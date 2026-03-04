@@ -16,7 +16,7 @@ export function DashboardShell({ children, user }: DashboardShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div className="flex min-h-svh bg-[#F0F1F5] dark:bg-[#0A0A12]">
+    <div className="flex min-h-svh w-full max-w-full overflow-x-hidden bg-[#F0F1F5] dark:bg-[#0A0A12]">
       {/* ─── Liquid Glass ambient background ─── */}
       {/* Primary blob — warm accent */}
       <div
@@ -44,12 +44,12 @@ export function DashboardShell({ children, user }: DashboardShellProps) {
       />
 
       <DashboardSidebar open={sidebarOpen} onOpenChange={setSidebarOpen} />
-      <div className="flex flex-1 flex-col min-w-0 lg:pl-64">
+      <div className="flex flex-1 flex-col min-w-0 w-full lg:ml-64">
         <DashboardHeader
           user={user}
           onMenuClick={() => setSidebarOpen(true)}
         />
-        <main className="flex-1 w-full max-w-full overflow-x-hidden px-6 py-8 lg:px-10">
+        <main className="flex-1 w-full px-6 py-8 lg:px-10">
           {children}
         </main>
       </div>
