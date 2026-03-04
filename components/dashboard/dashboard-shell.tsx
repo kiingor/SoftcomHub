@@ -16,7 +16,7 @@ export function DashboardShell({ children, user }: DashboardShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div className="flex min-h-svh bg-[#F0F1F5] dark:bg-[#0A0A12]">
+    <div className="min-h-svh bg-[#F0F1F5] dark:bg-[#0A0A12]">
       {/* ─── Liquid Glass ambient background ─── */}
       {/* Primary blob — warm accent */}
       <div
@@ -43,13 +43,16 @@ export function DashboardShell({ children, user }: DashboardShellProps) {
         style={{ background: 'radial-gradient(circle, #e9d5ff 0%, transparent 60%)' }}
       />
 
+      {/* Sidebar — fixed, fora do fluxo normal */}
       <DashboardSidebar open={sidebarOpen} onOpenChange={setSidebarOpen} />
-      <div className="flex flex-1 flex-col lg:pl-64">
+
+      {/* Conteúdo principal — offset via padding-left para compensar a sidebar fixa */}
+      <div className="flex min-h-svh flex-col lg:pl-64">
         <DashboardHeader
           user={user}
           onMenuClick={() => setSidebarOpen(true)}
         />
-        <main className="flex-1 w-full px-6 py-8 lg:px-10">
+        <main className="flex-1 px-6 py-8 lg:px-10">
           {children}
         </main>
       </div>
