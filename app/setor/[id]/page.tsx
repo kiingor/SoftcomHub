@@ -113,6 +113,10 @@ import {
   EyeOff,
   Megaphone,
   ArrowRightLeft,
+  Wifi,
+  WifiOff,
+  QrCode,
+  Smartphone,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
@@ -549,6 +553,26 @@ export default function SetorPage() {
   const [savingCanal, setSavingCanal] = useState(false)
   const [deletingCanalId, setDeletingCanalId] = useState<string | null>(null)
 
+  // Evolution API flow state
+  const [evoStep, setEvoStep] = useState<'form' | 'qrcode' | 'connected'>('form')
+  const [evoQrCode, setEvoQrCode] = useState<string | null>(null)
+  const [evoInstanceName, setEvoInstanceName] = useState<string | null>(null)
+  const [evoCreatingInstance, setEvoCreatingInstance] = useState(false)
+  const evoPollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Canal statuses (canalId -> 'open' | 'close' | 'connecting' | 'unknown')
+  const [canalStatuses, setCanalStatuses] = useState<Record<string, string>>({})
+
+  // Reconnect dialog state
+  const [reconnectDialog, setReconnectDialog] = useState<{
+    open: boolean
+    canal: Canal | null
+    qr: string | null
+    loading: boolean
+    connected: boolean
+  }>({ open: false, canal: null, qr: null, loading: false, connected: false })
+  const reconnectPollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   // Subsetores state
   interface Subsetor {
     id: string
@@ -872,6 +896,14 @@ export default function SetorPage() {
     )
   }
 
+  // Cleanup evolution polling on unmount
+  useEffect(() => {
+    return () => {
+      if (evoPollingRef.current) clearInterval(evoPollingRef.current)
+      if (reconnectPollingRef.current) clearInterval(reconnectPollingRef.current)
+    }
+  }, [])
+
   // Initialize horarios - use horarios.length as stable dependency
   const horariosLength = horarios.length
   useEffect(() => {
@@ -1152,7 +1184,26 @@ const saveConfig = async () => {
       .select('*')
       .eq('setor_id', setorId)
       .order('criado_em', { ascending: true })
-    if (data) setCanais(data as Canal[])
+    if (data) {
+      setCanais(data as Canal[])
+      // Fetch Evolution statuses for evolution_api channels
+      const evoCanais = (data as Canal[]).filter(c => c.tipo === 'evolution_api' && c.instancia)
+      if (evoCanais.length > 0) {
+        const statusMap: Record<string, string> = {}
+        await Promise.all(
+          evoCanais.map(async (canal) => {
+            try {
+              const res = await fetch(`/api/evolution/instance/${canal.instancia}/status`)
+              const d = await res.json()
+              statusMap[canal.id] = d.instance?.state || 'unknown'
+            } catch {
+              statusMap[canal.id] = 'unknown'
+            }
+          })
+        )
+        setCanalStatuses(prev => ({ ...prev, ...statusMap }))
+      }
+    }
   }
 
   // ============ TIPOS DE ATENDIMENTO DO SETOR ============
@@ -1398,6 +1449,179 @@ const saveConfig = async () => {
       max_disparos_dia: 0,
       ativo: true,
     })
+  }
+
+  // ---- Evolution API helpers ----
+
+  const EVOLUTION_BASE_URL_CONST = 'https://whatsapi.mensageria.softcomtecnologia.com'
+  const EVOLUTION_GLOBAL_KEY_CONST =
+    'duukhYWkWdrmqcREwVqdNumyokmudpPEUuN4B70YqyQrxL5212IfXWUFYCHfejvTGBw4fc378VGMmUcpF7549ktNWMrnjMF8HBmYxHM9xzhItqPlINrmejamx77FPF8d'
+
+  function generateInstanceName(nome: string): string {
+    const slug = nome
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 24)
+    const suffix = Math.random().toString(36).slice(2, 6)
+    return `${slug}-${suffix}`
+  }
+
+  async function handleEvoNext() {
+    if (!canalForm.nome.trim()) {
+      toast.error('Digite um nome para o canal')
+      return
+    }
+    setEvoCreatingInstance(true)
+    try {
+      const instanceName = generateInstanceName(canalForm.nome)
+      setEvoInstanceName(instanceName)
+
+      // Create instance
+      const createRes = await fetch('/api/evolution/instance/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instanceName }),
+      })
+      const createData = await createRes.json()
+
+      let qrBase64: string | null = null
+
+      // Try QR code from create response
+      if (createData.qrcode?.base64) {
+        qrBase64 = createData.qrcode.base64
+      } else {
+        // Fetch via connect endpoint
+        const connectRes = await fetch(`/api/evolution/instance/${instanceName}/connect`)
+        const connectData = await connectRes.json()
+        qrBase64 = connectData.base64 || connectData.qrcode?.base64 || null
+      }
+
+      setEvoQrCode(qrBase64)
+      setEvoStep('qrcode')
+      startEvoPolling(instanceName)
+    } catch (err) {
+      console.error('[handleEvoNext]', err)
+      toast.error('Erro ao criar instância Evolution')
+    } finally {
+      setEvoCreatingInstance(false)
+    }
+  }
+
+  function startEvoPolling(instanceName: string) {
+    if (evoPollingRef.current) clearInterval(evoPollingRef.current)
+    evoPollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/evolution/instance/${instanceName}/status`)
+        const data = await res.json()
+        const state: string = data.instance?.state || 'unknown'
+        if (state === 'open') {
+          clearInterval(evoPollingRef.current!)
+          evoPollingRef.current = null
+          await saveEvoCanal(instanceName)
+        }
+      } catch (err) {
+        console.error('[EvoPolling]', err)
+      }
+    }, 3000)
+  }
+
+  async function saveEvoCanal(instanceName: string) {
+    try {
+      const payload = {
+        setor_id: setorId,
+        nome: canalForm.nome.trim(),
+        tipo: 'evolution_api',
+        ativo: true,
+        instancia: instanceName,
+        evolution_base_url: EVOLUTION_BASE_URL_CONST,
+        evolution_api_key: EVOLUTION_GLOBAL_KEY_CONST,
+        max_disparos_dia: 0,
+      }
+      const { error } = await supabase.from('setor_canais').insert(payload)
+      if (error) throw error
+      setEvoStep('connected')
+      toast.success('Canal EvolutionAPI conectado com sucesso!')
+      setTimeout(() => {
+        closeCanalModal()
+        fetchCanais()
+      }, 2000)
+    } catch (err) {
+      console.error('[saveEvoCanal]', err)
+      toast.error('Erro ao salvar canal')
+    }
+  }
+
+  function closeCanalModal() {
+    if (evoPollingRef.current) {
+      clearInterval(evoPollingRef.current)
+      evoPollingRef.current = null
+    }
+    setIsCanalModalOpen(false)
+    setEditingCanal(null)
+    resetCanalForm()
+    setEvoStep('form')
+    setEvoQrCode(null)
+    setEvoInstanceName(null)
+  }
+
+  async function handleEvoCancelQr() {
+    if (evoInstanceName) {
+      try {
+        await fetch(`/api/evolution/instance/${evoInstanceName}`, { method: 'DELETE' })
+      } catch {}
+    }
+    if (evoPollingRef.current) {
+      clearInterval(evoPollingRef.current)
+      evoPollingRef.current = null
+    }
+    setEvoStep('form')
+    setEvoQrCode(null)
+    setEvoInstanceName(null)
+  }
+
+  async function openReconnect(canal: Canal) {
+    setReconnectDialog({ open: true, canal, qr: null, loading: true, connected: false })
+    try {
+      const res = await fetch(`/api/evolution/instance/${canal.instancia}/connect`)
+      const data = await res.json()
+      const qr = data.base64 || data.qrcode?.base64 || null
+      setReconnectDialog(prev => ({ ...prev, qr, loading: false }))
+
+      if (reconnectPollingRef.current) clearInterval(reconnectPollingRef.current)
+      reconnectPollingRef.current = setInterval(async () => {
+        try {
+          const sRes = await fetch(`/api/evolution/instance/${canal.instancia}/status`)
+          const sData = await sRes.json()
+          const state: string = sData.instance?.state || 'unknown'
+          if (state === 'open') {
+            clearInterval(reconnectPollingRef.current!)
+            reconnectPollingRef.current = null
+            setCanalStatuses(prev => ({ ...prev, [canal.id]: 'open' }))
+            setReconnectDialog(prev => ({ ...prev, connected: true }))
+            toast.success('WhatsApp conectado!')
+            setTimeout(() => {
+              setReconnectDialog({ open: false, canal: null, qr: null, loading: false, connected: false })
+            }, 2000)
+          }
+        } catch {}
+      }, 3000)
+    } catch (err) {
+      console.error('[openReconnect]', err)
+      setReconnectDialog(prev => ({ ...prev, loading: false }))
+      toast.error('Erro ao obter QR Code')
+    }
+  }
+
+  function closeReconnectDialog() {
+    if (reconnectPollingRef.current) {
+      clearInterval(reconnectPollingRef.current)
+      reconnectPollingRef.current = null
+    }
+    setReconnectDialog({ open: false, canal: null, qr: null, loading: false, connected: false })
   }
 
   const openEditCanal = (canal: Canal) => {
@@ -3651,13 +3875,58 @@ const saveConfig = async () => {
                            (canal.discord_guild_id || '-')}
                         </TableCell>
                         <TableCell>
-                          <Switch
-                            checked={canal.ativo}
-                            onCheckedChange={() => toggleCanalAtivo(canal)}
-                          />
+                          {canal.tipo === 'whatsapp' || canal.tipo === 'discord' ? (
+                            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                              <Wifi className="h-3 w-3" />
+                              Conectado
+                            </span>
+                          ) : canal.tipo === 'evolution_api' ? (
+                            (() => {
+                              const st = canalStatuses[canal.id]
+                              if (!st || st === 'unknown') return (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Verificando
+                                </span>
+                              )
+                              if (st === 'open') return (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                                  <Wifi className="h-3 w-3" />
+                                  Conectado
+                                </span>
+                              )
+                              if (st === 'connecting' || st === 'qrcode') return (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Conectando
+                                </span>
+                              )
+                              return (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                                  <WifiOff className="h-3 w-3" />
+                                  Desconectado
+                                </span>
+                              )
+                            })()
+                          ) : null}
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
+                            {/* Botão Conectar para evolution desconectado */}
+                            {canal.tipo === 'evolution_api' && canal.instancia &&
+                              canalStatuses[canal.id] &&
+                              canalStatuses[canal.id] !== 'open' &&
+                              canalStatuses[canal.id] !== 'connecting' && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs text-sky-600 hover:text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950"
+                                onClick={() => openReconnect(canal)}
+                              >
+                                <QrCode className="h-3.5 w-3.5 mr-1" />
+                                Conectar
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="icon"
@@ -4092,180 +4361,321 @@ const saveConfig = async () => {
       </Dialog>
 
       {/* Canal Modal */}
-      <Dialog open={isCanalModalOpen} onOpenChange={setIsCanalModalOpen}>
+      <Dialog open={isCanalModalOpen} onOpenChange={(open) => { if (!open) closeCanalModal() }}>
         <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingCanal ? 'Editar Canal' : 'Novo Canal'}</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              {canalForm.tipo === 'evolution_api' && <Smartphone className="h-5 w-5 text-sky-600" />}
+              {editingCanal ? 'Editar Canal' : 'Novo Canal'}
+            </DialogTitle>
             <DialogDescription>
-              Configure um canal de atendimento para este setor.
+              {evoStep === 'qrcode'
+                ? 'Escaneie o QR Code com o WhatsApp para conectar.'
+                : evoStep === 'connected'
+                ? 'Canal configurado com sucesso!'
+                : 'Configure um canal de atendimento para este setor.'}
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="canal-nome">Nome do Canal</Label>
-              <Input
-                id="canal-nome"
-                placeholder="Ex: WhatsApp Vendas"
-                value={canalForm.nome}
-                onChange={(e) => setCanalForm((prev) => ({ ...prev, nome: e.target.value }))}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Tipo</Label>
-              <Select
-                value={canalForm.tipo}
-                onValueChange={(value: 'whatsapp' | 'evolution_api' | 'discord') => setCanalForm((prev) => ({ ...prev, tipo: value }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o tipo" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="whatsapp">WhatsApp Oficial</SelectItem>
-                  <SelectItem value="evolution_api">EvolutionAPI</SelectItem>
-                  <SelectItem value="discord">Discord</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="canal-instancia">Instancia</Label>
-              <Input
-                id="canal-instancia"
-                placeholder="Ex: instancia-01"
-                value={canalForm.instancia}
-                onChange={(e) => setCanalForm((prev) => ({ ...prev, instancia: e.target.value }))}
-              />
-              <p className="text-[11px] text-muted-foreground">Identificador da instancia utilizada neste canal.</p>
-            </div>
-
-            {/* WhatsApp fields */}
-            {canalForm.tipo === 'whatsapp' && (
-              <div className="space-y-3 border-t pt-4">
-                <p className="text-sm font-semibold">WhatsApp - Configuracoes</p>
-                <div className="space-y-2">
-                  <Label>Phone Number ID</Label>
-                  <Input
-                    placeholder="Ex: 123456789012345"
-                    value={canalForm.phone_number_id}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, phone_number_id: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Access Token</Label>
-                  <Input
-                    type="password"
-                    placeholder="EAAxxxxxx..."
-                    value={canalForm.whatsapp_token}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, whatsapp_token: e.target.value }))}
-                  />
-                  <p className="text-[11px] text-muted-foreground">Se vazio, usa o token global do sistema.</p>
-                </div>
-                <div className="space-y-2">
-                  <Label>Nome do Template (Disparo)</Label>
-                  <Input
-                    placeholder="Ex: atendimento_inicio"
-                    value={canalForm.template_id}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, template_id: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Idioma do Template</Label>
-                  <Select
-                    value={canalForm.template_language}
-                    onValueChange={(value) => setCanalForm((prev) => ({ ...prev, template_language: value }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecione o idioma" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pt_BR">Portugues (Brasil) - pt_BR</SelectItem>
-                      <SelectItem value="pt">Portugues - pt</SelectItem>
-                      <SelectItem value="en_US">Ingles (EUA) - en_US</SelectItem>
-                      <SelectItem value="en">Ingles - en</SelectItem>
-                      <SelectItem value="es">Espanhol - es</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Limite de Disparos por Dia</Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    placeholder="0 = ilimitado"
-                    value={canalForm.max_disparos_dia || ''}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, max_disparos_dia: parseInt(e.target.value) || 0 }))}
-                  />
-                </div>
+          {/* ── STEP: QR Code ── */}
+          {evoStep === 'qrcode' && (
+            <div className="flex flex-col items-center gap-5 py-6">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Smartphone className="h-4 w-4 text-sky-600" />
+                <span>Abra o WhatsApp → Menu → Aparelhos conectados → Conectar</span>
               </div>
-            )}
-
-            {/* EvolutionAPI fields */}
-            {canalForm.tipo === 'evolution_api' && (
-              <div className="space-y-3 border-t pt-4">
-                <p className="text-sm font-semibold">EvolutionAPI - Configuracoes</p>
-                <div className="space-y-2">
-                  <Label>Base URL</Label>
-                  <Input
-                    placeholder="https://sua-instancia.evolution-api.com"
-                    value={canalForm.evolution_base_url}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, evolution_base_url: e.target.value }))}
-                  />
+              {evoQrCode ? (
+                <div className="rounded-2xl border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
+                  <img src={evoQrCode} alt="QR Code WhatsApp" className="w-56 h-56" />
                 </div>
-                <div className="space-y-2">
-                  <Label>API Key</Label>
-                  <Input
-                    type="password"
-                    placeholder="Sua API Key..."
-                    value={canalForm.evolution_api_key}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, evolution_api_key: e.target.value }))}
-                  />
+              ) : (
+                <div className="w-64 h-64 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/30 gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-sky-600" />
+                  <p className="text-sm text-muted-foreground">Gerando QR Code...</p>
                 </div>
+              )}
+              <div className="flex items-center gap-2 text-sm text-muted-foreground animate-pulse">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Aguardando conexão...
               </div>
-            )}
-
-            {/* Discord fields */}
-            {canalForm.tipo === 'discord' && (
-              <div className="space-y-3 border-t pt-4">
-                <p className="text-sm font-semibold">Discord - Configuracoes</p>
-                <div className="space-y-2">
-                  <Label>Bot Token</Label>
-                  <Input
-                    type="password"
-                    placeholder="MTIzNDU2Nzg5MDEy..."
-                    value={canalForm.discord_bot_token}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, discord_bot_token: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Guild ID (Servidor)</Label>
-                  <Input
-                    placeholder="Ex: 123456789012345678"
-                    value={canalForm.discord_guild_id}
-                    onChange={(e) => setCanalForm((prev) => ({ ...prev, discord_guild_id: e.target.value }))}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center gap-3 border-t pt-4">
-              <Switch
-                checked={canalForm.ativo}
-                onCheckedChange={(checked) => setCanalForm((prev) => ({ ...prev, ativo: checked }))}
-              />
-              <Label>Canal ativo</Label>
             </div>
-          </div>
+          )}
+
+          {/* ── STEP: Connected ── */}
+          {evoStep === 'connected' && (
+            <div className="flex flex-col items-center gap-4 py-8">
+              <div className="h-20 w-20 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center ring-4 ring-green-200 dark:ring-green-800">
+                <CheckCircle className="h-10 w-10 text-green-600 dark:text-green-400" />
+              </div>
+              <div className="text-center">
+                <p className="font-bold text-xl text-green-700 dark:text-green-400">WhatsApp Conectado!</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Canal <span className="font-medium">{canalForm.nome}</span> configurado com sucesso.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP: Form ── */}
+          {evoStep === 'form' && (
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="canal-nome">Nome do Canal</Label>
+                <Input
+                  id="canal-nome"
+                  placeholder="Ex: WhatsApp Vendas"
+                  value={canalForm.nome}
+                  onChange={(e) => setCanalForm((prev) => ({ ...prev, nome: e.target.value }))}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Tipo</Label>
+                <Select
+                  value={canalForm.tipo}
+                  onValueChange={(value: 'whatsapp' | 'evolution_api' | 'discord') =>
+                    setCanalForm((prev) => ({ ...prev, tipo: value }))
+                  }
+                  disabled={!!editingCanal}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione o tipo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="whatsapp">WhatsApp Oficial</SelectItem>
+                    <SelectItem value="evolution_api">EvolutionAPI</SelectItem>
+                    <SelectItem value="discord">Discord</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* EvolutionAPI NEW: apenas nome+tipo, instância é gerada automaticamente */}
+              {canalForm.tipo === 'evolution_api' && !editingCanal && (
+                <div className="rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/60 dark:bg-sky-950/40 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-medium text-sky-700 dark:text-sky-300">
+                    <Smartphone className="h-4 w-4" />
+                    EvolutionAPI — Configuração automática
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Clique em <strong>Próximo</strong> para criar a instância e escanear o QR Code com o WhatsApp.
+                    As credenciais são gerenciadas automaticamente pelo sistema.
+                  </p>
+                </div>
+              )}
+
+              {/* EvolutionAPI EDIT: mostra instância como info */}
+              {canalForm.tipo === 'evolution_api' && !!editingCanal && (
+                <div className="rounded-xl border border-muted bg-muted/30 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Smartphone className="h-4 w-4 text-sky-600" />
+                    EvolutionAPI — Gerenciado automaticamente
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Instância: <span className="font-mono text-xs">{canalForm.instancia || 'N/D'}</span>
+                  </p>
+                </div>
+              )}
+
+              {/* Instância (apenas para WhatsApp e Discord) */}
+              {canalForm.tipo !== 'evolution_api' && (
+                <div className="space-y-2">
+                  <Label htmlFor="canal-instancia">Instância</Label>
+                  <Input
+                    id="canal-instancia"
+                    placeholder="Ex: instancia-01"
+                    value={canalForm.instancia}
+                    onChange={(e) => setCanalForm((prev) => ({ ...prev, instancia: e.target.value }))}
+                  />
+                  <p className="text-[11px] text-muted-foreground">Identificador da instância utilizada neste canal.</p>
+                </div>
+              )}
+
+              {/* WhatsApp fields */}
+              {canalForm.tipo === 'whatsapp' && (
+                <div className="space-y-3 border-t pt-4">
+                  <p className="text-sm font-semibold">WhatsApp — Configurações</p>
+                  <div className="space-y-2">
+                    <Label>Phone Number ID</Label>
+                    <Input
+                      placeholder="Ex: 123456789012345"
+                      value={canalForm.phone_number_id}
+                      onChange={(e) => setCanalForm((prev) => ({ ...prev, phone_number_id: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Access Token</Label>
+                    <Input
+                      type="password"
+                      placeholder="EAAxxxxxx..."
+                      value={canalForm.whatsapp_token}
+                      onChange={(e) => setCanalForm((prev) => ({ ...prev, whatsapp_token: e.target.value }))}
+                    />
+                    <p className="text-[11px] text-muted-foreground">Se vazio, usa o token global do sistema.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Nome do Template (Disparo)</Label>
+                    <Input
+                      placeholder="Ex: atendimento_inicio"
+                      value={canalForm.template_id}
+                      onChange={(e) => setCanalForm((prev) => ({ ...prev, template_id: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Idioma do Template</Label>
+                    <Select
+                      value={canalForm.template_language}
+                      onValueChange={(value) => setCanalForm((prev) => ({ ...prev, template_language: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione o idioma" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pt_BR">Português (Brasil) - pt_BR</SelectItem>
+                        <SelectItem value="pt">Português - pt</SelectItem>
+                        <SelectItem value="en_US">Inglês (EUA) - en_US</SelectItem>
+                        <SelectItem value="en">Inglês - en</SelectItem>
+                        <SelectItem value="es">Espanhol - es</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Limite de Disparos por Dia</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      placeholder="0 = ilimitado"
+                      value={canalForm.max_disparos_dia || ''}
+                      onChange={(e) =>
+                        setCanalForm((prev) => ({ ...prev, max_disparos_dia: parseInt(e.target.value) || 0 }))
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Discord fields */}
+              {canalForm.tipo === 'discord' && (
+                <div className="space-y-3 border-t pt-4">
+                  <p className="text-sm font-semibold">Discord — Configurações</p>
+                  <div className="space-y-2">
+                    <Label>Bot Token</Label>
+                    <Input
+                      type="password"
+                      placeholder="MTIzNDU2Nzg5MDEy..."
+                      value={canalForm.discord_bot_token}
+                      onChange={(e) => setCanalForm((prev) => ({ ...prev, discord_bot_token: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Guild ID (Servidor)</Label>
+                    <Input
+                      placeholder="Ex: 123456789012345678"
+                      value={canalForm.discord_guild_id}
+                      onChange={(e) => setCanalForm((prev) => ({ ...prev, discord_guild_id: e.target.value }))}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 border-t pt-4">
+                <Switch
+                  checked={canalForm.ativo}
+                  onCheckedChange={(checked) => setCanalForm((prev) => ({ ...prev, ativo: checked }))}
+                />
+                <Label>Canal ativo</Label>
+              </div>
+            </div>
+          )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCanalModalOpen(false)}>
-              Cancelar
-            </Button>
-            <Button onClick={saveCanal} disabled={savingCanal}>
-              {savingCanal ? 'Salvando...' : editingCanal ? 'Salvar' : 'Criar Canal'}
-            </Button>
+            {evoStep === 'qrcode' ? (
+              <Button variant="outline" onClick={handleEvoCancelQr}>
+                ← Voltar
+              </Button>
+            ) : evoStep === 'connected' ? (
+              <Button onClick={closeCanalModal} className="bg-green-600 hover:bg-green-700 text-white">
+                Concluir
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={closeCanalModal}>
+                  Cancelar
+                </Button>
+                {!editingCanal && canalForm.tipo === 'evolution_api' ? (
+                  <Button onClick={handleEvoNext} disabled={evoCreatingInstance}>
+                    {evoCreatingInstance ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Criando...
+                      </>
+                    ) : (
+                      <>Próximo →</>
+                    )}
+                  </Button>
+                ) : (
+                  <Button onClick={saveCanal} disabled={savingCanal}>
+                    {savingCanal ? 'Salvando...' : editingCanal ? 'Salvar' : 'Criar Canal'}
+                  </Button>
+                )}
+              </>
+            )}
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reconnect QR Dialog */}
+      <Dialog
+        open={reconnectDialog.open}
+        onOpenChange={(open) => { if (!open) closeReconnectDialog() }}
+      >
+        <DialogContent className="sm:max-w-sm max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5 text-sky-600" />
+              Conectar {reconnectDialog.canal?.nome}
+            </DialogTitle>
+            <DialogDescription>
+              Escaneie o QR Code com o WhatsApp para reconectar esta instância.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col items-center gap-5 py-4">
+            {reconnectDialog.connected ? (
+              <>
+                <div className="h-20 w-20 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center ring-4 ring-green-200 dark:ring-green-800">
+                  <CheckCircle className="h-10 w-10 text-green-600 dark:text-green-400" />
+                </div>
+                <p className="font-bold text-lg text-green-700 dark:text-green-400">WhatsApp Conectado!</p>
+              </>
+            ) : reconnectDialog.loading ? (
+              <div className="flex flex-col items-center gap-3 py-6">
+                <Loader2 className="h-10 w-10 animate-spin text-sky-600" />
+                <p className="text-sm text-muted-foreground">Obtendo QR Code...</p>
+              </div>
+            ) : reconnectDialog.qr ? (
+              <>
+                <div className="rounded-2xl border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
+                  <img src={reconnectDialog.qr} alt="QR Code WhatsApp" className="w-56 h-56" />
+                </div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground animate-pulse">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Aguardando conexão...
+                </div>
+              </>
+            ) : (
+              <div className="text-center py-6">
+                <WifiOff className="h-10 w-10 mx-auto mb-3 text-muted-foreground opacity-50" />
+                <p className="text-sm font-medium text-muted-foreground">Não foi possível obter o QR Code.</p>
+                <p className="text-xs text-muted-foreground mt-1">Verifique se a instância existe no servidor.</p>
+              </div>
+            )}
+          </div>
+
+          {!reconnectDialog.connected && !reconnectDialog.loading && (
+            <DialogFooter>
+              <Button variant="outline" onClick={closeReconnectDialog}>Fechar</Button>
+            </DialogFooter>
+          )}
         </DialogContent>
       </Dialog>
 
