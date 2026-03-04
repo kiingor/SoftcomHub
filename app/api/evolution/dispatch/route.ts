@@ -179,12 +179,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const evolutionMessageId = evolutionData?.key?.id || null
+    const evolutionMessageId =
+      evolutionData?.key?.id ||
+      evolutionData?.message?.key?.id ||
+      null
 
     // Save message in DB as colaborador message
-    await supabase.from('mensagens').insert({
+    const { error: msgError } = await supabase.from('mensagens').insert({
       ticket_id: ticketId,
       remetente: 'colaborador',
+      colaborador_id: colaborador.id,
       conteudo: mensagem,
       tipo: 'texto',
       phone_number_id: instanceName,
@@ -192,6 +196,10 @@ export async function POST(request: NextRequest) {
       whatsapp_message_id: evolutionMessageId,
       enviado_em: new Date().toISOString(),
     })
+
+    if (msgError) {
+      console.error('[Evolution Dispatch] Error saving message:', JSON.stringify(msgError))
+    }
 
     // Set primeira_resposta_em on ticket
     await supabase
