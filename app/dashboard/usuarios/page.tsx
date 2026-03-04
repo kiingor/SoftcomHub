@@ -235,7 +235,7 @@ export default function UsuariosPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6 h-[calc(100vh-130px)]">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -263,12 +263,12 @@ export default function UsuariosPage() {
       </div>
 
       {/* Users Table */}
-      <Card className="glass-card-elevated rounded-2xl border-0">
-        <CardContent className="p-0 max-h-[calc(100vh-220px)] overflow-y-auto">
+      <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col flex-1 min-h-0">
+        <CardContent className="p-0 overflow-y-auto flex-1">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Nome</TableHead>
+                <TableHead className="pl-5">Nome</TableHead>
                 <TableHead>E-mail</TableHead>
                 <TableHead>Tipo</TableHead>
                 <TableHead>Permissão</TableHead>
@@ -281,7 +281,7 @@ export default function UsuariosPage() {
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={i}>
-                    <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                    <TableCell className="pl-5"><Skeleton className="h-4 w-32" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-40" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-20" /></TableCell>
@@ -314,7 +314,7 @@ export default function UsuariosPage() {
                       transition={{ delay: index * 0.03 }}
                       className="border-b"
                     >
-                      <TableCell className="font-medium">{user.nome}</TableCell>
+                      <TableCell className="font-medium pl-5">{user.nome}</TableCell>
                       <TableCell>{user.email}</TableCell>
                       <TableCell>
                         {user.is_master ? (
