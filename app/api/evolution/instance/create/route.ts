@@ -21,6 +21,12 @@ export async function POST(request: NextRequest) {
         instanceName,
         integration: 'WHATSAPP-BAILEYS',
         qrcode: true,
+        webhook: {
+          url: 'https://n8n-webhook.mensageria.softcomtecnologia.com/webhook/evolution',
+          byEvents: true,
+          base64: false,
+          events: ['MESSAGES_UPSERT'],
+        },
       }),
     })
 
