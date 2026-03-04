@@ -130,6 +130,7 @@ interface TagItem {
   id: string
   nome: string
   cor: string
+  ordem: number
 }
 
 interface Setor {
@@ -163,14 +164,14 @@ export default function DashboardPage() {
   const [tags, setTags] = useState<TagItem[]>([])
   const [loadingTags, setLoadingTags] = useState(false)
   const [isTagsDialogOpen, setIsTagsDialogOpen] = useState(false)
-  const [tagForm, setTagForm] = useState({ nome: '', cor: '#6B7280' })
+  const [tagForm, setTagForm] = useState({ nome: '', cor: '#6B7280', ordem: 0 })
   const [editingTag, setEditingTag] = useState<TagItem | null>(null)
   const [savingTag, setSavingTag] = useState(false)
   const [deletingTagId, setDeletingTagId] = useState<string | null>(null)
 
   const fetchTags = useCallback(async () => {
     setLoadingTags(true)
-    const { data } = await supabase.from('tags').select('*').order('nome')
+    const { data } = await supabase.from('tags').select('*').order('ordem').order('nome')
     if (data) setTags(data)
     setLoadingTags(false)
   }, [supabase])
@@ -219,10 +220,11 @@ export default function DashboardPage() {
       }
     }
 
-    // Sort tag groups alphabetically
-    const tagGroups = Array.from(tagMap.values()).sort((a, b) =>
-      a.tag.nome.localeCompare(b.tag.nome)
-    )
+    // Sort tag groups by ordem, then by name
+    const tagGroups = Array.from(tagMap.values()).sort((a, b) => {
+      const ordemDiff = (a.tag.ordem ?? 0) - (b.tag.ordem ?? 0)
+      return ordemDiff !== 0 ? ordemDiff : a.tag.nome.localeCompare(b.tag.nome)
+    })
     groups.push(...tagGroups)
 
     // Untagged setores
@@ -283,19 +285,19 @@ export default function DashboardPage() {
       if (editingTag) {
         const { error } = await supabase
           .from('tags')
-          .update({ nome: tagForm.nome.trim(), cor: tagForm.cor })
+          .update({ nome: tagForm.nome.trim(), cor: tagForm.cor, ordem: tagForm.ordem })
           .eq('id', editingTag.id)
         if (error) throw error
         toast.success('Tag atualizada!')
       } else {
         const { error } = await supabase
           .from('tags')
-          .insert({ nome: tagForm.nome.trim(), cor: tagForm.cor })
+          .insert({ nome: tagForm.nome.trim(), cor: tagForm.cor, ordem: tagForm.ordem })
         if (error) throw error
         toast.success('Tag criada!')
       }
       setEditingTag(null)
-      setTagForm({ nome: '', cor: '#6B7280' })
+      setTagForm({ nome: '', cor: '#6B7280', ordem: 0 })
       await fetchTags()
       mutate()
     } catch {
@@ -754,16 +756,32 @@ export default function DashboardPage() {
               <p className="text-sm font-medium">
                 {editingTag ? 'Editar Tag' : 'Nova Tag'}
               </p>
-              <div className="space-y-2">
-                <Label htmlFor="tag-nome">Nome</Label>
-                <Input
-                  id="tag-nome"
-                  placeholder="Ex: Comercial, Suporte..."
-                  value={tagForm.nome}
-                  onChange={(e) => setTagForm((prev) => ({ ...prev, nome: e.target.value }))}
-                  className="glass-input rounded-xl"
-                  onKeyDown={(e) => e.key === 'Enter' && handleSaveTag()}
-                />
+              <div className="flex gap-3">
+                <div className="flex-1 space-y-2">
+                  <Label htmlFor="tag-nome">Nome</Label>
+                  <Input
+                    id="tag-nome"
+                    placeholder="Ex: Comercial, Suporte..."
+                    value={tagForm.nome}
+                    onChange={(e) => setTagForm((prev) => ({ ...prev, nome: e.target.value }))}
+                    className="glass-input rounded-xl"
+                    onKeyDown={(e) => e.key === 'Enter' && handleSaveTag()}
+                  />
+                </div>
+                <div className="w-20 space-y-2">
+                  <Label htmlFor="tag-ordem">Ordem</Label>
+                  <Input
+                    id="tag-ordem"
+                    type="number"
+                    min={0}
+                    placeholder="0"
+                    value={tagForm.ordem}
+                    onChange={(e) =>
+                      setTagForm((prev) => ({ ...prev, ordem: parseInt(e.target.value, 10) || 0 }))
+                    }
+                    className="glass-input rounded-xl text-center"
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Cor</Label>
@@ -792,7 +810,7 @@ export default function DashboardPage() {
                     size="sm"
                     onClick={() => {
                       setEditingTag(null)
-                      setTagForm({ nome: '', cor: '#6B7280' })
+                      setTagForm({ nome: '', cor: '#6B7280', ordem: 0 })
                     }}
                   >
                     <X className="h-4 w-4 mr-1" />
@@ -841,6 +859,9 @@ export default function DashboardPage() {
                       style={{ backgroundColor: tag.cor }}
                     />
                     <span className="flex-1 text-sm font-medium">{tag.nome}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums w-8 text-center">
+                      #{tag.ordem ?? 0}
+                    </span>
                     <div className="flex items-center gap-1">
                       <Button
                         variant="ghost"
@@ -848,7 +869,7 @@ export default function DashboardPage() {
                         className="h-7 w-7"
                         onClick={() => {
                           setEditingTag(tag)
-                          setTagForm({ nome: tag.nome, cor: tag.cor })
+                          setTagForm({ nome: tag.nome, cor: tag.cor, ordem: tag.ordem ?? 0 })
                         }}
                       >
                         <Pencil className="h-3.5 w-3.5" />

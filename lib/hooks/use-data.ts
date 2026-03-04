@@ -36,14 +36,14 @@ export function useSetores(colaboradorId?: string, isMaster?: boolean) {
       if (isMaster) {
         const { data } = await supabase
           .from('setores')
-          .select('*, setor_canais(tipo, ativo), tags(id, nome, cor)')
+          .select('*, setor_canais(tipo, ativo), tags(id, nome, cor, ordem)')
           .order('nome')
         return data || []
       }
 
       const { data: assignments } = await supabase
         .from('colaborador_setores')
-        .select('setor_id, setores(*, setor_canais(tipo, ativo), tags(id, nome, cor))')
+        .select('setor_id, setores(*, setor_canais(tipo, ativo), tags(id, nome, cor, ordem))')
         .eq('colaborador_id', colaboradorId)
 
       return assignments?.map((a) => a.setores).filter(Boolean) || []
