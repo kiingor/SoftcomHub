@@ -264,7 +264,7 @@ export default function UsuariosPage() {
 
       {/* Users Table */}
       <Card className="glass-card-elevated rounded-2xl border-0">
-        <CardContent className="p-0">
+        <CardContent className="p-0 max-h-[calc(100vh-220px)] overflow-y-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -384,7 +384,7 @@ export default function UsuariosPage() {
 
       {/* Create/Edit Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="max-w-2xl glass-card-elevated rounded-3xl border-0">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto glass-card-elevated rounded-2xl border-0">
           <DialogHeader>
             <DialogTitle>
               {editingUser ? 'Editar Usuário' : 'Novo Usuário'}
