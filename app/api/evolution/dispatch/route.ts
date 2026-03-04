@@ -101,8 +101,11 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (clienteError || !newCliente) {
-        console.error('[Evolution Dispatch] Error creating cliente:', clienteError)
-        return NextResponse.json({ error: 'Erro ao criar cliente' }, { status: 500 })
+        console.error('[Evolution Dispatch] Error creating cliente:', JSON.stringify(clienteError))
+        return NextResponse.json(
+          { error: 'Erro ao criar cliente', details: clienteError?.message || clienteError },
+          { status: 500 },
+        )
       }
       clienteId = newCliente.id
     }
@@ -133,14 +136,16 @@ export async function POST(request: NextRequest) {
           status: 'em_atendimento',
           prioridade: 'normal',
           canal: 'whatsapp',
-          atribuido_em: new Date().toISOString(),
         })
         .select('id, numero')
         .single()
 
       if (ticketError || !ticket) {
-        console.error('[Evolution Dispatch] Error creating ticket:', ticketError)
-        return NextResponse.json({ error: 'Erro ao criar ticket' }, { status: 500 })
+        console.error('[Evolution Dispatch] Error creating ticket:', JSON.stringify(ticketError))
+        return NextResponse.json(
+          { error: 'Erro ao criar ticket', details: ticketError?.message || ticketError },
+          { status: 500 },
+        )
       }
       ticketId = ticket.id
       ticketNumero = ticket.numero
