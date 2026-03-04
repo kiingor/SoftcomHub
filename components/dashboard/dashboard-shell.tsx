@@ -44,12 +44,12 @@ export function DashboardShell({ children, user }: DashboardShellProps) {
       />
 
       <DashboardSidebar open={sidebarOpen} onOpenChange={setSidebarOpen} />
-      <div className="flex flex-1 flex-col lg:pl-64">
+      <div className="flex flex-1 flex-col min-w-0 lg:pl-64">
         <DashboardHeader
           user={user}
           onMenuClick={() => setSidebarOpen(true)}
         />
-        <main className="flex-1 w-full px-6 py-8 lg:px-10">
+        <main className="flex-1 w-full max-w-full overflow-x-hidden px-6 py-8 lg:px-10">
           {children}
         </main>
       </div>
