@@ -1,0 +1,1 @@
+ALTER TABLE mensagens ADD COLUMN IF NOT EXISTS user_name_discord TEXT DEFAULT NULL;
