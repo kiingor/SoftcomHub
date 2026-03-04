@@ -184,11 +184,10 @@ export async function POST(request: NextRequest) {
       evolutionData?.message?.key?.id ||
       null
 
-    // Save message in DB as colaborador message
+    // Save message in DB as bot message (initial dispatch message)
     const { error: msgError } = await supabase.from('mensagens').insert({
       ticket_id: ticketId,
-      remetente: 'colaborador',
-      colaborador_id: colaborador.id,
+      remetente: 'bot',
       conteudo: mensagem,
       tipo: 'texto',
       phone_number_id: instanceName,
@@ -200,13 +199,6 @@ export async function POST(request: NextRequest) {
     if (msgError) {
       console.error('[Evolution Dispatch] Error saving message:', JSON.stringify(msgError))
     }
-
-    // Set primeira_resposta_em on ticket
-    await supabase
-      .from('tickets')
-      .update({ primeira_resposta_em: new Date().toISOString() })
-      .eq('id', ticketId)
-      .is('primeira_resposta_em', null)
 
     return NextResponse.json({
       success: true,
