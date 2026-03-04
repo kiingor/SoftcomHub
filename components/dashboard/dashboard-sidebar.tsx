@@ -178,7 +178,10 @@ export function DashboardSidebar({ open, onOpenChange }: DashboardSidebarProps) 
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-50 hidden w-64 lg:block glass-panel">
+      <aside
+        className="inset-y-0 left-0 z-50 hidden w-64 lg:block glass-panel"
+        style={{ position: 'fixed', top: 0, bottom: 0, left: 0, width: '16rem' }}
+      >
         <SidebarContent />
       </aside>
 
