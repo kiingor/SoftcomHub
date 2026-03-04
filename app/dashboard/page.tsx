@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useTransition, useCallback } from 'react'
+import { useState, useMemo, useTransition, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
@@ -35,6 +35,10 @@ import {
   HelpCircle,
   ArrowUpRight,
   Sparkles,
+  Tag,
+  Pencil,
+  Trash2,
+  X,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -49,7 +53,15 @@ import {
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 
 // Available icons for sectors
 const AVAILABLE_ICONS = [
@@ -114,12 +126,20 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
+interface TagItem {
+  id: string
+  nome: string
+  cor: string
+}
+
 interface Setor {
   id: string
   nome: string
   descricao: string | null
   cor: string | null
   icon_url: string | null
+  tag_id: string | null
+  tags?: TagItem | null
   setor_canais?: Array<{ tipo: string; ativo: boolean }>
 }
 
@@ -134,9 +154,30 @@ export default function DashboardPage() {
     descricao: '',
     cor: '#3B82F6',
     icon_url: 'MessageCircle',
+    tag_id: '' as string,
   })
   const [saving, setSaving] = useState(false)
   const supabase = createClient()
+
+  // Tags state
+  const [tags, setTags] = useState<TagItem[]>([])
+  const [loadingTags, setLoadingTags] = useState(false)
+  const [isTagsDialogOpen, setIsTagsDialogOpen] = useState(false)
+  const [tagForm, setTagForm] = useState({ nome: '', cor: '#6B7280' })
+  const [editingTag, setEditingTag] = useState<TagItem | null>(null)
+  const [savingTag, setSavingTag] = useState(false)
+  const [deletingTagId, setDeletingTagId] = useState<string | null>(null)
+
+  const fetchTags = useCallback(async () => {
+    setLoadingTags(true)
+    const { data } = await supabase.from('tags').select('*').order('nome')
+    if (data) setTags(data)
+    setLoadingTags(false)
+  }, [supabase])
+
+  useEffect(() => {
+    fetchTags()
+  }, [fetchTags])
 
   const handleSetorClick = useCallback(
     (setorId: string) => {
@@ -155,11 +196,43 @@ export default function DashboardPage() {
   )
 
   const filteredSetores = useMemo(() => {
-    if (!searchTerm) return setores as Setor[]
-    return (setores as Setor[]).filter((s) =>
+    const all = setores as Setor[]
+    if (!searchTerm) return all
+    return all.filter((s) =>
       s.nome.toLowerCase().includes(searchTerm.toLowerCase())
     )
   }, [searchTerm, setores])
+
+  // Group sectors by tag
+  const groupedSetores = useMemo(() => {
+    const groups: { tag: TagItem | null; setores: Setor[] }[] = []
+    const tagMap = new Map<string, { tag: TagItem; setores: Setor[] }>()
+
+    for (const setor of filteredSetores) {
+      if (setor.tag_id && setor.tags) {
+        const existing = tagMap.get(setor.tag_id)
+        if (existing) {
+          existing.setores.push(setor)
+        } else {
+          tagMap.set(setor.tag_id, { tag: setor.tags, setores: [setor] })
+        }
+      }
+    }
+
+    // Sort tag groups alphabetically
+    const tagGroups = Array.from(tagMap.values()).sort((a, b) =>
+      a.tag.nome.localeCompare(b.tag.nome)
+    )
+    groups.push(...tagGroups)
+
+    // Untagged setores
+    const untagged = filteredSetores.filter((s) => !s.tag_id)
+    if (untagged.length > 0) {
+      groups.push({ tag: null, setores: untagged })
+    }
+
+    return groups
+  }, [filteredSetores])
 
   async function handleCreateSetor() {
     if (!newSetor.nome.trim()) return
@@ -172,6 +245,7 @@ export default function DashboardPage() {
           descricao: newSetor.descricao || null,
           cor: newSetor.cor,
           icon_url: newSetor.icon_url,
+          tag_id: newSetor.tag_id || null,
         })
         .select('id')
         .single()
@@ -184,22 +258,190 @@ export default function DashboardPage() {
         dia_semana: dia,
         hora_inicio: '08:00',
         hora_fim: '18:00',
-        ativo: dia >= 1 && dia <= 5, // true somente seg–sex
+        ativo: dia >= 1 && dia <= 5,
       }))
       await supabase.from('horarios_atendimento').insert(horariosDefault)
 
       setIsCreateOpen(false)
-      setNewSetor({ nome: '', descricao: '', cor: '#3B82F6', icon_url: 'MessageCircle' })
+      setNewSetor({ nome: '', descricao: '', cor: '#3B82F6', icon_url: 'MessageCircle', tag_id: '' })
       mutate()
     } catch {
-      // Error silently handled — toast could be added here
+      toast.error('Erro ao criar setor')
     } finally {
       setSaving(false)
     }
   }
 
+  // Tag CRUD
+  async function handleSaveTag() {
+    if (!tagForm.nome.trim()) {
+      toast.error('Digite um nome para a tag')
+      return
+    }
+    setSavingTag(true)
+    try {
+      if (editingTag) {
+        const { error } = await supabase
+          .from('tags')
+          .update({ nome: tagForm.nome.trim(), cor: tagForm.cor })
+          .eq('id', editingTag.id)
+        if (error) throw error
+        toast.success('Tag atualizada!')
+      } else {
+        const { error } = await supabase
+          .from('tags')
+          .insert({ nome: tagForm.nome.trim(), cor: tagForm.cor })
+        if (error) throw error
+        toast.success('Tag criada!')
+      }
+      setEditingTag(null)
+      setTagForm({ nome: '', cor: '#6B7280' })
+      await fetchTags()
+      mutate()
+    } catch {
+      toast.error('Erro ao salvar tag')
+    } finally {
+      setSavingTag(false)
+    }
+  }
+
+  async function handleDeleteTag(tag: TagItem) {
+    setDeletingTagId(tag.id)
+    try {
+      const { error } = await supabase.from('tags').delete().eq('id', tag.id)
+      if (error) throw error
+      toast.success('Tag excluída!')
+      await fetchTags()
+      mutate()
+    } catch {
+      toast.error('Erro ao excluir tag')
+    } finally {
+      setDeletingTagId(null)
+    }
+  }
+
   const isLoading = loadingColab || (colaborador && loadingSetores)
   const PreviewIcon = getIconComponent(newSetor.icon_url)
+
+  // ─── Sector Card ───
+  function SetorCard({ setor, index }: { setor: Setor; index: number }) {
+    const SetorIcon = getIconComponent(setor.icon_url)
+    const setorColor = setor.cor || '#3B82F6'
+    const isNavigating = navigatingTo === setor.id && isPending
+    const activeCanais: Array<{ tipo: string; ativo: boolean }> =
+      (setor.setor_canais ?? []).filter((c) => c.ativo)
+
+    return (
+      <motion.div
+        key={setor.id}
+        initial={{ opacity: 0, y: 16, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        transition={{ delay: index * 0.04, duration: 0.35, ease: [0.23, 1, 0.32, 1] }}
+        layout
+      >
+        <div
+          className={cn(
+            'group relative glass-card-elevated glass-shimmer-hover rounded-3xl overflow-hidden cursor-pointer',
+            'active:scale-[0.98] transition-transform duration-150',
+            isNavigating && 'opacity-70 pointer-events-none'
+          )}
+          onClick={() => handleSetorClick(setor.id)}
+          role="button"
+          tabIndex={0}
+          aria-label={`Acessar setor ${setor.nome}`}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') handleSetorClick(setor.id)
+          }}
+        >
+          {/* Color accent bar at top */}
+          <div
+            className="h-1 w-full"
+            style={{ background: `linear-gradient(90deg, ${setorColor}, ${hexToRgba(setorColor, 0.3)})` }}
+          />
+
+          {/* Subtle color tint overlay */}
+          <div
+            className="absolute inset-0 pointer-events-none opacity-[0.04] group-hover:opacity-[0.07] transition-opacity duration-500"
+            style={{ background: `radial-gradient(ellipse at top left, ${setorColor} 0%, transparent 70%)` }}
+          />
+
+          <div className="relative p-5 space-y-4">
+            {/* ─── Top row: Icon + Name + Arrow ─── */}
+            <div className="flex items-start gap-3.5">
+              <div
+                className="glass-icon-glow shrink-0 flex h-12 w-12 items-center justify-center rounded-2xl shadow-sm"
+                style={{ backgroundColor: setorColor }}
+              >
+                <SetorIcon className="h-6 w-6 text-white drop-shadow-sm" />
+              </div>
+
+              <div className="flex-1 min-w-0 pt-0.5">
+                <h3 className="font-semibold text-[15px] leading-snug line-clamp-1 tracking-tight">
+                  {setor.nome}
+                </h3>
+                {setor.descricao ? (
+                  <p className="text-xs text-muted-foreground/70 mt-0.5 line-clamp-2 leading-relaxed">
+                    {setor.descricao}
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground/35 mt-0.5 italic">Sem descrição</p>
+                )}
+              </div>
+
+              {/* Floating arrow button */}
+              <div
+                className={cn(
+                  'glass-fab shrink-0',
+                  'h-8 w-8 rounded-xl',
+                  'flex items-center justify-center',
+                  'opacity-0 group-hover:opacity-100',
+                  'translate-x-1 group-hover:translate-x-0',
+                  'transition-all duration-300',
+                )}
+              >
+                {isNavigating ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                ) : (
+                  <ArrowUpRight className="h-3.5 w-3.5 text-foreground/70" />
+                )}
+              </div>
+            </div>
+
+            {/* ─── Divider ─── */}
+            <div className="h-px bg-gradient-to-r from-border/50 via-border/20 to-transparent" />
+
+            {/* ─── Channels section ─── */}
+            <div className="space-y-2">
+              <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest">
+                Canais
+              </p>
+              {activeCanais.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {activeCanais.map((canal, idx) => {
+                    const cfg = CANAL_CONFIG[canal.tipo]
+                    if (!cfg) return null
+                    return (
+                      <span
+                        key={idx}
+                        className="glass-badge inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium"
+                        style={{ backgroundColor: cfg.bg, color: cfg.color }}
+                      >
+                        <span className="text-[9px]">{cfg.icon}</span>
+                        {cfg.label}
+                      </span>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="text-[10px] text-muted-foreground/40 italic">Nenhum canal ativo</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    )
+  }
 
   return (
     <div className="space-y-8">
@@ -228,13 +470,27 @@ export default function DashboardPage() {
             />
           </div>
           {colaborador?.is_master && (
-            <Button
-              onClick={() => setIsCreateOpen(true)}
-              className="gap-2 h-10 rounded-2xl shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-shadow"
-            >
-              <Plus className="h-4 w-4" />
-              Novo Setor
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setEditingTag(null)
+                  setTagForm({ nome: '', cor: '#6B7280' })
+                  setIsTagsDialogOpen(true)
+                }}
+                className="gap-2 h-10 rounded-2xl"
+              >
+                <Tag className="h-4 w-4" />
+                Tags
+              </Button>
+              <Button
+                onClick={() => setIsCreateOpen(true)}
+                className="gap-2 h-10 rounded-2xl shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-shadow"
+              >
+                <Plus className="h-4 w-4" />
+                Novo Setor
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -276,149 +532,54 @@ export default function DashboardPage() {
           </div>
         </div>
       ) : (
-        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-          <AnimatePresence mode="popLayout">
-            {filteredSetores.map((setor, index) => {
-              const SetorIcon = getIconComponent(setor.icon_url)
-              const setorColor = setor.cor || '#3B82F6'
-              const isNavigating = navigatingTo === setor.id && isPending
+        <div className="space-y-8">
+          {groupedSetores.map((group, gi) => (
+            <div key={group.tag?.id ?? 'sem-tag'}>
+              {/* Group header */}
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex items-center gap-2">
+                  {group.tag ? (
+                    <>
+                      <span
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold text-white shadow-sm"
+                        style={{ backgroundColor: group.tag.cor }}
+                      >
+                        <Tag className="h-3 w-3" />
+                        {group.tag.nome}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {group.setores.length} {group.setores.length === 1 ? 'setor' : 'setores'}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-muted text-muted-foreground">
+                        <Tag className="h-3 w-3" />
+                        Sem Tag
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {group.setores.length} {group.setores.length === 1 ? 'setor' : 'setores'}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex-1 h-px bg-border/30" />
+              </div>
 
-              // Active channels from setor_canais
-              const activeCanais: Array<{ tipo: string; ativo: boolean }> =
-                (setor.setor_canais ?? []).filter((c) => c.ativo)
-
-              return (
-                <motion.div
-                  key={setor.id}
-                  initial={{ opacity: 0, y: 16, scale: 0.97 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{
-                    delay: index * 0.04,
-                    duration: 0.35,
-                    ease: [0.23, 1, 0.32, 1],
-                  }}
-                  layout
-                >
-                  <div
-                    className={cn(
-                      'group relative glass-card-elevated glass-shimmer-hover rounded-3xl overflow-hidden cursor-pointer',
-                      'active:scale-[0.98] transition-transform duration-150',
-                      isNavigating && 'opacity-70 pointer-events-none'
-                    )}
-                    onClick={() => handleSetorClick(setor.id)}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Acessar setor ${setor.nome}`}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') handleSetorClick(setor.id)
-                    }}
-                  >
-                    {/* Color accent bar at top */}
-                    <div
-                      className="h-1 w-full"
-                      style={{
-                        background: `linear-gradient(90deg, ${setorColor}, ${hexToRgba(setorColor, 0.3)})`,
-                      }}
-                    />
-
-                    {/* Subtle color tint overlay */}
-                    <div
-                      className="absolute inset-0 pointer-events-none opacity-[0.04] group-hover:opacity-[0.07] transition-opacity duration-500"
-                      style={{
-                        background: `radial-gradient(ellipse at top left, ${setorColor} 0%, transparent 70%)`,
-                      }}
-                    />
-
-                    <div className="relative p-5 space-y-4">
-                      {/* ─── Top row: Icon + Name + Arrow ─── */}
-                      <div className="flex items-start gap-3.5">
-                        {/* Icon with glow */}
-                        <div
-                          className="glass-icon-glow shrink-0 flex h-12 w-12 items-center justify-center rounded-2xl shadow-sm"
-                          style={{ backgroundColor: setorColor }}
-                        >
-                          <SetorIcon className="h-6 w-6 text-white drop-shadow-sm" />
-                        </div>
-
-                        <div className="flex-1 min-w-0 pt-0.5">
-                          <h3 className="font-semibold text-[15px] leading-snug line-clamp-1 tracking-tight">
-                            {setor.nome}
-                          </h3>
-                          {setor.descricao ? (
-                            <p className="text-xs text-muted-foreground/70 mt-0.5 line-clamp-2 leading-relaxed">
-                              {setor.descricao}
-                            </p>
-                          ) : (
-                            <p className="text-xs text-muted-foreground/35 mt-0.5 italic">
-                              Sem descrição
-                            </p>
-                          )}
-                        </div>
-
-                        {/* Floating arrow button */}
-                        <div
-                          className={cn(
-                            'glass-fab shrink-0',
-                            'h-8 w-8 rounded-xl',
-                            'flex items-center justify-center',
-                            'opacity-0 group-hover:opacity-100',
-                            'translate-x-1 group-hover:translate-x-0',
-                            'transition-all duration-300',
-                          )}
-                        >
-                          {isNavigating ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                          ) : (
-                            <ArrowUpRight className="h-3.5 w-3.5 text-foreground/70" />
-                          )}
-                        </div>
-                      </div>
-
-                      {/* ─── Divider ─── */}
-                      <div className="h-px bg-gradient-to-r from-border/50 via-border/20 to-transparent" />
-
-                      {/* ─── Channels section ─── */}
-                      <div className="space-y-2">
-                        <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest">
-                          Canais
-                        </p>
-                        {activeCanais.length > 0 ? (
-                          <div className="flex flex-wrap gap-1.5">
-                            {activeCanais.map((canal, idx) => {
-                              const cfg = CANAL_CONFIG[canal.tipo]
-                              if (!cfg) return null
-                              return (
-                                <span
-                                  key={idx}
-                                  className="glass-badge inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium"
-                                  style={{
-                                    backgroundColor: cfg.bg,
-                                    color: cfg.color,
-                                  }}
-                                >
-                                  <span className="text-[9px]">{cfg.icon}</span>
-                                  {cfg.label}
-                                </span>
-                              )
-                            })}
-                          </div>
-                        ) : (
-                          <p className="text-[10px] text-muted-foreground/40 italic">
-                            Nenhum canal ativo
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
-              )
-            })}
-          </AnimatePresence>
+              {/* Sectors grid */}
+              <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                <AnimatePresence mode="popLayout">
+                  {group.setores.map((setor, index) => (
+                    <SetorCard key={setor.id} setor={setor} index={index + gi * 4} />
+                  ))}
+                </AnimatePresence>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* ─── Create Dialog ─── */}
+      {/* ─── Create Setor Dialog ─── */}
       <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
         <DialogContent className="glass-card-elevated rounded-2xl max-w-lg border-0">
           <DialogHeader>
@@ -470,6 +631,35 @@ export default function DashboardPage() {
                   className="rounded-xl glass-input"
                 />
               </div>
+
+              {/* Tag selector */}
+              {tags.length > 0 && (
+                <div className="space-y-2">
+                  <Label>Tag</Label>
+                  <Select
+                    value={newSetor.tag_id || 'none'}
+                    onValueChange={(v) => setNewSetor((prev) => ({ ...prev, tag_id: v === 'none' ? '' : v }))}
+                  >
+                    <SelectTrigger className="rounded-xl glass-input">
+                      <SelectValue placeholder="Selecionar tag..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sem tag</SelectItem>
+                      {tags.map((tag) => (
+                        <SelectItem key={tag.id} value={tag.id}>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="h-3 w-3 rounded-full shrink-0"
+                              style={{ backgroundColor: tag.cor }}
+                            />
+                            {tag.nome}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
               {/* Color Picker */}
               <div className="space-y-2.5">
@@ -540,6 +730,152 @@ export default function DashboardPage() {
               ) : (
                 'Criar Setor'
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ─── Tags Management Dialog ─── */}
+      <Dialog open={isTagsDialogOpen} onOpenChange={setIsTagsDialogOpen}>
+        <DialogContent className="glass-card-elevated rounded-2xl max-w-md border-0">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-lg">
+              <Tag className="h-5 w-5 text-primary" />
+              Gerenciar Tags
+            </DialogTitle>
+            <DialogDescription>
+              Crie tags para organizar e agrupar seus setores
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {/* Tag form */}
+            <div className="glass-card rounded-xl p-4 space-y-3 border border-border/30">
+              <p className="text-sm font-medium">
+                {editingTag ? 'Editar Tag' : 'Nova Tag'}
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="tag-nome">Nome</Label>
+                <Input
+                  id="tag-nome"
+                  placeholder="Ex: Comercial, Suporte..."
+                  value={tagForm.nome}
+                  onChange={(e) => setTagForm((prev) => ({ ...prev, nome: e.target.value }))}
+                  className="glass-input rounded-xl"
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveTag()}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Cor</Label>
+                <div className="flex flex-wrap gap-2">
+                  {AVAILABLE_COLORS.map((color) => (
+                    <button
+                      key={color.value}
+                      type="button"
+                      onClick={() => setTagForm((prev) => ({ ...prev, cor: color.value }))}
+                      className={cn(
+                        'h-7 w-7 rounded-full border-2 transition-all duration-200',
+                        tagForm.cor === color.value
+                          ? 'border-foreground scale-110 ring-2 ring-offset-2 ring-foreground/20'
+                          : 'border-transparent hover:scale-110'
+                      )}
+                      style={{ backgroundColor: color.value }}
+                      title={color.name}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                {editingTag && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setEditingTag(null)
+                      setTagForm({ nome: '', cor: '#6B7280' })
+                    }}
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    Cancelar
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  onClick={handleSaveTag}
+                  disabled={savingTag || !tagForm.nome.trim()}
+                  className="ml-auto"
+                >
+                  {savingTag ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                  ) : editingTag ? (
+                    'Salvar'
+                  ) : (
+                    <>
+                      <Plus className="h-4 w-4 mr-1" />
+                      Adicionar
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            {/* Tags list */}
+            <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+              {loadingTags ? (
+                <div className="flex justify-center py-4">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : tags.length === 0 ? (
+                <div className="text-center py-6 text-muted-foreground">
+                  <Tag className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                  <p className="text-sm">Nenhuma tag criada ainda</p>
+                </div>
+              ) : (
+                tags.map((tag) => (
+                  <div
+                    key={tag.id}
+                    className="flex items-center gap-3 p-3 rounded-xl border border-border/40 bg-muted/20"
+                  >
+                    <span
+                      className="h-4 w-4 rounded-full shrink-0"
+                      style={{ backgroundColor: tag.cor }}
+                    />
+                    <span className="flex-1 text-sm font-medium">{tag.nome}</span>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => {
+                          setEditingTag(tag)
+                          setTagForm({ nome: tag.nome, cor: tag.cor })
+                        }}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        disabled={deletingTagId === tag.id}
+                        onClick={() => handleDeleteTag(tag)}
+                      >
+                        {deletingTagId === tag.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsTagsDialogOpen(false)} className="rounded-xl">
+              Fechar
             </Button>
           </DialogFooter>
         </DialogContent>

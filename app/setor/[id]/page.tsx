@@ -122,7 +122,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { ThemeToggle } from '@/components/theme-toggle'
-import { Send, Hash, Check } from 'lucide-react'
+import { Send, Hash, Check, Tag } from 'lucide-react'
 import { DisparoLogsSection } from '@/components/disparo-logs-section'
 
 const supabase = createClient()
@@ -461,6 +461,9 @@ export default function SetorPage() {
   })
   const [sendingNotification, setSendingNotification] = useState(false)
 
+  // Tags list (for tag selector in config)
+  const [tagsList, setTagsList] = useState<{ id: string; nome: string; cor: string }[]>([])
+
   // Config form state
   const [configForm, setConfigForm] = useState({
   nome: '',
@@ -481,6 +484,7 @@ export default function SetorPage() {
   webhook_url: '',
   webhook_eventos: [] as string[],
   tempo_espera_minutos: 10,
+  tag_id: '' as string,
   })
 
 // Templates state
@@ -777,6 +781,7 @@ export default function SetorPage() {
         webhook_url: setor.webhook_url || '',
         webhook_eventos: setor.webhook_eventos || [],
         tempo_espera_minutos: setor.tempo_espera_minutos ?? 10,
+        tag_id: setor.tag_id || '',
       })
       fetchTemplates()
       fetchCanais()
@@ -785,6 +790,7 @@ export default function SetorPage() {
       fetchSubsetores()
       fetchDistributionConfig()
       fetchSetoresDestino()
+      fetchTagsList()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setorId_stable])
@@ -845,6 +851,12 @@ export default function SetorPage() {
       .select('id, nome')
       .order('nome')
     if (data) setTodosSetores(data)
+  }
+
+  // Fetch all tags for tag selector
+  const fetchTagsList = async () => {
+    const { data } = await supabase.from('tags').select('id, nome, cor').order('nome')
+    if (data) setTagsList(data)
   }
 
   // Fetch setores destino de transferência configurados
@@ -1088,6 +1100,7 @@ const saveConfig = async () => {
   webhook_url: configForm.webhook_url || null,
   webhook_eventos: configForm.webhook_eventos.length > 0 ? configForm.webhook_eventos : null,
   tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
+  tag_id: configForm.tag_id || null,
   })
         .eq('id', setorId)
 
@@ -3470,6 +3483,39 @@ const saveConfig = async () => {
                   rows={4}
                 />
               </div>
+
+              {tagsList.length > 0 && (
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1.5">
+                    <Tag className="h-3.5 w-3.5" />
+                    Tag
+                  </Label>
+                  <Select
+                    value={configForm.tag_id || 'none'}
+                    onValueChange={(v) =>
+                      setConfigForm((prev) => ({ ...prev, tag_id: v === 'none' ? '' : v }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecionar tag..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sem tag</SelectItem>
+                      {tagsList.map((tag) => (
+                        <SelectItem key={tag.id} value={tag.id}>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="h-3 w-3 rounded-full shrink-0"
+                              style={{ backgroundColor: tag.cor }}
+                            />
+                            {tag.nome}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
             </CardContent>
           </Card>
