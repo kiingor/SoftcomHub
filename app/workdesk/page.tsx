@@ -37,6 +37,8 @@ import {
   Megaphone,
   Lock,
   Timer,
+  ChevronRight,
+  Zap,
 } from 'lucide-react'
 import {
   Dialog,
@@ -290,10 +292,13 @@ export default function WorkdeskPage() {
   const [disparoCliente, setDisparoCliente] = useState<any>(null)
   const [disparoLoading, setDisparoLoading] = useState(false)
   const [disparoSending, setDisparoSending] = useState(false)
-  const [disparoStep, setDisparoStep] = useState<'cnpj' | 'telefone'>('cnpj')
+  const [disparoStep, setDisparoStep] = useState<'cnpj' | 'telefone' | 'canal' | 'mensagem_evolution'>('cnpj')
   const [disparoLimitBlocked, setDisparoLimitBlocked] = useState(false)
   const [disparoLimitInfo, setDisparoLimitInfo] = useState('')
+  const [disparoCanalChoice, setDisparoCanalChoice] = useState<'whatsapp' | 'evolution_api'>('whatsapp')
+  const [disparoMensagemEvolution, setDisparoMensagemEvolution] = useState('')
   const [setorCanalConfig, setSetorCanalConfig] = useState<'whatsapp' | 'discord' | 'evolution_api'>('whatsapp')
+  const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
   
   // Unread messages tracking
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map())
@@ -329,6 +334,15 @@ export default function WorkdeskPage() {
   if (sId) {
     const { data: setorInfo } = await supabase.from('setores').select('canal').eq('id', sId).single()
     if (setorInfo?.canal) setSetorCanalConfig(setorInfo.canal)
+    // Fetch active channels for this setor (for disparo multi-canal)
+    const { data: canaisAtivos } = await supabase
+      .from('setor_canais')
+      .select('tipo')
+      .eq('setor_id', sId)
+      .eq('ativo', true)
+    if (canaisAtivos && canaisAtivos.length > 0) {
+      setSetorCanaisAtivos(canaisAtivos.map((c: any) => c.tipo))
+    }
   }
   return colab
   }
@@ -1275,6 +1289,81 @@ const handleEncerrarTicket = async () => {
     setDisparoTelefone('')
     setDisparoCliente(null)
     setDisparoStep('cnpj')
+    setDisparoCanalChoice('whatsapp')
+    setDisparoMensagemEvolution('')
+  }
+
+  // Determine next step after phone number is confirmed
+  const handleDisparoConfirmPhone = () => {
+    const temWhatsapp = setorCanaisAtivos.includes('whatsapp') || setorCanalConfig === 'whatsapp'
+    const temEvolution = setorCanaisAtivos.includes('evolution_api')
+
+    if (temWhatsapp && temEvolution) {
+      // Both configured — let user choose
+      setDisparoStep('canal')
+    } else if (temEvolution) {
+      // Only Evolution — skip channel selection
+      setDisparoCanalChoice('evolution_api')
+      // Pre-load first template as default message
+      const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
+      setDisparoMensagemEvolution(defaultMsg)
+      setDisparoStep('mensagem_evolution')
+    } else {
+      // Only WhatsApp (or fallback) — existing send flow
+      handleEnviarDisparo()
+    }
+  }
+
+  // Handle canal choice and advance step
+  const handleDisparoSelectCanal = (canal: 'whatsapp' | 'evolution_api') => {
+    setDisparoCanalChoice(canal)
+    if (canal === 'evolution_api') {
+      const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
+      setDisparoMensagemEvolution(defaultMsg)
+      setDisparoStep('mensagem_evolution')
+    } else {
+      // WhatsApp oficial — existing flow
+      handleEnviarDisparo()
+    }
+  }
+
+  // Disparo via Evolution API
+  const handleEnviarDisparoEvolution = async () => {
+    if (!disparoCliente || !disparoTelefone || !colaborador || !disparoMensagemEvolution.trim()) return
+
+    const setorId = colaborador.setor_id || colaborador.setores_vinculados?.[0]?.setor_id
+    if (!setorId) {
+      toast.error('Colaborador sem setor vinculado')
+      return
+    }
+
+    setDisparoSending(true)
+    try {
+      const res = await fetch('/api/evolution/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clienteNome: disparoCliente.nome,
+          clienteCnpj: disparoCliente.cnpj,
+          clienteRegistro: disparoCliente.registro,
+          telefone: disparoTelefone,
+          setorId,
+          mensagem: disparoMensagemEvolution,
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        toast.success(`Disparo enviado via Evolution! Ticket #${data.ticketNumero || ''} criado.`)
+        setDisparoDialogOpen(false)
+        resetDisparo()
+        if (colaborador) fetchTickets(colaborador)
+      } else {
+        toast.error(data.error || 'Erro ao enviar disparo via Evolution')
+      }
+    } catch {
+      toast.error('Erro ao enviar disparo via Evolution')
+    }
+    setDisparoSending(false)
   }
 
   // Check if disparo ticket is locked (client hasn't replied after dispatch)
@@ -1758,8 +1847,9 @@ const tempId = `temp-${Date.now()}`
       <div className="flex flex-1 overflow-hidden w-full max-w-full">
         {/* Ticket List Column - responsive width */}
         <aside className="w-52 shrink-0 border-r border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl lg:w-60 xl:w-72 h-full overflow-hidden flex flex-col">
-          {/* Disparo Button - only for WhatsApp */}
-          {setorCanalConfig !== 'discord' && setorCanalConfig !== 'evolution_api' && (
+          {/* Disparo Button - for WhatsApp and/or EvolutionAPI */}
+          {(setorCanaisAtivos.includes('whatsapp') || setorCanaisAtivos.includes('evolution_api') ||
+            (setorCanalConfig !== 'discord' && setorCanalConfig !== 'evolution_api')) && (
           <div className="p-2 border-b border-white/30 dark:border-white/8 shrink-0">
   <Button
   onClick={async () => {
@@ -2992,105 +3082,226 @@ onClick={() => {
       <Dialog open={disparoDialogOpen} onOpenChange={(open) => { setDisparoDialogOpen(open); if (!open) resetDisparo() }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-  <DialogTitle className="flex items-center gap-2">
-  <Megaphone className="h-5 w-5 text-primary" />
-  Novo Disparo
-  {disparoLimitInfo && (
-    <Badge variant="outline" className="ml-2 text-xs font-normal">
-      {disparoLimitInfo}
-    </Badge>
-  )}
+            <DialogTitle className="flex items-center gap-2">
+              <Megaphone className="h-5 w-5 text-primary" />
+              Novo Disparo
+              {disparoLimitInfo && (
+                <Badge variant="outline" className="ml-2 text-xs font-normal">
+                  {disparoLimitInfo}
+                </Badge>
+              )}
             </DialogTitle>
             <DialogDescription>
-              Envie um template do WhatsApp para iniciar um atendimento.
+              {disparoStep === 'canal'
+                ? 'Escolha por qual canal deseja enviar o disparo.'
+                : disparoStep === 'mensagem_evolution'
+                ? 'Escreva a mensagem de abertura para o atendimento via WhatsApp não oficial.'
+                : 'Informe o CNPJ do cliente para iniciar um atendimento.'}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
-            {/* Step 1: CNPJ */}
-            <div className="space-y-2">
-              <Label>CNPJ do Cliente</Label>
-              <div className="flex gap-2">
-                <Input
-                  placeholder="00.000.000/0000-00"
-                  value={disparoCnpj}
-                  onChange={(e) => setDisparoCnpj(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleCnpjLookup()}
-                  disabled={disparoLoading || disparoStep === 'telefone'}
-                />
-                <Button
-                  onClick={handleCnpjLookup}
-                  disabled={!disparoCnpj.trim() || disparoLoading || disparoStep === 'telefone'}
-                  size="sm"
-                  className="shrink-0"
-                >
-                  {disparoLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Search className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-            </div>
+            {/* Steps 1 & 2: CNPJ + Phone (hidden after choosing canal) */}
+            {(disparoStep === 'cnpj' || disparoStep === 'telefone') && (
+              <>
+                {/* Step 1: CNPJ */}
+                <div className="space-y-2">
+                  <Label>CNPJ do Cliente</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="00.000.000/0000-00"
+                      value={disparoCnpj}
+                      onChange={(e) => setDisparoCnpj(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleCnpjLookup()}
+                      disabled={disparoLoading || disparoStep === 'telefone'}
+                    />
+                    <Button
+                      onClick={handleCnpjLookup}
+                      disabled={!disparoCnpj.trim() || disparoLoading || disparoStep === 'telefone'}
+                      size="sm"
+                      className="shrink-0"
+                    >
+                      {disparoLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
+                </div>
 
-            {/* Client data found */}
-            {disparoCliente && (
-              <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-1.5">
-                <p className="text-sm font-medium text-foreground">{disparoCliente.nome}</p>
-                {disparoCliente.cnpj && (
-                  <p className="text-xs text-muted-foreground">CNPJ: {formatCNPJ(disparoCliente.cnpj)}</p>
+                {/* Client data found */}
+                {disparoCliente && (
+                  <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-1.5">
+                    <p className="text-sm font-medium text-foreground">{disparoCliente.nome}</p>
+                    {disparoCliente.cnpj && (
+                      <p className="text-xs text-muted-foreground">CNPJ: {formatCNPJ(disparoCliente.cnpj)}</p>
+                    )}
+                    {disparoCliente.registro && (
+                      <p className="text-xs text-muted-foreground">Registro: {disparoCliente.registro}</p>
+                    )}
+                    {disparoCliente.telefone && (
+                      <p className="text-xs text-muted-foreground">Telefone: {formatPhone(disparoCliente.telefone)}</p>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-[10px] px-2"
+                      onClick={() => { setDisparoCliente(null); setDisparoStep('cnpj'); setDisparoTelefone('') }}
+                    >
+                      Trocar cliente
+                    </Button>
+                  </div>
                 )}
-                {disparoCliente.registro && (
-                  <p className="text-xs text-muted-foreground">Registro: {disparoCliente.registro}</p>
+
+                {/* Step 2: Phone number */}
+                {disparoStep === 'telefone' && (
+                  <div className="space-y-2">
+                    <Label>Telefone do cliente (com DDD)</Label>
+                    <Input
+                      placeholder="(83) 9 9999-9999"
+                      value={disparoTelefone}
+                      onChange={(e) => handleDisparoTelefoneChange(e.target.value)}
+                    />
+                  </div>
                 )}
-                {disparoCliente.telefone && (
-                  <p className="text-xs text-muted-foreground">Telefone: {formatPhone(disparoCliente.telefone)}</p>
+
+                {/* Advance button */}
+                {disparoStep === 'telefone' && (
+                  <Button
+                    onClick={handleDisparoConfirmPhone}
+                    disabled={!disparoCliente || disparoTelefone.replace(/\D/g, '').length < 10 || disparoSending}
+                    className="w-full gap-2"
+                  >
+                    {disparoSending ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Enviando...
+                      </>
+                    ) : (setorCanaisAtivos.includes('whatsapp') && setorCanaisAtivos.includes('evolution_api')) ? (
+                      <>
+                        Próximo
+                        <ChevronRight className="h-4 w-4" />
+                      </>
+                    ) : (
+                      <>
+                        <Send className="h-4 w-4" />
+                        Enviar Disparo
+                      </>
+                    )}
+                  </Button>
                 )}
+              </>
+            )}
+
+            {/* Step 3: Canal selection (when both WhatsApp + Evolution active) */}
+            {disparoStep === 'canal' && (
+              <div className="space-y-3">
+                {/* Client summary */}
+                <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5">
+                  <p className="text-sm font-medium">{disparoCliente?.nome}</p>
+                  <p className="text-xs text-muted-foreground">{formatPhone(disparoTelefone)}</p>
+                </div>
+
+                <Label className="text-sm font-medium">Escolha o canal de envio</Label>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {/* WhatsApp Oficial */}
+                  <button
+                    onClick={() => handleDisparoSelectCanal('whatsapp')}
+                    disabled={disparoSending}
+                    className="flex flex-col items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 dark:bg-green-950/30 dark:border-green-800 p-4 hover:border-green-400 hover:bg-green-100 dark:hover:bg-green-900/40 transition-all"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-500 text-white text-lg font-bold">
+                      W
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-semibold text-green-700 dark:text-green-400">WhatsApp</p>
+                      <p className="text-[10px] text-muted-foreground">Oficial (template)</p>
+                    </div>
+                  </button>
+
+                  {/* Evolution (WhatsApp não oficial) */}
+                  <button
+                    onClick={() => handleDisparoSelectCanal('evolution_api')}
+                    disabled={disparoSending}
+                    className="flex flex-col items-center gap-2 rounded-xl border-2 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 p-4 hover:border-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all"
+                  >
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 text-white">
+                      <Zap className="h-5 w-5" />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-semibold text-blue-700 dark:text-blue-400">Não Oficial</p>
+                      <p className="text-[10px] text-muted-foreground">Evolution API</p>
+                    </div>
+                  </button>
+                </div>
+
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 text-[10px] px-2"
-                  onClick={() => { setDisparoCliente(null); setDisparoStep('cnpj'); setDisparoTelefone('') }}
+                  className="w-full text-muted-foreground"
+                  onClick={() => setDisparoStep('telefone')}
                 >
-                  Trocar cliente
+                  ← Voltar
                 </Button>
               </div>
             )}
 
-            {/* Step 2: Phone number */}
-            {disparoStep === 'telefone' && (
-              <div className="space-y-2">
-                <Label>Telefone do cliente (com DDD)</Label>
-                <Input
-                  placeholder="(83) 9 9999-9999"
-                  value={disparoTelefone}
-                  onChange={(e) => handleDisparoTelefoneChange(e.target.value)}
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  O template sera enviado para este numero via WhatsApp.
-                </p>
-              </div>
-            )}
+            {/* Step 4: Evolution message editor */}
+            {disparoStep === 'mensagem_evolution' && (
+              <div className="space-y-3">
+                {/* Client summary */}
+                <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5">
+                  <p className="text-sm font-medium">{disparoCliente?.nome}</p>
+                  <p className="text-xs text-muted-foreground">{formatPhone(disparoTelefone)}</p>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 dark:bg-blue-900/40 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-400">
+                    <Zap className="h-2.5 w-2.5" />
+                    Evolution API
+                  </span>
+                </div>
 
-            {/* Send */}
-            {disparoStep === 'telefone' && (
-              <Button
-                onClick={handleEnviarDisparo}
-                disabled={!disparoCliente || disparoTelefone.replace(/\D/g, '').length < 10 || disparoSending}
-                className="w-full gap-2"
-              >
-                {disparoSending ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Enviando...
-                  </>
-                ) : (
-                  <>
-                    <Send className="h-4 w-4" />
-                    Enviar Disparo
-                  </>
-                )}
-              </Button>
+                <div className="space-y-1.5">
+                  <Label>Mensagem de abertura</Label>
+                  <textarea
+                    className="w-full min-h-[120px] resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    placeholder="Digite a mensagem..."
+                    value={disparoMensagemEvolution}
+                    onChange={(e) => setDisparoMensagemEvolution(e.target.value)}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    O ticket será criado e atribuído a você imediatamente. Você poderá enviar mais mensagens sem aguardar a resposta do cliente.
+                  </p>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setDisparoStep(setorCanaisAtivos.includes('whatsapp') ? 'canal' : 'telefone')}
+                  >
+                    ← Voltar
+                  </Button>
+                  <Button
+                    onClick={handleEnviarDisparoEvolution}
+                    disabled={!disparoMensagemEvolution.trim() || disparoSending}
+                    className="flex-1 gap-2"
+                  >
+                    {disparoSending ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Enviando...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="h-4 w-4" />
+                        Enviar
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
             )}
           </div>
         </DialogContent>
