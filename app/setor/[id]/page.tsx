@@ -528,6 +528,7 @@ export default function SetorPage() {
   // Setores destino de transferência
   const [setoresDestinoTransferencia, setSetoresDestinoTransferencia] = useState<string[]>([])
   const [savingSetoresDestino, setSavingSetoresDestino] = useState(false)
+  const [searchSetorDestino, setSearchSetorDestino] = useState('')
   const [isCanalModalOpen, setIsCanalModalOpen] = useState(false)
   const [editingCanal, setEditingCanal] = useState<Canal | null>(null)
   const [canalForm, setCanalForm] = useState({
@@ -3832,17 +3833,43 @@ const saveConfig = async () => {
               ) : 'Salvar'}
             </Button>
           </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto">
-            {todosSetores.filter((s) => s.id !== setorId).length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <Users className="h-10 w-10 mx-auto mb-3 opacity-40" />
-                <p className="text-sm">Nenhum outro setor cadastrado</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {todosSetores
-                  .filter((s) => s.id !== setorId)
-                  .map((s) => {
+          <CardContent className="flex-1 overflow-hidden flex flex-col gap-3 pb-4">
+            {/* Busca */}
+            <div className="relative shrink-0">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/60" />
+              <Input
+                placeholder="Buscar setor..."
+                value={searchSetorDestino}
+                onChange={(e) => setSearchSetorDestino(e.target.value)}
+                className="pl-9 h-9 text-sm"
+              />
+            </div>
+
+            {/* Lista */}
+            {(() => {
+              const lista = todosSetores.filter(
+                (s) =>
+                  s.id !== setorId &&
+                  s.nome.toLowerCase().includes(searchSetorDestino.toLowerCase())
+              )
+              if (todosSetores.filter((s) => s.id !== setorId).length === 0) {
+                return (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Users className="h-10 w-10 mx-auto mb-3 opacity-40" />
+                    <p className="text-sm">Nenhum outro setor cadastrado</p>
+                  </div>
+                )
+              }
+              if (lista.length === 0) {
+                return (
+                  <div className="text-center py-6 text-muted-foreground">
+                    <p className="text-sm">Nenhum setor encontrado</p>
+                  </div>
+                )
+              }
+              return (
+                <div className="overflow-y-auto flex-1 space-y-2 pr-1">
+                  {lista.map((s) => {
                     const isSelected = setoresDestinoTransferencia.includes(s.id)
                     return (
                       <label
@@ -3869,8 +3896,9 @@ const saveConfig = async () => {
                       </label>
                     )
                   })}
-              </div>
-            )}
+                </div>
+              )
+            })()}
           </CardContent>
         </Card>
 
