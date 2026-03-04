@@ -605,6 +605,13 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           const oldTicket = payload.old as any
 
           if (updatedTicket.colaborador_id === colaborador.id) {
+            // If ticket was closed (encerrado) by another session/tab, close the panel
+            if (updatedTicket.status === 'encerrado' && selectedTicketIdRef.current === updatedTicket.id) {
+              setSelectedTicket(null)
+              selectedTicketIdRef.current = null
+              setMobileDrawerOpen(false)
+              setMensagens([])
+            }
             // Ticket was just assigned/transferred TO this colaborador
             const isNew = !knownTicketIdsRef.current.has(updatedTicket.id)
             if (isNew || (oldTicket.colaborador_id && oldTicket.colaborador_id !== colaborador.id)) {
@@ -1014,6 +1021,8 @@ const handleEncerrarTicket = async () => {
       setSelectedTicket(null)
       selectedTicketIdRef.current = null
       setEncerrarDialogOpen(false)
+      setMobileDrawerOpen(false)
+      setMensagens([])
 
       if (colaborador) {
         fetchTickets(colaborador)
@@ -1196,6 +1205,8 @@ const handleEncerrarTicket = async () => {
     setTickets((prev) => prev.filter((t) => t.id !== transferredTicketId))
     setSelectedTicket(null)
     selectedTicketIdRef.current = null
+    setMobileDrawerOpen(false)
+    setMensagens([])
     setTransferLoading(false)
   }
 
