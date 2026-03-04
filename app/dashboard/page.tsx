@@ -403,131 +403,128 @@ export default function DashboardPage() {
 
       {/* ─── Create Dialog ─── */}
       <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-        <DialogContent className="glass-card-elevated rounded-2xl max-w-lg border-0 flex flex-col max-h-[90vh] p-0 overflow-hidden">
-          <div className="px-6 pt-6 pb-2 shrink-0">
-            <DialogHeader>
-              <DialogTitle className="text-lg">Novo Setor</DialogTitle>
-              <DialogDescription>
-                Crie um novo setor para organizar seus atendimentos
-              </DialogDescription>
-            </DialogHeader>
-          </div>
+        <DialogContent className="glass-card-elevated rounded-2xl max-w-lg border-0">
+          <DialogHeader>
+            <DialogTitle className="text-lg">Novo Setor</DialogTitle>
+            <DialogDescription>
+              Crie um novo setor para organizar seus atendimentos
+            </DialogDescription>
+          </DialogHeader>
 
-          <div className="overflow-y-auto flex-1 px-6 pb-2">
-          <div className="space-y-5 py-4">
-            {/* Preview */}
-            <div className="flex justify-center pb-5">
-              <div className="text-center">
-                <div
-                  className="glass-icon-glow mx-auto mb-3 flex h-18 w-18 items-center justify-center rounded-3xl shadow-lg"
-                  style={{ backgroundColor: newSetor.cor }}
-                >
-                  <PreviewIcon className="h-9 w-9 text-white drop-shadow-sm" />
-                </div>
-                <p className="text-sm font-semibold tracking-tight">
-                  {newSetor.nome || 'Nome do Setor'}
-                </p>
-              </div>
-            </div>
-
-            <div className="h-px bg-gradient-to-r from-transparent via-border/50 to-transparent" />
-
-            <div className="space-y-2">
-              <Label htmlFor="nome">Nome do Setor</Label>
-              <Input
-                id="nome"
-                value={newSetor.nome}
-                onChange={(e) => setNewSetor((prev) => ({ ...prev, nome: e.target.value }))}
-                placeholder="Ex: Suporte Técnico"
-                className="rounded-xl glass-input"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="descricao">Descrição</Label>
-              <Textarea
-                id="descricao"
-                value={newSetor.descricao}
-                onChange={(e) => setNewSetor((prev) => ({ ...prev, descricao: e.target.value }))}
-                placeholder="Descrição do setor..."
-                rows={2}
-                className="rounded-xl glass-input"
-              />
-            </div>
-
-            {/* Color Picker */}
-            <div className="space-y-2.5">
-              <Label>Cor do Setor</Label>
-              <div className="grid grid-cols-9 gap-2.5">
-                {AVAILABLE_COLORS.map((color) => (
-                  <button
-                    key={color.value}
-                    type="button"
-                    onClick={() => setNewSetor((prev) => ({ ...prev, cor: color.value }))}
-                    className={cn(
-                      'h-8 w-8 rounded-full border-2 transition-all duration-200',
-                      newSetor.cor === color.value
-                        ? 'border-foreground scale-110 ring-2 ring-offset-2 ring-foreground/20'
-                        : 'border-transparent hover:scale-110'
-                    )}
-                    style={{ backgroundColor: color.value }}
-                    title={color.name}
-                  />
-                ))}
-              </div>
-            </div>
-
-            {/* Icon Picker */}
-            <div className="space-y-2.5">
-              <Label>Ícone do Setor</Label>
-              <div className="grid grid-cols-8 gap-2">
-                {AVAILABLE_ICONS.map((iconItem) => (
-                  <button
-                    key={iconItem.name}
-                    type="button"
-                    onClick={() => setNewSetor((prev) => ({ ...prev, icon_url: iconItem.name }))}
-                    className={cn(
-                      'flex h-10 w-10 items-center justify-center rounded-xl border-2 transition-all duration-200',
-                      newSetor.icon_url === iconItem.name
-                        ? 'border-primary bg-primary/10 shadow-sm'
-                        : 'border-border/50 hover:border-primary/40 hover:bg-muted/50'
-                    )}
-                    title={iconItem.name}
+          {/* Scrollable content area */}
+          <div className="overflow-y-auto max-h-[65vh] -mx-6 px-6">
+            <div className="space-y-5 pb-2">
+              {/* Preview */}
+              <div className="flex justify-center pb-3">
+                <div className="text-center">
+                  <div
+                    className="glass-icon-glow mx-auto mb-3 flex h-18 w-18 items-center justify-center rounded-3xl shadow-lg"
+                    style={{ backgroundColor: newSetor.cor }}
                   >
-                    <iconItem.icon className="h-5 w-5" />
-                  </button>
-                ))}
+                    <PreviewIcon className="h-9 w-9 text-white drop-shadow-sm" />
+                  </div>
+                  <p className="text-sm font-semibold tracking-tight">
+                    {newSetor.nome || 'Nome do Setor'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="h-px bg-gradient-to-r from-transparent via-border/50 to-transparent" />
+
+              <div className="space-y-2">
+                <Label htmlFor="nome">Nome do Setor</Label>
+                <Input
+                  id="nome"
+                  value={newSetor.nome}
+                  onChange={(e) => setNewSetor((prev) => ({ ...prev, nome: e.target.value }))}
+                  placeholder="Ex: Suporte Técnico"
+                  className="rounded-xl glass-input"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="descricao">Descrição</Label>
+                <Textarea
+                  id="descricao"
+                  value={newSetor.descricao}
+                  onChange={(e) => setNewSetor((prev) => ({ ...prev, descricao: e.target.value }))}
+                  placeholder="Descrição do setor..."
+                  rows={2}
+                  className="rounded-xl glass-input"
+                />
+              </div>
+
+              {/* Color Picker */}
+              <div className="space-y-2.5">
+                <Label>Cor do Setor</Label>
+                <div className="grid grid-cols-9 gap-2.5">
+                  {AVAILABLE_COLORS.map((color) => (
+                    <button
+                      key={color.value}
+                      type="button"
+                      onClick={() => setNewSetor((prev) => ({ ...prev, cor: color.value }))}
+                      className={cn(
+                        'h-8 w-8 rounded-full border-2 transition-all duration-200',
+                        newSetor.cor === color.value
+                          ? 'border-foreground scale-110 ring-2 ring-offset-2 ring-foreground/20'
+                          : 'border-transparent hover:scale-110'
+                      )}
+                      style={{ backgroundColor: color.value }}
+                      title={color.name}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Icon Picker */}
+              <div className="space-y-2.5">
+                <Label>Ícone do Setor</Label>
+                <div className="grid grid-cols-8 gap-2">
+                  {AVAILABLE_ICONS.map((iconItem) => (
+                    <button
+                      key={iconItem.name}
+                      type="button"
+                      onClick={() => setNewSetor((prev) => ({ ...prev, icon_url: iconItem.name }))}
+                      className={cn(
+                        'flex h-10 w-10 items-center justify-center rounded-xl border-2 transition-all duration-200',
+                        newSetor.icon_url === iconItem.name
+                          ? 'border-primary bg-primary/10 shadow-sm'
+                          : 'border-border/50 hover:border-primary/40 hover:bg-muted/50'
+                      )}
+                      title={iconItem.name}
+                    >
+                      <iconItem.icon className="h-5 w-5" />
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
-          </div>
 
-          <div className="px-6 pb-6 pt-2 shrink-0 border-t border-border/30">
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setIsCreateOpen(false)}
-                disabled={saving}
-                className="rounded-xl"
-              >
-                Cancelar
-              </Button>
-              <Button
-                onClick={handleCreateSetor}
-                disabled={saving || !newSetor.nome.trim()}
-                className="rounded-xl shadow-lg shadow-primary/20"
-              >
-                {saving ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                    Criando...
-                  </>
-                ) : (
-                  'Criar Setor'
-                )}
-              </Button>
-            </DialogFooter>
-          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsCreateOpen(false)}
+              disabled={saving}
+              className="rounded-xl"
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleCreateSetor}
+              disabled={saving || !newSetor.nome.trim()}
+              className="rounded-xl shadow-lg shadow-primary/20"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Criando...
+                </>
+              ) : (
+                'Criar Setor'
+              )}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
