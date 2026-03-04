@@ -552,6 +552,7 @@ export default function SetorPage() {
   })
   const [savingCanal, setSavingCanal] = useState(false)
   const [deletingCanalId, setDeletingCanalId] = useState<string | null>(null)
+  const [canalNomeError, setCanalNomeError] = useState(false)
 
   // Evolution API flow state
   const [evoStep, setEvoStep] = useState<'form' | 'qrcode' | 'connected'>('form')
@@ -1449,6 +1450,7 @@ const saveConfig = async () => {
       max_disparos_dia: 0,
       ativo: true,
     })
+    setCanalNomeError(false)
   }
 
   // ---- Evolution API helpers ----
@@ -1472,9 +1474,11 @@ const saveConfig = async () => {
 
   async function handleEvoNext() {
     if (!canalForm.nome.trim()) {
+      setCanalNomeError(true)
       toast.error('Digite um nome para o canal')
       return
     }
+    setCanalNomeError(false)
     setEvoCreatingInstance(true)
     try {
       const instanceName = generateInstanceName(canalForm.nome)
@@ -4425,8 +4429,15 @@ const saveConfig = async () => {
                   id="canal-nome"
                   placeholder="Ex: WhatsApp Vendas"
                   value={canalForm.nome}
-                  onChange={(e) => setCanalForm((prev) => ({ ...prev, nome: e.target.value }))}
+                  onChange={(e) => {
+                    setCanalForm((prev) => ({ ...prev, nome: e.target.value }))
+                    if (e.target.value.trim()) setCanalNomeError(false)
+                  }}
+                  className={canalNomeError ? 'border-destructive focus-visible:ring-destructive' : ''}
                 />
+                {canalNomeError && (
+                  <p className="text-xs text-destructive">O nome do canal é obrigatório.</p>
+                )}
               </div>
 
               <div className="space-y-2">
