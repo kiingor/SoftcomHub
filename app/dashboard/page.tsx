@@ -165,12 +165,29 @@ export default function DashboardPage() {
     if (!newSetor.nome.trim()) return
     setSaving(true)
     try {
-      await supabase.from('setores').insert({
-        nome: newSetor.nome,
-        descricao: newSetor.descricao || null,
-        cor: newSetor.cor,
-        icon_url: newSetor.icon_url,
-      })
+      const { data: setorCriado, error: setorError } = await supabase
+        .from('setores')
+        .insert({
+          nome: newSetor.nome,
+          descricao: newSetor.descricao || null,
+          cor: newSetor.cor,
+          icon_url: newSetor.icon_url,
+        })
+        .select('id')
+        .single()
+
+      if (setorError || !setorCriado) throw setorError
+
+      // Inserir horários padrão: segunda a sexta, 08:00–18:00
+      const horariosDefault = [0, 1, 2, 3, 4, 5, 6].map((dia) => ({
+        setor_id: setorCriado.id,
+        dia_semana: dia,
+        hora_inicio: '08:00',
+        hora_fim: '18:00',
+        ativo: dia >= 1 && dia <= 5, // true somente seg–sex
+      }))
+      await supabase.from('horarios_atendimento').insert(horariosDefault)
+
       setIsCreateOpen(false)
       setNewSetor({ nome: '', descricao: '', cor: '#3B82F6', icon_url: 'MessageCircle' })
       mutate()
