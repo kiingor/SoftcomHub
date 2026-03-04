@@ -1015,14 +1015,26 @@ const handleEncerrarTicket = async () => {
     setSelectedSetorTransfer('all')
     setSelectedAtendenteTransfer('all')
 
-    // Fetch all setores
-    const { data: setoresData } = await supabase
-      .from('setores')
-      .select('id, nome')
-      .order('nome')
+    // Fetch apenas os setores configurados como destino de transferência para o setor atual
+    const currentSetorId = selectedTicket?.setor_id
+    if (currentSetorId) {
+      const { data: destinosData } = await supabase
+        .from('setor_destinos_transferencia')
+        .select('setor_destino_id, setores:setor_destino_id(id, nome)')
+        .eq('setor_origem_id', currentSetorId)
 
-    if (setoresData) {
-      setSetores(setoresData)
+      if (destinosData && destinosData.length > 0) {
+        const setoresDestino = destinosData
+          .map((d: any) => d.setores)
+          .filter(Boolean)
+          .sort((a: any, b: any) => a.nome.localeCompare(b.nome))
+        setSetores(setoresDestino)
+      } else {
+        // Sem configuração: mostra mensagem vazia (não exibe todos)
+        setSetores([])
+      }
+    } else {
+      setSetores([])
     }
 
     // Fetch available atendentes from same setor via colaboradores_setores
@@ -2890,8 +2902,8 @@ onClick={() => {
                         </SelectTrigger>
                         <SelectContent>
                           {setores.length === 0 ? (
-                            <div className="p-2 text-sm text-muted-foreground text-center">
-                              Nenhum setor encontrado
+                            <div className="p-3 text-sm text-muted-foreground text-center">
+                              Nenhum setor habilitado para transferência. Configure em Configurações do Setor.
                             </div>
                           ) : (
                             setores.map((setor) => (
@@ -2904,7 +2916,7 @@ onClick={() => {
                       </Select>
                       {setores.length === 0 && (
                         <p className="text-sm text-muted-foreground">
-                          Nenhum setor disponivel para transferencia.
+                          Nenhum setor habilitado. Configure os destinos em Configurações do Setor.
                         </p>
                       )}
                     </div>

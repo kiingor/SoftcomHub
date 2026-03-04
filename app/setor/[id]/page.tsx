@@ -524,6 +524,10 @@ export default function SetorPage() {
     auto_assign_enabled: true,
   })
   const [savingDistribution, setSavingDistribution] = useState(false)
+
+  // Setores destino de transferência
+  const [setoresDestinoTransferencia, setSetoresDestinoTransferencia] = useState<string[]>([])
+  const [savingSetoresDestino, setSavingSetoresDestino] = useState(false)
   const [isCanalModalOpen, setIsCanalModalOpen] = useState(false)
   const [editingCanal, setEditingCanal] = useState<Canal | null>(null)
   const [canalForm, setCanalForm] = useState({
@@ -754,6 +758,7 @@ export default function SetorPage() {
       fetchTiposAtendimento()
       fetchSubsetores()
       fetchDistributionConfig()
+      fetchSetoresDestino()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setorId_stable])
@@ -814,6 +819,56 @@ export default function SetorPage() {
       .select('id, nome')
       .order('nome')
     if (data) setTodosSetores(data)
+  }
+
+  // Fetch setores destino de transferência configurados
+  const fetchSetoresDestino = async () => {
+    try {
+      const { data } = await supabase
+        .from('setor_destinos_transferencia')
+        .select('setor_destino_id')
+        .eq('setor_origem_id', setorId)
+      if (data) setSetoresDestinoTransferencia(data.map((r) => r.setor_destino_id))
+    } catch {
+      // Tabela pode não existir ainda
+    }
+  }
+
+  // Salvar setores destino de transferência
+  const saveSetoresDestino = async () => {
+    setSavingSetoresDestino(true)
+    try {
+      // Remove todos os destinos atuais e reinsere os selecionados
+      await supabase
+        .from('setor_destinos_transferencia')
+        .delete()
+        .eq('setor_origem_id', setorId)
+
+      if (setoresDestinoTransferencia.length > 0) {
+        await supabase
+          .from('setor_destinos_transferencia')
+          .insert(
+            setoresDestinoTransferencia.map((destId) => ({
+              setor_origem_id: setorId,
+              setor_destino_id: destId,
+            }))
+          )
+      }
+      toast.success('Destinos de transferência salvos!')
+    } catch {
+      toast.error('Erro ao salvar destinos de transferência')
+    } finally {
+      setSavingSetoresDestino(false)
+    }
+  }
+
+  // Toggle setor destino
+  const toggleSetorDestino = (setorDestinoId: string) => {
+    setSetoresDestinoTransferencia((prev) =>
+      prev.includes(setorDestinoId)
+        ? prev.filter((id) => id !== setorDestinoId)
+        : [...prev, setorDestinoId]
+    )
   }
 
   // Initialize horarios - use horarios.length as stable dependency
@@ -3755,6 +3810,69 @@ const saveConfig = async () => {
             </CardContent>
           </Card>
         </div>
+
+        {/* Setores para Transferência */}
+        <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[420px]">
+          <CardHeader className="flex flex-row items-start justify-between space-y-0 shrink-0">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <ArrowRightLeft className="h-5 w-5" />
+                Setores para Transferência
+              </CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                Selecione quais setores estarão disponíveis como destino ao transferir um ticket deste setor no WorkDesk.
+              </p>
+            </div>
+            <Button size="sm" onClick={saveSetoresDestino} disabled={savingSetoresDestino}>
+              {savingSetoresDestino ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Salvando...
+                </>
+              ) : 'Salvar'}
+            </Button>
+          </CardHeader>
+          <CardContent className="flex-1 overflow-y-auto">
+            {todosSetores.filter((s) => s.id !== setorId).length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <Users className="h-10 w-10 mx-auto mb-3 opacity-40" />
+                <p className="text-sm">Nenhum outro setor cadastrado</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {todosSetores
+                  .filter((s) => s.id !== setorId)
+                  .map((s) => {
+                    const isSelected = setoresDestinoTransferencia.includes(s.id)
+                    return (
+                      <label
+                        key={s.id}
+                        className={cn(
+                          'flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors',
+                          isSelected
+                            ? 'bg-primary/8 border-primary/40'
+                            : 'hover:bg-muted/50 border-border/60'
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-border accent-primary"
+                          checked={isSelected}
+                          onChange={() => toggleSetorDestino(s.id)}
+                        />
+                        <span className="text-sm font-medium">{s.nome}</span>
+                        {isSelected && (
+                          <Badge variant="secondary" className="ml-auto text-xs">
+                            Habilitado
+                          </Badge>
+                        )}
+                      </label>
+                    )
+                  })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Zona de Perigo */}
         <Card className="glass-card-elevated rounded-2xl border-0 border-destructive/50">
