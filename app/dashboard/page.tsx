@@ -403,14 +403,17 @@ export default function DashboardPage() {
 
       {/* ─── Create Dialog ─── */}
       <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-        <DialogContent className="glass-card-elevated rounded-3xl max-w-lg max-h-[90vh] overflow-y-auto border-0">
-          <DialogHeader>
-            <DialogTitle className="text-lg">Novo Setor</DialogTitle>
-            <DialogDescription>
-              Crie um novo setor para organizar seus atendimentos
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent className="glass-card-elevated rounded-2xl max-w-lg border-0 flex flex-col max-h-[90vh] p-0 overflow-hidden">
+          <div className="px-6 pt-6 pb-2 shrink-0">
+            <DialogHeader>
+              <DialogTitle className="text-lg">Novo Setor</DialogTitle>
+              <DialogDescription>
+                Crie um novo setor para organizar seus atendimentos
+              </DialogDescription>
+            </DialogHeader>
+          </div>
 
+          <div className="overflow-y-auto flex-1 px-6 pb-2">
           <div className="space-y-5 py-4">
             {/* Preview */}
             <div className="flex justify-center pb-5">
@@ -497,31 +500,34 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+          </div>
 
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIsCreateOpen(false)}
-              disabled={saving}
-              className="rounded-xl"
-            >
-              Cancelar
-            </Button>
-            <Button
-              onClick={handleCreateSetor}
-              disabled={saving || !newSetor.nome.trim()}
-              className="rounded-xl shadow-lg shadow-primary/20"
-            >
-              {saving ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  Criando...
-                </>
-              ) : (
-                'Criar Setor'
-              )}
-            </Button>
-          </DialogFooter>
+          <div className="px-6 pb-6 pt-2 shrink-0 border-t border-border/30">
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setIsCreateOpen(false)}
+                disabled={saving}
+                className="rounded-xl"
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleCreateSetor}
+                disabled={saving || !newSetor.nome.trim()}
+                className="rounded-xl shadow-lg shadow-primary/20"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    Criando...
+                  </>
+                ) : (
+                  'Criar Setor'
+                )}
+              </Button>
+            </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
