@@ -224,7 +224,7 @@ export default function DashboardPage() {
 
       {/* ─── Content ─── */}
       {isLoading ? (
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="glass-card-elevated rounded-3xl p-5 space-y-4">
               <div className="flex items-center gap-3.5">
@@ -259,7 +259,7 @@ export default function DashboardPage() {
           </div>
         </div>
       ) : (
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           <AnimatePresence mode="popLayout">
             {filteredSetores.map((setor, index) => {
               const SetorIcon = getIconComponent(setor.icon_url)

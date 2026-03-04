@@ -49,8 +49,10 @@ export function DashboardShell({ children, user }: DashboardShellProps) {
           user={user}
           onMenuClick={() => setSidebarOpen(true)}
         />
-        <main className="flex-1 p-6">
-          {children}
+        <main className="flex-1 px-6 py-8 lg:px-10">
+          <div className="mx-auto w-full max-w-screen-2xl">
+            {children}
+          </div>
         </main>
       </div>
     </div>
