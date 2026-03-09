@@ -307,6 +307,13 @@ export default function WorkdeskPage() {
   // Ticket iframe popup
   const [ticketIframeTicket, setTicketIframeTicket] = useState<Ticket | null>(null)
 
+  // Selecionar cliente dialog
+  const [selecionarClienteDialogOpen, setSelecionarClienteDialogOpen] = useState(false)
+  const [selecionarClienteCnpj, setSelecionarClienteCnpj] = useState('')
+  const [selecionarClienteData, setSelecionarClienteData] = useState<any>(null)
+  const [selecionarClienteLoading, setSelecionarClienteLoading] = useState(false)
+  const [clienteNaoInformadoDialogOpen, setClienteNaoInformadoDialogOpen] = useState(false)
+
   // Fetch colaborador atual
   const fetchColaborador = useCallback(async () => {
     try {
@@ -1033,6 +1040,66 @@ const handleEncerrarTicket = async () => {
       }
     } catch (error) {
       console.error('Error closing ticket:', error)
+    }
+  }
+
+  // Helper: cliente tem CNPJ informado
+  const clienteTemCNPJ = !!(selectedTicket?.clientes?.CNPJ)
+
+  // Confirmar encerrar — verifica cliente antes
+  const handleConfirmarEncerrar = () => {
+    setEncerrarDialogOpen(false)
+    if (!clienteTemCNPJ) {
+      setClienteNaoInformadoDialogOpen(true)
+    } else {
+      handleEncerrarTicket()
+    }
+  }
+
+  // Buscar cliente por CNPJ (painel de seleção)
+  const handleSelecionarClienteCnpjLookup = async () => {
+    if (!selecionarClienteCnpj.trim()) return
+    setSelecionarClienteLoading(true)
+    setSelecionarClienteData(null)
+    try {
+      const res = await fetch('/api/clientes/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cnpj: selecionarClienteCnpj.replace(/\D/g, '') }),
+      })
+      const data = await res.json()
+      if (data.source === 'not_found') {
+        toast.error('Cliente não encontrado com este CNPJ')
+      } else if (data.cliente) {
+        setSelecionarClienteData(data.cliente)
+        toast.success(`Cliente encontrado: ${data.cliente.nome}`)
+      }
+    } catch {
+      toast.error('Erro ao buscar cliente')
+    } finally {
+      setSelecionarClienteLoading(false)
+    }
+  }
+
+  // Confirmar vínculo do cliente ao ticket
+  const handleConfirmarSelecionarCliente = async () => {
+    if (!selecionarClienteData || !selectedTicket) return
+    try {
+      const { error } = await supabase
+        .from('tickets')
+        .update({ cliente_id: selecionarClienteData.id })
+        .eq('id', selectedTicket.id)
+      if (error) throw error
+      setSelectedTicket((prev) =>
+        prev ? { ...prev, cliente_id: selecionarClienteData.id, clientes: selecionarClienteData } : null
+      )
+      toast.success('Cliente vinculado ao ticket!')
+      setSelecionarClienteDialogOpen(false)
+      setSelecionarClienteCnpj('')
+      setSelecionarClienteData(null)
+      if (colaborador) fetchTickets(colaborador)
+    } catch {
+      toast.error('Erro ao vincular cliente')
     }
   }
 
@@ -2420,124 +2487,117 @@ const tempId = `temp-${Date.now()}`
               </>
               ) : (
               <>
-              <h3 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
-                <User className="h-4 w-4" />
-                Dados do Cliente
-              </h3>
-  
-              <div className="space-y-3">
+              {/* Header Dados do Cliente */}
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <User className="h-3.5 w-3.5" />
+                  Dados do Cliente
+                </h3>
+                {!clienteTemCNPJ && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 text-[10px] px-2 gap-1 border-primary/40 text-primary hover:bg-primary/10"
+                    onClick={() => {
+                      setSelecionarClienteCnpj('')
+                      setSelecionarClienteData(null)
+                      setSelecionarClienteDialogOpen(true)
+                    }}
+                  >
+                    <Search className="h-3 w-3" />
+                    Selecionar cliente
+                  </Button>
+                )}
+              </div>
+
+              {/* Campo linha: label + valor + copy */}
+              <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-xs">
                 {/* Nome */}
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Nome
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <p className="text-xs font-medium text-foreground break-words flex-1">
-                      {selectedTicket.clientes.nome || 'Nao informado'}
-                    </p>
-                    {selectedTicket.clientes.nome && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0"
-                        onClick={() => copyToClipboard(selectedTicket.clientes.nome, 'Nome')}
-                      >
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
+                <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Nome</span>
+                  <span className="font-medium text-foreground flex-1 text-right truncate">
+                    {selectedTicket.clientes.nome || '—'}
+                  </span>
+                  {selectedTicket.clientes.nome && (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(selectedTicket.clientes.nome, 'Nome')}
+                      className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Telefone */}
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Telefone
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <p className="text-xs font-medium text-foreground flex-1">
-                      {selectedTicket.clientes.telefone ? formatPhone(selectedTicket.clientes.telefone) : 'Nao informado'}
-                    </p>
-                    {selectedTicket.clientes.telefone && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0"
-                        onClick={() => copyToClipboard(selectedTicket.clientes.telefone, 'Telefone')}
-                      >
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
+                <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Telefone</span>
+                  <span className="font-medium text-foreground flex-1 text-right truncate">
+                    {selectedTicket.clientes.telefone ? formatPhone(selectedTicket.clientes.telefone) : '—'}
+                  </span>
+                  {selectedTicket.clientes.telefone && (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(selectedTicket.clientes.telefone!, 'Telefone')}
+                      className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Registro */}
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Registro
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <p className="text-xs font-medium text-foreground flex-1">
-                      {selectedTicket.clientes.Registro || 'Nao informado'}
-                    </p>
-                    {selectedTicket.clientes.Registro && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0"
-                        onClick={() => copyToClipboard(selectedTicket.clientes.Registro, 'Registro')}
-                      >
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
+                <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">Registro</span>
+                  <span className="font-medium text-foreground flex-1 text-right truncate">
+                    {selectedTicket.clientes.Registro || '—'}
+                  </span>
+                  {selectedTicket.clientes.Registro && (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(selectedTicket.clientes.Registro!, 'Registro')}
+                      className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
 
                 {/* CNPJ */}
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    CNPJ
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <p className="text-xs font-medium text-foreground flex-1">
-                      {selectedTicket.clientes.CNPJ ? formatCNPJ(selectedTicket.clientes.CNPJ) : 'Nao informado'}
-                    </p>
-                    {selectedTicket.clientes.CNPJ && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0"
-                        onClick={() => copyToClipboard(selectedTicket.clientes.CNPJ.replace(/\D/g, ''), 'CNPJ')}
-                      >
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
+                <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">CNPJ</span>
+                  <span className="font-medium text-foreground flex-1 text-right truncate">
+                    {selectedTicket.clientes.CNPJ ? formatCNPJ(selectedTicket.clientes.CNPJ) : '—'}
+                  </span>
+                  {selectedTicket.clientes.CNPJ && (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(selectedTicket.clientes.CNPJ!.replace(/\D/g, ''), 'CNPJ')}
+                      className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
 
                 {/* PDV */}
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    PDV
-                  </label>
-                  <p className="text-xs font-medium text-foreground">
-                    {selectedTicket.clientes.PDV || 'Nao informado'}
-                  </p>
+                <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                  <span className="text-muted-foreground shrink-0 w-16">PDV</span>
+                  <span className="font-medium text-foreground flex-1 text-right truncate">
+                    {selectedTicket.clientes.PDV || '—'}
+                  </span>
                 </div>
 
-                {/* Data de Cadastro */}
+                {/* Cliente Desde */}
                 {selectedTicket.clientes.created_at && (
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                      Cliente Desde
-                    </label>
-                    <p className="text-xs font-medium text-foreground">
-                      {selectedTicket.clientes.created_at
-                        ? format(new Date(selectedTicket.clientes.created_at), 'dd/MM/yyyy', { locale: ptBR })
-                        : 'Nao informado'}
-                    </p>
+                  <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                    <span className="text-muted-foreground shrink-0 w-16">Desde</span>
+                    <span className="font-medium text-foreground flex-1 text-right">
+                      {format(new Date(selectedTicket.clientes.created_at), 'dd/MM/yyyy', { locale: ptBR })}
+                    </span>
                   </div>
                 )}
-                </div>
+              </div>
               </>
               )}
 
@@ -2905,7 +2965,7 @@ onClick={() => {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleEncerrarTicket}
+              onClick={handleConfirmarEncerrar}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               ✅ Confirmar Encerramento
@@ -3320,6 +3380,133 @@ onClick={() => {
                 </div>
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Cliente Não Informado ao Encerrar */}
+      <AlertDialog open={clienteNaoInformadoDialogOpen} onOpenChange={setClienteNaoInformadoDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <User className="h-5 w-5 text-amber-500" />
+              Cliente não informado
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Este ticket não possui um cliente com CNPJ vinculado. Deseja informar o cliente antes de encerrar?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => {
+                setClienteNaoInformadoDialogOpen(false)
+                handleEncerrarTicket()
+              }}
+            >
+              Não, encerrar assim
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setClienteNaoInformadoDialogOpen(false)
+                setSelecionarClienteCnpj('')
+                setSelecionarClienteData(null)
+                setSelecionarClienteDialogOpen(true)
+              }}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              Sim, informar cliente
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Dialog: Selecionar Cliente por CNPJ */}
+      <Dialog
+        open={selecionarClienteDialogOpen}
+        onOpenChange={(open) => {
+          setSelecionarClienteDialogOpen(open)
+          if (!open) { setSelecionarClienteCnpj(''); setSelecionarClienteData(null) }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Search className="h-5 w-5 text-primary" />
+              Selecionar Cliente
+            </DialogTitle>
+            <DialogDescription>
+              Informe o CNPJ para buscar e vincular um cliente a este ticket.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {/* CNPJ Input */}
+            <div className="space-y-2">
+              <Label>CNPJ do Cliente</Label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="00.000.000/0000-00"
+                  value={selecionarClienteCnpj}
+                  onChange={(e) => setSelecionarClienteCnpj(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSelecionarClienteCnpjLookup()}
+                  disabled={selecionarClienteLoading || !!selecionarClienteData}
+                />
+                <Button
+                  onClick={handleSelecionarClienteCnpjLookup}
+                  disabled={!selecionarClienteCnpj.trim() || selecionarClienteLoading || !!selecionarClienteData}
+                  size="sm"
+                  className="shrink-0"
+                >
+                  {selecionarClienteLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Search className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            {/* Cliente encontrado */}
+            {selecionarClienteData && (
+              <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-1.5">
+                <p className="text-sm font-semibold text-foreground">{selecionarClienteData.nome}</p>
+                {selecionarClienteData.cnpj && (
+                  <p className="text-xs text-muted-foreground">CNPJ: {formatCNPJ(selecionarClienteData.cnpj)}</p>
+                )}
+                {selecionarClienteData.registro && (
+                  <p className="text-xs text-muted-foreground">Registro: {selecionarClienteData.registro}</p>
+                )}
+                {selecionarClienteData.telefone && (
+                  <p className="text-xs text-muted-foreground">Telefone: {formatPhone(selecionarClienteData.telefone)}</p>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[10px] px-2 mt-1"
+                  onClick={() => { setSelecionarClienteData(null); setSelecionarClienteCnpj('') }}
+                >
+                  Trocar cliente
+                </Button>
+              </div>
+            )}
+
+            {/* Ações */}
+            <div className="flex gap-2 pt-1">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setSelecionarClienteDialogOpen(false)}
+              >
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1"
+                disabled={!selecionarClienteData}
+                onClick={handleConfirmarSelecionarCliente}
+              >
+                Vincular Cliente
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
