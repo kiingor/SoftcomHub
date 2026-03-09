@@ -799,33 +799,48 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     // Fallback polling every 10s to catch any missed messages
     const pollInterval = setInterval(async () => {
-      if (!selectedClienteIdRef) return
+      if (!selectedTicketIdRef2) return
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
-      const { data } = await supabase
+      // Same two-query approach as fetchMensagens — ticket_id first (always reliable)
+      const { data: ticketMsgs } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
-        .eq('cliente_id', selectedClienteIdRef)
-        .or(`enviado_em.gte.${sevenDaysAgo.toISOString()},enviado_em.is.null`)
+        .eq('ticket_id', selectedTicketIdRef2)
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      if (data) {
+      const { data: historyMsgs } = selectedClienteIdRef
+        ? await supabase
+            .from('mensagens')
+            .select('*, tickets(id, status, criado_em, encerrado_em)')
+            .eq('cliente_id', selectedClienteIdRef)
+            .neq('ticket_id', selectedTicketIdRef2)
+            .gte('enviado_em', sevenDaysAgo.toISOString())
+            .order('enviado_em', { ascending: true, nullsFirst: false })
+        : { data: [] }
+
+      const merged = [...(ticketMsgs || []), ...(historyMsgs || [])]
+      merged.sort((a, b) => {
+        if (!a.enviado_em) return -1
+        if (!b.enviado_em) return 1
+        return new Date(a.enviado_em).getTime() - new Date(b.enviado_em).getTime()
+      })
+
+      if (merged.length > 0) {
         setMensagens((prev) => {
-          // Only update if there are genuinely new messages
           const prevRealIds = prev.filter(m => !m.id.startsWith('temp-')).map(m => m.id)
-          const newRealIds = data.map((m: any) => m.id)
+          const newRealIds = merged.map((m: any) => m.id)
           const hasNewMessages = newRealIds.some((id: string) => !prevRealIds.includes(id))
 
-          if (!hasNewMessages && prevRealIds.length === newRealIds.length) return prev
+          // Never reduce: only update if there are genuinely new messages
+          if (!hasNewMessages && newRealIds.length >= prevRealIds.length) return prev
 
-          // Merge: keep temp messages, replace real ones with fresh data
           const tempMessages = prev.filter(m => m.id.startsWith('temp-'))
-          // Remove temps that now exist in real data
           const remainingTemps = tempMessages.filter(
-            t => !data.some((d: any) => d.conteudo === t.conteudo)
+            t => !merged.some((d: any) => d.conteudo === t.conteudo)
           )
-          return [...data, ...remainingTemps]
+          return [...merged, ...remainingTemps]
         })
       }
     }, 10000)
