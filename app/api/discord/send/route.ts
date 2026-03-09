@@ -31,20 +31,21 @@ export async function POST(request: NextRequest) {
     let discordBotToken: string | null = null
     let guildId: string | null = null
 
-    // Priority 1: Check setor_canais for discord channel
+    // Priority 1: Check setor_canais for discord channel (mais recente primeiro)
     const { data: canalMatch } = await supabase
       .from('setor_canais')
-      .select('discord_bot_token, discord_guild_id')
+      .select('id, discord_bot_token, discord_guild_id')
       .eq('setor_id', ticket.setor_id)
       .eq('tipo', 'discord')
       .eq('ativo', true)
+      .order('criado_em', { ascending: false })
       .limit(1)
       .maybeSingle()
 
     if (canalMatch?.discord_bot_token) {
       discordBotToken = canalMatch.discord_bot_token
       guildId = canalMatch.discord_guild_id
-      console.log('[Discord Send] Using setor_canais credentials')
+      console.log('[Discord Send] Using setor_canais credentials, canal_id:', canalMatch.id)
     }
 
     // Priority 2: Fallback to setores table
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
 
       discordBotToken = setor?.discord_bot_token || null
       guildId = guildId || setor?.discord_guild_id || null
+      console.log('[Discord Send] Fallback to setores legacy fields')
     }
 
     if (!discordBotToken) {
@@ -98,6 +100,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    console.log('[Discord Send] Sending to discord_user_id:', discordUserId, '| bot token prefix:', discordBotToken?.slice(0, 10))
+
     // Step 1: Open a DM channel with the user
     const dmChannelResponse = await fetch(`${DISCORD_API_URL}/users/@me/channels`, {
       method: 'POST',
@@ -119,6 +123,8 @@ export async function POST(request: NextRequest) {
         { status: dmChannelResponse.status },
       )
     }
+
+    console.log('[Discord Send] DM channel opened:', dmChannel.id)
 
     // Step 2: Send message in the DM channel (with optional file attachment)
     let discordResponse: Response
