@@ -305,7 +305,7 @@ export default function WorkdeskPage() {
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map())
 
   // Ticket iframe popup
-  const [ticketIframeOpen, setTicketIframeOpen] = useState(false)
+  const [ticketIframeTicket, setTicketIframeTicket] = useState<Ticket | null>(null)
 
   // Fetch colaborador atual
   const fetchColaborador = useCallback(async () => {
@@ -1912,6 +1912,8 @@ const tempId = `temp-${Date.now()}`
               setSearchTerm={setSearchTerm}
               unreadCounts={unreadCounts}
               setorCanal={setorCanalConfig}
+              colaboradorEmail={colaborador?.email || ''}
+              onOpenTicketIframe={(ticket) => setTicketIframeTicket(ticket)}
             />
           </div>
         </aside>
@@ -1959,17 +1961,6 @@ const tempId = `temp-${Date.now()}`
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {/* Ticket Iframe Button */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setTicketIframeOpen(true)}
-                    title="Abrir Ticket"
-                    className="text-primary hover:text-primary hover:bg-primary/10"
-                  >
-                    <Ticket className="h-4 w-4" />
-                  </Button>
-
                   {/* Transfer Button */}
                   <Button 
                     variant="outline" 
@@ -3334,26 +3325,27 @@ onClick={() => {
       </Dialog>
 
       {/* Ticket Iframe Popup */}
-      {ticketIframeOpen && selectedTicket && colaborador && (
+      {ticketIframeTicket && colaborador && (
         <div
-          className="fixed inset-0 z-[200] flex items-start justify-center bg-black/60 backdrop-blur-sm p-4 pt-12"
+          className="fixed inset-x-0 bottom-0 z-[200] flex items-start justify-center bg-black/60 backdrop-blur-sm px-4 pb-4 pt-4"
+          style={{ top: 64 }}
           onClick={(e) => {
-            if (e.target === e.currentTarget) setTicketIframeOpen(false)
+            if (e.target === e.currentTarget) setTicketIframeTicket(null)
           }}
         >
-          <div className="relative w-full max-w-5xl h-[85vh] rounded-2xl overflow-hidden shadow-2xl border border-white/20 bg-background flex flex-col">
+          <div className="relative w-full max-w-[96vw] rounded-2xl overflow-hidden shadow-2xl border border-white/20 bg-background flex flex-col" style={{ height: 'calc(100vh - 88px)' }}>
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-white/70 dark:bg-white/5 backdrop-blur-xl shrink-0">
               <div className="flex items-center gap-2">
                 <Ticket className="h-4 w-4 text-primary" />
                 <span className="text-sm font-semibold">
-                  Ticket #{selectedTicket.numero} — {selectedTicket.clientes.nome}
+                  Ticket #{ticketIframeTicket.numero} — {ticketIframeTicket.clientes.nome}
                 </span>
               </div>
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setTicketIframeOpen(false)}
+                onClick={() => setTicketIframeTicket(null)}
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -3361,9 +3353,9 @@ onClick={() => {
 
             {/* iFrame */}
             <iframe
-              src={`https://ticket.softcom.solutions/?email=${encodeURIComponent(colaborador.email)}&open_ticket=${selectedTicket.numero}`}
+              src={`https://ticket.softcom.solutions/?email=${encodeURIComponent(colaborador.email)}&open_ticket=${ticketIframeTicket.numero}`}
               className="w-full flex-1 border-0"
-              title={`Ticket #${selectedTicket.numero}`}
+              title={`Ticket #${ticketIframeTicket.numero}`}
               allow="clipboard-read; clipboard-write"
             />
           </div>
@@ -3389,6 +3381,8 @@ function TicketList({
   setSearchTerm,
   unreadCounts,
   setorCanal,
+  colaboradorEmail,
+  onOpenTicketIframe,
 }: {
   tickets: Ticket[]
   selectedTicket: Ticket | null
@@ -3404,6 +3398,8 @@ function TicketList({
   setSearchTerm: (v: string) => void
   unreadCounts: Map<string, number>
   setorCanal: 'whatsapp' | 'discord' | 'evolution_api'
+  colaboradorEmail: string
+  onOpenTicketIframe: (ticket: Ticket) => void
 }) {
   // Tick every 30s to re-evaluate wait times
   const [, setTick] = useState(0)
@@ -3502,7 +3498,7 @@ function TicketList({
                   )}
                 >
                   <div className="flex flex-col gap-1">
-                    {/* Row 1: #numero - Status Tags - Unread Badge */}
+                    {/* Row 1: #numero - Status Tags - Unread Badge - Ticket Icon */}
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className={cn(
@@ -3536,12 +3532,26 @@ function TicketList({
                           </Badge>
                         )}
                       </div>
-                      {/* Unread badge */}
-                      {unreadCount > 0 && (
-                        <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground shrink-0">
-                          {unreadCount > 99 ? '99+' : unreadCount}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Unread badge */}
+                        {unreadCount > 0 && (
+                          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground">
+                            {unreadCount > 99 ? '99+' : unreadCount}
+                          </span>
+                        )}
+                        {/* Ticket Iframe Button */}
+                        <button
+                          type="button"
+                          title="Abrir detalhes do ticket"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onOpenTicketIframe(ticket)
+                          }}
+                          className="flex h-5 w-5 items-center justify-center rounded text-primary opacity-60 hover:opacity-100 hover:bg-primary/10 transition-all"
+                        >
+                          <Ticket className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
                     
                     {/* Row 2: Nome do Cliente */}
