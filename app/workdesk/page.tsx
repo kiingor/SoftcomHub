@@ -3547,9 +3547,9 @@ function TicketList({
                             e.stopPropagation()
                             onOpenTicketIframe(ticket)
                           }}
-                          className="flex h-5 w-5 items-center justify-center rounded text-primary opacity-60 hover:opacity-100 hover:bg-primary/10 transition-all"
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-primary opacity-70 hover:opacity-100 hover:bg-primary/10 transition-all"
                         >
-                          <Ticket className="h-3.5 w-3.5" />
+                          <Ticket className="h-5 w-5" />
                         </button>
                       </div>
                     </div>
