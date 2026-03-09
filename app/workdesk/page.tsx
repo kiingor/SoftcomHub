@@ -2336,7 +2336,7 @@ const tempId = `temp-${Date.now()}`
                             <span className="capitalize">{msg.tipo}</span>
                           </div>
                         )}
-                  {msg.conteudo && msg.tipo !== 'documento' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm">{msg.conteudo}</p>}
+                  {msg.conteudo && msg.tipo !== 'documento' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
@@ -2897,7 +2897,7 @@ onClick={() => {
                       </div>
                     </div>
                   )}
-{msg.conteudo && msg.tipo !== 'documento' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm">{msg.conteudo}</p>}
+{msg.conteudo && msg.tipo !== 'documento' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
