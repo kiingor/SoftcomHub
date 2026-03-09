@@ -3610,19 +3610,20 @@ onClick={() => {
         >
           <div className="relative w-full max-w-[96vw] rounded-2xl overflow-hidden shadow-2xl border border-white/20 bg-background flex flex-col" style={{ height: 'calc(100vh - 88px)' }}>
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-white/70 dark:bg-white/5 backdrop-blur-xl shrink-0">
-              <div className="flex items-center gap-2">
-                <Ticket className="h-4 w-4 text-primary" />
-                <span className="text-sm font-semibold">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-white/70 dark:bg-white/5 backdrop-blur-xl shrink-0">
+              <div className="flex items-center gap-1.5">
+                <Ticket className="h-3.5 w-3.5 text-primary" />
+                <span className="text-xs font-semibold">
                   Ticket #{ticketIframeTicket.numero} — {ticketIframeTicket.clientes.nome}
                 </span>
               </div>
               <Button
                 variant="ghost"
                 size="icon"
+                className="h-6 w-6"
                 onClick={() => setTicketIframeTicket(null)}
               >
-                <X className="h-4 w-4" />
+                <X className="h-3.5 w-3.5" />
               </Button>
             </div>
 
