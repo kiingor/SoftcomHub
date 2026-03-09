@@ -47,6 +47,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
 import { Plus, Pencil, Search, UserCog, Building2, Trash2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
