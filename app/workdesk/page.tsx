@@ -1090,14 +1090,24 @@ const handleEncerrarTicket = async () => {
         .update({ cliente_id: selecionarClienteData.id })
         .eq('id', selectedTicket.id)
       if (error) throw error
+
+      // Atualiza apenas o estado local — sem fetchTickets para não resetar a conversa
+      const updatedCliente = selecionarClienteData
       setSelectedTicket((prev) =>
-        prev ? { ...prev, cliente_id: selecionarClienteData.id, clientes: selecionarClienteData } : null
+        prev ? { ...prev, cliente_id: updatedCliente.id, clientes: updatedCliente } : null
       )
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.id === selectedTicket.id
+            ? { ...t, cliente_id: updatedCliente.id, clientes: updatedCliente }
+            : t
+        )
+      )
+
       toast.success('Cliente vinculado ao ticket!')
       setSelecionarClienteDialogOpen(false)
       setSelecionarClienteCnpj('')
       setSelecionarClienteData(null)
-      if (colaborador) fetchTickets(colaborador)
     } catch {
       toast.error('Erro ao vincular cliente')
     }
