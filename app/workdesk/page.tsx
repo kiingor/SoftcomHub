@@ -39,6 +39,7 @@ import {
   Timer,
   ChevronRight,
   Zap,
+  Ticket,
 } from 'lucide-react'
 import {
   Dialog,
@@ -302,6 +303,9 @@ export default function WorkdeskPage() {
   
   // Unread messages tracking
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map())
+
+  // Ticket iframe popup
+  const [ticketIframeOpen, setTicketIframeOpen] = useState(false)
 
   // Fetch colaborador atual
   const fetchColaborador = useCallback(async () => {
@@ -1955,6 +1959,17 @@ const tempId = `temp-${Date.now()}`
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {/* Ticket Iframe Button */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setTicketIframeOpen(true)}
+                    title="Abrir Ticket"
+                    className="text-primary hover:text-primary hover:bg-primary/10"
+                  >
+                    <Ticket className="h-4 w-4" />
+                  </Button>
+
                   {/* Transfer Button */}
                   <Button 
                     variant="outline" 
@@ -3317,6 +3332,43 @@ onClick={() => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Ticket Iframe Popup */}
+      {ticketIframeOpen && selectedTicket && colaborador && (
+        <div
+          className="fixed inset-0 z-[200] flex items-start justify-center bg-black/60 backdrop-blur-sm p-4 pt-12"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setTicketIframeOpen(false)
+          }}
+        >
+          <div className="relative w-full max-w-5xl h-[85vh] rounded-2xl overflow-hidden shadow-2xl border border-white/20 bg-background flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-white/70 dark:bg-white/5 backdrop-blur-xl shrink-0">
+              <div className="flex items-center gap-2">
+                <Ticket className="h-4 w-4 text-primary" />
+                <span className="text-sm font-semibold">
+                  Ticket #{selectedTicket.numero} — {selectedTicket.clientes.nome}
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setTicketIframeOpen(false)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {/* iFrame */}
+            <iframe
+              src={`https://ticket.softcom.solutions/?email=${encodeURIComponent(colaborador.email)}&open_ticket=${selectedTicket.numero}`}
+              className="w-full flex-1 border-0"
+              title={`Ticket #${selectedTicket.numero}`}
+              allow="clipboard-read; clipboard-write"
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
