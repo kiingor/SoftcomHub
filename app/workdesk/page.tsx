@@ -1124,7 +1124,12 @@ const handleEncerrarTicket = async () => {
       if (error) throw error
 
       // Atualiza apenas o estado local — sem fetchTickets para não resetar a conversa
-      const updatedCliente = selecionarClienteData
+      // Preserva o telefone original do ticket (número de quem está conversando)
+      const telefoneOriginal = selectedTicket.clientes?.telefone
+      const updatedCliente = {
+        ...selecionarClienteData,
+        telefone: telefoneOriginal ?? selecionarClienteData.telefone,
+      }
       setSelectedTicket((prev) =>
         prev ? { ...prev, cliente_id: updatedCliente.id, clientes: updatedCliente } : null
       )
