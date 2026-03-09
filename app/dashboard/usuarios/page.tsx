@@ -36,7 +36,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Plus, Pencil, Search, UserCog, Building2 } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { toast } from 'sonner'
+import { Plus, Pencil, Search, UserCog, Building2, Trash2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 interface Setor {
@@ -87,6 +98,8 @@ export default function UsuariosPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<Colaborador | null>(null)
   const [saving, setSaving] = useState(false)
+  const [deletingUser, setDeletingUser] = useState<Colaborador | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const [formData, setFormData] = useState({
     nome: '',
@@ -234,6 +247,30 @@ export default function UsuariosPage() {
     }))
   }
 
+  async function handleDelete() {
+    if (!deletingUser) return
+    setDeleting(true)
+    try {
+      const res = await fetch('/api/admin/delete-user', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          colaboradorId: deletingUser.id,
+          email: deletingUser.email,
+        }),
+      })
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.error || 'Erro ao deletar')
+      toast.success(`Usuário "${deletingUser.nome}" removido com sucesso`)
+      setDeletingUser(null)
+      mutate()
+    } catch (error: any) {
+      toast.error(error.message || 'Erro ao deletar usuário')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6 h-[calc(100vh-130px)]">
       {/* Header */}
@@ -274,7 +311,7 @@ export default function UsuariosPage() {
                 <TableHead>Permissão</TableHead>
                 <TableHead>Setores</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="w-20">Ações</TableHead>
+                <TableHead className="w-24">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -365,13 +402,23 @@ export default function UsuariosPage() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => openEditModal(user)}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openEditModal(user)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={() => setDeletingUser(user)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </motion.tr>
                   )
@@ -381,6 +428,30 @@ export default function UsuariosPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deletingUser} onOpenChange={(open) => !open && setDeletingUser(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Deletar usuário</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja deletar <strong>{deletingUser?.nome}</strong>?
+              <br />
+              Esta ação removerá o colaborador e seu acesso ao sistema. Não é possível desfazer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? 'Deletando...' : 'Deletar'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Create/Edit Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
