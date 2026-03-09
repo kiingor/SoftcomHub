@@ -2574,21 +2574,19 @@ const tempId = `temp-${Date.now()}`
                   <User className="h-3.5 w-3.5" />
                   Dados do Cliente
                 </h3>
-                {!clienteTemCNPJ && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6 text-[10px] px-2 gap-1 border-primary/40 text-primary hover:bg-primary/10"
-                    onClick={() => {
-                      setSelecionarClienteCnpj('')
-                      setSelecionarClienteData(null)
-                      setSelecionarClienteDialogOpen(true)
-                    }}
-                  >
-                    <Search className="h-3 w-3" />
-                    Selecionar cliente
-                  </Button>
-                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[10px] px-2 gap-1 border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={() => {
+                    setSelecionarClienteCnpj('')
+                    setSelecionarClienteData(null)
+                    setSelecionarClienteDialogOpen(true)
+                  }}
+                >
+                  <Search className="h-3 w-3" />
+                  {clienteTemCNPJ ? 'Trocar cliente' : 'Selecionar cliente'}
+                </Button>
               </div>
 
               {/* Campo linha: label + valor + copy */}
