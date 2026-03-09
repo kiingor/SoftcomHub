@@ -40,6 +40,7 @@ import {
   ChevronRight,
   Zap,
   Ticket,
+  Hash,
 } from 'lucide-react'
 import {
   Dialog,
@@ -1712,15 +1713,15 @@ const tempId = `temp-${Date.now()}`
     // Send in background
     try {
       // Determinar canal de envio pela última mensagem do ticket
-      // Prioridade: canal_envio da mensagem > cruzamento com setor_canais > fallback setor
+      // Prioridade: discord_user_id (indicador mais confiável) > canal_envio > setor_canais > fallback
       let setorCanal = 'whatsapp'
       let phoneNumberId: string | null = null
 
-      // 1. Busca a última mensagem do ticket (exceto sistema) para obter canal_envio e phone_number_id
-      //    NÃO filtra por phone_number_id pois Discord não tem esse campo
+      // 1. Busca a última mensagem do ticket (exceto sistema)
+      //    Inclui discord_user_id — indicador definitivo de ticket Discord
       const { data: lastMsgData } = await supabase
         .from('mensagens')
-        .select('canal_envio, phone_number_id')
+        .select('canal_envio, phone_number_id, discord_user_id')
         .eq('ticket_id', capturedTicketId)
         .neq('remetente', 'sistema')
         .order('enviado_em', { ascending: false })
@@ -1728,11 +1729,29 @@ const tempId = `temp-${Date.now()}`
 
       const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
       const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
+      const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
 
-      if (lastCanalEnvio === 'discord') {
-        // Discord — não precisa de phone_number_id
+      // Também verificar se alguma mensagem do cliente tem discord_user_id (mais abrangente)
+      const hasDiscordMsg = lastDiscordUserId || mensagens.some(m => m.discord_user_id)
+
+      console.log('[workdesk] Canal detection — ticket:', capturedTicketId, {
+        lastCanalEnvio,
+        lastPhoneNumberId,
+        lastDiscordUserId,
+        hasDiscordMsg,
+        setorCanalConfig,
+      })
+
+      if (hasDiscordMsg) {
+        // Indicador definitivo: mensagem com discord_user_id = é Discord
         setorCanal = 'discord'
         phoneNumberId = null
+        console.log('[workdesk] Canal detectado: DISCORD (via discord_user_id)')
+      } else if (lastCanalEnvio === 'discord') {
+        // Discord via canal_envio (caso esteja correto no banco)
+        setorCanal = 'discord'
+        phoneNumberId = null
+        console.log('[workdesk] Canal detectado: DISCORD (via canal_envio)')
       } else if (lastCanalEnvio === 'evolutionapi' || lastPhoneNumberId) {
         // Evolution ou WhatsApp — cruzar phone_number_id com setor_canais
         if (lastPhoneNumberId && capturedTicket.setor_id) {
@@ -1747,20 +1766,23 @@ const tempId = `temp-${Date.now()}`
 
           if (evoCanal) {
             setorCanal = 'evolution_api'
+            console.log('[workdesk] Canal detectado: EVOLUTION_API (instancia:', lastPhoneNumberId, ')')
           } else {
             setorCanal = 'whatsapp'
+            console.log('[workdesk] Canal detectado: WHATSAPP (phone_number_id:', lastPhoneNumberId, ')')
           }
           phoneNumberId = lastPhoneNumberId
         } else {
           setorCanal = 'evolution_api'
           phoneNumberId = lastPhoneNumberId
+          console.log('[workdesk] Canal detectado: EVOLUTION_API (sem phone_number_id confirmado)')
         }
       } else if (capturedTicket.setor_id) {
-        // 2b. Sem canal_envio nas mensagens — usar canal ativo do setor baseado em setorCanalConfig
-        // Prioridade: setorCanalConfig (já determinado pelo setor) > setor_canais > legado
+        // Sem indicadores nas mensagens — usar setorCanalConfig ou setor_canais
         if (setorCanalConfig === 'discord') {
           setorCanal = 'discord'
           phoneNumberId = null
+          console.log('[workdesk] Canal detectado: DISCORD (via setorCanalConfig)')
         } else {
           const { data: canalAtivo } = await supabase
             .from('setor_canais')
@@ -1776,6 +1798,7 @@ const tempId = `temp-${Date.now()}`
             phoneNumberId = canalAtivo.tipo === 'evolution_api'
               ? canalAtivo.instancia
               : canalAtivo.phone_number_id
+            console.log('[workdesk] Canal detectado:', setorCanal.toUpperCase(), '(via setor_canais fallback)')
           } else {
             // Legacy fallback: campos diretos da tabela setores
             const { data: setorData } = await supabase
@@ -1785,6 +1808,7 @@ const tempId = `temp-${Date.now()}`
               .single()
             setorCanal = setorData?.canal || 'whatsapp'
             phoneNumberId = setorData?.phone_number_id || null
+            console.log('[workdesk] Canal detectado:', setorCanal.toUpperCase(), '(via setores legacy fallback)')
           }
         }
       }
@@ -1899,6 +1923,8 @@ const tempId = `temp-${Date.now()}`
           }
         }
 
+        console.log(`[workdesk] Enviando via ${setorCanal.toUpperCase()} → ${sendUrl}`, sendBody)
+
         const response = await fetch(sendUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1907,8 +1933,10 @@ const tempId = `temp-${Date.now()}`
         
         const result = await response.json()
         
+        console.log(`[workdesk] Resposta ${sendUrl} (status ${response.status}):`, result)
+
         if (!response.ok) {
-          console.error('[v0] Send API failed:', result)
+          console.error('[workdesk] Send API failed:', result)
           const errorMsg = result?.details?.message || result?.error || 'Erro ao enviar mensagem'
           toast.error(errorMsg)
           setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
@@ -2548,34 +2576,130 @@ const tempId = `temp-${Date.now()}`
             <div className="p-4">
               {setorCanalConfig === 'discord' ? (
               <>
-              <h3 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
-                <User className="h-4 w-4" />
+              {/* Header Dados do Colaborador */}
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1.5 mb-2">
+                <User className="h-3.5 w-3.5" />
                 Dados do Colaborador
               </h3>
-              <div className="space-y-3">
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Nome (Discord)
+
+              {/* Dados compactos */}
+              <div className="rounded-lg border bg-muted/30 divide-y divide-border">
+                {/* Nome Discord */}
+                <div className="flex items-center px-2.5 py-1.5">
+                  <label className="w-16 shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    Nome
                   </label>
-                  <div className="flex items-center gap-1">
-                    <p className="text-xs font-medium text-foreground break-words flex-1">
-                      {selectedTicket.user_name_discord || 'Nao informado'}
-                    </p>
-                  </div>
+                  <p className="text-xs font-medium text-foreground break-words flex-1">
+                    {selectedTicket.user_name_discord || '—'}
+                  </p>
+                  {selectedTicket.user_name_discord && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 shrink-0"
+                      onClick={() => copyToClipboard(selectedTicket.user_name_discord || '', 'Nome Discord')}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  )}
                 </div>
-                {/* Discord User ID */}
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                    Discord ID
+
+                {/* Discord ID */}
+                <div className="flex items-center px-2.5 py-1.5">
+                  <label className="w-16 shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    ID
                   </label>
-                  <div className="flex items-center gap-1">
-                    <p className="text-xs font-mono text-foreground break-all flex-1">
-                      {(() => {
-                        const lastClientMsg = mensagens.filter(m => m.remetente === 'cliente' && m.discord_user_id).pop()
-                        return lastClientMsg?.discord_user_id || 'Nao informado'
-                      })()}
-                    </p>
-                  </div>
+                  {(() => {
+                    const lastClientMsg = mensagens.filter(m => m.remetente === 'cliente' && m.discord_user_id).pop()
+                    const discordId = lastClientMsg?.discord_user_id || null
+                    return (
+                      <>
+                        <p className="text-xs font-mono text-foreground break-all flex-1">
+                          {discordId || '—'}
+                        </p>
+                        {discordId && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5 shrink-0"
+                            onClick={() => copyToClipboard(discordId, 'Discord ID')}
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
+                        )}
+                      </>
+                    )
+                  })()}
+                </div>
+              </div>
+
+              {/* Info do Ticket */}
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1.5 mt-4 mb-2">
+                <Hash className="h-3.5 w-3.5" />
+                Info do Ticket
+              </h3>
+              <div className="rounded-lg border bg-muted/30 divide-y divide-border">
+                {/* Número */}
+                <div className="flex items-center px-2.5 py-1.5">
+                  <label className="w-16 shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    Número
+                  </label>
+                  <code className="flex-1 font-sans text-xs font-bold select-all tracking-wide">
+                    #{selectedTicket.numero}
+                  </code>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5 shrink-0"
+                    onClick={() => copyToClipboard(String(selectedTicket.numero), 'Número do ticket')}
+                  >
+                    <Copy className="h-3 w-3" />
+                  </Button>
+                </div>
+
+                {/* Prioridade */}
+                <div className="flex items-center px-2.5 py-1.5">
+                  <label className="w-16 shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    Prioridade
+                  </label>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      'text-[10px] px-1.5 py-0 h-4',
+                      selectedTicket.prioridade === 'urgente' && 'border-red-300 text-red-600'
+                    )}
+                  >
+                    {selectedTicket.prioridade === 'urgente' ? 'Urgente' : 'Normal'}
+                  </Badge>
+                </div>
+
+                {/* Status */}
+                <div className="flex items-center px-2.5 py-1.5">
+                  <label className="w-16 shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    Status
+                  </label>
+                  <Badge
+                    className={cn(
+                      'text-[10px] px-1.5 py-0 h-4 border-0',
+                      selectedTicket.status === 'aberto' && 'bg-blue-100 text-blue-700',
+                      selectedTicket.status === 'em_atendimento' && 'bg-emerald-100 text-emerald-700',
+                      selectedTicket.status === 'encerrado' && 'bg-gray-100 text-gray-600',
+                    )}
+                  >
+                    {selectedTicket.status === 'aberto' ? 'Aberto' : selectedTicket.status === 'em_atendimento' ? 'Atendendo' : 'Encerrado'}
+                  </Badge>
+                </div>
+
+                {/* Abertura */}
+                <div className="flex items-center px-2.5 py-1.5">
+                  <label className="w-16 shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    Abertura
+                  </label>
+                  <p className="text-xs text-foreground flex-1">
+                    {selectedTicket.criado_em
+                      ? new Date(selectedTicket.criado_em).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+                      : '—'}
+                  </p>
                 </div>
               </div>
               </>
