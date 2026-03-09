@@ -446,14 +446,31 @@ export default function WorkdeskPage() {
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
-      // Fetch all messages from this client in the last 7 days (across all tickets)
-      // Also include messages with null enviado_em (old system messages)
-      const { data } = await supabase
+      // Query 1: All messages from current ticket (by ticket_id — always reliable even if cliente_id changed)
+      const { data: ticketMsgs } = await supabase
+        .from('mensagens')
+        .select('*, tickets(id, status, criado_em, encerrado_em)')
+        .eq('ticket_id', ticketId)
+        .order('enviado_em', { ascending: true, nullsFirst: false })
+
+      // Query 2: Messages from client's OTHER tickets in the last 7 days (history)
+      const { data: historyMsgs } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
         .eq('cliente_id', clienteId)
-        .or(`enviado_em.gte.${sevenDaysAgo.toISOString()},enviado_em.is.null`)
+        .neq('ticket_id', ticketId)
+        .gte('enviado_em', sevenDaysAgo.toISOString())
         .order('enviado_em', { ascending: true, nullsFirst: false })
+
+      // Merge and sort chronologically
+      const merged = [...(ticketMsgs || []), ...(historyMsgs || [])]
+      merged.sort((a, b) => {
+        if (!a.enviado_em) return -1
+        if (!b.enviado_em) return 1
+        return new Date(a.enviado_em).getTime() - new Date(b.enviado_em).getTime()
+      })
+
+      const data = merged.length > 0 ? merged : null
 
       if (data) {
         setMensagens(data)
