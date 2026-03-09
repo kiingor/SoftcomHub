@@ -2602,47 +2602,51 @@ const tempId = `temp-${Date.now()}`
               )}
 
               {/* Ticket Info Section */}
-              <div className="mt-6 pt-4 border-t border-border">
-                <h3 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
-                    <MessageCircle className="h-4 w-4" />
-                    Info do Ticket
-                  </h3>
-                
-                <div className="space-y-2">
-                  {/* Ticket Number */}
-                  <div className="space-y-0.5">
-  <code className="block font-sans text-xl font-bold bg-muted px-3 py-2 rounded select-all text-center tracking-wide">
-  #{selectedTicket.numero}
-  </code>
+              <div className="mt-4 pt-4 border-t border-border">
+                <h3 className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
+                  <MessageCircle className="h-3.5 w-3.5" />
+                  Info do Ticket
+                </h3>
+
+                <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-xs">
+                  {/* Número */}
+                  <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                    <span className="text-muted-foreground shrink-0 w-16">Número</span>
+                    <span className="font-bold text-foreground flex-1 text-right select-all">
+                      #{selectedTicket.numero}
+                    </span>
                   </div>
-                  
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-muted-foreground">Prioridade</span>
+
+                  {/* Prioridade */}
+                  <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                    <span className="text-muted-foreground shrink-0 w-16">Prioridade</span>
                     <Badge
                       variant="outline"
                       className={cn(
-                        'text-[10px] px-1.5 py-0',
+                        'text-[10px] px-1.5 py-0 h-4',
                         selectedTicket.prioridade === 'urgente' && 'border-red-300 text-red-600'
                       )}
                     >
                       {selectedTicket.prioridade === 'urgente' ? 'Urgente' : 'Normal'}
                     </Badge>
                   </div>
-                  
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-muted-foreground">Canal</span>
-                    <span className="font-medium capitalize">{selectedTicket.canal}</span>
+
+                  {/* Canal */}
+                  <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                    <span className="text-muted-foreground shrink-0 w-16">Canal</span>
+                    <span className="font-medium text-foreground capitalize">{selectedTicket.canal}</span>
                   </div>
-                  
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-muted-foreground">Criado em</span>
-                    <span className="font-medium">
+
+                  {/* Criado em */}
+                  <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                    <span className="text-muted-foreground shrink-0 w-16">Criado em</span>
+                    <span className="font-medium text-foreground">
                       {new Date(selectedTicket.criado_em).toLocaleDateString('pt-BR', {
                         day: '2-digit',
                         month: '2-digit',
                         year: '2-digit',
                         hour: '2-digit',
-                        minute: '2-digit'
+                        minute: '2-digit',
                       })}
                     </span>
                   </div>
