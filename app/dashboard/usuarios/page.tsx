@@ -455,8 +455,9 @@ export default function UsuariosPage() {
 
       {/* Create/Edit Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto glass-card-elevated rounded-2xl border-0">
-          <DialogHeader>
+        <DialogContent className="max-w-2xl glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[88vh] p-0 gap-0">
+          {/* Header fixo */}
+          <DialogHeader className="px-6 pt-6 pb-4 shrink-0 border-b border-border/50">
             <DialogTitle>
               {editingUser ? 'Editar Usuário' : 'Novo Usuário'}
             </DialogTitle>
@@ -467,131 +468,134 @@ export default function UsuariosPage() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-6 py-4">
-            {/* Basic Info */}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="nome">Nome</Label>
-                <Input
-                  id="nome"
-                  value={formData.nome}
-                  onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, nome: e.target.value }))
-                  }
-                  placeholder="Nome completo"
-                />
+          {/* Conteúdo rolável */}
+          <div className="flex-1 overflow-y-auto px-6 py-5">
+            <div className="grid gap-5">
+              {/* Nome + E-mail */}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="nome">Nome</Label>
+                  <Input
+                    id="nome"
+                    value={formData.nome}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, nome: e.target.value }))
+                    }
+                    placeholder="Nome completo"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="email">E-mail</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    value={formData.email}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, email: e.target.value }))
+                    }
+                    placeholder="email@exemplo.com"
+                    disabled={!!editingUser}
+                  />
+                </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="email">E-mail</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, email: e.target.value }))
-                  }
-                  placeholder="email@exemplo.com"
-                  disabled={!!editingUser}
-                />
-              </div>
-            </div>
+              {/* Senha (apenas criação) */}
+              {!editingUser && (
+                <div className="space-y-2">
+                  <Label htmlFor="senha">Senha</Label>
+                  <Input
+                    id="senha"
+                    type="password"
+                    value={formData.senha}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, senha: e.target.value }))
+                    }
+                    placeholder="Mínimo 8 caracteres"
+                  />
+                </div>
+              )}
 
-            {!editingUser && (
-              <div className="space-y-2">
-                <Label htmlFor="senha">Senha</Label>
-                <Input
-                  id="senha"
-                  type="password"
-                  value={formData.senha}
-                  onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, senha: e.target.value }))
-                  }
-                  placeholder="Mínimo 8 caracteres"
-                />
-              </div>
-            )}
+              {/* Permissão + Admin toggle */}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="permissao">Permissão</Label>
+                  <Select
+                    value={formData.permissao_id}
+                    onValueChange={(value) =>
+                      setFormData((prev) => ({ ...prev, permissao_id: value }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione uma permissão" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {permissoes.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.nome}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="permissao">Permissão</Label>
-                <Select
-                  value={formData.permissao_id}
-                  onValueChange={(value) =>
-                    setFormData((prev) => ({ ...prev, permissao_id: value }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione uma permissão" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {permissoes.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.nome}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 h-fit mt-auto">
+                  <Switch
+                    id="is_master"
+                    checked={formData.is_master}
+                    onCheckedChange={(checked) =>
+                      setFormData((prev) => ({ ...prev, is_master: checked }))
+                    }
+                  />
+                  <Label htmlFor="is_master" className="cursor-pointer text-sm leading-tight">
+                    Admin — acesso a todos os setores
+                  </Label>
+                </div>
               </div>
 
-              <div className="flex items-center gap-3 pt-6">
-                <Switch
-                  id="is_master"
-                  checked={formData.is_master}
-                  onCheckedChange={(checked) =>
-                    setFormData((prev) => ({ ...prev, is_master: checked }))
-                  }
-                />
-                <Label htmlFor="is_master" className="cursor-pointer">
-                  Usuário Admin (acesso a todos os setores)
-                </Label>
-              </div>
-            </div>
-
-            {/* Setores Selection */}
-            {!formData.is_master && (
-              <div className="space-y-3">
-                <Label>Setores que o usuário pode acessar</Label>
-                <Card className="glass-card-elevated rounded-2xl border-0">
-                  <CardContent className="p-4">
-                    {setores.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        Nenhum setor cadastrado
-                      </p>
-                    ) : (
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                        {setores.map((setor) => (
-                          <div
-                            key={setor.id}
-                            className="flex items-center gap-2 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                          >
-                            <Checkbox
-                              id={`setor-${setor.id}`}
-                              checked={formData.setores_selecionados.includes(
-                                setor.id
-                              )}
-                              onCheckedChange={() =>
-                                toggleSetorSelection(setor.id)
-                              }
-                            />
-                            <Label
-                              htmlFor={`setor-${setor.id}`}
-                              className="flex cursor-pointer items-center gap-2"
-                            >
-                              <Building2 className="h-4 w-4 text-muted-foreground" />
-                              {setor.nome}
-                            </Label>
-                          </div>
-                        ))}
-                      </div>
+              {/* Setores */}
+              {!formData.is_master && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Setores que o usuário pode acessar</Label>
+                    {formData.setores_selecionados.length > 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        {formData.setores_selecionados.length} selecionado{formData.setores_selecionados.length > 1 ? 's' : ''}
+                      </span>
                     )}
-                  </CardContent>
-                </Card>
-              </div>
-            )}
+                  </div>
+                  {setores.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nenhum setor cadastrado</p>
+                  ) : (
+                    <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 max-h-56 overflow-y-auto pr-1">
+                      {setores.map((setor) => {
+                        const isSelected = formData.setores_selecionados.includes(setor.id)
+                        return (
+                          <button
+                            key={setor.id}
+                            type="button"
+                            onClick={() => toggleSetorSelection(setor.id)}
+                            className={cn(
+                              'flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors',
+                              isSelected
+                                ? 'border-primary bg-primary/10 text-primary font-medium'
+                                : 'border-border/60 bg-background hover:bg-muted/50 text-foreground'
+                            )}
+                          >
+                            <Building2 className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                            <span className="truncate leading-tight">{setor.nome}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
-          <DialogFooter>
+          {/* Footer fixo */}
+          <div className="flex justify-end gap-2 px-6 py-4 shrink-0 border-t border-border/50">
             <Button
               variant="outline"
               onClick={() => setIsModalOpen(false)}
@@ -600,9 +604,9 @@ export default function UsuariosPage() {
               Cancelar
             </Button>
             <Button onClick={handleSave} disabled={saving}>
-              {saving ? 'Salvando...' : editingUser ? 'Salvar' : 'Criar Usuário'}
+              {saving ? 'Salvando...' : editingUser ? 'Salvar alterações' : 'Criar Usuário'}
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
