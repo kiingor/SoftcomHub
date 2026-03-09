@@ -41,6 +41,10 @@ import {
   Zap,
   Ticket,
   Hash,
+  Download,
+  Music,
+  Play,
+  FileIcon,
 } from 'lucide-react'
 import {
   Dialog,
@@ -194,6 +198,136 @@ const formatCNPJ = (cnpj: string) => {
   }
   return cnpj
 }
+
+// ─── MessageMedia Component ───────────────────────────────────────────────────
+// Renderiza mídia de mensagem baseado no media_type (MIME) com fallback no tipo
+interface MessageMediaProps {
+  url: string
+  mediaType?: string | null
+  tipo?: string
+  conteudo?: string
+  isOutgoing: boolean
+}
+
+function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing }: MessageMediaProps) {
+  const urlLower = url.toLowerCase()
+
+  // Determina o tipo real pela ordem: media_type MIME > tipo do banco > extensão da URL
+  const isImage = mediaType?.startsWith('image/') || (tipo === 'imagem' && !mediaType)
+  const isVideo = mediaType?.startsWith('video/') || tipo === 'video'
+  const isAudio = mediaType?.startsWith('audio/') || tipo === 'audio'
+  const isPdf   = mediaType === 'application/pdf' || urlLower.endsWith('.pdf')
+  const isText  = mediaType?.startsWith('text/') && !isPdf
+  const isDoc   = tipo === 'documento' || isPdf || isText
+
+  const fileName = conteudo || url.split('/').pop()?.split('?')[0] || 'arquivo'
+
+  if (isVideo) {
+    return (
+      <div className="mb-2 space-y-1.5">
+        <video
+          controls
+          className="max-w-full rounded-lg max-h-64 w-full bg-black"
+          preload="metadata"
+        >
+          <source src={url} type={mediaType || 'video/mp4'} />
+          Seu navegador não suporta vídeo.
+        </video>
+        <a
+          href={url}
+          download={fileName}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            'inline-flex items-center gap-1.5 text-[11px] rounded-md px-2 py-1 transition-colors',
+            isOutgoing
+              ? 'bg-white/20 hover:bg-white/30 text-white'
+              : 'bg-muted hover:bg-muted/80 text-foreground'
+          )}
+        >
+          <Download className="h-3 w-3" />
+          Baixar vídeo
+        </a>
+      </div>
+    )
+  }
+
+  if (isAudio) {
+    return (
+      <div className={cn(
+        'mb-2 flex items-center gap-2 rounded-xl px-3 py-2',
+        isOutgoing ? 'bg-white/15' : 'bg-muted/60'
+      )}>
+        <Music className="h-4 w-4 shrink-0 opacity-70" />
+        <audio controls className="flex-1 h-8 min-w-0" preload="metadata" style={{ height: '32px' }}>
+          <source src={url} type={mediaType || 'audio/ogg'} />
+        </audio>
+        <a
+          href={url}
+          download={fileName}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            'shrink-0 rounded p-1 transition-colors',
+            isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
+          )}
+          title="Baixar áudio"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </a>
+      </div>
+    )
+  }
+
+  if (isImage) {
+    return (
+      <div className="mb-2">
+        <img
+          src={url}
+          alt="Imagem"
+          className="max-w-full rounded-lg max-h-64 object-contain cursor-pointer hover:opacity-90 transition-opacity"
+          onClick={() => window.open(url, '_blank')}
+        />
+      </div>
+    )
+  }
+
+  if (isPdf) {
+    return (
+      <div
+        className="mb-2 flex items-center gap-3 px-3 py-2.5 bg-red-50 dark:bg-red-950/30 rounded-lg border border-red-200 dark:border-red-800 cursor-pointer hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors"
+        onClick={() => window.open(url, '_blank')}
+      >
+        <FileText className="h-6 w-6 text-red-600 shrink-0" />
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
+          <span className="text-[10px] text-muted-foreground">PDF · Clique para abrir</span>
+        </div>
+        <Download className="h-4 w-4 text-muted-foreground shrink-0" />
+      </div>
+    )
+  }
+
+  // Documento genérico / txt / outros
+  if (isDoc || isText) {
+    return (
+      <div
+        className="mb-2 flex items-center gap-3 px-3 py-2.5 bg-muted/50 rounded-lg border border-border cursor-pointer hover:bg-muted/80 transition-colors"
+        onClick={() => window.open(url, '_blank')}
+      >
+        <FileIcon className="h-6 w-6 text-muted-foreground shrink-0" />
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
+          <span className="text-[10px] text-muted-foreground">Arquivo · Clique para baixar</span>
+        </div>
+        <Download className="h-4 w-4 text-muted-foreground shrink-0" />
+      </div>
+    )
+  }
+
+  return null
+}
+// ──────────────────────────────────────────────────────────────────────────────
 
 // Disparo Timer Component
 function DisparoTimer({ dispatchTime }: { dispatchTime: string }) {
@@ -2344,27 +2478,14 @@ const tempId = `temp-${Date.now()}`
                                       msgStatus === 'error' && 'bg-red-500 text-white'
                                     )}
                                   >
-{msg.url_imagem && !msg.url_imagem.toLowerCase().endsWith('.pdf') && (msg.tipo === 'imagem' || msg.media_type?.startsWith('image/')) && (
-                          <div className="mb-2">
-                            <img
-                              src={msg.url_imagem || '/placeholder.svg'}
-                              alt="Imagem anexada"
-                              className="max-w-full rounded-lg max-h-64 object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                              onClick={() => window.open(msg.url_imagem!, '_blank')}
-                            />
-                          </div>
-                        )}
-                        {msg.url_imagem && (msg.tipo === 'documento' || msg.media_type === 'application/pdf' || msg.url_imagem.toLowerCase().endsWith('.pdf')) && (
-                          <div
-                            className="mb-2 flex items-center gap-3 px-3 py-2.5 bg-red-50 dark:bg-red-950/30 rounded-lg border border-red-200 dark:border-red-800 cursor-pointer hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors"
-                            onClick={() => window.open(msg.url_imagem!, '_blank')}
-                          >
-                            <FileText className="h-6 w-6 text-red-600 shrink-0" />
-                            <div className="flex flex-col min-w-0">
-                              <span className="text-sm font-medium text-foreground truncate">{msg.conteudo || msg.url_imagem?.split('/').pop() || 'documento.pdf'}</span>
-                              <span className="text-[10px] text-muted-foreground">PDF - Clique para baixar</span>
-                            </div>
-                          </div>
+                        {msg.url_imagem && (
+                          <MessageMedia
+                            url={msg.url_imagem}
+                            mediaType={msg.media_type}
+                            tipo={msg.tipo}
+                            conteudo={msg.conteudo}
+                            isOutgoing={isOutgoingMessage(msg.remetente)}
+                          />
                         )}
                         {msg.tipo !== 'texto' && !msg.url_imagem && (
                           <div className="mb-1 flex items-center gap-1 text-xs opacity-70">
@@ -2372,7 +2493,7 @@ const tempId = `temp-${Date.now()}`
                             <span className="capitalize">{msg.tipo}</span>
                           </div>
                         )}
-                  {msg.conteudo && msg.tipo !== 'documento' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
+                        {msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
@@ -2938,29 +3059,16 @@ onClick={() => {
                     msgStatus === 'error' && 'bg-red-500 text-white'
                                     )}
                                   >
-{msg.url_imagem && !msg.url_imagem.toLowerCase().endsWith('.pdf') && (msg.tipo === 'imagem' || msg.media_type?.startsWith('image/')) && (
-                    <div className="mb-2">
-                      <img
-                        src={msg.url_imagem || '/placeholder.svg'}
-                        alt="Imagem anexada"
-                        className="max-w-full rounded-lg max-h-48 object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                        onClick={() => window.open(msg.url_imagem!, '_blank')}
-                      />
-                    </div>
+                  {msg.url_imagem && (
+                    <MessageMedia
+                      url={msg.url_imagem}
+                      mediaType={msg.media_type}
+                      tipo={msg.tipo}
+                      conteudo={msg.conteudo}
+                      isOutgoing={isOutgoingMessage(msg.remetente)}
+                    />
                   )}
-                  {msg.url_imagem && (msg.tipo === 'documento' || msg.media_type === 'application/pdf' || msg.url_imagem.toLowerCase().endsWith('.pdf')) && (
-                    <div
-                      className="mb-2 flex items-center gap-3 px-3 py-2.5 bg-red-50 dark:bg-red-950/30 rounded-lg border border-red-200 dark:border-red-800 cursor-pointer hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors"
-                      onClick={() => window.open(msg.url_imagem!, '_blank')}
-                    >
-                      <FileText className="h-6 w-6 text-red-600 shrink-0" />
-                      <div className="flex flex-col min-w-0">
-                        <span className="text-sm font-medium text-foreground truncate">{msg.conteudo || msg.url_imagem?.split('/').pop() || 'documento.pdf'}</span>
-                        <span className="text-[10px] text-muted-foreground">PDF - Clique para baixar</span>
-                      </div>
-                    </div>
-                  )}
-{msg.conteudo && msg.tipo !== 'documento' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
+                  {msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
