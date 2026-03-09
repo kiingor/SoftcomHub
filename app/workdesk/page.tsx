@@ -1725,15 +1725,33 @@ const tempId = `temp-${Date.now()}`
         setorCanal = lastMsg[0].canal_envio === 'evolutionapi' ? 'evolution_api' : lastMsg[0].canal_envio
         phoneNumberId = lastMsg[0].phone_number_id
       } else {
-        // Fallback: use setor config for channel determination
+        // Fallback: check setor_canais first (new system), then legacy setores fields
         if (capturedTicket.setor_id) {
-          const { data: setorData } = await supabase
-            .from('setores')
-            .select('canal, phone_number_id, discord_bot_token')
-            .eq('id', capturedTicket.setor_id)
-            .single()
-          setorCanal = setorData?.canal || 'whatsapp'
-          phoneNumberId = lastMsg?.[0]?.phone_number_id || setorData?.phone_number_id
+          const { data: canalAtivo } = await supabase
+            .from('setor_canais')
+            .select('tipo, instancia, phone_number_id')
+            .eq('setor_id', capturedTicket.setor_id)
+            .eq('ativo', true)
+            .order('criado_em', { ascending: true })
+            .limit(1)
+            .maybeSingle()
+
+          if (canalAtivo) {
+            setorCanal = canalAtivo.tipo as typeof setorCanal
+            // Para evolution_api, o identificador é 'instancia'; para whatsapp, é 'phone_number_id'
+            phoneNumberId = (canalAtivo.tipo === 'evolution_api'
+              ? canalAtivo.instancia
+              : canalAtivo.phone_number_id) || lastMsg?.[0]?.phone_number_id || null
+          } else {
+            // Legacy fallback
+            const { data: setorData } = await supabase
+              .from('setores')
+              .select('canal, phone_number_id, discord_bot_token')
+              .eq('id', capturedTicket.setor_id)
+              .single()
+            setorCanal = setorData?.canal || 'whatsapp'
+            phoneNumberId = lastMsg?.[0]?.phone_number_id || setorData?.phone_number_id
+          }
         }
       }
 
