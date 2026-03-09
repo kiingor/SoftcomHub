@@ -1711,73 +1711,81 @@ const tempId = `temp-${Date.now()}`
     
     // Send in background
     try {
-      // Determine channel from last message (phone_number_id) + setor_canais lookup
-      // Não confiamos apenas em canal_envio das mensagens (pode estar incorreto).
-      // Em vez disso, cruzamos o phone_number_id da mensagem com setor_canais para
-      // determinar definitivamente se é Evolution (instancia) ou WhatsApp (phone_number_id).
+      // Determinar canal de envio pela última mensagem do ticket
+      // Prioridade: canal_envio da mensagem > cruzamento com setor_canais > fallback setor
       let setorCanal = 'whatsapp'
       let phoneNumberId: string | null = null
 
-      // 1. Pegar phone_number_id da última mensagem do ticket (exceto sistema)
+      // 1. Busca a última mensagem do ticket (exceto sistema) para obter canal_envio e phone_number_id
+      //    NÃO filtra por phone_number_id pois Discord não tem esse campo
       const { data: lastMsgData } = await supabase
         .from('mensagens')
         .select('canal_envio, phone_number_id')
         .eq('ticket_id', capturedTicketId)
-        .not('phone_number_id', 'is', null)
         .neq('remetente', 'sistema')
         .order('enviado_em', { ascending: false })
         .limit(1)
 
+      const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
       const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
 
-      if (lastPhoneNumberId && capturedTicket.setor_id) {
-        // 2a. Verificar se o phone_number_id corresponde a uma instância Evolution no setor
-        const { data: evoCanal } = await supabase
-          .from('setor_canais')
-          .select('instancia')
-          .eq('setor_id', capturedTicket.setor_id)
-          .eq('tipo', 'evolution_api')
-          .eq('instancia', lastPhoneNumberId)
-          .eq('ativo', true)
-          .maybeSingle()
+      if (lastCanalEnvio === 'discord') {
+        // Discord — não precisa de phone_number_id
+        setorCanal = 'discord'
+        phoneNumberId = null
+      } else if (lastCanalEnvio === 'evolutionapi' || lastPhoneNumberId) {
+        // Evolution ou WhatsApp — cruzar phone_number_id com setor_canais
+        if (lastPhoneNumberId && capturedTicket.setor_id) {
+          const { data: evoCanal } = await supabase
+            .from('setor_canais')
+            .select('instancia')
+            .eq('setor_id', capturedTicket.setor_id)
+            .eq('tipo', 'evolution_api')
+            .eq('instancia', lastPhoneNumberId)
+            .eq('ativo', true)
+            .maybeSingle()
 
-        if (evoCanal) {
-          // É Evolution — o phone_number_id é o nome da instância
-          setorCanal = 'evolution_api'
+          if (evoCanal) {
+            setorCanal = 'evolution_api'
+          } else {
+            setorCanal = 'whatsapp'
+          }
           phoneNumberId = lastPhoneNumberId
         } else {
-          // Não é Evolution — tratar como WhatsApp (ou Discord via canal_envio)
-          const msgCanalEnvio = lastMsgData?.[0]?.canal_envio
-          setorCanal = (msgCanalEnvio && msgCanalEnvio !== 'evolutionapi')
-            ? msgCanalEnvio
-            : 'whatsapp'
+          setorCanal = 'evolution_api'
           phoneNumberId = lastPhoneNumberId
         }
       } else if (capturedTicket.setor_id) {
-        // 2b. Sem mensagem anterior com phone_number_id — usar canal ativo do setor
-        const { data: canalAtivo } = await supabase
-          .from('setor_canais')
-          .select('tipo, instancia, phone_number_id')
-          .eq('setor_id', capturedTicket.setor_id)
-          .eq('ativo', true)
-          .order('criado_em', { ascending: true })
-          .limit(1)
-          .maybeSingle()
-
-        if (canalAtivo) {
-          setorCanal = canalAtivo.tipo as typeof setorCanal
-          phoneNumberId = canalAtivo.tipo === 'evolution_api'
-            ? canalAtivo.instancia
-            : canalAtivo.phone_number_id
+        // 2b. Sem canal_envio nas mensagens — usar canal ativo do setor baseado em setorCanalConfig
+        // Prioridade: setorCanalConfig (já determinado pelo setor) > setor_canais > legado
+        if (setorCanalConfig === 'discord') {
+          setorCanal = 'discord'
+          phoneNumberId = null
         } else {
-          // Legacy fallback: campos diretos da tabela setores
-          const { data: setorData } = await supabase
-            .from('setores')
-            .select('canal, phone_number_id, discord_bot_token')
-            .eq('id', capturedTicket.setor_id)
-            .single()
-          setorCanal = setorData?.canal || 'whatsapp'
-          phoneNumberId = setorData?.phone_number_id || null
+          const { data: canalAtivo } = await supabase
+            .from('setor_canais')
+            .select('tipo, instancia, phone_number_id')
+            .eq('setor_id', capturedTicket.setor_id)
+            .eq('ativo', true)
+            .order('criado_em', { ascending: true })
+            .limit(1)
+            .maybeSingle()
+
+          if (canalAtivo) {
+            setorCanal = canalAtivo.tipo as typeof setorCanal
+            phoneNumberId = canalAtivo.tipo === 'evolution_api'
+              ? canalAtivo.instancia
+              : canalAtivo.phone_number_id
+          } else {
+            // Legacy fallback: campos diretos da tabela setores
+            const { data: setorData } = await supabase
+              .from('setores')
+              .select('canal, phone_number_id, discord_bot_token')
+              .eq('id', capturedTicket.setor_id)
+              .single()
+            setorCanal = setorData?.canal || 'whatsapp'
+            phoneNumberId = setorData?.phone_number_id || null
+          }
         }
       }
 
