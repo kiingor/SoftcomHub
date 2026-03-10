@@ -36,31 +36,48 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Telefone do cliente nao encontrado' }, { status: 400 })
     }
 
-    // Get EvolutionAPI credentials - Priority: setor_canais > setores
+    // Get EvolutionAPI credentials - Priority: setor_canais (por instancia) > setor_canais (setor atual) > setores
     let evolutionBaseUrl: string | null = null
     let evolutionApiKey: string | null = null
 
-    // Priority 1: Check setor_canais by evolution_api_key (matched via instanceName/phone_number_id)
+    // Priority 1: busca pela instancia em TODOS os setores
+    // (ticket pode ter sido transferido do setor original, então não filtramos por setor_id)
     if (instanceName) {
-      const { data: canalMatch } = await supabase
+      const { data: canalByInstance } = await supabase
+        .from('setor_canais')
+        .select('evolution_base_url, evolution_api_key')
+        .eq('tipo', 'evolution_api')
+        .eq('instancia', instanceName)
+        .eq('ativo', true)
+        .limit(1)
+        .maybeSingle()
+
+      if (canalByInstance) {
+        evolutionBaseUrl = canalByInstance.evolution_base_url
+        evolutionApiKey = canalByInstance.evolution_api_key
+        console.log('[EvolutionAPI Send] Credenciais encontradas via instancia:', instanceName, '(busca global de setores)')
+      }
+    }
+
+    // Priority 2: Fallback — qualquer canal Evolution ativo do setor atual
+    if (!evolutionBaseUrl || !evolutionApiKey) {
+      const { data: canalSetor } = await supabase
         .from('setor_canais')
         .select('evolution_base_url, evolution_api_key')
         .eq('setor_id', ticket.setor_id)
         .eq('tipo', 'evolution_api')
         .eq('ativo', true)
-        .limit(5)
+        .limit(1)
+        .maybeSingle()
 
-      // Try matching by evolution_api_key (stored in phone_number_id of messages)
-      if (canalMatch && canalMatch.length > 0) {
-        // Use the first active evolution_api canal
-        const canal = canalMatch[0]
-        evolutionBaseUrl = canal.evolution_base_url
-        evolutionApiKey = canal.evolution_api_key
-        console.log('[EvolutionAPI Send] Using setor_canais credentials')
+      if (canalSetor) {
+        evolutionBaseUrl = evolutionBaseUrl || canalSetor.evolution_base_url
+        evolutionApiKey = evolutionApiKey || canalSetor.evolution_api_key
+        console.log('[EvolutionAPI Send] Credenciais encontradas via setor atual:', ticket.setor_id)
       }
     }
 
-    // Priority 2: Fallback to setores table
+    // Priority 3: Fallback to setores table
     if (!evolutionBaseUrl || !evolutionApiKey) {
       const { data: setor } = await supabase
         .from('setores')

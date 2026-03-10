@@ -1929,11 +1929,11 @@ const tempId = `temp-${Date.now()}`
         console.log('[workdesk] Canal detectado: DISCORD (via canal_envio)')
       } else if (lastCanalEnvio === 'evolutionapi' || lastPhoneNumberId) {
         // Evolution ou WhatsApp — cruzar phone_number_id com setor_canais
-        if (lastPhoneNumberId && capturedTicket.setor_id) {
+        // IMPORTANTE: busca em TODOS os setores (ticket pode ter sido transferido do setor original)
+        if (lastPhoneNumberId) {
           const { data: evoCanal } = await supabase
             .from('setor_canais')
             .select('instancia')
-            .eq('setor_id', capturedTicket.setor_id)
             .eq('tipo', 'evolution_api')
             .eq('instancia', lastPhoneNumberId)
             .eq('ativo', true)
@@ -1941,7 +1941,7 @@ const tempId = `temp-${Date.now()}`
 
           if (evoCanal) {
             setorCanal = 'evolution_api'
-            console.log('[workdesk] Canal detectado: EVOLUTION_API (instancia:', lastPhoneNumberId, ')')
+            console.log('[workdesk] Canal detectado: EVOLUTION_API (instancia:', lastPhoneNumberId, ') [busca global de setores]')
           } else {
             setorCanal = 'whatsapp'
             console.log('[workdesk] Canal detectado: WHATSAPP (phone_number_id:', lastPhoneNumberId, ')')

@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
     let resolvedCanalEnvio: string = 'whatsapp'
 
     if (phoneNumberId) {
-      // Priority 1: Check setor_canais table for multi-channel support
+      // Priority 1: Check setor_canais by phone_number_id (WhatsApp)
       const { data: canalMatch } = await supabase
         .from('setor_canais')
         .select('setor_id, tipo')
@@ -105,6 +105,24 @@ export async function POST(request: NextRequest) {
         targetSetorId = canalMatch.setor_id
         resolvedCanalEnvio = canalMatch.tipo === 'evolution_api' ? 'evolutionapi' : canalMatch.tipo
         console.log(`[v0] Resolved setor ${targetSetorId} from setor_canais (phone_number_id: ${phoneNumberId}, tipo: ${canalMatch.tipo})`)
+      }
+
+      // Priority 1b: Check setor_canais by instancia (Evolution API — phone_number_id = instance name)
+      if (!targetSetorId) {
+        const { data: evoMatch } = await supabase
+          .from('setor_canais')
+          .select('setor_id, tipo')
+          .eq('instancia', phoneNumberId)
+          .eq('tipo', 'evolution_api')
+          .eq('ativo', true)
+          .limit(1)
+          .maybeSingle()
+
+        if (evoMatch) {
+          targetSetorId = evoMatch.setor_id
+          resolvedCanalEnvio = 'evolutionapi'
+          console.log(`[v0] Resolved setor ${targetSetorId} from setor_canais (instancia: ${phoneNumberId}, tipo: evolution_api)`)
+        }
       }
 
       // Priority 2: Fallback to setores table
