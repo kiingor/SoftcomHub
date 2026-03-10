@@ -3244,24 +3244,75 @@ const saveConfig = async () => {
                           </div>
                         </div>
 
-                        {/* Status Badge */}
+                        {/* Status Badge + Trocar Status */}
                         <div className="hidden lg:flex items-center gap-2">
-                          <div className={cn(
-                            "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
-                            atendente.is_online 
-                              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" 
-                              : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
-                          )}>
-                            <span className={cn(
-                              "h-1.5 w-1.5 rounded-full",
-                              atendente.is_online ? "bg-green-500" : "bg-gray-400"
-                            )} />
-                            {atendente.is_online ? 'Online' : 'Offline'}
-                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <div className={cn(
+                                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium cursor-pointer transition-opacity hover:opacity-80 select-none",
+                                atendente.is_online 
+                                  ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" 
+                                  : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                              )}>
+                                {alterandoStatusId === atendente.id
+                                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                                  : <span className={cn("h-1.5 w-1.5 rounded-full", atendente.is_online ? "bg-green-500" : "bg-gray-400")} />
+                                }
+                                {atendente.is_online ? 'Online' : 'Offline'}
+                              </div>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuItem
+                                disabled={atendente.is_online && !atendente.pausa_atual_id}
+                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
+                                className="gap-2"
+                              >
+                                <CircleCheck className="h-4 w-4 text-green-500" />
+                                Marcar como Online
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={!atendente.is_online && !atendente.pausa_atual_id}
+                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
+                                className="gap-2"
+                              >
+                                <CircleOff className="h-4 w-4 text-muted-foreground" />
+                                Marcar como Offline
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
 
                         {/* Actions */}
                         <div className="flex items-center gap-1">
+                          {/* Status mobile */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="lg:hidden h-8 w-8" disabled={alterandoStatusId === atendente.id}>
+                                {alterandoStatusId === atendente.id
+                                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                                  : <MoreHorizontal className="h-4 w-4" />
+                                }
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuItem
+                                disabled={atendente.is_online && !atendente.pausa_atual_id}
+                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
+                                className="gap-2"
+                              >
+                                <CircleCheck className="h-4 w-4 text-green-500" />
+                                Marcar como Online
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={!atendente.is_online && !atendente.pausa_atual_id}
+                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
+                                className="gap-2"
+                              >
+                                <CircleOff className="h-4 w-4 text-muted-foreground" />
+                                Marcar como Offline
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                           <Button
                             variant="ghost"
                             size="icon"
