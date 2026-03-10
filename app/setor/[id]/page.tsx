@@ -987,7 +987,7 @@ export default function SetorPage() {
       })
       .map((t: any) => ({
         id: t.id,
-        numero: t.id.slice(0, 8),
+        numero: t.numero ?? null,
         // Tempo na fila = criado_em → atribuido_em (tempo aguardando atendente)
         tempoNaFila: t.atribuido_em
           ? formatDuration(t.criado_em, t.atribuido_em)
@@ -1018,7 +1018,7 @@ export default function SetorPage() {
       })
       .map((t: any) => ({
         id: t.id,
-        numero: t.id.slice(0, 8),
+        numero: t.numero ?? null,
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         fila: setor?.cor || '',
         prioridade: t.prioridade,
@@ -2653,7 +2653,9 @@ const saveConfig = async () => {
                                     )}
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
-                                  <TableCell className="text-sm tabular-nums text-foreground font-medium">#{ticket.numero}</TableCell>
+                                  <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                                    {ticket.numero ? `#${ticket.numero}` : '—'}
+                                  </TableCell>
                                   <TableCell className="text-sm text-foreground">
                                     <div className="flex items-center gap-1">
                                       <User className="h-3 w-3 text-muted-foreground shrink-0" />
@@ -2726,7 +2728,9 @@ const saveConfig = async () => {
                                     Aguardando...
                                   </Badge>
                                 </TableCell>
-                                <TableCell className="text-sm tabular-nums text-foreground font-medium">#{ticket.numero}</TableCell>
+                                <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                                  {ticket.numero ? `#${ticket.numero}` : '—'}
+                                </TableCell>
                                 <TableCell className="text-sm text-foreground">
                                   <div className="flex items-center gap-1">
                                     <User className="h-3 w-3 text-muted-foreground shrink-0" />
