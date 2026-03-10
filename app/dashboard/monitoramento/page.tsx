@@ -277,7 +277,7 @@ export default function MonitoramentoPage() {
       .map((t: any) => ({
         id: t.id,
         cliente_id: t.cliente_id,
-        numero: t.numero || t.id?.slice(0, 8),
+        numero: t.numero ?? null,
         // Tempo na fila = criado_em → atribuido_em (tempo sem atendente)
         // Se atribuido_em não foi registrado mas já tem colaborador, o dado não está disponível
         tempoNaFila: t.atribuido_em
@@ -318,7 +318,7 @@ export default function MonitoramentoPage() {
       .map((t: any) => ({
         id: t.id,
         cliente_id: t.cliente_id,
-        numero: t.numero || t.id?.slice(0, 8),
+        numero: t.numero ?? null,
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         setor: t.setores?.nome || '-',
         subsetor: t.subsetores?.nome || null,
@@ -514,27 +514,27 @@ export default function MonitoramentoPage() {
           <CardContent>
             <div className="grid grid-cols-3 gap-3 text-center sm:grid-cols-6">
               <div className="space-y-1">
-                <p className="text-xl lg:text-2xl font-bold text-foreground">{stats.total}</p>
+                <p className="text-2xl font-bold text-foreground tabular-nums">{stats.total}</p>
                 <p className="text-xs text-muted-foreground">Total</p>
               </div>
               <div className="space-y-1">
-                <p className="text-xl lg:text-2xl font-bold text-orange-500">{stats.naFila}</p>
+                <p className="text-2xl font-bold text-orange-500 tabular-nums">{stats.naFila}</p>
                 <p className="text-xs text-muted-foreground">Na fila</p>
               </div>
               <div className="space-y-1">
-                <p className="text-xl lg:text-2xl font-bold text-primary">{stats.emAtendimento}</p>
+                <p className="text-2xl font-bold text-primary tabular-nums">{stats.emAtendimento}</p>
                 <p className="text-xs text-muted-foreground">Em atend.</p>
               </div>
               <div className="space-y-1">
-                <p className="text-xl lg:text-2xl font-bold text-green-500">{stats.finalizados}</p>
+                <p className="text-2xl font-bold text-green-500 tabular-nums">{stats.finalizados}</p>
                 <p className="text-xs text-muted-foreground">Finalizados</p>
               </div>
               <div className="space-y-1">
-                <p className="text-sm lg:text-lg font-bold text-foreground whitespace-nowrap">{stats.tempoMaximoFila}</p>
+                <p className="text-xl font-bold text-foreground tabular-nums whitespace-nowrap">{stats.tempoMaximoFila}</p>
                 <p className="text-xs text-muted-foreground">Max. fila</p>
               </div>
               <div className="space-y-1">
-                <p className="text-sm lg:text-lg font-bold text-foreground whitespace-nowrap">{stats.tempoMaximoResposta}</p>
+                <p className="text-xl font-bold text-foreground tabular-nums whitespace-nowrap">{stats.tempoMaximoResposta}</p>
                 <p className="text-xs text-muted-foreground">Max. resp.</p>
               </div>
             </div>
@@ -551,21 +551,21 @@ export default function MonitoramentoPage() {
           <CardContent>
             <div className="flex justify-around text-center gap-2">
               <div className="space-y-1">
-                <p className="text-xl lg:text-2xl font-bold text-foreground">{atendentesStats.online}</p>
+                <p className="text-2xl font-bold text-green-500 tabular-nums">{atendentesStats.online}</p>
                 <div className="flex items-center justify-center gap-1">
                   <span className="h-2 w-2 rounded-full bg-green-500" />
                   <p className="text-xs text-muted-foreground">Online</p>
                 </div>
               </div>
               <div className="space-y-1">
-                <p className="text-xl lg:text-2xl font-bold text-foreground">{atendentesStats.pausa}</p>
+                <p className="text-2xl font-bold text-amber-500 tabular-nums">{atendentesStats.pausa}</p>
                 <div className="flex items-center justify-center gap-1">
                   <span className="h-2 w-2 rounded-full bg-yellow-500" />
                   <p className="text-xs text-muted-foreground">Pausa</p>
                 </div>
               </div>
               <div className="space-y-1">
-                <p className="text-xl lg:text-2xl font-bold text-foreground">{atendentesStats.offline}</p>
+                <p className="text-2xl font-bold text-muted-foreground tabular-nums">{atendentesStats.offline}</p>
                 <div className="flex items-center justify-center gap-1">
                   <span className="h-2 w-2 rounded-full bg-gray-400" />
                   <p className="text-xs text-muted-foreground">Offline</p>
@@ -678,13 +678,13 @@ export default function MonitoramentoPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="text-xs">Tempo na fila</TableHead>
-                      <TableHead className="text-xs">Tempo de 1a resposta</TableHead>
-                      <TableHead className="text-xs">Tempo de atendimento</TableHead>
-                      <TableHead className="text-xs">Ticket</TableHead>
-                      <TableHead className="text-xs">Contato</TableHead>
-                      <TableHead className="text-xs">Setor / Subsetor</TableHead>
-                      <TableHead className="text-xs">Atendente</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo na fila</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">1ª Resposta</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo atend.</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
                     </TableRow>
                   </TableHeader>
@@ -721,7 +721,7 @@ export default function MonitoramentoPage() {
                               aguardandoResposta && "bg-yellow-50/50 dark:bg-yellow-950/20"
                             )}
                           >
-                            <TableCell className="font-mono text-xs text-foreground">{ticket.tempoNaFila}</TableCell>
+                            <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoNaFila}</TableCell>
                             <TableCell>
                               {aguardandoResposta ? (
                                 <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
@@ -729,24 +729,26 @@ export default function MonitoramentoPage() {
                                   Aguardando...
                                 </Badge>
                               ) : (
-                                <span className="font-mono text-xs text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
+                                <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
                               )}
                             </TableCell>
-                            <TableCell className="font-mono text-xs text-foreground">{ticket.tempoAtendimento}</TableCell>
-                            <TableCell className="text-xs text-foreground font-mono">#{ticket.numero}</TableCell>
-                            <TableCell className="text-xs text-foreground">
+                            <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
+                            <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                              {ticket.numero ? `#${ticket.numero}` : '—'}
+                            </TableCell>
+                            <TableCell className="text-sm text-foreground">
                               <div className="flex items-center gap-1">
-                                <User className="h-3 w-3 text-muted-foreground" />
+                                <User className="h-3 w-3 text-muted-foreground shrink-0" />
                                 {ticket.contato}
                               </div>
                             </TableCell>
-                            <TableCell className="text-xs text-foreground">
+                            <TableCell className="text-sm text-foreground">
                               {ticket.setor}
                               {ticket.subsetor && (
                                 <span className="text-muted-foreground"> / {ticket.subsetor}</span>
                               )}
                             </TableCell>
-                            <TableCell className="text-xs text-foreground">{ticket.atendente || '-'}</TableCell>
+                            <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                             <TableCell>
                               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openConversation(ticket)}>
                                 <MessageCircle className="h-4 w-4" />
@@ -767,10 +769,10 @@ export default function MonitoramentoPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="text-xs">Tempo de espera</TableHead>
-                      <TableHead className="text-xs">Ticket</TableHead>
-                      <TableHead className="text-xs">Contato</TableHead>
-                      <TableHead className="text-xs">Setor / Subsetor</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo de espera</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
                     </TableRow>
                   </TableHeader>
@@ -797,11 +799,13 @@ export default function MonitoramentoPage() {
                     ) : (
                       ticketsAguardando.map((ticket: any) => (
                         <TableRow key={ticket.id} className="bg-orange-50/50 dark:bg-orange-950/20">
-                          <TableCell className="font-mono text-xs text-orange-600 font-medium">{ticket.tempoEspera}</TableCell>
-                          <TableCell className="text-xs text-foreground font-mono">#{ticket.numero}</TableCell>
-                          <TableCell className="text-xs text-foreground">
+                          <TableCell className="text-sm tabular-nums text-orange-600 font-medium">{ticket.tempoEspera}</TableCell>
+                          <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                            {ticket.numero ? `#${ticket.numero}` : '—'}
+                          </TableCell>
+                          <TableCell className="text-sm text-foreground">
                             <div className="flex items-center gap-1">
-                              <User className="h-3 w-3 text-muted-foreground" />
+                              <User className="h-3 w-3 text-muted-foreground shrink-0" />
                               {ticket.contato}
                             </div>
                           </TableCell>
