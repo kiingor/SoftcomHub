@@ -810,47 +810,88 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (!colaborador?.id) return
 
     let isActive = true
+    const colaboradorId = colaborador.id
 
+    // ── BroadcastChannel para coordenação entre abas ──────────────────────────
+    // Se o usuário tiver mais de uma aba do workdesk aberta, a aba remanescente
+    // re-afirma o status online quando outra aba fechar.
+    const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('workdesk_presence') : null
+
+    if (bc) {
+      bc.onmessage = (event: MessageEvent) => {
+        if (event.data?.type === 'tab_closing' && event.data?.colaboradorId === colaboradorId) {
+          // Outra aba está fechando — re-afirma online se esta aba estiver ativa
+          if (isActive && colaborador.is_online) {
+            supabase
+              .from('colaboradores')
+              .update({ is_online: true, last_heartbeat: new Date().toISOString() })
+              .eq('id', colaboradorId)
+              .then(() => {})
+          }
+        }
+      }
+    }
+
+    // ── Heartbeat a cada 30s — mantém last_heartbeat atualizado ──────────────
+    const sendHeartbeat = () => {
+      if (!isActive) return
+      fetch('/api/colaborador/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId }),
+      }).catch(() => {})
+    }
+
+    const heartbeatInterval = setInterval(sendHeartbeat, 30000)
+    sendHeartbeat() // imediato ao montar
+
+    // ── Atualiza status local quando aba fica visível ─────────────────────────
     const refreshColaboradorStatus = async () => {
       if (!isActive) return
       try {
-        // Just re-fetch the colaborador data to stay in sync
         const { data } = await supabase
           .from('colaboradores')
           .select('is_online')
-          .eq('id', colaborador.id)
+          .eq('id', colaboradorId)
           .single()
-
         if (data) {
           setColaborador((prev) => (prev ? { ...prev, is_online: data.is_online } : null))
         }
       } catch {
-        // Silently ignore errors
+        // Silently ignore
       }
     }
 
-    // Refresh every 30 seconds to stay in sync
-    const refreshInterval = setInterval(refreshColaboradorStatus, 30000)
-
-    // Handle visibility change - refresh status when tab becomes visible
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && isActive) {
         refreshColaboradorStatus()
+        sendHeartbeat()
       }
     }
-
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
-    // NOTE: We intentionally do NOT set offline on beforeunload
-    // The status is GLOBAL per user and should only change when user explicitly changes it
-    // This allows multiple tabs/browsers to share the same online status
+    // ── beforeunload / pagehide — marca offline ao fechar o navegador/aba ─────
+    const handlePageClose = () => {
+      // Avisa outras abas que esta está fechando
+      bc?.postMessage({ type: 'tab_closing', colaboradorId })
+
+      // Envia sinal de offline via sendBeacon (funciona mesmo durante unload)
+      const payload = JSON.stringify({ colaboradorId, setOffline: true })
+      navigator.sendBeacon('/api/colaborador/heartbeat', payload)
+    }
+
+    window.addEventListener('beforeunload', handlePageClose)
+    window.addEventListener('pagehide', handlePageClose)
 
     return () => {
       isActive = false
-      clearInterval(refreshInterval)
+      clearInterval(heartbeatInterval)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('beforeunload', handlePageClose)
+      window.removeEventListener('pagehide', handlePageClose)
+      bc?.close()
     }
-  }, [colaborador?.id, supabase])
+  }, [colaborador?.id, colaborador?.is_online, supabase])
 
   // Periodic queue processor - check for unassigned tickets every 30 seconds
   useEffect(() => {

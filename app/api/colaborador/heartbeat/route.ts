@@ -3,25 +3,23 @@ import { NextResponse } from 'next/server'
 
 /**
  * POST /api/colaborador/heartbeat
- * 
- * Updates the last_heartbeat timestamp for monitoring purposes.
- * NOTE: This does NOT control online/offline status - that is GLOBAL per user
- * and only changes when the user explicitly toggles it.
- * 
- * Body: { colaboradorId: string }
+ *
+ * - Atualiza last_heartbeat (keep-alive enquanto o navegador está aberto)
+ * - Quando setOffline=true, marca is_online=false (chamado no beforeunload/pagehide)
+ *
+ * Body: { colaboradorId: string, setOffline?: boolean }
  */
 export async function POST(request: Request) {
   try {
     const supabase = await createClient()
 
-    // Handle both JSON and text/plain (from sendBeacon)
-    let body: { colaboradorId?: string }
+    // Aceita application/json ou text/plain (navigator.sendBeacon envia text/plain)
+    let body: { colaboradorId?: string; setOffline?: boolean }
     const contentType = request.headers.get('content-type') || ''
 
     if (contentType.includes('application/json')) {
       body = await request.json()
     } else {
-      // sendBeacon sends as text/plain
       const text = await request.text()
       try {
         body = JSON.parse(text)
@@ -30,19 +28,35 @@ export async function POST(request: Request) {
       }
     }
 
-    const { colaboradorId } = body
+    const { colaboradorId, setOffline } = body
 
     if (!colaboradorId) {
       return NextResponse.json({ error: 'colaboradorId required' }, { status: 400 })
     }
 
-    // Only update last_heartbeat - DO NOT change is_online status
-    // The online/offline status is GLOBAL and controlled only by explicit user action
+    if (setOffline) {
+      // Chamado quando a aba/navegador fecha — marca offline
+      const { error } = await supabase
+        .from('colaboradores')
+        .update({
+          is_online: false,
+          pausa_atual_id: null,
+          last_heartbeat: new Date().toISOString(),
+        })
+        .eq('id', colaboradorId)
+
+      if (error) {
+        console.error('Heartbeat setOffline error:', error)
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+
+      return NextResponse.json({ success: true, action: 'offline' })
+    }
+
+    // Keep-alive normal — apenas atualiza last_heartbeat
     const { error } = await supabase
       .from('colaboradores')
-      .update({
-        last_heartbeat: new Date().toISOString(),
-      })
+      .update({ last_heartbeat: new Date().toISOString() })
       .eq('id', colaboradorId)
 
     if (error) {
@@ -50,10 +64,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    return NextResponse.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-    })
+    return NextResponse.json({ success: true, action: 'heartbeat' })
   } catch (error) {
     console.error('Heartbeat error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -62,8 +73,7 @@ export async function POST(request: Request) {
 
 /**
  * GET /api/colaborador/heartbeat
- * 
- * Returns the current status of a colaborador.
+ * Retorna status atual do colaborador.
  */
 export async function GET(request: Request) {
   try {
@@ -82,7 +92,6 @@ export async function GET(request: Request) {
       .single()
 
     if (error) {
-      console.error('Status check error:', error)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
@@ -93,7 +102,6 @@ export async function GET(request: Request) {
       pausaAtualId: data.pausa_atual_id,
     })
   } catch (error) {
-    console.error('Status check error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
