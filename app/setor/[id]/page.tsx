@@ -2330,27 +2330,27 @@ const saveConfig = async () => {
                   <CardContent>
                     <div className="grid grid-cols-6 gap-3 text-center">
                       <div className="space-y-1">
-                        <p className="text-xl lg:text-2xl font-bold text-foreground">{stats.total}</p>
+                        <p className="text-2xl font-bold text-foreground tabular-nums">{stats.total}</p>
                         <p className="text-xs text-muted-foreground">Total</p>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-xl lg:text-2xl font-bold text-orange-500">{stats.naFila}</p>
+                        <p className="text-2xl font-bold text-orange-500 tabular-nums">{stats.naFila}</p>
                         <p className="text-xs text-muted-foreground">Na fila</p>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-xl lg:text-2xl font-bold text-primary">{stats.emAtendimento}</p>
+                        <p className="text-2xl font-bold text-primary tabular-nums">{stats.emAtendimento}</p>
                         <p className="text-xs text-muted-foreground">Em atend.</p>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-xl lg:text-2xl font-bold text-green-500">{stats.finalizadosHoje}</p>
+                        <p className="text-2xl font-bold text-green-500 tabular-nums">{stats.finalizadosHoje}</p>
                         <p className="text-xs text-muted-foreground">Finalizados</p>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-sm lg:text-lg font-bold text-foreground whitespace-nowrap">{stats.tempoMaximoFila}</p>
+                        <p className="text-xl font-bold text-foreground tabular-nums whitespace-nowrap">{stats.tempoMaximoFila}</p>
                         <p className="text-xs text-muted-foreground">Max. fila</p>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-sm lg:text-lg font-bold text-foreground whitespace-nowrap">{stats.tempoMaximoResposta}</p>
+                        <p className="text-xl font-bold text-foreground tabular-nums whitespace-nowrap">{stats.tempoMaximoResposta}</p>
                         <p className="text-xs text-muted-foreground">Max. resp.</p>
                       </div>
                     </div>
@@ -2367,21 +2367,21 @@ const saveConfig = async () => {
                   <CardContent>
                     <div className="flex justify-around text-center gap-2">
                       <div className="space-y-1">
-                        <p className="text-xl lg:text-2xl font-bold text-foreground">{atendentesStats.online}</p>
+                        <p className="text-2xl font-bold text-green-500 tabular-nums">{atendentesStats.online}</p>
                         <div className="flex items-center justify-center gap-1">
                           <span className="h-2 w-2 rounded-full bg-green-500" />
                           <p className="text-xs text-muted-foreground">Online</p>
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-xl lg:text-2xl font-bold text-foreground">{atendentesStats.pausa}</p>
+                        <p className="text-2xl font-bold text-amber-500 tabular-nums">{atendentesStats.pausa}</p>
                         <div className="flex items-center justify-center gap-1">
                           <span className="h-2 w-2 rounded-full bg-yellow-500" />
                           <p className="text-xs text-muted-foreground">Pausa</p>
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-xl lg:text-2xl font-bold text-foreground">{atendentesStats.invisivel}</p>
+                        <p className="text-2xl font-bold text-muted-foreground tabular-nums">{atendentesStats.invisivel}</p>
                         <div className="flex items-center justify-center gap-1">
                           <span className="h-2 w-2 rounded-full bg-gray-400" />
                           <p className="text-xs text-muted-foreground">Offline</p>
@@ -2404,20 +2404,20 @@ const saveConfig = async () => {
                 <CardContent>
                   <div className="grid grid-cols-4 gap-2 text-center">
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground">{temposHoje.tempoMedioEspera}</p>
-                      <p className="text-xs text-muted-foreground">Tempo med. espera</p>
+                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioEspera}</p>
+                      <p className="text-xs text-muted-foreground">Tempo méd. espera</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground">{temposHoje.tempoMedioResposta}</p>
-                      <p className="text-xs text-muted-foreground">Tempo med. resposta</p>
+                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioResposta}</p>
+                      <p className="text-xs text-muted-foreground">Tempo méd. resposta</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground">{temposHoje.tempoMedioPrimeiraResposta}</p>
-                      <p className="text-xs text-muted-foreground">Tempo med. 1a resp.</p>
+                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioPrimeiraResposta}</p>
+                      <p className="text-xs text-muted-foreground">Tempo méd. 1ª resp.</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground">{temposHoje.tempoMedioAtendimento}</p>
-                      <p className="text-xs text-muted-foreground">Tempo med. atend.</p>
+                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioAtendimento}</p>
+                      <p className="text-xs text-muted-foreground">Tempo méd. atend.</p>
                     </div>
                   </div>
                 </CardContent>
@@ -2433,19 +2433,19 @@ const saveConfig = async () => {
                 <CardContent>
                   <div className="grid grid-cols-4 gap-2 text-center">
                     <div className="space-y-1">
-                      <p className="text-2xl font-bold text-red-500">{ticketsHoje.perdidos}</p>
+                      <p className="text-2xl font-bold text-red-500 tabular-nums">{ticketsHoje.perdidos}</p>
                       <p className="text-xs text-muted-foreground">Perdidos</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-2xl font-bold text-orange-500">{ticketsHoje.abandonados}</p>
+                      <p className="text-2xl font-bold text-orange-500 tabular-nums">{ticketsHoje.abandonados}</p>
                       <p className="text-xs text-muted-foreground">Abandonados</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-2xl font-bold text-green-500">{ticketsHoje.finalizados}</p>
+                      <p className="text-2xl font-bold text-green-500 tabular-nums">{ticketsHoje.finalizados}</p>
                       <p className="text-xs text-muted-foreground">Finalizados</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-2xl font-bold text-blue-500">{ticketsHoje.fechados}</p>
+                      <p className="text-2xl font-bold text-blue-500 tabular-nums">{ticketsHoje.fechados}</p>
                       <p className="text-xs text-muted-foreground">Fechados</p>
                     </div>
                   </div>
@@ -2598,14 +2598,14 @@ const saveConfig = async () => {
                       <Table>
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
-                            <TableHead className="text-xs">Tempo na fila</TableHead>
-                            <TableHead className="text-xs">Tempo de 1ª resposta</TableHead>
-                            <TableHead className="text-xs">Tempo de atendimento</TableHead>
-                            <TableHead className="text-xs">Ticket</TableHead>
-                            <TableHead className="text-xs">Contato</TableHead>
-                            <TableHead className="text-xs">Fila</TableHead>
-                            <TableHead className="text-xs">Atendente</TableHead>
-                            <TableHead className="text-xs w-[80px]">Ações</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo na fila</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">1ª Resposta</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo atend.</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
+                            <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -2641,7 +2641,7 @@ const saveConfig = async () => {
                                     aguardandoResposta && "bg-yellow-50/50 dark:bg-yellow-950/20"
                                   )}
                                 >
-                                  <TableCell className="font-mono text-xs text-foreground">{ticket.tempoNaFila}</TableCell>
+                                  <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoNaFila}</TableCell>
                                   <TableCell>
                                     {aguardandoResposta ? (
                                       <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
@@ -2649,19 +2649,19 @@ const saveConfig = async () => {
                                         Aguardando...
                                       </Badge>
                                     ) : (
-                                      <span className="font-mono text-xs text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
+                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
                                     )}
                                   </TableCell>
-                                  <TableCell className="font-mono text-xs text-foreground">{ticket.tempoAtendimento}</TableCell>
-                                  <TableCell className="text-xs text-foreground font-mono">#{ticket.numero}</TableCell>
-                                  <TableCell className="text-xs text-foreground">
+                                  <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
+                                  <TableCell className="text-sm tabular-nums text-foreground font-medium">#{ticket.numero}</TableCell>
+                                  <TableCell className="text-sm text-foreground">
                                     <div className="flex items-center gap-1">
-                                      <User className="h-3 w-3 text-muted-foreground" />
+                                      <User className="h-3 w-3 text-muted-foreground shrink-0" />
                                       {ticket.contato}
                                     </div>
                                   </TableCell>
-                                  <TableCell className="text-xs text-foreground">{ticket.fila || setor?.nome}</TableCell>
-                                  <TableCell className="text-xs text-foreground">{ticket.atendente || '-'}</TableCell>
+                                  <TableCell className="text-sm text-foreground">{ticket.fila || setor?.nome}</TableCell>
+                                  <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
                                     <Button 
                                       variant="ghost" 
@@ -2687,12 +2687,12 @@ const saveConfig = async () => {
                       <Table>
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
-                            <TableHead className="text-xs">Tempo na fila</TableHead>
-                            <TableHead className="text-xs">Ticket</TableHead>
-                            <TableHead className="text-xs">Contato</TableHead>
-                            <TableHead className="text-xs">Fila</TableHead>
-                            <TableHead className="text-xs">Prioridade</TableHead>
-                            <TableHead className="text-xs w-[80px]">Ações</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo na fila</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Prioridade</TableHead>
+                            <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -2720,20 +2720,20 @@ const saveConfig = async () => {
                           ) : (
                             ticketsAguardando.map((ticket: any) => (
                               <TableRow key={ticket.id} className="bg-yellow-50/50 dark:bg-yellow-950/20">
-                                <TableCell className="font-mono text-xs">
+                                <TableCell>
                                   <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
                                     <Clock className="mr-1 h-3 w-3" />
                                     Aguardando...
                                   </Badge>
                                 </TableCell>
-                                <TableCell className="text-xs text-foreground font-mono">#{ticket.numero}</TableCell>
-                                <TableCell className="text-xs text-foreground">
+                                <TableCell className="text-sm tabular-nums text-foreground font-medium">#{ticket.numero}</TableCell>
+                                <TableCell className="text-sm text-foreground">
                                   <div className="flex items-center gap-1">
-                                    <User className="h-3 w-3 text-muted-foreground" />
+                                    <User className="h-3 w-3 text-muted-foreground shrink-0" />
                                     {ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}
                                   </div>
                                 </TableCell>
-                                <TableCell className="text-xs text-foreground">{setor?.nome}</TableCell>
+                                <TableCell className="text-sm text-foreground">{setor?.nome}</TableCell>
                                 <TableCell>
                                   <Badge variant={
                                     ticket.prioridade === 'alta' ? 'destructive' :
@@ -2766,10 +2766,10 @@ const saveConfig = async () => {
                       <Table>
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
-                            <TableHead className="text-xs">Atendente</TableHead>
-                            <TableHead className="text-xs">Status</TableHead>
-                            <TableHead className="text-xs text-center">Tickets em atendimento</TableHead>
-                            <TableHead className="text-xs text-center">Finalizados hoje</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-center">Em atendimento</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-center">Finalizados hoje</TableHead>
                             <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
@@ -2808,15 +2808,15 @@ const saveConfig = async () => {
                               const isChanging = alterandoStatusId === atendente.id
                               return (
                                 <TableRow key={atendente.id}>
-                                  <TableCell className="font-medium">{atendente.nome}</TableCell>
+                                  <TableCell className="text-sm font-medium text-foreground">{atendente.nome}</TableCell>
                                   <TableCell>
                                     <div className="flex items-center gap-2">
-                                      <span className={cn('h-2 w-2 rounded-full', statusDisplay.color)} />
-                                      <span className={cn('text-xs', statusDisplay.textColor)}>{statusDisplay.label}</span>
+                                      <span className={cn('h-2 w-2 rounded-full shrink-0', statusDisplay.color)} />
+                                      <span className={cn('text-sm', statusDisplay.textColor)}>{statusDisplay.label}</span>
                                     </div>
                                   </TableCell>
-                                  <TableCell className="text-center font-medium">{ticketsDoAtendente}</TableCell>
-                                  <TableCell className="text-center font-medium">0</TableCell>
+                                  <TableCell className="text-sm tabular-nums text-center font-medium">{ticketsDoAtendente}</TableCell>
+                                  <TableCell className="text-sm tabular-nums text-center font-medium">0</TableCell>
                                   <TableCell className="text-center">
                                     <DropdownMenu>
                                       <DropdownMenuTrigger asChild>
