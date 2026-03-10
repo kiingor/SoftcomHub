@@ -117,6 +117,9 @@ import {
   WifiOff,
   QrCode,
   Smartphone,
+  MoreHorizontal,
+  CircleOff,
+  CircleCheck,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
@@ -644,6 +647,28 @@ export default function SetorPage() {
   const [atendenteToDelete, setAtendenteToDelete] = useState<{ id: string; nome: string } | null>(null)
   const [deleting, setDeleting] = useState(false)
   const emailCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const [alterandoStatusId, setAlterandoStatusId] = useState<string | null>(null)
+
+  // Alterar status do atendente (admin)
+  const handleAlterarStatusAtendente = async (colaboradorId: string, novoStatus: 'online' | 'offline') => {
+    setAlterandoStatusId(colaboradorId)
+    try {
+      const { error } = await supabase
+        .from('colaboradores')
+        .update({
+          is_online: novoStatus === 'online',
+          pausa_atual_id: null,
+        })
+        .eq('id', colaboradorId)
+      if (error) throw error
+      toast.success(`Atendente marcado como ${novoStatus === 'online' ? 'Online' : 'Offline'}`)
+      mutate()
+    } catch (err: any) {
+      toast.error(err.message || 'Erro ao alterar status')
+    } finally {
+      setAlterandoStatusId(null)
+    }
+  }
 
   // Conversation slide-out state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
@@ -2745,6 +2770,7 @@ const saveConfig = async () => {
                             <TableHead className="text-xs">Status</TableHead>
                             <TableHead className="text-xs text-center">Tickets em atendimento</TableHead>
                             <TableHead className="text-xs text-center">Finalizados hoje</TableHead>
+                            <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -2755,11 +2781,12 @@ const saveConfig = async () => {
                                 <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-8 mx-auto" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-8 mx-auto" /></TableCell>
+                                <TableCell></TableCell>
                               </TableRow>
                             ))
                           ) : atendentes.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={4} className="h-32 text-center">
+                              <TableCell colSpan={5} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <Users className="mb-2 h-8 w-8" />
                                   <p>Nenhum atendente cadastrado neste setor</p>
@@ -2772,11 +2799,13 @@ const saveConfig = async () => {
                                 (t: any) => t.colaborador_id === atendente.id && t.status === 'em_atendimento'
                               ).length
                               const isOnPause = !!atendente.pausa_atual_id
+                              const isOnline = atendente.is_online
                               const statusDisplay = isOnPause
                                 ? { color: 'bg-amber-500', textColor: 'text-amber-600 dark:text-amber-400', label: 'Ausente' }
-                                : atendente.is_online
+                                : isOnline
                                   ? { color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Online' }
                                   : { color: 'bg-gray-400', textColor: 'text-muted-foreground', label: 'Offline' }
+                              const isChanging = alterandoStatusId === atendente.id
                               return (
                                 <TableRow key={atendente.id}>
                                   <TableCell className="font-medium">{atendente.nome}</TableCell>
@@ -2788,6 +2817,41 @@ const saveConfig = async () => {
                                   </TableCell>
                                   <TableCell className="text-center font-medium">{ticketsDoAtendente}</TableCell>
                                   <TableCell className="text-center font-medium">0</TableCell>
+                                  <TableCell className="text-center">
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-7 w-7"
+                                          disabled={isChanging}
+                                        >
+                                          {isChanging
+                                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            : <MoreHorizontal className="h-3.5 w-3.5" />
+                                          }
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="end" className="w-44">
+                                        <DropdownMenuItem
+                                          disabled={isOnline && !isOnPause}
+                                          onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
+                                          className="gap-2"
+                                        >
+                                          <CircleCheck className="h-4 w-4 text-green-500" />
+                                          Marcar como Online
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem
+                                          disabled={!isOnline && !isOnPause}
+                                          onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
+                                          className="gap-2"
+                                        >
+                                          <CircleOff className="h-4 w-4 text-muted-foreground" />
+                                          Marcar como Offline
+                                        </DropdownMenuItem>
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                  </TableCell>
                                 </TableRow>
                               )
                             })
