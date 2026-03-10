@@ -271,7 +271,7 @@ export default function MonitoramentoPage() {
         }
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        const numero = t.numero || t.id?.slice(0, 8) || ''
+        const numero = String(t.numero ?? t.id?.slice(0, 8) ?? '')
         return contato.toLowerCase().includes(searchTerm.toLowerCase()) || numero.includes(searchTerm)
       })
       .map((t: any) => ({
