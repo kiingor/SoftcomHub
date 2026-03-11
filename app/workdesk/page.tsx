@@ -4025,12 +4025,15 @@ function TicketList({
               }
               
               return (
-                <motion.button
+                <motion.div
                   key={ticket.id}
+                  role="button"
+                  tabIndex={0}
                   whileHover={{ backgroundColor: isSelected ? undefined : 'rgba(0,0,0,0.02)' }}
                   onClick={() => onSelectTicket(ticket)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectTicket(ticket) }}
                   className={cn(
-                    'w-full px-3 py-2.5 text-left transition-colors border-l-3',
+                    'w-full px-3 py-2.5 text-left transition-colors border-l-3 cursor-pointer',
                     isSelected 
                       ? 'bg-primary/10 border-l-primary'
                       : isExpiredWait
@@ -4111,7 +4114,7 @@ function TicketList({
                       })}
                     </span>
                   </div>
-                </motion.button>
+                </motion.div>
               )
             })}
           </div>
