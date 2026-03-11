@@ -1184,23 +1184,75 @@ const handleEncerrarTicket = async () => {
         .eq('id', selectedTicket.setor_id)
         .single()
 
-      // If there's a finalization message, send it via WhatsApp
+      // Se há mensagem de finalização, detectar o canal correto e enviar
       if (setor?.mensagem_finalizacao && !isWindowExpired) {
-        // Get phone_number_id from last message
-        const { data: msgList } = await supabase
+        // Detectar canal pela última mensagem (mesma lógica do handleSendMessage)
+        const { data: lastMsgData } = await supabase
           .from('mensagens')
-          .select('phone_number_id')
+          .select('canal_envio, phone_number_id, discord_user_id')
           .eq('ticket_id', selectedTicket.id)
-          .not('phone_number_id', 'is', null)
+          .neq('remetente', 'sistema')
           .order('enviado_em', { ascending: false })
           .limit(1)
 
-        const phoneNumberId = msgList?.[0]?.phone_number_id || process.env.NEXT_PUBLIC_WHATSAPP_PHONE_NUMBER_ID
-        if (phoneNumberId && selectedTicket.clientes.telefone) {
-          // Process variables in the message
-          const processedMessage = processTemplateVariables(setor.mensagem_finalizacao)
+        const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
+        const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
+        const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+        const hasDiscordMsg = lastDiscordUserId || mensagens.some(m => m.discord_user_id)
 
-          // Send via WhatsApp API
+        let setorCanal = 'whatsapp'
+        let phoneNumberId: string | null = lastPhoneNumberId
+
+        if (hasDiscordMsg || lastCanalEnvio === 'discord') {
+          setorCanal = 'discord'
+          phoneNumberId = null
+        } else if (lastCanalEnvio === 'evolutionapi' || lastPhoneNumberId) {
+          if (lastPhoneNumberId) {
+            const { data: evoCanal } = await supabase
+              .from('setor_canais')
+              .select('instancia')
+              .eq('tipo', 'evolution_api')
+              .eq('instancia', lastPhoneNumberId)
+              .eq('ativo', true)
+              .maybeSingle()
+            setorCanal = evoCanal ? 'evolution_api' : 'whatsapp'
+            phoneNumberId = lastPhoneNumberId
+          } else {
+            setorCanal = 'evolution_api'
+          }
+        } else if (selectedTicket.setor_id) {
+          // Fallback: buscar canal ativo do setor
+          const { data: canalAtivo } = await supabase
+            .from('setor_canais')
+            .select('tipo, instancia, phone_number_id')
+            .eq('setor_id', selectedTicket.setor_id)
+            .eq('ativo', true)
+            .order('criado_em', { ascending: true })
+            .limit(1)
+            .maybeSingle()
+          if (canalAtivo) {
+            setorCanal = canalAtivo.tipo
+            phoneNumberId = canalAtivo.tipo === 'evolution_api'
+              ? canalAtivo.instancia
+              : canalAtivo.phone_number_id
+          }
+        }
+
+        console.log('[encerrar] Canal de finalização detectado:', setorCanal, 'phoneNumberId:', phoneNumberId)
+
+        const processedMessage = processTemplateVariables(setor.mensagem_finalizacao)
+
+        if (setorCanal === 'evolution_api' && phoneNumberId && selectedTicket.clientes.telefone) {
+          await fetch('/api/evolution/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ticketId: selectedTicket.id,
+              message: processedMessage,
+              instanceName: phoneNumberId,
+            }),
+          })
+        } else if (setorCanal === 'whatsapp' && phoneNumberId && selectedTicket.clientes.telefone) {
           await fetch('/api/whatsapp/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1212,6 +1264,7 @@ const handleEncerrarTicket = async () => {
             }),
           })
         }
+        // Discord: não envia mensagem de finalização (sem suporte a DM de encerramento)
       }
 
       // Update ticket status
