@@ -20,11 +20,15 @@ import {
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { motion } from 'framer-motion'
+import { useColaborador } from '@/lib/hooks/use-data'
 
-const navigation = [
+const baseNavigation = [
   { name: 'Setores', href: '/dashboard', icon: Building2 },
   { name: 'Monitoramento', href: '/dashboard/monitoramento', icon: Activity },
   { name: 'Dashboard Geral', href: '/dashboard/metricas', icon: BarChart3 },
+]
+
+const masterNavigation = [
   { name: 'Usuarios Master', href: '/dashboard/usuarios', icon: UserCog },
 ]
 
@@ -38,6 +42,11 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [loadingHref, setLoadingHref] = useState<string | null>(null)
+  const { data: colaborador } = useColaborador()
+
+  const navigation = colaborador?.is_master
+    ? [...baseNavigation, ...masterNavigation]
+    : baseNavigation
 
   const handleNavClick = (e: React.MouseEvent, href: string) => {
     e.preventDefault()

@@ -457,12 +457,16 @@ export default function SetorPage() {
 
 // Notification modal state
   const [showNotificationModal, setShowNotificationModal] = useState(false)
+  const [notificationModalTab, setNotificationModalTab] = useState<'novo' | 'historico'>('novo')
   const [notificationForm, setNotificationForm] = useState({
     destinatario: 'todos', // 'todos' or colaborador id
     titulo: '',
     mensagem: '',
   })
   const [sendingNotification, setSendingNotification] = useState(false)
+  const [avisosEnviados, setAvisosEnviados] = useState<any[]>([])
+  const [loadingAvisos, setLoadingAvisos] = useState(false)
+  const [deletingAvisoId, setDeletingAvisoId] = useState<string | null>(null)
 
   // Tags list (for tag selector in config)
   const [tagsList, setTagsList] = useState<{ id: string; nome: string; cor: string }[]>([])
@@ -1091,7 +1095,7 @@ const handleLogout = async () => {
       }
 
       setNotificationForm({ destinatario: 'todos', titulo: '', mensagem: '' })
-      setShowNotificationModal(false)
+      await fetchAvisosEnviados()
     } catch (error: any) {
       console.error('Error sending notification:', error)
       toast.error('Erro ao enviar notificação')
@@ -1099,7 +1103,42 @@ const handleLogout = async () => {
       setSendingNotification(false)
     }
   }
-  
+
+  const fetchAvisosEnviados = async () => {
+    if (!setor?.id) return
+    setLoadingAvisos(true)
+    try {
+      const { data, error } = await supabase
+        .from('notificacoes')
+        .select('id, titulo, mensagem, criado_em, destinatario_id, colaboradores!notificacoes_destinatario_id_fkey(nome)')
+        .eq('setor_id', setor.id)
+        .order('criado_em', { ascending: false })
+        .limit(50)
+      if (!error && data) setAvisosEnviados(data)
+    } catch (e) {
+      console.error('Erro ao carregar avisos:', e)
+    } finally {
+      setLoadingAvisos(false)
+    }
+  }
+
+  const deleteAviso = async (avisoId: string) => {
+    setDeletingAvisoId(avisoId)
+    try {
+      const { error } = await supabase
+        .from('notificacoes')
+        .delete()
+        .eq('id', avisoId)
+      if (error) throw error
+      setAvisosEnviados((prev) => prev.filter((a) => a.id !== avisoId))
+      toast.success('Aviso excluído')
+    } catch (e: any) {
+      toast.error('Erro ao excluir aviso')
+    } finally {
+      setDeletingAvisoId(null)
+    }
+  }
+
   // Save configuration
 const saveConfig = async () => {
     setSaving(true)
@@ -5424,81 +5463,174 @@ const saveConfig = async () => {
       )}
 
       {/* Notification Modal */}
-      <Dialog open={showNotificationModal} onOpenChange={setShowNotificationModal}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog open={showNotificationModal} onOpenChange={(open) => {
+        setShowNotificationModal(open)
+        if (open) { setNotificationModalTab('novo'); fetchAvisosEnviados() }
+      }}>
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Send className="h-5 w-5" />
-              Enviar Aviso
+              Avisos do Setor
             </DialogTitle>
             <DialogDescription>
-              Envie uma notificação para os colaboradores do setor
+              Envie notificações ou gerencie os avisos já enviados
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Destinatário</Label>
-              <Select
-                value={notificationForm.destinatario}
-                onValueChange={(value) => setNotificationForm((prev) => ({ ...prev, destinatario: value }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o destinatário" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="todos">
-                    <span className="flex items-center gap-2">
-                      <Users className="h-4 w-4" />
-                      Todos do setor
-                    </span>
-                  </SelectItem>
-                  {atendentes.map((atendente: any) => (
-                    <SelectItem key={atendente.id} value={atendente.id}>
-                      <span className="flex items-center gap-2">
-                        <User className="h-4 w-4" />
-                        {atendente.nome}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-</Select>
-  </div>
-  <div className="space-y-2">
-    <Label>Título</Label>
-    <Input
-      placeholder="Título do aviso..."
-      value={notificationForm.titulo}
-      onChange={(e) => setNotificationForm((prev) => ({ ...prev, titulo: e.target.value }))}
-    />
-            </div>
-            <div className="space-y-2">
-              <Label>Mensagem</Label>
-              <Textarea
-                placeholder="Digite sua mensagem..."
-                value={notificationForm.mensagem}
-                onChange={(e) => setNotificationForm((prev) => ({ ...prev, mensagem: e.target.value }))}
-                rows={4}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowNotificationModal(false)}>
-              Cancelar
-            </Button>
-            <Button onClick={sendNotification} disabled={sendingNotification}>
-              {sendingNotification ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Enviando...
-                </>
-              ) : (
-                <>
-                  <Send className="mr-2 h-4 w-4" />
-                  Enviar
-                </>
+
+          {/* Tabs */}
+          <div className="flex border-b">
+            <button
+              onClick={() => setNotificationModalTab('novo')}
+              className={cn(
+                'px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+                notificationModalTab === 'novo'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
               )}
-            </Button>
-          </DialogFooter>
+            >
+              Novo Aviso
+            </button>
+            <button
+              onClick={() => { setNotificationModalTab('historico'); fetchAvisosEnviados() }}
+              className={cn(
+                'px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+                notificationModalTab === 'historico'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Histórico
+              {avisosEnviados.length > 0 && (
+                <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-xs tabular-nums">
+                  {avisosEnviados.length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {notificationModalTab === 'novo' ? (
+            <>
+              <div className="space-y-4 py-2">
+                <div className="space-y-2">
+                  <Label>Destinatário</Label>
+                  <Select
+                    value={notificationForm.destinatario}
+                    onValueChange={(value) => setNotificationForm((prev) => ({ ...prev, destinatario: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione o destinatário" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="todos">
+                        <span className="flex items-center gap-2">
+                          <Users className="h-4 w-4" />
+                          Todos do setor
+                        </span>
+                      </SelectItem>
+                      {atendentes.map((atendente: any) => (
+                        <SelectItem key={atendente.id} value={atendente.id}>
+                          <span className="flex items-center gap-2">
+                            <User className="h-4 w-4" />
+                            {atendente.nome}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Título</Label>
+                  <Input
+                    placeholder="Título do aviso..."
+                    value={notificationForm.titulo}
+                    onChange={(e) => setNotificationForm((prev) => ({ ...prev, titulo: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Mensagem</Label>
+                  <Textarea
+                    placeholder="Digite sua mensagem..."
+                    value={notificationForm.mensagem}
+                    onChange={(e) => setNotificationForm((prev) => ({ ...prev, mensagem: e.target.value }))}
+                    rows={4}
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowNotificationModal(false)}>
+                  Cancelar
+                </Button>
+                <Button onClick={sendNotification} disabled={sendingNotification}>
+                  {sendingNotification ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Enviando...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="mr-2 h-4 w-4" />
+                      Enviar
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <div className="py-2">
+              {loadingAvisos ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : avisosEnviados.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <Send className="h-8 w-8 text-muted-foreground/40 mb-2" />
+                  <p className="text-sm text-muted-foreground">Nenhum aviso enviado ainda</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {avisosEnviados.map((aviso) => (
+                    <div key={aviso.id} className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+                      <div className="flex-1 min-w-0 space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-foreground truncate">{aviso.titulo}</p>
+                          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                            {aviso.destinatario_id
+                              ? (aviso.colaboradores as any)?.nome || 'Específico'
+                              : 'Todos'}
+                          </span>
+                        </div>
+                        <p className="text-muted-foreground line-clamp-2">{aviso.mensagem}</p>
+                        <p className="text-[11px] text-muted-foreground/70">
+                          {new Date(aviso.criado_em).toLocaleString('pt-BR', {
+                            day: '2-digit', month: '2-digit', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit',
+                          })}
+                        </p>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        disabled={deletingAvisoId === aviso.id}
+                        onClick={() => deleteAviso(aviso.id)}
+                      >
+                        {deletingAvisoId === aviso.id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <Trash2 className="h-3.5 w-3.5" />
+                        }
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <DialogFooter className="mt-4">
+                <Button variant="outline" onClick={() => setShowNotificationModal(false)}>
+                  Fechar
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

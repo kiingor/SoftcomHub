@@ -15,6 +15,7 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Menu, LogOut, User as UserIcon, ChevronDown, Bell } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { useColaborador } from '@/lib/hooks/use-data'
 
 interface DashboardHeaderProps {
   user: User
@@ -23,6 +24,7 @@ interface DashboardHeaderProps {
 
 export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
   const router = useRouter()
+  const { data: colaborador } = useColaborador()
 
   const handleSignOut = async () => {
     const supabase = createClient()
@@ -34,9 +36,13 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
     ? user.email.slice(0, 2).toUpperCase()
     : 'U'
 
-  const userDisplayName = user.email
+  const userDisplayName = colaborador?.nome || (user.email
     ? user.email.split('@')[0]
-    : 'Usuario'
+    : 'Usuario')
+
+  const userRole = colaborador?.is_master
+    ? 'Administrador'
+    : (colaborador?.permissoes as { nome?: string } | null)?.nome || 'Usuário'
 
   return (
     <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-4 lg:px-6">
@@ -89,7 +95,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
                   {userDisplayName}
                 </span>
                 <span className="text-[10px] text-muted-foreground leading-tight">
-                  Administrador
+                  {userRole}
                 </span>
               </div>
               <ChevronDown className="hidden md:block h-3.5 w-3.5 text-muted-foreground ml-0.5" />
