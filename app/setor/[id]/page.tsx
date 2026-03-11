@@ -574,6 +574,8 @@ export default function SetorPage() {
 
   // Canal statuses (canalId -> 'open' | 'close' | 'connecting' | 'unknown')
   const [canalStatuses, setCanalStatuses] = useState<Record<string, string>>({})
+  // Canais sendo verificados manualmente
+  const [checkingCanalId, setCheckingCanalId] = useState<string | null>(null)
 
   // Reconnect dialog state
   const [reconnectDialog, setReconnectDialog] = useState<{
@@ -1281,6 +1283,30 @@ const saveConfig = async () => {
         )
         setCanalStatuses(prev => ({ ...prev, ...statusMap }))
       }
+    }
+  }
+
+  // Verifica manualmente o status de uma instância Evolution
+  async function checkInstanciaStatus(canal: Canal) {
+    if (!canal.instancia) return
+    setCheckingCanalId(canal.id)
+    try {
+      const res = await fetch(`/api/evolution/instance/${canal.instancia}/status`)
+      const d = await res.json()
+      const state = d.instance?.state || 'unknown'
+      setCanalStatuses(prev => ({ ...prev, [canal.id]: state }))
+      if (state === 'open') {
+        toast.success('Instância conectada!')
+      } else if (state === 'unknown') {
+        toast.error('Não foi possível verificar a instância')
+      } else {
+        toast.warning('Instância desconectada')
+      }
+    } catch {
+      setCanalStatuses(prev => ({ ...prev, [canal.id]: 'unknown' }))
+      toast.error('Erro ao verificar instância')
+    } finally {
+      setCheckingCanalId(null)
     }
   }
 
@@ -4120,6 +4146,23 @@ const saveConfig = async () => {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
+                            {/* Botão Verificar para evolution_api */}
+                            {canal.tipo === 'evolution_api' && canal.instancia && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted"
+                                onClick={() => checkInstanciaStatus(canal)}
+                                disabled={checkingCanalId === canal.id}
+                                title="Verificar status da instância agora"
+                              >
+                                {checkingCanalId === canal.id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
+                            )}
                             {/* Botão Conectar para evolution desconectado */}
                             {canal.tipo === 'evolution_api' && canal.instancia &&
                               canalStatuses[canal.id] &&
