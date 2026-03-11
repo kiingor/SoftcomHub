@@ -1288,7 +1288,10 @@ const saveConfig = async () => {
 
   // Verifica manualmente o status de uma instância Evolution
   async function checkInstanciaStatus(canal: Canal) {
-    if (!canal.instancia) return
+    if (!canal.instancia) {
+      toast.error('Instância não configurada. Conecte o canal primeiro.')
+      return
+    }
     setCheckingCanalId(canal.id)
     try {
       const res = await fetch(`/api/evolution/instance/${canal.instancia}/status`)
@@ -4147,7 +4150,7 @@ const saveConfig = async () => {
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
                             {/* Botão Verificar para evolution_api */}
-                            {canal.tipo === 'evolution_api' && canal.instancia && (
+                            {canal.tipo === 'evolution_api' && (
                               <Button
                                 variant="ghost"
                                 size="sm"
