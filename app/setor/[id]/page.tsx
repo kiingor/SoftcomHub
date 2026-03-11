@@ -1293,21 +1293,31 @@ const saveConfig = async () => {
       return
     }
     setCheckingCanalId(canal.id)
+    // Remove status anterior para forçar o badge "Verificando..." durante o check
+    setCanalStatuses(prev => {
+      const next = { ...prev }
+      delete next[canal.id]
+      return next
+    })
     try {
       const res = await fetch(`/api/evolution/instance/${canal.instancia}/status`)
       const d = await res.json()
-      const state = d.instance?.state || 'unknown'
+      const state: string = d.instance?.state || 'unknown'
+      console.log('[Evolution Check]', canal.instancia, '→', state, d)
       setCanalStatuses(prev => ({ ...prev, [canal.id]: state }))
       if (state === 'open') {
         toast.success('Instância conectada!')
+      } else if (state === 'not_found') {
+        toast.error('Instância não encontrada no servidor')
       } else if (state === 'unknown') {
-        toast.error('Não foi possível verificar a instância')
+        toast.error('Não foi possível obter resposta da instância')
       } else {
-        toast.warning('Instância desconectada')
+        toast.warning(`Instância ${state === 'close' ? 'desconectada' : state}`)
       }
-    } catch {
+    } catch (err) {
+      console.error('[Evolution Check] erro:', err)
       setCanalStatuses(prev => ({ ...prev, [canal.id]: 'unknown' }))
-      toast.error('Erro ao verificar instância')
+      toast.error('Erro de rede ao verificar instância')
     } finally {
       setCheckingCanalId(null)
     }
@@ -4120,10 +4130,22 @@ const saveConfig = async () => {
                           ) : canal.tipo === 'evolution_api' ? (
                             (() => {
                               const st = canalStatuses[canal.id]
-                              if (!st || st === 'unknown') return (
+                              const isChecking = checkingCanalId === canal.id
+                              if (isChecking) return (
                                 <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground">
                                   <Loader2 className="h-3 w-3 animate-spin" />
-                                  Verificando
+                                  Verificando...
+                                </span>
+                              )
+                              if (!st) return (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-muted/50 text-muted-foreground">
+                                  —
+                                </span>
+                              )
+                              if (st === 'unknown') return (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
+                                  <WifiOff className="h-3 w-3" />
+                                  Sem resposta
                                 </span>
                               )
                               if (st === 'open') return (
@@ -4136,6 +4158,12 @@ const saveConfig = async () => {
                                 <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300">
                                   <Loader2 className="h-3 w-3 animate-spin" />
                                   Conectando
+                                </span>
+                              )
+                              if (st === 'not_found') return (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground">
+                                  <WifiOff className="h-3 w-3" />
+                                  Não encontrada
                                 </span>
                               )
                               return (
@@ -4154,7 +4182,7 @@ const saveConfig = async () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted"
+                                className="h-7 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground hover:bg-muted"
                                 onClick={() => checkInstanciaStatus(canal)}
                                 disabled={checkingCanalId === canal.id}
                                 title="Verificar status da instância agora"
@@ -4163,6 +4191,9 @@ const saveConfig = async () => {
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
                                   <RefreshCw className="h-3.5 w-3.5" />
+                                )}
+                                {!canalStatuses[canal.id] && checkingCanalId !== canal.id && (
+                                  <span>Verificar</span>
                                 )}
                               </Button>
                             )}
