@@ -1288,8 +1288,9 @@ const saveConfig = async () => {
 
   // Verifica manualmente o status de uma instância Evolution
   async function checkInstanciaStatus(canal: Canal) {
+    console.log('[checkInstanciaStatus] canal:', canal.id, 'instancia:', canal.instancia)
     if (!canal.instancia) {
-      toast.error('Instância não configurada. Conecte o canal primeiro.')
+      toast.error(`Canal "${canal.nome}" sem instância configurada. Reconecte o canal via QR Code.`)
       return
     }
     setCheckingCanalId(canal.id)
@@ -4118,7 +4119,17 @@ const saveConfig = async () => {
                         </TableCell>
                         <TableCell className="text-muted-foreground text-xs font-mono">
                           {canal.tipo === 'whatsapp' ? (canal.phone_number_id || '-') :
-                           canal.tipo === 'evolution_api' ? (canal.evolution_api_key ? '****' + canal.evolution_api_key.slice(-4) : '-') :
+                           canal.tipo === 'evolution_api' ? (
+                            <div className="flex flex-col gap-0.5">
+                              {canal.instancia && (
+                                <span className="text-foreground font-medium">{canal.instancia}</span>
+                              )}
+                              <span>{canal.evolution_api_key ? '****' + canal.evolution_api_key.slice(-4) : '-'}</span>
+                              {!canal.instancia && (
+                                <span className="text-orange-500 text-[10px] font-sans">sem instância</span>
+                              )}
+                            </div>
+                           ) :
                            (canal.discord_guild_id || '-')}
                         </TableCell>
                         <TableCell>
