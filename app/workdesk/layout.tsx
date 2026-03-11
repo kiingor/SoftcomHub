@@ -5,16 +5,19 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
-import { User, LogOut, MessageCircle } from 'lucide-react'
+import { User, LogOut, MessageCircle, Volume2, Play } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { DisponibilidadePanel } from '@/components/workdesk/disponibilidade-panel'
 import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
+import { useAudioAlert, type TicketSoundType } from '@/hooks/use-audio-alert'
 
 interface ColaboradorSetor {
   setor_id: string
@@ -35,9 +38,31 @@ export default function WorkdeskLayout({
 }) {
   const [colaborador, setColaborador] = useState<Colaborador | null>(null)
   const [loading, setLoading] = useState(true)
+  const [ticketSound, setTicketSound] = useState<TicketSoundType>('default')
   const supabase = createClient()
   const router = useRouter()
   const pathname = usePathname()
+  const { setTicketSoundType, getTicketSoundType, playAlert, playBuhBuh, initAudioContext } = useAudioAlert()
+
+  // Carregar preferência de som salva
+  useEffect(() => {
+    const saved = localStorage.getItem('ticketSoundType') as TicketSoundType | null
+    if (saved === 'buhbuh' || saved === 'default') {
+      setTicketSound(saved)
+    }
+  }, [])
+
+  const handleSoundChange = (type: TicketSoundType) => {
+    setTicketSound(type)
+    setTicketSoundType(type)
+    // Pré-visualizar o som selecionado
+    initAudioContext()
+    if (type === 'buhbuh') {
+      playBuhBuh()
+    } else {
+      playAlert('new_ticket')
+    }
+  }
 
   const fetchColaborador = useCallback(async () => {
     // Skip auth check for login page
@@ -202,12 +227,61 @@ export default function WorkdeskLayout({
                 <span className="hidden text-sm font-medium md:inline">{colaborador.nome}</span>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56 glass-dropdown rounded-2xl border-0">
-              <div className="px-2 py-1.5">
+            <DropdownMenuContent align="end" className="w-64 glass-dropdown rounded-2xl border-0">
+              <div className="px-3 py-2">
                 <p className="text-sm font-medium">{colaborador.nome}</p>
                 <p className="text-xs text-muted-foreground">{colaborador.email}</p>
               </div>
-              <DropdownMenuItem onClick={handleLogout} className="text-destructive rounded-xl mx-1">
+
+              <DropdownMenuSeparator className="mx-2" />
+
+              {/* Som de novo ticket */}
+              <DropdownMenuLabel className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                <Volume2 className="h-3 w-3" />
+                Som — Novo Ticket
+              </DropdownMenuLabel>
+
+              <div className="px-2 pb-1 space-y-0.5">
+                {/* Opção Padrão */}
+                <button
+                  onClick={() => handleSoundChange('default')}
+                  className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm transition-colors ${
+                    ticketSound === 'default'
+                      ? 'bg-primary/10 text-primary font-medium'
+                      : 'hover:bg-black/5 dark:hover:bg-white/5 text-foreground'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="text-base">🔔</span>
+                    Padrão
+                  </span>
+                  {ticketSound === 'default' && (
+                    <Play className="h-3 w-3 shrink-0 opacity-60" />
+                  )}
+                </button>
+
+                {/* Opção Buh Buh */}
+                <button
+                  onClick={() => handleSoundChange('buhbuh')}
+                  className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm transition-colors ${
+                    ticketSound === 'buhbuh'
+                      ? 'bg-primary/10 text-primary font-medium'
+                      : 'hover:bg-black/5 dark:hover:bg-white/5 text-foreground'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="text-base">📣</span>
+                    Buh Buh
+                  </span>
+                  {ticketSound === 'buhbuh' && (
+                    <Play className="h-3 w-3 shrink-0 opacity-60" />
+                  )}
+                </button>
+              </div>
+
+              <DropdownMenuSeparator className="mx-2" />
+
+              <DropdownMenuItem onClick={handleLogout} className="text-destructive rounded-xl mx-1 mb-1">
                 <LogOut className="mr-2 h-4 w-4" />
                 Sair
               </DropdownMenuItem>

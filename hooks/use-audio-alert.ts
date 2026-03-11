@@ -3,11 +3,15 @@
 import { useCallback, useRef, useEffect } from 'react'
 
 export type AlertType = 'new_ticket' | 'new_message'
+export type TicketSoundType = 'default' | 'buhbuh'
+
+const BUHBUH_URL = 'https://wgmcavssrufxgwvjxwms.supabase.co/storage/v1/object/public/whatsapp-media/buhbuh.mp3'
 
 export function useAudioAlert() {
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioEnabledRef = useRef(true)
   const userInteractedRef = useRef(false)
+  const ticketSoundTypeRef = useRef<TicketSoundType>('default')
 
   // Get or create AudioContext (must be after user interaction)
   const getContext = useCallback(() => {
@@ -70,9 +74,27 @@ export function useAudioAlert() {
     oscillator.stop(startTime + duration)
   }, [])
 
+  // Play the buhbuh MP3 via HTMLAudioElement
+  const playBuhBuh = useCallback(() => {
+    try {
+      const audio = new Audio(BUHBUH_URL)
+      audio.volume = 0.8
+      audio.play().catch((err) => {
+        console.warn('[AudioAlert] Falha ao reproduzir buhbuh:', err)
+      })
+    } catch (err) {
+      console.error('[AudioAlert] Erro ao criar Audio buhbuh:', err)
+    }
+  }, [])
+
   // Play notification sound entirely via Web Audio API
   const playAlert = useCallback((type: AlertType) => {
     if (!audioEnabledRef.current || !userInteractedRef.current) return
+
+    if (type === 'new_ticket' && ticketSoundTypeRef.current === 'buhbuh') {
+      playBuhBuh()
+      return
+    }
 
     const ctx = getContext()
     if (!ctx) return
@@ -92,7 +114,7 @@ export function useAudioAlert() {
     } catch (error) {
       console.error('Error playing alert:', error)
     }
-  }, [getContext, playTone])
+  }, [getContext, playTone, playBuhBuh])
 
   // Toggle audio
   const setAudioEnabled = useCallback((enabled: boolean) => {
@@ -106,11 +128,28 @@ export function useAudioAlert() {
     return audioEnabledRef.current
   }, [])
 
-  // Load saved preference
+  // Set ticket sound type
+  const setTicketSoundType = useCallback((type: TicketSoundType) => {
+    ticketSoundTypeRef.current = type
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('ticketSoundType', type)
+    }
+  }, [])
+
+  const getTicketSoundType = useCallback((): TicketSoundType => {
+    return ticketSoundTypeRef.current
+  }, [])
+
+  // Load saved preferences
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('audioAlertsEnabled')
-      audioEnabledRef.current = saved !== 'false'
+      const savedEnabled = localStorage.getItem('audioAlertsEnabled')
+      audioEnabledRef.current = savedEnabled !== 'false'
+
+      const savedSoundType = localStorage.getItem('ticketSoundType') as TicketSoundType | null
+      if (savedSoundType === 'buhbuh' || savedSoundType === 'default') {
+        ticketSoundTypeRef.current = savedSoundType
+      }
     }
   }, [])
 
@@ -119,5 +158,8 @@ export function useAudioAlert() {
     setAudioEnabled,
     isAudioEnabled,
     initAudioContext,
+    setTicketSoundType,
+    getTicketSoundType,
+    playBuhBuh,
   }
 }
