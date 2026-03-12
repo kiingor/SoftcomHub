@@ -287,6 +287,9 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
   })
   
   // Process each ticket
+  // Track tickets that failed assignment by setor for transmission check
+  const failedBySetor: Record<string, string[]> = {}
+
   for (const ticket of queuedTickets) {
     if (!ticket.setor_id) {
       stats.ticketsSkipped++
@@ -307,6 +310,13 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
         stats.ticketsAssigned++
       } else {
         stats.ticketsSkipped++
+        // Track failed tickets for potential transmission
+        if (result.reason === 'No online colaboradores in setor') {
+          if (!failedBySetor[ticket.setor_id]) {
+            failedBySetor[ticket.setor_id] = []
+          }
+          failedBySetor[ticket.setor_id].push(ticket.id)
+        }
       }
     } catch (error) {
       stats.ticketsSkipped++
@@ -318,6 +328,59 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
         success: false,
         reason: errorMessage,
       })
+    }
+  }
+
+  // Transmissão automática: encaminhar tickets sem atendente para setor receptor
+  for (const [setorId, ticketIds] of Object.entries(failedBySetor)) {
+    try {
+      const { data: setorData } = await supabase
+        .from('setores')
+        .select('transmissao_ativa, setor_receptor_id')
+        .eq('id', setorId)
+        .single()
+
+      if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
+        const receptorId = setorData.setor_receptor_id
+        console.log(`[TicketQueue] Transmissão ativa no setor ${setorId} → receptor ${receptorId}. Encaminhando ${ticketIds.length} tickets.`)
+
+        for (const ticketId of ticketIds) {
+          // Mover ticket para o setor receptor
+          const { error: moveError } = await supabase
+            .from('tickets')
+            .update({
+              setor_id: receptorId,
+              subsetor_id: null,
+            })
+            .eq('id', ticketId)
+            .is('colaborador_id', null)
+            .eq('status', 'aberto')
+
+          if (!moveError) {
+            // Log da transferência
+            await supabase.from('ticket_logs').insert({
+              ticket_id: ticketId,
+              tipo: 'transferencia_automatica',
+              descricao: `Ticket transferido automaticamente para setor receptor (fila sem atendentes disponíveis)`,
+            })
+
+            // Tentar atribuir no setor receptor
+            const receptorResult = await tryAssignTicket(ticketId, receptorId)
+            if (receptorResult.success) {
+              stats.ticketsAssigned++
+              stats.ticketsSkipped--
+            }
+            stats.assignments.push({
+              ...receptorResult,
+              reason: `Transmitido para receptor: ${receptorResult.reason}`,
+            })
+
+            console.log(`[TicketQueue] Ticket ${ticketId} transmitido para receptor ${receptorId}: ${receptorResult.success ? 'atribuído' : 'aguardando'}`)
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`[TicketQueue] Erro ao verificar transmissão do setor ${setorId}:`, error)
     }
   }
   

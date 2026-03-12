@@ -19,6 +19,8 @@ export async function criarEDistribuirTicket(
 ): Promise<DistribuicaoResult | null> {
   const supabase = await createClient()
 
+  console.log(`[Distribuição] criarEDistribuirTicket chamada — clienteId=${clienteId}, setorId=${setorId}, canal=${canal}, subsetorId=${subsetorId}`)
+
   try {
     // 1. Get distribution config for this sector
     const { data: config } = await supabase
