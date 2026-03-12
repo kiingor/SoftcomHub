@@ -619,9 +619,11 @@ export default function WorkdeskPage() {
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
       // Query 3: Messages from client WITHOUT a ticket (bot conversation before ticket creation)
+      // IMPORTANT: Do NOT join tickets() here — ticket_id is NULL so the join would
+      // cause PostgREST to use INNER JOIN and exclude these rows entirely
       const { data: orphanMsgs } = await supabase
         .from('mensagens')
-        .select('*, tickets(id, status, criado_em, encerrado_em)')
+        .select('*')
         .in('cliente_id', allClienteIds)
         .is('ticket_id', null)
         .gte('enviado_em', sevenDaysAgo.toISOString())
@@ -1053,10 +1055,11 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         : { data: [] }
 
       // Messages from client without a ticket (bot conversation before ticket creation)
+      // No tickets() join — ticket_id is NULL so join would exclude these rows
       const { data: orphanMsgs } = pollClienteIds.length > 0
         ? await supabase
             .from('mensagens')
-            .select('*, tickets(id, status, criado_em, encerrado_em)')
+            .select('*')
             .in('cliente_id', pollClienteIds)
             .is('ticket_id', null)
             .gte('enviado_em', sevenDaysAgo.toISOString())
