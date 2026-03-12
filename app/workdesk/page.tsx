@@ -581,6 +581,25 @@ export default function WorkdeskPage() {
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
+      // Resolve all cliente_ids with the same phone number (handles duplicate records)
+      let allClienteIds = [clienteId]
+      const { data: clienteData } = await supabase
+        .from('clientes')
+        .select('telefone')
+        .eq('id', clienteId)
+        .single()
+
+      if (clienteData?.telefone) {
+        const { data: allClientes } = await supabase
+          .from('clientes')
+          .select('id')
+          .eq('telefone', clienteData.telefone)
+
+        if (allClientes && allClientes.length > 0) {
+          allClienteIds = [...new Set(allClientes.map(c => c.id))]
+        }
+      }
+
       // Query 1: All messages from current ticket (by ticket_id — always reliable even if cliente_id changed)
       const { data: ticketMsgs } = await supabase
         .from('mensagens')
@@ -589,11 +608,13 @@ export default function WorkdeskPage() {
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
       // Query 2: Messages from client's OTHER tickets in the last 7 days (history)
+      // Uses all cliente_ids with the same phone to catch duplicate records
       const { data: historyMsgs } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
-        .eq('cliente_id', clienteId)
+        .in('cliente_id', allClienteIds)
         .neq('ticket_id', ticketId)
+        .not('ticket_id', 'is', null)
         .gte('enviado_em', sevenDaysAgo.toISOString())
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
@@ -601,13 +622,19 @@ export default function WorkdeskPage() {
       const { data: orphanMsgs } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
-        .eq('cliente_id', clienteId)
+        .in('cliente_id', allClienteIds)
         .is('ticket_id', null)
         .gte('enviado_em', sevenDaysAgo.toISOString())
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      // Merge and sort chronologically
-      const merged = [...(ticketMsgs || []), ...(historyMsgs || []), ...(orphanMsgs || [])]
+      // Merge, deduplicate by id, and sort chronologically
+      const allMsgs = [...(ticketMsgs || []), ...(historyMsgs || []), ...(orphanMsgs || [])]
+      const seen = new Set<string>()
+      const merged = allMsgs.filter(m => {
+        if (seen.has(m.id)) return false
+        seen.add(m.id)
+        return true
+      })
       merged.sort((a, b) => {
         if (!a.enviado_em) return -1
         if (!b.enviado_em) return 1
@@ -988,35 +1015,62 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
-      // Same two-query approach as fetchMensagens — ticket_id first (always reliable)
+      // Resolve all cliente_ids with the same phone (handles duplicate client records)
+      let pollClienteIds: string[] = selectedClienteIdRef ? [selectedClienteIdRef] : []
+      if (selectedClienteIdRef) {
+        const { data: cData } = await supabase
+          .from('clientes')
+          .select('telefone')
+          .eq('id', selectedClienteIdRef)
+          .single()
+        if (cData?.telefone) {
+          const { data: allC } = await supabase
+            .from('clientes')
+            .select('id')
+            .eq('telefone', cData.telefone)
+          if (allC && allC.length > 0) {
+            pollClienteIds = [...new Set(allC.map(c => c.id))]
+          }
+        }
+      }
+
+      // Same approach as fetchMensagens — ticket_id first (always reliable)
       const { data: ticketMsgs } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
         .eq('ticket_id', selectedTicketIdRef2)
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      const { data: historyMsgs } = selectedClienteIdRef
+      const { data: historyMsgs } = pollClienteIds.length > 0
         ? await supabase
             .from('mensagens')
             .select('*, tickets(id, status, criado_em, encerrado_em)')
-            .eq('cliente_id', selectedClienteIdRef)
+            .in('cliente_id', pollClienteIds)
             .neq('ticket_id', selectedTicketIdRef2)
+            .not('ticket_id', 'is', null)
             .gte('enviado_em', sevenDaysAgo.toISOString())
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
       // Messages from client without a ticket (bot conversation before ticket creation)
-      const { data: orphanMsgs } = selectedClienteIdRef
+      const { data: orphanMsgs } = pollClienteIds.length > 0
         ? await supabase
             .from('mensagens')
             .select('*, tickets(id, status, criado_em, encerrado_em)')
-            .eq('cliente_id', selectedClienteIdRef)
+            .in('cliente_id', pollClienteIds)
             .is('ticket_id', null)
             .gte('enviado_em', sevenDaysAgo.toISOString())
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
-      const merged = [...(ticketMsgs || []), ...(historyMsgs || []), ...(orphanMsgs || [])]
+      // Merge, deduplicate by id, and sort
+      const allPollMsgs = [...(ticketMsgs || []), ...(historyMsgs || []), ...(orphanMsgs || [])]
+      const pollSeen = new Set<string>()
+      const merged = allPollMsgs.filter((m: any) => {
+        if (pollSeen.has(m.id)) return false
+        pollSeen.add(m.id)
+        return true
+      })
       merged.sort((a, b) => {
         if (!a.enviado_em) return -1
         if (!b.enviado_em) return 1
