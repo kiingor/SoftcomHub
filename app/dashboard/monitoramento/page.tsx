@@ -42,8 +42,29 @@ import {
   Loader2,
   History,
   Check,
+  XCircle,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Label } from '@/components/ui/label'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
 function formatMs(ms: number) {
@@ -87,6 +108,15 @@ export default function MonitoramentoPage() {
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [conversationTab, setConversationTab] = useState<'conversa' | 'historico'>('conversa')
+
+  // Transfer & finalize state
+  const [encerrarDialogOpen, setEncerrarDialogOpen] = useState(false)
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const [transferLoading, setTransferLoading] = useState(false)
+  const [atendentesDisponiveis, setAtendentesDisponiveis] = useState<any[]>([])
+  const [setoresTransfer, setSetoresTransfer] = useState<any[]>([])
+  const [selectedSetorTransfer, setSelectedSetorTransfer] = useState<string>('all')
+  const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all')
 
   // Tick every second for live times
   useEffect(() => {
@@ -277,6 +307,10 @@ export default function MonitoramentoPage() {
       .map((t: any) => ({
         id: t.id,
         cliente_id: t.cliente_id,
+        setor_id: t.setor_id,
+        colaborador_id: t.colaborador_id,
+        setores: t.setores,
+        colaboradores: t.colaboradores,
         numero: t.numero ?? null,
         // Tempo na fila = criado_em → atribuido_em (tempo sem atendente)
         // Se atribuido_em não foi registrado mas já tem colaborador, o dado não está disponível
@@ -387,6 +421,162 @@ export default function MonitoramentoPage() {
       .eq('ticket_id', ticketId)
       .order('enviado_em', { ascending: true })
     setHistoryMessages(prev => ({ ...prev, [ticketId]: msgs || [] }))
+  }
+
+  // Encerrar ticket
+  const handleEncerrarTicket = async () => {
+    if (!selectedTicket) return
+    try {
+      await supabase
+        .from('tickets')
+        .update({ status: 'encerrado', encerrado_em: new Date().toISOString() })
+        .eq('id', selectedTicket.id)
+
+      try {
+        await fetch('/api/webhooks/dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticketId: selectedTicket.id, evento: 'ticket_encerrado' }),
+        })
+      } catch (err) {
+        console.error('[Webhook] dispatch error:', err)
+      }
+
+      toast.success('Ticket encerrado')
+      setEncerrarDialogOpen(false)
+      closeConversation()
+      mutate()
+    } catch {
+      toast.error('Erro ao encerrar ticket')
+    }
+  }
+
+  // Open transfer dialog and fetch data
+  const openTransferDialog = async () => {
+    setTransferDialogOpen(true)
+    setSelectedSetorTransfer('all')
+    setSelectedAtendenteTransfer('all')
+    setAtendentesDisponiveis([])
+    setSetoresTransfer([])
+
+    const currentSetorId = selectedTicket?.setor_id
+    if (!currentSetorId) return
+
+    // Fetch destination setores configured for this setor
+    const { data: destinosData } = await supabase
+      .from('setor_destinos_transferencia')
+      .select('setor_destino_id, setores:setor_destino_id(id, nome)')
+      .eq('setor_origem_id', currentSetorId)
+
+    if (destinosData && destinosData.length > 0) {
+      const destinos = destinosData.map((d: any) => d.setores).filter(Boolean).sort((a: any, b: any) => a.nome.localeCompare(b.nome))
+      setSetoresTransfer(destinos)
+    }
+
+    // Fetch atendentes from same setor
+    const { data: csData } = await supabase
+      .from('colaboradores_setores')
+      .select('colaborador_id')
+      .eq('setor_id', currentSetorId)
+
+    if (csData && csData.length > 0) {
+      const ids = csData.map((cs: any) => cs.colaborador_id)
+      const { data: colabData } = await supabase
+        .from('colaboradores')
+        .select('id, nome, is_online, ativo')
+        .in('id', ids)
+        .eq('ativo', true)
+        .neq('id', selectedTicket?.colaborador_id || '')
+
+      setAtendentesDisponiveis(colabData || [])
+    }
+  }
+
+  // Fetch atendentes when destination setor changes
+  const handleSetorTransferChange = async (setorId: string) => {
+    setSelectedSetorTransfer(setorId)
+    setSelectedAtendenteTransfer('all')
+
+    const { data: csData } = await supabase
+      .from('colaboradores_setores')
+      .select('colaborador_id')
+      .eq('setor_id', setorId)
+
+    if (csData && csData.length > 0) {
+      const ids = csData.map((cs: any) => cs.colaborador_id)
+      const { data: colabData } = await supabase
+        .from('colaboradores')
+        .select('id, nome, is_online, ativo')
+        .in('id', ids)
+        .eq('ativo', true)
+      setAtendentesDisponiveis(colabData || [])
+    } else {
+      setAtendentesDisponiveis([])
+    }
+  }
+
+  // Execute transfer
+  const handleTransferTicket = async () => {
+    if (!selectedTicket) return
+    setTransferLoading(true)
+
+    const updateData: any = {}
+
+    if (selectedSetorTransfer !== 'all') {
+      updateData.setor_id = selectedSetorTransfer
+    }
+
+    if (selectedAtendenteTransfer !== 'all') {
+      const { data: atendenteData } = await supabase
+        .from('colaboradores')
+        .select('id, is_online')
+        .eq('id', selectedAtendenteTransfer)
+        .single()
+
+      if (!atendenteData?.is_online) {
+        toast.error('Este atendente está offline. Selecione um atendente online.')
+        setTransferLoading(false)
+        return
+      }
+
+      updateData.colaborador_id = selectedAtendenteTransfer
+      updateData.status = 'em_atendimento'
+    } else {
+      updateData.colaborador_id = null
+      updateData.status = 'aberto'
+    }
+
+    const { error } = await supabase.from('tickets').update(updateData).eq('id', selectedTicket.id)
+
+    if (error) {
+      toast.error('Erro ao transferir ticket')
+      setTransferLoading(false)
+      return
+    }
+
+    // Insert system transfer message
+    const fromColabName = selectedTicket.colaboradores?.nome || 'Desconhecido'
+    const fromSetorName = selectedTicket.setores?.nome || 'Desconhecido'
+    const targetSetorId = selectedSetorTransfer !== 'all' ? selectedSetorTransfer : selectedTicket.setor_id
+    const toSetorName = setoresTransfer.find((s: any) => s.id === targetSetorId)?.nome || fromSetorName
+    const toColabName = selectedAtendenteTransfer !== 'all'
+      ? atendentesDisponiveis.find((a: any) => a.id === selectedAtendenteTransfer)?.nome || 'Aguardando atendente'
+      : 'Aguardando atendente'
+
+    await supabase.from('mensagens').insert({
+      ticket_id: selectedTicket.id,
+      cliente_id: selectedTicket.cliente_id,
+      remetente: 'sistema',
+      conteudo: `Transferido de ${fromColabName} - ${fromSetorName} >> ${toColabName} - ${toSetorName}`,
+      tipo: 'texto',
+      enviado_em: new Date().toISOString(),
+    })
+
+    toast.success('Ticket transferido com sucesso')
+    setTransferDialogOpen(false)
+    setTransferLoading(false)
+    closeConversation()
+    mutate()
   }
 
   const dateFilterLabel = dateFilter === 'custom' && customRange?.from
@@ -831,12 +1021,162 @@ export default function MonitoramentoPage() {
         </CardContent>
       </Card>
 
+      {/* Encerrar Dialog */}
+      <AlertDialog open={encerrarDialogOpen} onOpenChange={setEncerrarDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>⚠️ Encerrar ticket?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja encerrar este ticket? O ticket será movido para o histórico.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleEncerrarTicket}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              ✅ Confirmar Encerramento
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Transfer Dialog */}
+      <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ArrowRightLeft className="h-5 w-5" />
+              Transferir Ticket
+            </DialogTitle>
+            <DialogDescription>
+              Transfira este ticket para outro setor ou atendente.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs defaultValue="atendente" className="w-full">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="atendente">👤 Atendente</TabsTrigger>
+              <TabsTrigger value="setor">🏢 Setor</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="atendente" className="space-y-4 pt-4">
+              <div className="space-y-2">
+                <Label>Selecione um atendente do setor atual</Label>
+                <Select value={selectedAtendenteTransfer} onValueChange={setSelectedAtendenteTransfer}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Escolha um atendente..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {atendentesDisponiveis.map((atendente) => (
+                      <SelectItem key={atendente.id} value={atendente.id} disabled={!atendente.is_online}>
+                        <div className="flex items-center gap-2">
+                          <span className={cn('h-2 w-2 rounded-full', atendente.is_online ? 'bg-green-500' : 'bg-gray-400')} />
+                          <span className={!atendente.is_online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
+                          {!atendente.is_online && <span className="text-xs text-muted-foreground">(Offline)</span>}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {atendentesDisponiveis.length === 0 && (
+                  <p className="text-sm text-muted-foreground">Nenhum outro atendente neste setor.</p>
+                )}
+                {atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => a.is_online) && (
+                  <p className="text-sm text-amber-600">Todos os atendentes estão offline.</p>
+                )}
+              </div>
+              <Button
+                onClick={handleTransferTicket}
+                disabled={
+                  !selectedAtendenteTransfer ||
+                  selectedAtendenteTransfer === 'all' ||
+                  transferLoading ||
+                  !atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)?.is_online
+                }
+                className="w-full"
+              >
+                {transferLoading ? 'Transferindo...' : 'Transferir para Atendente'}
+              </Button>
+              {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)?.is_online && (
+                <p className="text-sm text-destructive">Este atendente está offline. Selecione um atendente online.</p>
+              )}
+            </TabsContent>
+
+            <TabsContent value="setor" className="space-y-4 pt-4">
+              <div className="space-y-2">
+                <Label>Selecione o setor de destino</Label>
+                <Select value={selectedSetorTransfer} onValueChange={handleSetorTransferChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Escolha um setor..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {setoresTransfer.length === 0 ? (
+                      <div className="p-3 text-sm text-muted-foreground text-center">
+                        Nenhum setor habilitado para transferência. Configure em Configurações do Setor.
+                      </div>
+                    ) : (
+                      setoresTransfer.map((setor) => (
+                        <SelectItem key={setor.id} value={setor.id}>{setor.nome}</SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {selectedSetorTransfer !== 'all' && (
+                <div className="space-y-2">
+                  <Label>Atribuir a um atendente (opcional)</Label>
+                  <Select value={selectedAtendenteTransfer} onValueChange={setSelectedAtendenteTransfer}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Deixar na fila do setor..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-full bg-blue-500" />
+                          Deixar na fila (atribuir automaticamente)
+                        </div>
+                      </SelectItem>
+                      {atendentesDisponiveis.map((atendente) => (
+                        <SelectItem key={atendente.id} value={atendente.id} disabled={!atendente.is_online}>
+                          <div className="flex items-center gap-2">
+                            <span className={cn('h-2 w-2 rounded-full', atendente.is_online ? 'bg-green-500' : 'bg-gray-400')} />
+                            <span className={!atendente.is_online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
+                            {!atendente.is_online && <span className="text-xs text-muted-foreground">(Offline)</span>}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {selectedSetorTransfer !== 'all' && atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => a.is_online) && (
+                <p className="text-sm text-blue-600 bg-blue-50 p-2 rounded-md">
+                  Nenhum atendente online neste setor. O ticket irá para a fila e será atribuído automaticamente quando alguém ficar online.
+                </p>
+              )}
+
+              <Button
+                onClick={handleTransferTicket}
+                disabled={!selectedSetorTransfer || selectedSetorTransfer === 'all' || transferLoading}
+                className="w-full"
+              >
+                {transferLoading ? 'Transferindo...' : 'Transferir para Setor'}
+              </Button>
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
+
       {/* Conversation Slide-out Panel */}
       {selectedTicket && (
-        <div className="fixed top-16 bottom-0 right-0 z-50 flex">
-          <div className="fixed top-16 inset-x-0 bottom-0 bg-black/20 backdrop-blur-sm" onClick={closeConversation} />
+        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-lg">
+          <div className="fixed inset-0 bg-black/20 backdrop-blur-sm" onClick={closeConversation} />
 
-          <div className="relative ml-auto flex h-full w-full max-w-lg flex-col bg-background shadow-xl">
+          <div className="absolute inset-0 flex flex-col bg-background shadow-xl">
             {/* Header */}
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
@@ -879,6 +1219,30 @@ export default function MonitoramentoPage() {
                 </button>
               </div>
             </div>
+
+            {/* Action Buttons */}
+            {selectedTicket.status === 'em_atendimento' && (
+              <div className="flex gap-2 border-b px-4 py-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={openTransferDialog}
+                  className="flex-1 gap-1 bg-transparent"
+                >
+                  <ArrowRightLeft className="h-4 w-4" />
+                  Transferir
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setEncerrarDialogOpen(true)}
+                  className="flex-1 gap-1"
+                >
+                  <XCircle className="h-4 w-4" />
+                  Encerrar
+                </Button>
+              </div>
+            )}
 
             {/* Tab Content */}
             <div className="flex-1 overflow-y-auto">
