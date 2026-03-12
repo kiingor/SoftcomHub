@@ -5134,6 +5134,8 @@ const saveConfig = async () => {
                   <SelectItem value="Financeiro">Financeiro</SelectItem>
                   <SelectItem value="Ouvidoria">Ouvidoria</SelectItem>
                   <SelectItem value="Jornada Cliente">Jornada Cliente</SelectItem>
+                  <SelectItem value="Sped">Sped</SelectItem>
+                  <SelectItem value="Prime">Prime</SelectItem>
                 </SelectContent>
               </Select>
             </div>
