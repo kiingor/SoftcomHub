@@ -7,6 +7,7 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
+import { useColaborador } from '@/lib/hooks/use-data'
 import { DateRange } from 'react-day-picker'
 import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -125,7 +126,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { ThemeToggle } from '@/components/theme-toggle'
-import { Send, Hash, Check, Tag } from 'lucide-react'
+import { Send, Hash, Check, Tag, Radio, Inbox } from 'lucide-react'
 import { DisparoLogsSection } from '@/components/disparo-logs-section'
 
 const supabase = createClient()
@@ -396,6 +397,7 @@ export default function SetorPage() {
   const params = useParams()
   const router = useRouter()
   const setorId = params.id as string
+  const { data: colaboradorLogado } = useColaborador()
   const [isPending, startTransition] = useTransition()
   const [isNavigatingBack, setIsNavigatingBack] = useState(false)
   const [activeSection, setActiveSection] = useState('monitoramento')
@@ -500,6 +502,9 @@ export default function SetorPage() {
   webhook_eventos: [] as string[],
   tempo_espera_minutos: 10,
   tag_id: '' as string,
+  is_receptor: false,
+  transmissao_ativa: false,
+  setor_receptor_id: '' as string,
   })
 
 // Templates state
@@ -531,7 +536,7 @@ export default function SetorPage() {
     criado_em: string
   }
   const [canais, setCanais] = useState<Canal[]>([])
-  const [todosSetores, setTodosSetores] = useState<{ id: string; nome: string }[]>([])
+  const [todosSetores, setTodosSetores] = useState<{ id: string; nome: string; is_receptor?: boolean }[]>([])
   const [tiposAtendimentoSetor, setTiposAtendimentoSetor] = useState<Record<string, string | null>>({
     suporte: null,
     ouvidoria: null,
@@ -820,6 +825,9 @@ export default function SetorPage() {
         webhook_eventos: setor.webhook_eventos || [],
         tempo_espera_minutos: setor.tempo_espera_minutos ?? 10,
         tag_id: setor.tag_id || '',
+        is_receptor: setor.is_receptor || false,
+        transmissao_ativa: setor.transmissao_ativa || false,
+        setor_receptor_id: setor.setor_receptor_id || '',
       })
       fetchTemplates()
       fetchCanais()
@@ -886,7 +894,7 @@ export default function SetorPage() {
   const fetchTodosSetores = async () => {
     const { data } = await supabase
       .from('setores')
-      .select('id, nome')
+      .select('id, nome, is_receptor')
       .order('nome')
     if (data) setTodosSetores(data)
   }
@@ -1174,6 +1182,9 @@ const saveConfig = async () => {
   webhook_eventos: configForm.webhook_eventos.length > 0 ? configForm.webhook_eventos : null,
   tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
   tag_id: configForm.tag_id || null,
+  is_receptor: configForm.is_receptor,
+  transmissao_ativa: configForm.transmissao_ativa,
+  setor_receptor_id: configForm.setor_receptor_id || null,
   })
         .eq('id', setorId)
 
@@ -4474,6 +4485,114 @@ const saveConfig = async () => {
             })()}
           </CardContent>
         </Card>
+
+        {/* Receptor / Transmissor — apenas admin */}
+        {colaboradorLogado?.is_master && (
+          <Card className="glass-card-elevated rounded-2xl border-0">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Radio className="h-5 w-5" />
+                Receptor / Transmissor
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Configure o encaminhamento automático de tickets quando não houver atendentes disponíveis.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              {/* Switch: Setor Receptor */}
+              <div className="flex items-center justify-between rounded-lg border border-border p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-950">
+                    <Inbox className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">Setor Receptor</p>
+                    <p className="text-xs text-muted-foreground">
+                      Marca este setor como ponto central que recebe tickets de outros setores.
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  checked={configForm.is_receptor}
+                  onCheckedChange={(checked) => {
+                    setConfigForm((prev) => ({
+                      ...prev,
+                      is_receptor: checked,
+                      // Receptor não pode transmitir
+                      ...(checked ? { transmissao_ativa: false, setor_receptor_id: '' } : {}),
+                    }))
+                  }}
+                />
+              </div>
+
+              {/* Switch: Transmissão Ativa */}
+              <div className={cn(
+                "rounded-lg border border-border p-4 transition-opacity",
+                configForm.is_receptor && "opacity-50 pointer-events-none"
+              )}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-950">
+                      <Radio className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium">Transmissão Ativa</p>
+                      <p className="text-xs text-muted-foreground">
+                        Quando ativo, tickets sem atendente disponível são encaminhados ao setor receptor.
+                      </p>
+                    </div>
+                  </div>
+                  <Switch
+                    checked={configForm.transmissao_ativa}
+                    disabled={configForm.is_receptor}
+                    onCheckedChange={(checked) => {
+                      setConfigForm((prev) => ({
+                        ...prev,
+                        transmissao_ativa: checked,
+                        ...(checked ? {} : { setor_receptor_id: '' }),
+                      }))
+                    }}
+                  />
+                </div>
+
+                {/* Select: Setor Receptor destino */}
+                {configForm.transmissao_ativa && !configForm.is_receptor && (
+                  <div className="mt-4 space-y-2 pl-12">
+                    <Label>Setor Receptor de Destino</Label>
+                    <Select
+                      value={configForm.setor_receptor_id || 'none'}
+                      onValueChange={(v) =>
+                        setConfigForm((prev) => ({ ...prev, setor_receptor_id: v === 'none' ? '' : v }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione o setor receptor..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Nenhum</SelectItem>
+                        {todosSetores
+                          .filter((s) => s.id !== setorId && s.is_receptor)
+                          .map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              <div className="flex items-center gap-2">
+                                <Inbox className="h-3.5 w-3.5 text-blue-500" />
+                                {s.nome}
+                              </div>
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                    {todosSetores.filter((s) => s.id !== setorId && s.is_receptor).length === 0 && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        Nenhum setor está configurado como receptor. Marque um setor como &quot;Setor Receptor&quot; primeiro.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Zona de Perigo */}
         <Card className="glass-card-elevated rounded-2xl border-0 border-destructive/50">
