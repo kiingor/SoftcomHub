@@ -132,7 +132,7 @@ interface Ticket {
 
 interface Mensagem {
   id: string
-  ticket_id: string
+  ticket_id: string | null
   cliente_id: string | null
   remetente: 'cliente' | 'colaborador' | 'bot' | 'sistema'
   conteudo: string
@@ -600,29 +600,39 @@ export default function WorkdeskPage() {
         }
       }
 
-      // Query 1: All messages from current ticket
-      const { data: ticketMsgs } = await supabase
+      // Query 1: All messages from current ticket (always reliable)
+      const { data: ticketMsgs, error: err1 } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
         .eq('ticket_id', ticketId)
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      // Query 2: ALL other messages from client in last 7 days
-      // Uses .or() to capture BOTH messages from other tickets AND orphan messages (ticket_id IS NULL)
-      // .neq alone would EXCLUDE nulls (SQL: NULL != value → NULL → filtered out)
-      // No tickets() join because orphan messages have ticket_id=null and the join would INNER JOIN them out
-      const { data: otherMsgs } = await supabase
+      // Query 2: Messages from OTHER tickets of the same client (last 7 days)
+      const { data: otherTicketMsgs, error: err2 } = await supabase
         .from('mensagens')
         .select('*')
         .in('cliente_id', allClienteIds)
-        .or(`ticket_id.neq.${ticketId},ticket_id.is.null`)
+        .neq('ticket_id', ticketId)
+        .not('ticket_id', 'is', null)
         .gte('enviado_em', sevenDaysAgo.toISOString())
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      console.log('[fetchMensagens] ticketMsgs:', ticketMsgs?.length, 'otherMsgs:', otherMsgs?.length, 'allClienteIds:', allClienteIds)
+      // Query 3: Orphan messages (ticket_id IS NULL) — bot conversations before ticket creation
+      const { data: orphanMsgs, error: err3 } = await supabase
+        .from('mensagens')
+        .select('*')
+        .in('cliente_id', allClienteIds)
+        .is('ticket_id', null)
+        .gte('enviado_em', sevenDaysAgo.toISOString())
+        .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      // Merge, deduplicate by id, and sort chronologically
-      const allMsgs = [...(ticketMsgs || []), ...(otherMsgs || [])]
+      console.log('[fetchMensagens] Q1 ticketMsgs:', ticketMsgs?.length, err1 ? `ERR: ${JSON.stringify(err1)}` : 'OK')
+      console.log('[fetchMensagens] Q2 otherTicketMsgs:', otherTicketMsgs?.length, err2 ? `ERR: ${JSON.stringify(err2)}` : 'OK')
+      console.log('[fetchMensagens] Q3 orphanMsgs:', orphanMsgs?.length, err3 ? `ERR: ${JSON.stringify(err3)}` : 'OK')
+      console.log('[fetchMensagens] allClienteIds:', allClienteIds)
+
+      // Merge all 3 queries, deduplicate by id, and sort chronologically
+      const allMsgs = [...(ticketMsgs || []), ...(otherTicketMsgs || []), ...(orphanMsgs || [])]
       const seen = new Set<string>()
       const merged = allMsgs.filter(m => {
         if (seen.has(m.id)) return false
@@ -1028,26 +1038,38 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         }
       }
 
-      // Same approach as fetchMensagens
+      // Same 3-query approach as fetchMensagens
       const { data: ticketMsgs } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
         .eq('ticket_id', selectedTicketIdRef2)
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      // ALL other messages from client (history + orphan with ticket_id=null)
-      const { data: otherMsgs } = pollClienteIds.length > 0
+      // Messages from OTHER tickets of the same client
+      const { data: otherTicketMsgs } = pollClienteIds.length > 0
         ? await supabase
             .from('mensagens')
             .select('*')
             .in('cliente_id', pollClienteIds)
-            .or(`ticket_id.neq.${selectedTicketIdRef2},ticket_id.is.null`)
+            .neq('ticket_id', selectedTicketIdRef2)
+            .not('ticket_id', 'is', null)
             .gte('enviado_em', sevenDaysAgo.toISOString())
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
-      // Merge, deduplicate by id, and sort
-      const allPollMsgs = [...(ticketMsgs || []), ...(otherMsgs || [])]
+      // Orphan messages (ticket_id IS NULL) — bot conversations
+      const { data: orphanMsgs } = pollClienteIds.length > 0
+        ? await supabase
+            .from('mensagens')
+            .select('*')
+            .in('cliente_id', pollClienteIds)
+            .is('ticket_id', null)
+            .gte('enviado_em', sevenDaysAgo.toISOString())
+            .order('enviado_em', { ascending: true, nullsFirst: false })
+        : { data: [] }
+
+      // Merge all 3 queries, deduplicate by id, and sort
+      const allPollMsgs = [...(ticketMsgs || []), ...(otherTicketMsgs || []), ...(orphanMsgs || [])]
       const pollSeen = new Set<string>()
       const merged = allPollMsgs.filter((m: any) => {
         if (pollSeen.has(m.id)) return false
