@@ -597,8 +597,17 @@ export default function WorkdeskPage() {
         .gte('enviado_em', sevenDaysAgo.toISOString())
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
+      // Query 3: Messages from client WITHOUT a ticket (bot conversation before ticket creation)
+      const { data: orphanMsgs } = await supabase
+        .from('mensagens')
+        .select('*, tickets(id, status, criado_em, encerrado_em)')
+        .eq('cliente_id', clienteId)
+        .is('ticket_id', null)
+        .gte('enviado_em', sevenDaysAgo.toISOString())
+        .order('enviado_em', { ascending: true, nullsFirst: false })
+
       // Merge and sort chronologically
-      const merged = [...(ticketMsgs || []), ...(historyMsgs || [])]
+      const merged = [...(ticketMsgs || []), ...(historyMsgs || []), ...(orphanMsgs || [])]
       merged.sort((a, b) => {
         if (!a.enviado_em) return -1
         if (!b.enviado_em) return 1
@@ -996,7 +1005,18 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
-      const merged = [...(ticketMsgs || []), ...(historyMsgs || [])]
+      // Messages from client without a ticket (bot conversation before ticket creation)
+      const { data: orphanMsgs } = selectedClienteIdRef
+        ? await supabase
+            .from('mensagens')
+            .select('*, tickets(id, status, criado_em, encerrado_em)')
+            .eq('cliente_id', selectedClienteIdRef)
+            .is('ticket_id', null)
+            .gte('enviado_em', sevenDaysAgo.toISOString())
+            .order('enviado_em', { ascending: true, nullsFirst: false })
+        : { data: [] }
+
+      const merged = [...(ticketMsgs || []), ...(historyMsgs || []), ...(orphanMsgs || [])]
       merged.sort((a, b) => {
         if (!a.enviado_em) return -1
         if (!b.enviado_em) return 1
