@@ -152,14 +152,19 @@ export async function criarEDistribuirTicket(
 
     // Se ninguém foi atribuído e auto-assign está ativo, verificar transmissão
     if (!assignedColaboradorId && autoAssignEnabled) {
+      console.log(`[Distribuição] Ticket ${ticket.id} sem atribuição — verificando transmissão do setor ${setorId}`)
+
       const { data: setorData } = await supabase
         .from('setores')
         .select('transmissao_ativa, setor_receptor_id')
         .eq('id', setorId)
         .single()
 
+      console.log(`[Distribuição] Setor ${setorId}: transmissao_ativa=${setorData?.transmissao_ativa}, setor_receptor_id=${setorData?.setor_receptor_id}`)
+
       if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
         const receptorId = setorData.setor_receptor_id
+        console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
 
         // Mover ticket para o setor receptor
         const { error: moveError } = await supabase
@@ -327,7 +332,42 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       .is('pausa_atual_id', null)
 
     if (!allColaboradores || allColaboradores.length === 0) {
-      return 0
+      // Nenhum atendente online — verificar se o setor tem transmissão ativa
+      const { data: setorData } = await supabase
+        .from('setores')
+        .select('transmissao_ativa, setor_receptor_id')
+        .eq('id', setorId)
+        .single()
+
+      if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
+        const receptorId = setorData.setor_receptor_id
+        console.log(`[Redistribuição] Sem atendentes em ${setorId} — transmitindo ${pendingTickets.length} tickets para receptor ${receptorId}`)
+
+        for (const ticket of pendingTickets) {
+          const { error: moveError } = await supabase
+            .from('tickets')
+            .update({
+              setor_id: receptorId,
+              subsetor_id: null,
+            })
+            .eq('id', ticket.id)
+
+          if (!moveError) {
+            await supabase.from('ticket_logs').insert({
+              ticket_id: ticket.id,
+              tipo: 'transferencia_automatica',
+              descricao: `Ticket transferido automaticamente para setor receptor (nenhum atendente online no setor original)`,
+            })
+
+            const result = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
+            if (result) {
+              assignedCount++
+            }
+          }
+        }
+      }
+
+      return assignedCount
     }
 
     // Buscar todos os vínculos de subsetores para os colaboradores disponíveis
