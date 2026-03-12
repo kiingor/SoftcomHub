@@ -18,8 +18,8 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Search in setor_canais table by multiple fields
-    const { data: canalMatch, error: canalError } = await supabase
+    // Search in setor_canais table by multiple fields — return ALL matches
+    const { data: canalMatches, error: canalError } = await supabase
       .from('setor_canais')
       .select(`
         id, setor_id, nome, tipo, ativo, instancia, max_disparos_dia, criado_em,
@@ -29,110 +29,114 @@ export async function GET(request: NextRequest) {
         setores(id, nome)
       `)
       .or(`evolution_api_key.eq.${identifier},instancia.eq.${identifier},phone_number_id.eq.${identifier}`)
-      .limit(1)
-      .maybeSingle()
 
-    if (canalMatch) {
-      const setor = canalMatch.setores as any
-      
-      // Build canal response based on type
-      const canalBase = {
-        id: canalMatch.id,
-        nome: canalMatch.nome,
-        tipo: canalMatch.tipo,
-        ativo: canalMatch.ativo,
-        instancia: canalMatch.instancia || null,
-        max_disparos_dia: canalMatch.max_disparos_dia || 0,
-        criado_em: canalMatch.criado_em,
-      }
+    if (canalMatches && canalMatches.length > 0) {
+      const results = await Promise.all(
+        canalMatches.map(async (canalMatch) => {
+          const setor = canalMatch.setores as any
 
-      let canalEspecifico = {}
-
-      if (canalMatch.tipo === 'whatsapp') {
-        canalEspecifico = {
-          phone_number_id: canalMatch.phone_number_id || null,
-          whatsapp_token: canalMatch.whatsapp_token || null,
-          template_id: canalMatch.template_id || null,
-          template_language: canalMatch.template_language || 'pt_BR',
-        }
-      } else if (canalMatch.tipo === 'evolution_api') {
-        canalEspecifico = {
-          evolution_base_url: canalMatch.evolution_base_url || null,
-          evolution_api_key: canalMatch.evolution_api_key || null,
-        }
-      } else if (canalMatch.tipo === 'discord') {
-        canalEspecifico = {
-          discord_bot_token: canalMatch.discord_bot_token || null,
-          discord_guild_id: canalMatch.discord_guild_id || null,
-        }
-      }
-
-      // Buscar setores de atendimento associados ao setor (não ao canal)
-      const { data: tiposAtendimento } = await supabase
-        .from('setor_tipos_atendimento')
-        .select('tipo, setor_destino_id, setores!setor_tipos_atendimento_setor_destino_id_fkey(id, nome)')
-        .eq('setor_id', canalMatch.setor_id)
-
-      const setoresAtendimento: Record<string, { setor_id: string; setor_nome: string } | null> = {
-        suporte: null,
-        ouvidoria: null,
-        financeiro: null,
-        implantacao: null,
-        comercial: null,
-      }
-
-      if (tiposAtendimento) {
-        for (const tipo of tiposAtendimento) {
-          const setorInfo = tipo.setores as any
-          setoresAtendimento[tipo.tipo] = {
-            setor_id: tipo.setor_destino_id,
-            setor_nome: setorInfo?.nome || null,
+          // Build canal response based on type
+          const canalBase = {
+            id: canalMatch.id,
+            nome: canalMatch.nome,
+            tipo: canalMatch.tipo,
+            ativo: canalMatch.ativo,
+            instancia: canalMatch.instancia || null,
+            max_disparos_dia: canalMatch.max_disparos_dia || 0,
+            criado_em: canalMatch.criado_em,
           }
-        }
-      }
 
-      // Buscar subsetores do setor
-      const { data: subsetoresData } = await supabase
-        .from('subsetores')
-        .select('id, nome, descricao, ativo')
-        .eq('setor_id', canalMatch.setor_id)
-        .eq('ativo', true)
-        .order('nome')
+          let canalEspecifico = {}
 
-      const subsetores = (subsetoresData || []).map((s) => ({
-        id: s.id,
-        nome: s.nome,
-        descricao: s.descricao,
-      }))
+          if (canalMatch.tipo === 'whatsapp') {
+            canalEspecifico = {
+              phone_number_id: canalMatch.phone_number_id || null,
+              whatsapp_token: canalMatch.whatsapp_token || null,
+              template_id: canalMatch.template_id || null,
+              template_language: canalMatch.template_language || 'pt_BR',
+            }
+          } else if (canalMatch.tipo === 'evolution_api') {
+            canalEspecifico = {
+              evolution_base_url: canalMatch.evolution_base_url || null,
+              evolution_api_key: canalMatch.evolution_api_key || null,
+            }
+          } else if (canalMatch.tipo === 'discord') {
+            canalEspecifico = {
+              discord_bot_token: canalMatch.discord_bot_token || null,
+              discord_guild_id: canalMatch.discord_guild_id || null,
+            }
+          }
 
-      return NextResponse.json({
-        source: 'setor_canais',
-        setor_id: canalMatch.setor_id,
-        setor_nome: setor?.nome || null,
-        canal: {
-          ...canalBase,
-          ...canalEspecifico,
-        },
-        setores_atendimento: setoresAtendimento,
-        subsetores,
-      })
+          // Buscar setores de atendimento associados ao setor (não ao canal)
+          const { data: tiposAtendimento } = await supabase
+            .from('setor_tipos_atendimento')
+            .select('tipo, setor_destino_id, setores!setor_tipos_atendimento_setor_destino_id_fkey(id, nome)')
+            .eq('setor_id', canalMatch.setor_id)
+
+          const setoresAtendimento: Record<string, { setor_id: string; setor_nome: string } | null> = {
+            suporte: null,
+            ouvidoria: null,
+            financeiro: null,
+            implantacao: null,
+            comercial: null,
+          }
+
+          if (tiposAtendimento) {
+            for (const tipo of tiposAtendimento) {
+              const setorInfo = tipo.setores as any
+              setoresAtendimento[tipo.tipo] = {
+                setor_id: tipo.setor_destino_id,
+                setor_nome: setorInfo?.nome || null,
+              }
+            }
+          }
+
+          // Buscar subsetores do setor
+          const { data: subsetoresData } = await supabase
+            .from('subsetores')
+            .select('id, nome, descricao, ativo')
+            .eq('setor_id', canalMatch.setor_id)
+            .eq('ativo', true)
+            .order('nome')
+
+          const subsetores = (subsetoresData || []).map((s) => ({
+            id: s.id,
+            nome: s.nome,
+            descricao: s.descricao,
+          }))
+
+          return {
+            source: 'setor_canais',
+            setor_id: canalMatch.setor_id,
+            setor_nome: setor?.nome || null,
+            canal: {
+              ...canalBase,
+              ...canalEspecifico,
+            },
+            setores_atendimento: setoresAtendimento,
+            subsetores,
+          }
+        }),
+      )
+
+      return NextResponse.json(results)
     }
 
-    // Priority 2: Fallback to setores table
-    const { data: setorMatch } = await supabase
+    // Priority 2: Fallback to setores table — return ALL matches
+    const { data: setorMatches } = await supabase
       .from('setores')
       .select('id, nome, canal')
       .or(`evolution_api_key.eq.${identifier},phone_number_id.eq.${identifier}`)
-      .limit(1)
-      .maybeSingle()
 
-    if (setorMatch) {
-      return NextResponse.json({
-        source: 'setores',
-        setor_id: setorMatch.id,
-        setor_nome: setorMatch.nome,
-        canal: null,
-      })
+    if (setorMatches && setorMatches.length > 0) {
+      return NextResponse.json(
+        setorMatches.map((s) => ({
+          source: 'setores',
+          setor_id: s.id,
+          setor_nome: s.nome,
+          canal: null,
+        })),
+      )
     }
 
     return NextResponse.json(
