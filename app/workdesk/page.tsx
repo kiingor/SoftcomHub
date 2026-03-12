@@ -45,6 +45,8 @@ import {
   Music,
   Play,
   FileIcon,
+  Layers,
+  ChevronDown,
 } from 'lucide-react'
 import {
   Dialog,
@@ -77,6 +79,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Checkbox } from '@/components/ui/checkbox'
 import { toast } from 'sonner'
 import { useAudioAlert } from '@/hooks/use-audio-alert'
 
@@ -103,6 +107,7 @@ interface Setor {
 interface Subsetor {
   id: string
   nome: string
+  setor_id?: string
 }
 
 interface Ticket {
@@ -449,6 +454,11 @@ export default function WorkdeskPage() {
   const [selecionarClienteLoading, setSelecionarClienteLoading] = useState(false)
   const [clienteNaoInformadoDialogOpen, setClienteNaoInformadoDialogOpen] = useState(false)
 
+  // Meus subsetores ativos (seleção do próprio atendente)
+  const [meusSubsetorIds, setMeusSubsetorIds] = useState<string[]>([])
+  const [subsetorPickerOpen, setSubsetorPickerOpen] = useState(false)
+  const [togglingSubsetor, setTogglingSubsetor] = useState(false)
+
   // Fetch colaborador atual
   const fetchColaborador = useCallback(async () => {
     try {
@@ -562,7 +572,7 @@ export default function WorkdeskPage() {
     const setorIds = colab.setores_vinculados.map((s: ColaboradorSetor) => s.setor_id)
     const { data } = await supabase
       .from('subsetores')
-      .select('id, nome')
+      .select('id, nome, setor_id')
       .in('setor_id', setorIds)
       .eq('ativo', true)
       .order('nome')
@@ -570,6 +580,15 @@ export default function WorkdeskPage() {
     if (data) {
       setSubsetoresDisponiveis(data)
     }
+  }, [supabase])
+
+  // Fetch subsetores onde o colaborador está ativo (colaboradores_subsetores)
+  const fetchMeusSubsetores = useCallback(async (colab: Colaborador) => {
+    const { data } = await supabase
+      .from('colaboradores_subsetores')
+      .select('subsetor_id')
+      .eq('colaborador_id', colab.id)
+    setMeusSubsetorIds(data?.map((d: any) => d.subsetor_id) || [])
   }, [supabase])
 
 // Fetch messages for selected ticket (including client history from last 7 days)
@@ -659,11 +678,12 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       if (colab) {
         await fetchTickets(colab)
         await fetchSubsetoresDisponiveis(colab)
+        await fetchMeusSubsetores(colab)
       }
       setLoading(false)
     }
     init()
-  }, [fetchColaborador, fetchTickets, fetchSubsetoresDisponiveis])
+  }, [fetchColaborador, fetchTickets, fetchSubsetoresDisponiveis, fetchMeusSubsetores])
 
   // Real-time subscription to sync colaborador status across all sessions/browsers
   useEffect(() => {
@@ -1379,6 +1399,27 @@ const handleEncerrarTicket = async () => {
     }
   }
 
+  // Toggle subsetor ativo do colaborador (escreve/remove em colaboradores_subsetores)
+  const toggleMeuSubsetor = async (subsetorId: string, setorId: string) => {
+    if (!colaborador || togglingSubsetor) return
+    setTogglingSubsetor(true)
+    const isActive = meusSubsetorIds.includes(subsetorId)
+    if (isActive) {
+      await supabase
+        .from('colaboradores_subsetores')
+        .delete()
+        .eq('colaborador_id', colaborador.id)
+        .eq('subsetor_id', subsetorId)
+      setMeusSubsetorIds((prev) => prev.filter((id) => id !== subsetorId))
+    } else {
+      await supabase
+        .from('colaboradores_subsetores')
+        .insert({ colaborador_id: colaborador.id, setor_id: setorId, subsetor_id: subsetorId })
+      setMeusSubsetorIds((prev) => [...prev, subsetorId])
+    }
+    setTogglingSubsetor(false)
+  }
+
   // Open transfer dialog and fetch data
   const openTransferDialog = async () => {
     setTransferDialogOpen(true)
@@ -1435,7 +1476,19 @@ const handleEncerrarTicket = async () => {
         }
 
         if (colaboradoresData) {
-          setAtendentesDisponiveis(colaboradoresData)
+          // Marcar quais atendentes atendem o subsetor do ticket
+          let finalAtendentes: any[] = colaboradoresData.map((a: any) => ({ ...a, handlesSubsetor: false }))
+          if (selectedTicket?.subsetor_id) {
+            const { data: subColab } = await supabase
+              .from('colaboradores_subsetores')
+              .select('colaborador_id')
+              .eq('subsetor_id', selectedTicket.subsetor_id)
+            const subColabIds = new Set(subColab?.map((s: any) => s.colaborador_id) || [])
+            finalAtendentes = finalAtendentes.map((a: any) => ({ ...a, handlesSubsetor: subColabIds.has(a.id) }))
+            // Atendentes do subsetor primeiro
+            finalAtendentes.sort((a: any, b: any) => Number(b.handlesSubsetor) - Number(a.handlesSubsetor))
+          }
+          setAtendentesDisponiveis(finalAtendentes)
         }
       } else {
         setAtendentesDisponiveis([])
@@ -1465,7 +1518,17 @@ const handleEncerrarTicket = async () => {
         .eq('ativo', true)
 
       if (colaboradoresData) {
-        setAtendentesDisponiveis(colaboradoresData)
+        let finalAtendentes: any[] = colaboradoresData.map((a: any) => ({ ...a, handlesSubsetor: false }))
+        if (selectedTicket?.subsetor_id) {
+          const { data: subColab } = await supabase
+            .from('colaboradores_subsetores')
+            .select('colaborador_id')
+            .eq('subsetor_id', selectedTicket.subsetor_id)
+          const subColabIds = new Set(subColab?.map((s: any) => s.colaborador_id) || [])
+          finalAtendentes = finalAtendentes.map((a: any) => ({ ...a, handlesSubsetor: subColabIds.has(a.id) }))
+          finalAtendentes.sort((a: any, b: any) => Number(b.handlesSubsetor) - Number(a.handlesSubsetor))
+        }
+        setAtendentesDisponiveis(finalAtendentes)
       }
     } else {
       setAtendentesDisponiveis([])
@@ -2313,6 +2376,58 @@ const tempId = `temp-${Date.now()}`
             </Button>
           </div>
           )}
+          {/* Subsetor Picker */}
+          {subsetoresDisponiveis.length > 0 && (
+            <div className="px-2 py-1.5 border-b border-white/30 dark:border-white/8 shrink-0">
+              <Popover open={subsetorPickerOpen} onOpenChange={setSubsetorPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-between h-8 text-xs px-2 font-normal hover:bg-muted/50"
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Layers className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="truncate text-muted-foreground">
+                        {meusSubsetorIds.length === 0
+                          ? 'Nenhum subsetor'
+                          : meusSubsetorIds.length === subsetoresDisponiveis.length
+                          ? 'Todos subsetores'
+                          : `${meusSubsetorIds.length} subsetor${meusSubsetorIds.length > 1 ? 'es' : ''}`}
+                      </span>
+                    </div>
+                    <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-2" align="start">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
+                    Meus Subsetores
+                  </p>
+                  <div className="space-y-0.5">
+                    {subsetoresDisponiveis.map((subsetor) => {
+                      const isActive = meusSubsetorIds.includes(subsetor.id)
+                      return (
+                        <label
+                          key={subsetor.id}
+                          className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted cursor-pointer"
+                        >
+                          <Checkbox
+                            checked={isActive}
+                            disabled={togglingSubsetor}
+                            onCheckedChange={() =>
+                              toggleMeuSubsetor(subsetor.id, subsetor.setor_id || '')
+                            }
+                          />
+                          <span className="text-sm">{subsetor.nome}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+          )}
+
           <div className="flex-1 overflow-hidden">
             <TicketList
               tickets={filteredTickets}
@@ -3363,16 +3478,21 @@ onClick={() => {
                               value={atendente.id}
                               disabled={!atendente.is_online}
                             >
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 w-full">
                                 <span
                                   className={cn(
-                                    'h-2 w-2 rounded-full',
+                                    'h-2 w-2 rounded-full shrink-0',
                                     atendente.is_online ? 'bg-green-500' : 'bg-gray-400'
                                   )}
                                 />
-                                <span className={!atendente.is_online ? 'text-muted-foreground' : ''}>
+                                <span className={cn('flex-1', !atendente.is_online ? 'text-muted-foreground' : '')}>
                                   {atendente.nome}
                                 </span>
+                                {atendente.handlesSubsetor && selectedTicket?.subsetor_id && (
+                                  <Badge variant="secondary" className="text-[10px] h-4 px-1 ml-auto shrink-0">
+                                    {selectedTicket.subsetores?.nome}
+                                  </Badge>
+                                )}
                                 {!atendente.is_online && (
                                   <span className="text-xs text-muted-foreground">(Offline)</span>
                                 )}
