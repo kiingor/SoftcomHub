@@ -9,6 +9,7 @@ interface DistribuicaoResult {
  * Creates a new ticket and distributes it to an available collaborator
  * using round-robin distribution based on the sector's configuration.
  * If subsetorId is provided, it will prioritize collaborators assigned to that subsetor.
+ * A collaborator can be assigned to multiple subsetores (via colaboradores_subsetores).
  */
 export async function criarEDistribuirTicket(
   clienteId: string,
@@ -58,52 +59,43 @@ export async function criarEDistribuirTicket(
 
     // 3. If auto-assign is enabled, find an available collaborator
     if (autoAssignEnabled) {
-      // Build query to get collaborators assigned to this sector
-      // If subsetorId is provided, filter by subsetor as well
-      let colaboradoresQuery = supabase
+      // Get all available collaborators in this setor
+      const { data: allColaboradores } = await supabase
         .from('colaboradores')
         .select(`
           id,
           nome,
-          colaboradores_setores!inner(setor_id, subsetor_id)
+          colaboradores_setores!inner(setor_id)
         `)
         .eq('colaboradores_setores.setor_id', setorId)
         .eq('is_online', true)
         .eq('ativo', true)
         .is('pausa_atual_id', null)
 
-      // If subsetorId is specified, filter collaborators by subsetor
-      if (subsetorId) {
-        colaboradoresQuery = colaboradoresQuery.eq('colaboradores_setores.subsetor_id', subsetorId)
+      let finalColaboradores = allColaboradores || []
+
+      // If subsetorId is specified, prioritize collaborators assigned to that subsetor
+      if (subsetorId && finalColaboradores.length > 0) {
+        // Buscar colaboradores do subsetor específico na nova tabela N:N
+        const { data: subsetorLinks } = await supabase
+          .from('colaboradores_subsetores')
+          .select('colaborador_id')
+          .eq('setor_id', setorId)
+          .eq('subsetor_id', subsetorId)
+
+        const subsetorColabIds = new Set((subsetorLinks || []).map(s => s.colaborador_id))
+        const subsetorColaboradores = finalColaboradores.filter(c => subsetorColabIds.has(c.id))
+
+        if (subsetorColaboradores.length > 0) {
+          // Prioriza colaboradores do subsetor
+          finalColaboradores = subsetorColaboradores
+        }
+        // Senão, fallback: qualquer colaborador do setor
       }
 
-      const { data: colaboradores } = await colaboradoresQuery
-
-      // If no collaborators found for the specific subsetor, try to find any collaborator in the setor
-      let finalColaboradores = colaboradores
-      if (subsetorId && (!colaboradores || colaboradores.length === 0)) {
-        // No collaborators found for the specific subsetor, fall back to setor
-        const { data: setorColaboradores } = await supabase
-          .from('colaboradores')
-          .select(`
-            id,
-            nome,
-            colaboradores_setores!inner(setor_id, subsetor_id)
-          `)
-          .eq('colaboradores_setores.setor_id', setorId)
-          .eq('is_online', true)
-          .eq('ativo', true)
-          .is('pausa_atual_id', null)
-        
-        finalColaboradores = setorColaboradores
-      }
-
-      // Use finalColaboradores which may be subsetor-specific or fallback to setor
-      const availableColaboradores = finalColaboradores || []
-      
-      if (availableColaboradores.length > 0) {
+      if (finalColaboradores.length > 0) {
         // Get current ticket counts for each collaborator
-        const colaboradorIds = availableColaboradores.map(c => c.id)
+        const colaboradorIds = finalColaboradores.map(c => c.id)
 
         const { data: ticketCounts } = await supabase
           .from('tickets')
@@ -122,7 +114,7 @@ export async function criarEDistribuirTicket(
         // Find collaborator with least tickets under the max limit
         let bestColaborador: { id: string; count: number } | null = null
 
-        for (const colab of availableColaboradores) {
+        for (const colab of finalColaboradores) {
           const currentCount = countMap[colab.id] || 0
           
           if (currentCount < maxTicketsPerAgent) {
@@ -153,7 +145,6 @@ export async function criarEDistribuirTicket(
               action: 'auto_assigned',
               assignment_reason: `Auto-assigned via round-robin (${bestColaborador.count} tickets)`,
             })
-
           }
         }
       }
@@ -179,10 +170,10 @@ export async function criarEDistribuirTicket(
 }
 
 /**
- * Redistributes unassigned tickets to available collaborators
- * This can be called periodically or when collaborators become available.
- * Respects subsetor assignment - tickets with subsetor will be assigned to 
- * collaborators in that subsetor first, then fallback to any setor collaborator.
+ * Redistributes unassigned tickets to available collaborators.
+ * Respects subsetor assignment — tickets com subsetor são atribuídos
+ * preferencialmente a colaboradores do subsetor (via colaboradores_subsetores).
+ * Um colaborador pode atender múltiplos subsetores.
  */
 export async function redistribuirTicketsPendentes(setorId: string): Promise<number> {
   const supabase = await createClient()
@@ -211,12 +202,12 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
 
     const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
 
-    // Get ALL available collaborators in this setor with their subsetor assignments
+    // Get ALL available collaborators in this setor
     const { data: allColaboradores } = await supabase
       .from('colaboradores')
       .select(`
         id,
-        colaboradores_setores!inner(setor_id, subsetor_id)
+        colaboradores_setores!inner(setor_id)
       `)
       .eq('colaboradores_setores.setor_id', setorId)
       .eq('is_online', true)
@@ -227,8 +218,24 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       return 0
     }
 
-    // Get current ticket counts for all collaborators
+    // Buscar todos os vínculos de subsetores para os colaboradores disponíveis
     const colaboradorIds = allColaboradores.map(c => c.id)
+    const { data: subsetorLinks } = await supabase
+      .from('colaboradores_subsetores')
+      .select('colaborador_id, subsetor_id')
+      .eq('setor_id', setorId)
+      .in('colaborador_id', colaboradorIds)
+
+    // Mapa: subsetor_id → Set de colaborador_ids que atendem aquele subsetor
+    const subsetorToColabs: Record<string, Set<string>> = {}
+    for (const link of (subsetorLinks || [])) {
+      if (!subsetorToColabs[link.subsetor_id]) {
+        subsetorToColabs[link.subsetor_id] = new Set()
+      }
+      subsetorToColabs[link.subsetor_id].add(link.colaborador_id)
+    }
+
+    // Get current ticket counts for all collaborators
     const { data: ticketCounts } = await supabase
       .from('tickets')
       .select('colaborador_id')
@@ -244,20 +251,18 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
 
     // Distribute tickets respecting subsetor
     for (const ticket of pendingTickets) {
-      // Filter collaborators based on ticket's subsetor
       let eligibleColaboradores = allColaboradores
 
       if (ticket.subsetor_id) {
-        // First try to find collaborators assigned to this specific subsetor
-        const subsetorColaboradores = allColaboradores.filter(c => {
-          const setores = c.colaboradores_setores as any[]
-          return setores?.some(s => s.subsetor_id === ticket.subsetor_id)
-        })
-
-        if (subsetorColaboradores.length > 0) {
-          eligibleColaboradores = subsetorColaboradores
+        // Colaboradores que atendem este subsetor
+        const subsetorColabIds = subsetorToColabs[ticket.subsetor_id]
+        if (subsetorColabIds && subsetorColabIds.size > 0) {
+          const filtered = allColaboradores.filter(c => subsetorColabIds.has(c.id))
+          if (filtered.length > 0) {
+            eligibleColaboradores = filtered
+          }
+          // Senão, fallback para qualquer colaborador do setor
         }
-        // If no subsetor-specific collaborators, fallback to all setor collaborators
       }
 
       // Find collaborator with least tickets under limit
@@ -300,7 +305,6 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
           })
         }
       }
-      // Continue to next ticket even if this one couldn't be assigned
     }
 
     return assignedCount

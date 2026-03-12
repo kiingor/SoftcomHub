@@ -201,7 +201,7 @@ async function fetchSetorData(setorId: string) {
   // Date range for reports (last 90 days to support all filter options)
   const ninetyDaysAgo = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
-const [setorRes, ticketsAtivosRes, ticketsHojeRes, ticketsRelatorioRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes] = await Promise.all([
+const [setorRes, ticketsAtivosRes, ticketsHojeRes, ticketsRelatorioRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes] = await Promise.all([
     supabase.from('setores').select('*').eq('id', setorId).single(),
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
@@ -209,20 +209,28 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, ticketsRelatorioRes, colabora
     supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Tickets para relatorio (ultimos 90 dias, incluindo encerrados)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).gte('criado_em', ninetyDaysAgo).order('criado_em', { ascending: false }).limit(500),
-    supabase.from('colaboradores_setores').select('colaborador_id, subsetor_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id), subsetores(id, nome)').eq('setor_id', setorId),
+    supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
     supabase.from('permissoes').select('*'),
     supabase.from('pausas').select('*').eq('setor_id', setorId).order('nome'),
+    // Múltiplos subsetores por colaborador
+    supabase.from('colaboradores_subsetores').select('colaborador_id, subsetor_id, subsetores(id, nome)').eq('setor_id', setorId),
   ])
 
   const ticketsAtivos = ticketsAtivosRes.data || []
   const ticketsHoje = ticketsHojeRes.data || []
   const ticketsRelatorio = ticketsRelatorioRes.data || []
   const atendentesSetor = colaboradoresRes.data || []
+  // Agrupar subsetores por colaborador
+  const colabSubsetoresMap: Record<string, { id: string; nome: string }[]> = {}
+  for (const cs of (colabSubsetoresRes.data || [])) {
+    if (!colabSubsetoresMap[cs.colaborador_id]) colabSubsetoresMap[cs.colaborador_id] = []
+    if (cs.subsetores) colabSubsetoresMap[cs.colaborador_id].push(cs.subsetores as { id: string; nome: string })
+  }
   const atendentes = atendentesSetor.map((as: any) => ({
     ...as.colaboradores,
-    subsetor_id: as.subsetor_id,
-    subsetor_nome: as.subsetores?.nome || null,
+    subsetor_ids: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.id),
+    subsetor_nomes: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.nome),
   })).filter(Boolean)
 
   // Calculate stats
@@ -636,13 +644,12 @@ export default function SetorPage() {
   // Atendentes state
   const [isAtendenteModalOpen, setIsAtendenteModalOpen] = useState(false)
   const [editingAtendente, setEditingAtendente] = useState<any>(null)
-  const [editingAtendenteSubsetorId, setEditingAtendenteSubsetorId] = useState<string | null>(null)
+  const [atendenteSubsetorIds, setAtendenteSubsetorIds] = useState<string[]>([])
   const [atendenteForm, setAtendenteForm] = useState({
     nome: '',
     email: '',
     senha: '',
     confirmarSenha: '',
-    subsetor_id: '' as string,
   })
   const [savingAtendente, setSavingAtendente] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -1913,8 +1920,8 @@ const saveConfig = async () => {
   // Atendentes functions
   const openCreateAtendenteModal = () => {
     setEditingAtendente(null)
-    setEditingAtendenteSubsetorId(null)
-    setAtendenteForm({ nome: '', email: '', senha: '', confirmarSenha: '', subsetor_id: '' })
+    setAtendenteSubsetorIds([])
+    setAtendenteForm({ nome: '', email: '', senha: '', confirmarSenha: '' })
     setShowPassword(false)
     setShowConfirmPassword(false)
     setExistingColaborador(null)
@@ -1971,22 +1978,19 @@ const saveConfig = async () => {
 
   const openEditAtendenteModal = async (atendente: any) => {
     setEditingAtendente(atendente)
-    // Fetch current subsetor_id for this atendente in this setor
-    const { data: colabSetor, error: colabSetorError } = await supabase
-      .from('colaboradores_setores')
+    // Buscar subsetores atuais do atendente neste setor
+    const { data: colabSubsetores } = await supabase
+      .from('colaboradores_subsetores')
       .select('subsetor_id')
       .eq('colaborador_id', atendente.id)
       .eq('setor_id', setorId)
-      .single()
     
-    const subsetorId = colabSetor?.subsetor_id || ''
-    setEditingAtendenteSubsetorId(colabSetor?.subsetor_id || null)
+    setAtendenteSubsetorIds((colabSubsetores || []).map((cs: any) => cs.subsetor_id))
     setAtendenteForm({
       nome: atendente.nome || '',
       email: atendente.email || '',
       senha: '',
       confirmarSenha: '',
-      subsetor_id: subsetorId,
     })
     setExistingColaborador(null)
     setIsAtendenteModalOpen(true)
@@ -1998,18 +2002,39 @@ const saveConfig = async () => {
       return
     }
 
+    // Helper para salvar subsetores na nova tabela (delete + insert)
+    const saveSubsetores = async (colaboradorId: string) => {
+      // Remove atribuições anteriores
+      await supabase
+        .from('colaboradores_subsetores')
+        .delete()
+        .eq('colaborador_id', colaboradorId)
+        .eq('setor_id', setorId)
+
+      // Insere as novas
+      if (atendenteSubsetorIds.length > 0) {
+        const inserts = atendenteSubsetorIds.map((subsetorId) => ({
+          colaborador_id: colaboradorId,
+          setor_id: setorId,
+          subsetor_id: subsetorId,
+        }))
+        const { error } = await supabase.from('colaboradores_subsetores').insert(inserts)
+        if (error) throw error
+      }
+    }
+
     // If adding existing colaborador to this setor
     if (!editingAtendente && existingColaborador && !existingColaborador.alreadyInThisSetor) {
       setSavingAtendente(true)
       try {
-        // Just add to colaboradores_setores
         const { error } = await supabase.from('colaboradores_setores').insert({
           colaborador_id: existingColaborador.id,
           setor_id: setorId,
-          subsetor_id: atendenteForm.subsetor_id || null,
         })
-
         if (error) throw error
+
+        await saveSubsetores(existingColaborador.id)
+
         toast.success('Atendente adicionado ao setor!')
         setIsAtendenteModalOpen(false)
         mutate()
@@ -2045,33 +2070,8 @@ const saveConfig = async () => {
 
         if (error) throw error
 
-        // Update subsetor - always update to ensure correct value
-        // Convert empty string to null for proper comparison and storage
-        const newSubsetorId = atendenteForm.subsetor_id && atendenteForm.subsetor_id !== '' 
-          ? atendenteForm.subsetor_id 
-          : null
-        
-        // Use upsert to handle both insert and update cases
-        // The table has a unique constraint on (colaborador_id, setor_id)
-        const { data: upsertData, error: subsetorError } = await supabase
-          .from('colaboradores_setores')
-          .upsert({
-            colaborador_id: editingAtendente.id,
-            setor_id: setorId,
-            subsetor_id: newSubsetorId
-          }, { 
-            onConflict: 'colaborador_id,setor_id',
-            ignoreDuplicates: false 
-          })
-          .select()
-        
-        if (subsetorError) {
-          console.error('[v0] Error upserting subsetor:', subsetorError)
-          // Don't throw - try alternative approach
-          // If upsert fails, it might be RLS blocking the operation
-          // We'll show a warning but not fail the entire save
-          toast.error('Erro ao atualizar subsetor. Verifique as permissões.')
-        }
+        // Salvar subsetores na nova tabela N:N
+        await saveSubsetores(editingAtendente.id)
 
         toast.success('Atendente atualizado com sucesso!')
       } else {
@@ -2117,10 +2117,12 @@ const saveConfig = async () => {
           .insert({
             colaborador_id: colaboradorData.id,
             setor_id: setorId,
-            subsetor_id: atendenteForm.subsetor_id || null,
           })
 
         if (linkError) throw linkError
+
+        // Salvar subsetores na nova tabela N:N
+        await saveSubsetores(colaboradorData.id)
 
         toast.success('Atendente criado com sucesso!')
       }
@@ -3314,10 +3316,16 @@ const saveConfig = async () => {
                             <p className="text-[10px] uppercase text-muted-foreground tracking-wide">Setor / Subsetor</p>
                             <p className="text-sm truncate">
                               {setor?.nome}
-                              {atendente.subsetor_nome && (
-                                <span className="text-muted-foreground"> / {atendente.subsetor_nome}</span>
-                              )}
                             </p>
+                            {atendente.subsetor_nomes?.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {atendente.subsetor_nomes.map((nome: string, i: number) => (
+                                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                                    {nome}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
 
                           {/* Tickets Simultâneos */}
@@ -5250,26 +5258,35 @@ const saveConfig = async () => {
               </>
             )}
 
-            {/* Subsetor selection - always visible if there are subsetores */}
-            {subsetores.length > 0 && (
+            {/* Subsetor selection - checkboxes para múltipla seleção */}
+            {subsetores.filter(s => s.ativo).length > 0 && (
               <div className="space-y-2">
-                <Label htmlFor="atendente-subsetor">Subsetor (opcional)</Label>
-                <Select
-                  value={atendenteForm.subsetor_id || 'none'}
-                  onValueChange={(value) => setAtendenteForm((prev) => ({ ...prev, subsetor_id: value === 'none' ? '' : value }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione um subsetor..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Nenhum (Setor geral)</SelectItem>
-                    {subsetores.filter(s => s.ativo).map((s) => (
-                      <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label>Subsetores (opcional)</Label>
+                <div className="rounded-lg border border-border divide-y divide-border max-h-44 overflow-y-auto">
+                  {subsetores.filter(s => s.ativo).map((s) => {
+                    const checked = atendenteSubsetorIds.includes(s.id)
+                    return (
+                      <label
+                        key={s.id}
+                        className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-border accent-primary"
+                          checked={checked}
+                          onChange={() => {
+                            setAtendenteSubsetorIds(prev =>
+                              checked ? prev.filter(id => id !== s.id) : [...prev, s.id]
+                            )
+                          }}
+                        />
+                        <span className="text-sm">{s.nome}</span>
+                      </label>
+                    )
+                  })}
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  Se selecionado, o atendente so recebera tickets direcionados a este subsetor.
+                  O atendente receberá tickets dos subsetores selecionados. Sem seleção, atende o setor geral.
                 </p>
               </div>
             )}
