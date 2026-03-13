@@ -2,7 +2,7 @@
 
 import React from "react"
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, startTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
@@ -593,8 +593,8 @@ export default function WorkdeskPage() {
 
 // Fetch messages for selected ticket (including client history from last 7 days)
   const fetchMensagens = useCallback(
-    async (ticketId: string, clienteId: string) => {
-      setLoadingMensagens(true)
+    async (ticketId: string, clienteId: string, options?: { silent?: boolean }) => {
+      if (!options?.silent) setLoadingMensagens(true)
 
       // Calculate date 7 days ago
       const sevenDaysAgo = new Date()
@@ -1179,16 +1179,19 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           }
           
           // Update ticket's last message info and move to top (like WhatsApp)
-          setTickets((prev) => {
-            const updated = prev.map((t) => 
-              t.id === newMessage.ticket_id 
-                ? { ...t, ultima_mensagem: newMessage.conteudo, ultima_mensagem_em: newMessage.enviado_em, ultima_mensagem_remetente: newMessage.remetente }
-                : t
-            )
-            return updated.sort((a, b) => 
-              new Date(b.ultima_mensagem_em || b.criado_em).getTime() - 
-              new Date(a.ultima_mensagem_em || a.criado_em).getTime()
-            )
+          // startTransition → baixa prioridade: não interrompe a renderização das mensagens
+          startTransition(() => {
+            setTickets((prev) => {
+              const updated = prev.map((t) =>
+                t.id === newMessage.ticket_id
+                  ? { ...t, ultima_mensagem: newMessage.conteudo, ultima_mensagem_em: newMessage.enviado_em, ultima_mensagem_remetente: newMessage.remetente }
+                  : t
+              )
+              return updated.sort((a, b) =>
+                new Date(b.ultima_mensagem_em || b.criado_em).getTime() -
+                new Date(a.ultima_mensagem_em || a.criado_em).getTime()
+              )
+            })
           })
         }
       )
@@ -2349,11 +2352,23 @@ const tempId = `temp-${Date.now()}`
           .eq('id', capturedTicketId)
         
         if (!updateError) {
-          // Only update displayed ticket if user is still viewing this one
-          setSelectedTicket(prev => prev?.id === capturedTicketId ? { ...prev, status: 'em_atendimento', colaborador_id: colaborador.id, primeira_resposta_em: new Date().toISOString() } : prev)
-          
-          // Refresh ticket list to show updated status
-          fetchTickets(colaborador)
+          const now = new Date().toISOString()
+          // Atualiza o selectedTicket localmente sem refetch
+          setSelectedTicket(prev =>
+            prev?.id === capturedTicketId
+              ? { ...prev, status: 'em_atendimento', colaborador_id: colaborador.id, primeira_resposta_em: now }
+              : prev
+          )
+          // Atualiza a lista de tickets localmente sem disparar N+1 queries
+          startTransition(() => {
+            setTickets(prev =>
+              prev.map(t =>
+                t.id === capturedTicketId
+                  ? { ...t, status: 'em_atendimento', colaborador_id: colaborador.id, primeira_resposta_em: now }
+                  : t
+              )
+            )
+          })
         }
       } else if (!capturedTicket.primeira_resposta_em) {
         // Update first response time if not already set
@@ -2363,10 +2378,10 @@ const tempId = `temp-${Date.now()}`
           .eq('id', capturedTicketId)
       }
       
-      // After 2 seconds, refresh to get real message ID (only if still viewing this ticket)
+      // After 2 seconds, silently refresh to get real message ID (sem loading spinner)
       setTimeout(() => {
         if (selectedTicketIdRef.current === capturedTicketId) {
-          fetchMensagens(capturedTicketId, capturedTicket.cliente_id)
+          fetchMensagens(capturedTicketId, capturedTicket.cliente_id, { silent: true })
         }
         setPendingMessages(prev => {
           const newMap = new Map(prev)
