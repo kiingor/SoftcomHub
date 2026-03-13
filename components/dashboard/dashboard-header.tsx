@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -12,8 +13,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Menu, LogOut, User as UserIcon, ChevronDown, Bell } from 'lucide-react'
+import { Menu, LogOut, User as UserIcon, ChevronDown, Bell, KeyRound } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { useColaborador } from '@/lib/hooks/use-data'
 
@@ -25,6 +35,65 @@ interface DashboardHeaderProps {
 export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
   const router = useRouter()
   const { data: colaborador } = useColaborador()
+
+  // — Alterar senha
+  const [senhaDialogOpen, setSenhaDialogOpen] = useState(false)
+  const [senhaAtual, setSenhaAtual] = useState('')
+  const [novaSenha, setNovaSenha] = useState('')
+  const [confirmarSenha, setConfirmarSenha] = useState('')
+  const [senhaLoading, setSenhaLoading] = useState(false)
+  const [senhaError, setSenhaError] = useState<string | null>(null)
+
+  const resetSenhaDialog = () => {
+    setSenhaAtual('')
+    setNovaSenha('')
+    setConfirmarSenha('')
+    setSenhaError(null)
+    setSenhaLoading(false)
+  }
+
+  const handleAlterarSenha = async () => {
+    setSenhaError(null)
+
+    if (!senhaAtual || !novaSenha || !confirmarSenha) {
+      setSenhaError('Preencha todos os campos.')
+      return
+    }
+    if (novaSenha.length < 6) {
+      setSenhaError('A nova senha deve ter pelo menos 6 caracteres.')
+      return
+    }
+    if (novaSenha !== confirmarSenha) {
+      setSenhaError('A confirmação não coincide com a nova senha.')
+      return
+    }
+
+    setSenhaLoading(true)
+    const supabase = createClient()
+
+    // Verificar senha atual
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email: user.email!,
+      password: senhaAtual,
+    })
+    if (authError) {
+      setSenhaError('Senha atual incorreta.')
+      setSenhaLoading(false)
+      return
+    }
+
+    // Atualizar para nova senha
+    const { error: updateError } = await supabase.auth.updateUser({ password: novaSenha })
+    if (updateError) {
+      setSenhaError('Erro ao atualizar senha. Tente novamente.')
+      setSenhaLoading(false)
+      return
+    }
+
+    // Logout para forçar novo login com nova senha
+    await supabase.auth.signOut()
+    router.push('/login')
+  }
 
   const handleSignOut = async () => {
     const supabase = createClient()
@@ -134,6 +203,16 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
               <span className="text-sm">Meu Perfil</span>
             </DropdownMenuItem>
 
+            <DropdownMenuItem
+              onClick={() => { resetSenhaDialog(); setSenhaDialogOpen(true) }}
+              className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
+            >
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
+                <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+              </div>
+              <span className="text-sm">Alterar Senha</span>
+            </DropdownMenuItem>
+
             <DropdownMenuSeparator className="bg-black/5 dark:bg-white/8 mx-1" />
 
             <DropdownMenuItem
@@ -147,6 +226,71 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Dialog — Alterar Senha */}
+        <Dialog open={senhaDialogOpen} onOpenChange={(open) => { if (!open) resetSenhaDialog(); setSenhaDialogOpen(open) }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <KeyRound className="h-4 w-4" />
+                Alterar Senha
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="senha-atual">Senha atual</Label>
+                <Input
+                  id="senha-atual"
+                  type="password"
+                  placeholder="Digite sua senha atual"
+                  value={senhaAtual}
+                  onChange={(e) => setSenhaAtual(e.target.value)}
+                  disabled={senhaLoading}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nova-senha">Nova senha</Label>
+                <Input
+                  id="nova-senha"
+                  type="password"
+                  placeholder="Mínimo 6 caracteres"
+                  value={novaSenha}
+                  onChange={(e) => setNovaSenha(e.target.value)}
+                  disabled={senhaLoading}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="confirmar-senha">Confirmar nova senha</Label>
+                <Input
+                  id="confirmar-senha"
+                  type="password"
+                  placeholder="Repita a nova senha"
+                  value={confirmarSenha}
+                  onChange={(e) => setConfirmarSenha(e.target.value)}
+                  disabled={senhaLoading}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAlterarSenha() }}
+                />
+              </div>
+              {senhaError && (
+                <p className="text-sm text-destructive">{senhaError}</p>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setSenhaDialogOpen(false)}
+                disabled={senhaLoading}
+              >
+                Cancelar
+              </Button>
+              <Button onClick={handleAlterarSenha} disabled={senhaLoading}>
+                {senhaLoading ? 'Salvando...' : 'Salvar e sair'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </header>
   )
