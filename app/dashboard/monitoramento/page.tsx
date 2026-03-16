@@ -97,6 +97,7 @@ export default function MonitoramentoPage() {
   const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
   const [filtrosAtendenteOpen, setFiltrosAtendenteOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('em-andamento')
+  const [searchAtendente, setSearchAtendente] = useState('')
   const [, setTick] = useState(0)
 
   // Conversation panel state
@@ -160,7 +161,7 @@ export default function MonitoramentoPage() {
       // Fetch active tickets (aberto + em_atendimento) across all accessible setores
       let ticketsQuery = supabase
         .from('tickets')
-        .select('*, clientes(nome, telefone), colaboradores(nome), setores(id, nome), subsetores(id, nome)')
+        .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, pausa_atual_id), setores(id, nome), subsetores(id, nome)')
         .in('setor_id', targetSetorIds)
         .in('status', ['aberto', 'em_atendimento'])
       const { data: ticketsAtivos } = await ticketsQuery
@@ -244,6 +245,7 @@ export default function MonitoramentoPage() {
 
       return {
         tickets,
+        atendentes,
         stats: {
           total: tickets.length,
           naFila: ticketsNaFila.length,
@@ -272,6 +274,7 @@ export default function MonitoramentoPage() {
   const atendentesStats = data?.atendentesStats || { online: 0, pausa: 0, offline: 0 }
   const temposHoje = data?.temposHoje || { tempoMedioPrimeiraResposta: '00:00:00', tempoMedioResolucao: '00:00:00', totalRecebidos: 0, totalResolvidos: 0 }
   const tickets = data?.tickets || []
+  const atendentesRaw: any[] = data?.atendentes || []
 
   // Tickets em andamento
   // Lista de atendentes únicos para o filtro
@@ -325,6 +328,7 @@ export default function MonitoramentoPage() {
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         setor: t.setores?.nome || '-',
         subsetor: t.subsetores?.nome || null,
+        colaboradores: t.colaboradores || null,
         atendente: t.colaboradores?.nome || null,
         status: t.status,
         primeira_resposta_em: t.primeira_resposta_em,
@@ -360,6 +364,34 @@ export default function MonitoramentoPage() {
         criado_em: t.criado_em,
       }))
   }, [tickets, searchTerm, subsetorFilter])
+
+  // Atendentes list for the Atendentes tab
+  const atendentesLista = useMemo(() => {
+    const ticketCountPorAtendente = new Map<string, number>()
+    tickets.forEach((t: any) => {
+      if (t.colaborador_id && (t.status === 'em_atendimento' || t.status === 'aberto')) {
+        ticketCountPorAtendente.set(t.colaborador_id, (ticketCountPorAtendente.get(t.colaborador_id) || 0) + 1)
+      }
+    })
+    return atendentesRaw
+      .filter((a: any) => {
+        if (!searchAtendente) return true
+        return a.nome?.toLowerCase().includes(searchAtendente.toLowerCase())
+      })
+      .map((a: any) => ({
+        ...a,
+        ticketsAtivos: ticketCountPorAtendente.get(a.id) || 0,
+      }))
+      .sort((a: any, b: any) => {
+        // Online first, then pausa, then offline
+        const order = (x: any) => {
+          if (x.is_online && !x.pausa_atual_id) return 0
+          if (x.pausa_atual_id) return 1
+          return 2
+        }
+        return order(a) - order(b) || a.nome?.localeCompare(b.nome)
+      })
+  }, [atendentesRaw, tickets, searchAtendente])
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
@@ -855,6 +887,22 @@ export default function MonitoramentoPage() {
                     </Badge>
                   )}
                 </button>
+                <button
+                  onClick={() => setActiveTab('atendentes')}
+                  className={cn(
+                    "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                    activeTab === 'atendentes'
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
+                  )}
+                >
+                  Atendentes
+                  {atendentesRaw.length > 0 && (
+                    <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-[10px]">
+                      {atendentesRaw.length}
+                    </Badge>
+                  )}
+                </button>
               </div>
 
             </div>
@@ -926,10 +974,10 @@ export default function MonitoramentoPage() {
                             <TableCell className="text-sm tabular-nums text-foreground font-medium">
                               {ticket.numero ? `#${ticket.numero}` : '—'}
                             </TableCell>
-                            <TableCell className="text-sm text-foreground">
+                            <TableCell className="text-sm text-foreground max-w-[140px]">
                               <div className="flex items-center gap-1">
                                 <User className="h-3 w-3 text-muted-foreground shrink-0" />
-                                {ticket.contato}
+                                <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                               </div>
                             </TableCell>
                             <TableCell className="text-sm text-foreground">
@@ -938,7 +986,21 @@ export default function MonitoramentoPage() {
                                 <span className="text-muted-foreground"> / {ticket.subsetor}</span>
                               )}
                             </TableCell>
-                            <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
+                            <TableCell className="text-sm text-foreground">
+                              {ticket.atendente ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className={cn(
+                                    'h-2 w-2 shrink-0 rounded-full',
+                                    ticket.colaboradores?.is_online && !ticket.colaboradores?.pausa_atual_id
+                                      ? 'bg-green-500'
+                                      : ticket.colaboradores?.pausa_atual_id
+                                        ? 'bg-yellow-500'
+                                        : 'bg-gray-400'
+                                  )} />
+                                  {ticket.atendente}
+                                </div>
+                              ) : '-'}
+                            </TableCell>
                             <TableCell>
                               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openConversation(ticket)}>
                                 <MessageCircle className="h-4 w-4" />
@@ -950,6 +1012,67 @@ export default function MonitoramentoPage() {
                     )}
                   </TableBody>
                 </Table>
+              </div>
+            )}
+
+            {/* Atendentes Tab */}
+            {activeTab === 'atendentes' && (
+              <div className="space-y-4">
+                <div className="relative max-w-xs">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar atendente..."
+                    value={searchAtendente}
+                    onChange={(e) => setSearchAtendente(e.target.value)}
+                    className="pl-9 h-9 rounded-2xl glass-input"
+                  />
+                </div>
+                {isLoading ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <Skeleton key={i} className="h-20 rounded-xl" />
+                    ))}
+                  </div>
+                ) : atendentesLista.length === 0 ? (
+                  <div className="flex h-32 flex-col items-center justify-center text-muted-foreground">
+                    <AlertCircle className="mb-2 h-8 w-8" />
+                    <p>{searchAtendente ? 'Nenhum atendente encontrado' : 'Nenhum atendente neste setor'}</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {atendentesLista.map((atendente: any) => {
+                      const isOnline = atendente.is_online && !atendente.pausa_atual_id
+                      const isPausa = !!atendente.pausa_atual_id
+                      return (
+                        <div
+                          key={atendente.id}
+                          className="flex items-center gap-3 rounded-xl border bg-card/60 px-4 py-3 transition-colors hover:bg-muted/40"
+                        >
+                          <span
+                            className={cn(
+                              'h-3 w-3 shrink-0 rounded-full',
+                              isOnline ? 'bg-green-500' : isPausa ? 'bg-yellow-500' : 'bg-gray-400'
+                            )}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium text-foreground">{atendente.nome}</p>
+                            <p className={cn(
+                              'text-xs',
+                              isOnline ? 'text-green-600 dark:text-green-400' : isPausa ? 'text-yellow-600 dark:text-yellow-400' : 'text-muted-foreground'
+                            )}>
+                              {isOnline ? 'Online' : isPausa ? 'Em pausa' : 'Offline'}
+                            </p>
+                          </div>
+                          {atendente.ticketsAtivos > 0 && (
+                            <Badge variant="secondary" className="shrink-0 text-[10px]">
+                              {atendente.ticketsAtivos} {atendente.ticketsAtivos === 1 ? 'ticket' : 'tickets'}
+                            </Badge>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
