@@ -59,40 +59,32 @@ export async function criarEDistribuirTicket(
 
     // 3. If auto-assign is enabled, find an available collaborator
     if (autoAssignEnabled) {
-      // Get all available collaborators in this setor
-      const { data: allColaboradores } = await supabase
-        .from('colaboradores')
-        .select(`
-          id,
-          nome,
-          colaboradores_setores!inner(setor_id)
-        `)
-        .eq('colaboradores_setores.setor_id', setorId)
-        .eq('is_online', true)
-        .eq('ativo', true)
-        .is('pausa_atual_id', null)
+      // Mesma lógica do ticket-queue-processor:
+      // com subsetor → busca diretamente em colaboradores_subsetores (fonte autoritativa)
+      // sem subsetor → busca em colaboradores_setores (todos do setor)
+      let finalColaboradores: Array<{ id: string; nome: string }> = []
 
-      let finalColaboradores = allColaboradores || []
-
-      // If subsetorId is specified, prioritize collaborators assigned to that subsetor
-      if (subsetorId && finalColaboradores.length > 0) {
-        // Buscar colaboradores do subsetor específico na nova tabela N:N
+      if (subsetorId) {
         const { data: subsetorLinks } = await supabase
           .from('colaboradores_subsetores')
-          .select('colaborador_id')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
           .eq('setor_id', setorId)
           .eq('subsetor_id', subsetorId)
 
-        const subsetorColabIds = new Set((subsetorLinks || []).map(s => s.colaborador_id))
-        const subsetorColaboradores = finalColaboradores.filter(c => subsetorColabIds.has(c.id))
+        finalColaboradores = (subsetorLinks || [])
+          .map((sl: any) => sl.colaboradores)
+          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
+          .map((c: any) => ({ id: c.id, nome: c.nome }))
+      } else {
+        const { data: setorLinks } = await supabase
+          .from('colaboradores_setores')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+          .eq('setor_id', setorId)
 
-        if (subsetorColaboradores.length > 0) {
-          // Somente colaboradores do subsetor
-          finalColaboradores = subsetorColaboradores
-        } else {
-          // Nenhum colaborador do subsetor disponível → não atribuir
-          finalColaboradores = []
-        }
+        finalColaboradores = (setorLinks || [])
+          .map((cs: any) => cs.colaboradores)
+          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
+          .map((c: any) => ({ id: c.id, nome: c.nome }))
       }
 
       if (finalColaboradores.length > 0) {

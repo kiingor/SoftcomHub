@@ -54,9 +54,14 @@ function logAssignment(
 }
 
 // Get online colaboradores for a setor with their current ticket count.
-// If subsetorId is provided, only return colaboradores vinculados àquele subsetor
-// via a tabela N:N colaboradores_subsetores.
-// If subsetorId is null, return ALL colaboradores online do setor (sem filtro de subsetor).
+//
+// Quando subsetorId é fornecido:
+//   → busca DIRETAMENTE em colaboradores_subsetores (fonte autoritativa de subsetor)
+//   → join com colaboradores para verificar is_online/ativo/pausa
+//   → NÃO depende de colaboradores_setores para este caminho
+//
+// Quando subsetorId é null:
+//   → busca em colaboradores_setores (todos do setor, sem filtro de subsetor)
 async function getAvailableColaboradores(
   setorId: string,
   subsetorId: string | null = null
@@ -67,46 +72,54 @@ async function getAvailableColaboradores(
 }>> {
   const supabase = await createClient()
 
-  // 1. Buscar todos os colaboradores online e ativos do setor
-  const { data: colaboradoresSetores, error: queryError } = await supabase
-    .from('colaboradores_setores')
-    .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
-    .eq('setor_id', setorId)
-
   console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}`)
-  console.log(`[TicketQueue] Query result: ${colaboradoresSetores?.length || 0} records, error: ${queryError?.message || 'none'}`)
 
-  if (!colaboradoresSetores) return []
+  const colaboradoresMap = new Map<string, { id: string; nome: string }>()
 
-  // Filtrar online, ativos e sem pausa
-  const onlineColaboradores = colaboradoresSetores
-    .map((cs: any) => cs.colaboradores)
-    .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
-
-  console.log(`[TicketQueue] Online and available colaboradores: ${onlineColaboradores.length}`)
-
-  if (onlineColaboradores.length === 0) return []
-
-  let eligibleIds: string[] = onlineColaboradores.map((c: any) => c.id)
-
-  // 2. Se há subsetor, filtrar apenas os vinculados via colaboradores_subsetores (N:N)
   if (subsetorId) {
-    const { data: subsetorLinks } = await supabase
+    // Caminho A: ticket com subsetor → buscar diretamente em colaboradores_subsetores
+    // Isso garante que encontramos o colaborador mesmo que colaboradores_setores
+    // não seja consultado (evita falha no estágio de pré-filtro).
+    const { data: subsetorLinks, error: subErr } = await supabase
       .from('colaboradores_subsetores')
-      .select('colaborador_id')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
       .eq('setor_id', setorId)
       .eq('subsetor_id', subsetorId)
-      .in('colaborador_id', eligibleIds)
 
-    const linkedIds = new Set((subsetorLinks || []).map((s: any) => s.colaborador_id))
-    eligibleIds = eligibleIds.filter(id => linkedIds.has(id))
+    console.log(`[TicketQueue] colaboradores_subsetores query: ${subsetorLinks?.length || 0} registros, error: ${subErr?.message || 'none'}`)
 
-    console.log(`[TicketQueue] Colaboradores no subsetor ${subsetorId}: ${eligibleIds.length}`)
+    ;(subsetorLinks || []).forEach((sl: any) => {
+      const c = sl.colaboradores
+      if (c && c.ativo && c.is_online && !c.pausa_atual_id) {
+        colaboradoresMap.set(c.id, { id: c.id, nome: c.nome })
+      }
+    })
+
+    console.log(`[TicketQueue] Colaboradores online no subsetor ${subsetorId}: ${colaboradoresMap.size}`)
+  } else {
+    // Caminho B: ticket sem subsetor → qualquer colaborador online do setor
+    const { data: setorLinks, error: setErr } = await supabase
+      .from('colaboradores_setores')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+      .eq('setor_id', setorId)
+
+    console.log(`[TicketQueue] colaboradores_setores query: ${setorLinks?.length || 0} registros, error: ${setErr?.message || 'none'}`)
+
+    ;(setorLinks || []).forEach((cs: any) => {
+      const c = cs.colaboradores
+      if (c && c.ativo && c.is_online && !c.pausa_atual_id) {
+        colaboradoresMap.set(c.id, { id: c.id, nome: c.nome })
+      }
+    })
+
+    console.log(`[TicketQueue] Colaboradores online no setor (sem subsetor): ${colaboradoresMap.size}`)
   }
 
-  if (eligibleIds.length === 0) return []
+  if (colaboradoresMap.size === 0) return []
 
-  // 3. Contar tickets ativos por colaborador
+  const eligibleIds = [...colaboradoresMap.keys()]
+
+  // Contar tickets ativos por colaborador
   const { data: ticketCounts } = await supabase
     .from('tickets')
     .select('colaborador_id')
@@ -121,13 +134,8 @@ async function getAvailableColaboradores(
     }
   })
 
-  return onlineColaboradores
-    .filter((c: any) => eligibleIds.includes(c.id))
-    .map((c: any) => ({
-      id: c.id,
-      nome: c.nome,
-      ticketCount: countMap.get(c.id) || 0,
-    }))
+  return [...colaboradoresMap.values()]
+    .map(c => ({ ...c, ticketCount: countMap.get(c.id) || 0 }))
     .sort((a, b) => {
       if (a.ticketCount !== b.ticketCount) return a.ticketCount - b.ticketCount
       return a.id.localeCompare(b.id)
