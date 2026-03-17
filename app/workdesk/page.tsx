@@ -335,6 +335,29 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing }: MessageMed
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Disparo Timer Component
+function renderTextWithLinks(text: string, isOutgoing: boolean) {
+  const parts = text.split(/(https?:\/\/[^\s]+)/g)
+  return parts.map((part, i) =>
+    /^https?:\/\//.test(part) ? (
+      <a
+        key={i}
+        href={part}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(
+          'underline break-all hover:opacity-80',
+          isOutgoing ? 'text-primary-foreground' : 'text-blue-500 dark:text-blue-400'
+        )}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {part}
+      </a>
+    ) : (
+      part
+    )
+  )
+}
+
 function DisparoTimer({ dispatchTime }: { dispatchTime: string }) {
   const [timeLeft, setTimeLeft] = React.useState<string>('')
 
@@ -2796,7 +2819,7 @@ const tempId = `temp-${Date.now()}`
                             <span className="capitalize">{msg.tipo}</span>
                           </div>
                         )}
-                        {msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
+                        {msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
