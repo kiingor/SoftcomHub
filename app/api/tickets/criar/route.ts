@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
 import { criarEDistribuirTicket } from '@/lib/ticket-distribution'
 
@@ -10,7 +10,8 @@ import { criarEDistribuirTicket } from '@/lib/ticket-distribution'
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const supabase = await createClient()
+    // Use service role to bypass RLS — this endpoint is called by bots/n8n without user session
+    const supabase = createServiceClient()
 
     const { 
       cliente_id, 
