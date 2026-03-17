@@ -223,6 +223,21 @@ export async function POST(request: NextRequest) {
       console.error('[Evolution Dispatch] Error saving message:', JSON.stringify(msgError))
     }
 
+    // Save dispatch log
+    const { error: logError } = await supabase.from('disparo_logs').insert({
+      setor_id: setorId,
+      colaborador_id: colaborador.id,
+      ticket_id: ticketId,
+      cliente_nome: clienteNome,
+      cliente_telefone: formattedPhone,
+      template_usado: `[Evolution] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+      status: 'enviado',
+    })
+
+    if (logError) {
+      console.error('[Evolution Dispatch] Error saving disparo_log:', JSON.stringify(logError))
+    }
+
     return NextResponse.json({
       success: true,
       ticketId,
