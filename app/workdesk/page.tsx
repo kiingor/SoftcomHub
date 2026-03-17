@@ -392,7 +392,7 @@ function DisparoTimer({ dispatchTime }: { dispatchTime: string }) {
 }
 
 export default function WorkdeskPage() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const { playAlert, initAudioContext } = useAudioAlert()
 
   const [colaborador, setColaborador] = useState<Colaborador | null>(null)
@@ -980,31 +980,37 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   useEffect(() => {
     if (!colaborador?.is_online) return
 
+    const colaboradorRef = colaborador
+
     // Call auto-assign when colaborador comes online
     const triggerAutoAssign = async () => {
       try {
         await fetch('/api/tickets/auto-assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ colaboradorId: colaborador.id }),
+          body: JSON.stringify({ colaboradorId: colaboradorRef.id }),
         })
-        // Refresh tickets after auto-assign
-        fetchTickets(colaborador)
       } catch (error) {
         console.error('Error triggering auto-assign:', error)
       }
     }
 
+    // Polling independente: atualiza os tickets do atendente a cada 15s
+    // Garante que tickets atribuídos via queue (por outro processo) apareçam mesmo sem Realtime
+    const pollTickets = () => fetchTickets(colaboradorRef)
+
     // Trigger immediately when online
     triggerAutoAssign()
+    pollTickets()
 
-    // Set up interval for periodic checks (every 30 seconds)
-    const intervalId = setInterval(triggerAutoAssign, 30000)
+    const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
+    const pollInterval = setInterval(pollTickets, 15000)
 
     return () => {
-      clearInterval(intervalId)
+      clearInterval(autoAssignInterval)
+      clearInterval(pollInterval)
     }
-  }, [colaborador, fetchTickets])
+  }, [colaborador?.id, colaborador?.is_online, fetchTickets])
 
 // Real-time subscription for messages of current ticket
   // Stable refs for realtime subscription
