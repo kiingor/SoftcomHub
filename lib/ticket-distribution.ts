@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 
 interface DistribuicaoResult {
   ticketId: string
@@ -17,7 +17,9 @@ export async function criarEDistribuirTicket(
   canal: string = 'whatsapp',
   subsetorId: string | null = null
 ): Promise<DistribuicaoResult | null> {
-  const supabase = await createClient()
+  // Use service role client to bypass RLS — this function is called both from
+  // authenticated user sessions and from bots/n8n without a user session.
+  const supabase = createServiceClient()
 
   try {
     // 1. Get distribution config for this sector
@@ -170,7 +172,7 @@ export async function criarEDistribuirTicket(
  * Um colaborador pode atender múltiplos subsetores.
  */
 export async function redistribuirTicketsPendentes(setorId: string): Promise<number> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   let assignedCount = 0
 
   try {

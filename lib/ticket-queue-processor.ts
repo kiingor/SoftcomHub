@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 
 // Configuration defaults
 const DEFAULT_CHECK_INTERVAL_MS = 30000 // 30 seconds
@@ -70,7 +70,7 @@ async function getAvailableColaboradores(
   nome: string
   ticketCount: number
 }>> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}`)
 
@@ -148,7 +148,7 @@ async function tryAssignTicket(
   setorId: string,
   subsetorId: string | null = null
 ): Promise<AssignmentResult> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   
   console.log(`[TicketQueue] tryAssignTicket - ticketId: ${ticketId}, setorId: ${setorId}, subsetorId: ${subsetorId}`)
   
@@ -248,7 +248,7 @@ async function tryAssignTicket(
 
 // Main queue processor function
 export async function processTicketQueue(): Promise<ProcessorStats> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const stats: ProcessorStats = {
     processedAt: new Date().toISOString(),
     ticketsInQueue: 0,
@@ -346,7 +346,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
 
 // Function to call when a colaborador comes online
 export async function onColaboradorOnline(colaboradorId: string): Promise<ProcessorStats> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   
   // Get setores and subsetores this colaborador belongs to
   const { data: setores } = await supabase
