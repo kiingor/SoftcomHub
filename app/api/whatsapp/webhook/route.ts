@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
 import { criarEDistribuirTicket } from '@/lib/ticket-distribution'
 
@@ -23,7 +23,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const supabase = await createClient()
+    // Webhook is called by external systems (WhatsApp/Evolution) without user session
+    const supabase = createServiceClient()
 
     // Process WhatsApp Cloud API webhook payload
     const entry = body.entry?.[0]

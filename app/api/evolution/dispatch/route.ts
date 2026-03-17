@@ -184,6 +184,29 @@ export async function POST(request: NextRequest) {
       evolutionData?.message?.key?.id ||
       null
 
+    // Extract canonical phone from remoteJid returned by Evolution API
+    // Apenas aceita o formato "@s.whatsapp.net" — ignora "@lid" e outros formatos
+    // internos do WhatsApp que não representam um número de telefone real.
+    // Exemplo válido:   "558399399202@s.whatsapp.net" → "558399399202"
+    // Exemplo inválido: "230571745747156@lid"         → ignorado
+    const remoteJid: string | undefined =
+      evolutionData?.key?.remoteJid ||
+      evolutionData?.message?.key?.remoteJid
+
+    if (remoteJid && remoteJid.endsWith('@s.whatsapp.net')) {
+      const canonicalPhone = remoteJid.replace('@s.whatsapp.net', '')
+      if (canonicalPhone && canonicalPhone !== formattedPhone) {
+        await supabase
+          .from('clientes')
+          .update({ telefone: canonicalPhone })
+          .eq('id', clienteId)
+        console.log(`[Evolution Dispatch] Updated client phone: ${formattedPhone} → ${canonicalPhone}`)
+      }
+      // Se já é igual, nenhuma atualização necessária
+    } else if (remoteJid) {
+      console.log(`[Evolution Dispatch] remoteJid ignorado (formato não é @s.whatsapp.net): ${remoteJid}`)
+    }
+
     // Save message in DB as bot message (initial dispatch message)
     const { error: msgError } = await supabase.from('mensagens').insert({
       ticket_id: ticketId,
@@ -198,6 +221,21 @@ export async function POST(request: NextRequest) {
 
     if (msgError) {
       console.error('[Evolution Dispatch] Error saving message:', JSON.stringify(msgError))
+    }
+
+    // Save dispatch log
+    const { error: logError } = await supabase.from('disparo_logs').insert({
+      setor_id: setorId,
+      colaborador_id: colaborador.id,
+      ticket_id: ticketId,
+      cliente_nome: clienteNome,
+      cliente_telefone: formattedPhone,
+      template_usado: `[Evolution] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+      status: 'enviado',
+    })
+
+    if (logError) {
+      console.error('[Evolution Dispatch] Error saving disparo_log:', JSON.stringify(logError))
     }
 
     return NextResponse.json({

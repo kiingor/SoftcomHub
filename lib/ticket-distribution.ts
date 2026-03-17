@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 
 interface DistribuicaoResult {
   ticketId: string
@@ -17,7 +17,9 @@ export async function criarEDistribuirTicket(
   canal: string = 'whatsapp',
   subsetorId: string | null = null
 ): Promise<DistribuicaoResult | null> {
-  const supabase = await createClient()
+  // Use service role client to bypass RLS — this function is called both from
+  // authenticated user sessions and from bots/n8n without a user session.
+  const supabase = createServiceClient()
 
   console.log(`[Distribuição] criarEDistribuirTicket chamada — clienteId=${clienteId}, setorId=${setorId}, canal=${canal}, subsetorId=${subsetorId}`)
 
@@ -61,38 +63,32 @@ export async function criarEDistribuirTicket(
 
     // 3. If auto-assign is enabled, find an available collaborator
     if (autoAssignEnabled) {
-      // Get all available collaborators in this setor
-      const { data: allColaboradores } = await supabase
-        .from('colaboradores')
-        .select(`
-          id,
-          nome,
-          colaboradores_setores!inner(setor_id)
-        `)
-        .eq('colaboradores_setores.setor_id', setorId)
-        .eq('is_online', true)
-        .eq('ativo', true)
-        .is('pausa_atual_id', null)
+      // Mesma lógica do ticket-queue-processor:
+      // com subsetor → busca diretamente em colaboradores_subsetores (fonte autoritativa)
+      // sem subsetor → busca em colaboradores_setores (todos do setor)
+      let finalColaboradores: Array<{ id: string; nome: string }> = []
 
-      let finalColaboradores = allColaboradores || []
-
-      // If subsetorId is specified, prioritize collaborators assigned to that subsetor
-      if (subsetorId && finalColaboradores.length > 0) {
-        // Buscar colaboradores do subsetor específico na nova tabela N:N
+      if (subsetorId) {
         const { data: subsetorLinks } = await supabase
           .from('colaboradores_subsetores')
-          .select('colaborador_id')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
           .eq('setor_id', setorId)
           .eq('subsetor_id', subsetorId)
 
-        const subsetorColabIds = new Set((subsetorLinks || []).map(s => s.colaborador_id))
-        const subsetorColaboradores = finalColaboradores.filter(c => subsetorColabIds.has(c.id))
+        finalColaboradores = (subsetorLinks || [])
+          .map((sl: any) => sl.colaboradores)
+          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
+          .map((c: any) => ({ id: c.id, nome: c.nome }))
+      } else {
+        const { data: setorLinks } = await supabase
+          .from('colaboradores_setores')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+          .eq('setor_id', setorId)
 
-        if (subsetorColaboradores.length > 0) {
-          // Prioriza colaboradores do subsetor
-          finalColaboradores = subsetorColaboradores
-        }
-        // Senão, fallback: qualquer colaborador do setor
+        finalColaboradores = (setorLinks || [])
+          .map((cs: any) => cs.colaboradores)
+          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
+          .map((c: any) => ({ id: c.id, nome: c.nome }))
       }
 
       if (finalColaboradores.length > 0) {
@@ -295,7 +291,7 @@ async function _tentarDistribuirNoSetor(
  * Um colaborador pode atender múltiplos subsetores.
  */
 export async function redistribuirTicketsPendentes(setorId: string): Promise<number> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   let assignedCount = 0
 
   try {
@@ -412,10 +408,10 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const subsetorColabIds = subsetorToColabs[ticket.subsetor_id]
         if (subsetorColabIds && subsetorColabIds.size > 0) {
           const filtered = allColaboradores.filter(c => subsetorColabIds.has(c.id))
-          if (filtered.length > 0) {
-            eligibleColaboradores = filtered
-          }
-          // Senão, fallback para qualquer colaborador do setor
+          eligibleColaboradores = filtered // pode ser [] se nenhum do subsetor está online
+        } else {
+          // Subsetor não tem nenhum colaborador cadastrado ou online → não atribuir
+          eligibleColaboradores = []
         }
       }
 
