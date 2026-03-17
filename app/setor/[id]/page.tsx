@@ -1018,6 +1018,8 @@ export default function SetorPage() {
         criado_em: t.criado_em,
         primeira_resposta_em: t.primeira_resposta_em,
         colaborador_id: t.colaborador_id,
+        clientes: t.clientes,
+        colaboradores: t.colaboradores,
       }))
   }, [tickets, searchTerm, setor, atendenteFilter])
 
@@ -1036,7 +1038,10 @@ export default function SetorPage() {
         fila: setor?.cor || '',
         prioridade: t.prioridade,
         status: t.status,
+        criado_em: t.criado_em,
+        colaborador_id: t.colaborador_id,
         clientes: t.clientes,
+        colaboradores: t.colaboradores,
       }))
   }, [tickets, searchTerm, setor])
 
@@ -5558,7 +5563,7 @@ const saveConfig = async () => {
                     <div>
                       <Label className="text-muted-foreground">Criado em</Label>
                       <p className="font-medium">
-                        {new Date(selectedTicket.created_at).toLocaleString('pt-BR')}
+                        {selectedTicket.criado_em ? new Date(selectedTicket.criado_em).toLocaleString('pt-BR') : '—'}
                       </p>
                     </div>
                   </div>
