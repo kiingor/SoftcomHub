@@ -53,86 +53,85 @@ function logAssignment(
   })
 }
 
-// Get online colaboradores for a setor with their current ticket count
-// If subsetorId is provided, only return colaboradores assigned to that subsetor
-// If subsetorId is null and includeAllFromSetor is true, return ALL colaboradores from setor (including those with subsetores)
-// If subsetorId is null and includeAllFromSetor is false, return only colaboradores without subsetor assignment
+// Get online colaboradores for a setor with their current ticket count.
+// If subsetorId is provided, only return colaboradores vinculados àquele subsetor
+// via a tabela N:N colaboradores_subsetores.
+// If subsetorId is null, return ALL colaboradores online do setor (sem filtro de subsetor).
 async function getAvailableColaboradores(
   setorId: string,
-  subsetorId: string | null = null,
-  includeAllFromSetor: boolean = false
+  subsetorId: string | null = null
 ): Promise<Array<{
   id: string
   nome: string
   ticketCount: number
 }>> {
   const supabase = await createClient()
-  
-  // Get colaboradores in this setor who are online and active
-  let query = supabase
+
+  // 1. Buscar todos os colaboradores online e ativos do setor
+  const { data: colaboradoresSetores, error: queryError } = await supabase
     .from('colaboradores_setores')
-    .select('colaborador_id, subsetor_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+    .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
     .eq('setor_id', setorId)
-  
-  // If subsetorId is provided, filter by subsetor
-  if (subsetorId) {
-    query = query.eq('subsetor_id', subsetorId)
-  } else if (!includeAllFromSetor) {
-    // If no subsetorId and not including all, get only colaboradores without subsetor assignment
-    query = query.is('subsetor_id', null)
-  }
-  // If includeAllFromSetor is true and no subsetorId, don't filter by subsetor_id at all
-  
-  const { data: colaboradoresSetores, error: queryError } = await query
-  
-  console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}, includeAll: ${includeAllFromSetor}`)
+
+  console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}`)
   console.log(`[TicketQueue] Query result: ${colaboradoresSetores?.length || 0} records, error: ${queryError?.message || 'none'}`)
-  
+
   if (!colaboradoresSetores) return []
-  
-  // Log each colaborador found
-  colaboradoresSetores.forEach((cs: any) => {
-    console.log(`[TicketQueue] Found colaborador_setor: colaborador_id=${cs.colaborador_id}, subsetor_id=${cs.subsetor_id}, colaborador=${JSON.stringify(cs.colaboradores)}`)
-  })
-  
-  // Filter for online, active, not on break
+
+  // Filtrar online, ativos e sem pausa
   const onlineColaboradores = colaboradoresSetores
     .map((cs: any) => cs.colaboradores)
     .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
-  
+
   console.log(`[TicketQueue] Online and available colaboradores: ${onlineColaboradores.length}`)
-  
+
   if (onlineColaboradores.length === 0) return []
-  
-  // Get ticket counts for each colaborador
-  const colaboradorIds = onlineColaboradores.map((c: any) => c.id)
-  
+
+  let eligibleIds: string[] = onlineColaboradores.map((c: any) => c.id)
+
+  // 2. Se há subsetor, filtrar apenas os vinculados via colaboradores_subsetores (N:N)
+  if (subsetorId) {
+    const { data: subsetorLinks } = await supabase
+      .from('colaboradores_subsetores')
+      .select('colaborador_id')
+      .eq('setor_id', setorId)
+      .eq('subsetor_id', subsetorId)
+      .in('colaborador_id', eligibleIds)
+
+    const linkedIds = new Set((subsetorLinks || []).map((s: any) => s.colaborador_id))
+    eligibleIds = eligibleIds.filter(id => linkedIds.has(id))
+
+    console.log(`[TicketQueue] Colaboradores no subsetor ${subsetorId}: ${eligibleIds.length}`)
+  }
+
+  if (eligibleIds.length === 0) return []
+
+  // 3. Contar tickets ativos por colaborador
   const { data: ticketCounts } = await supabase
     .from('tickets')
     .select('colaborador_id')
-    .in('colaborador_id', colaboradorIds)
+    .in('colaborador_id', eligibleIds)
     .in('status', ['aberto', 'em_atendimento'])
-  
+
   const countMap = new Map<string, number>()
-  colaboradorIds.forEach((id: string) => countMap.set(id, 0))
-  
+  eligibleIds.forEach(id => countMap.set(id, 0))
   ticketCounts?.forEach((t: any) => {
     if (t.colaborador_id) {
       countMap.set(t.colaborador_id, (countMap.get(t.colaborador_id) || 0) + 1)
     }
   })
-  
-  return onlineColaboradores.map((c: any) => ({
-    id: c.id,
-    nome: c.nome,
-    ticketCount: countMap.get(c.id) || 0,
-  })).sort((a, b) => {
-    // Sort by ticket count (ascending), then by id for consistency
-    if (a.ticketCount !== b.ticketCount) {
-      return a.ticketCount - b.ticketCount
-    }
-    return a.id.localeCompare(b.id)
-  })
+
+  return onlineColaboradores
+    .filter((c: any) => eligibleIds.includes(c.id))
+    .map((c: any) => ({
+      id: c.id,
+      nome: c.nome,
+      ticketCount: countMap.get(c.id) || 0,
+    }))
+    .sort((a, b) => {
+      if (a.ticketCount !== b.ticketCount) return a.ticketCount - b.ticketCount
+      return a.id.localeCompare(b.id)
+    })
 }
 
 // Try to assign a single ticket with concurrency protection
@@ -173,19 +172,17 @@ async function tryAssignTicket(
   
   let colaboradores: Array<{ id: string; nome: string; ticketCount: number }> = []
   
-  // If ticket has a subsetor, try to find colaboradores in the subsetor first
   if (ticketSubsetorId) {
+    // Ticket tem subsetor: somente colaboradores daquele subsetor
     console.log(`[TicketQueue] Searching for colaboradores in subsetor ${ticketSubsetorId}`)
-    colaboradores = await getAvailableColaboradores(setorId, ticketSubsetorId, false)
+    colaboradores = await getAvailableColaboradores(setorId, ticketSubsetorId)
     if (colaboradores.length === 0) {
-      console.log(`[TicketQueue] No colaboradores found in subsetor ${ticketSubsetorId}, trying all colaboradores in setor`)
-      // Fallback: get ALL colaboradores from setor (including those with other subsetores or no subsetor)
-      colaboradores = await getAvailableColaboradores(setorId, null, true)
+      console.log(`[TicketQueue] No colaboradores available for subsetor ${ticketSubsetorId} — ticket will remain unassigned`)
     }
   } else {
-    // If no subsetor, get all colaboradores from setor
+    // Sem subsetor: qualquer colaborador online do setor
     console.log(`[TicketQueue] No subsetor, getting all colaboradores from setor`)
-    colaboradores = await getAvailableColaboradores(setorId, null, true)
+    colaboradores = await getAvailableColaboradores(setorId, null)
   }
   
   console.log(`[TicketQueue] Found ${colaboradores.length} available colaboradores: ${JSON.stringify(colaboradores.map(c => ({ id: c.id, nome: c.nome })))}`)
