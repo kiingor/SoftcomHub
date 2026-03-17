@@ -169,7 +169,7 @@ async function tryAssignTicket(
     return { ticketId, colaboradorId: ticket.colaborador_id, success: false, reason: 'Already assigned' }
   }
   
-  if (ticket.status !== 'aberto') {
+  if (ticket.status !== 'aberto' && ticket.status !== 'em_atendimento') {
     return { ticketId, colaboradorId: null, success: false, reason: `Invalid status: ${ticket.status}` }
   }
   
@@ -211,7 +211,7 @@ async function tryAssignTicket(
     })
     .eq('id', ticketId)
     .is('colaborador_id', null) // Only update if still unassigned
-    .eq('status', 'aberto') // Only update if still open
+    .in('status', ['aberto', 'em_atendimento']) // Accept both statuses
     .select()
     .single()
   
@@ -269,7 +269,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
   const { data: queuedTickets, error: fetchError } = await supabase
     .from('tickets')
     .select('id, setor_id, subsetor_id, criado_em, clientes(nome)')
-    .eq('status', 'aberto')
+    .in('status', ['aberto', 'em_atendimento'])
     .is('colaborador_id', null)
     .order('criado_em', { ascending: true })
   

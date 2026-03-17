@@ -392,7 +392,7 @@ function DisparoTimer({ dispatchTime }: { dispatchTime: string }) {
 }
 
 export default function WorkdeskPage() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const { playAlert, initAudioContext } = useAudioAlert()
 
   const [colaborador, setColaborador] = useState<Colaborador | null>(null)
