@@ -184,6 +184,32 @@ export async function POST(request: NextRequest) {
       evolutionData?.message?.key?.id ||
       null
 
+    // Extract canonical phone from remoteJid returned by Evolution API
+    // remoteJid format: "558399399202@s.whatsapp.net" → "558399399202"
+    const remoteJid: string | undefined =
+      evolutionData?.key?.remoteJid ||
+      evolutionData?.message?.key?.remoteJid
+
+    if (remoteJid) {
+      const canonicalPhone = remoteJid.replace(/@s\.whatsapp\.net$/, '').replace(/@.*$/, '')
+      if (canonicalPhone && canonicalPhone !== formattedPhone) {
+        // Update client phone to the canonical number confirmed by Evolution
+        await supabase
+          .from('clientes')
+          .update({ telefone: canonicalPhone })
+          .eq('id', clienteId)
+        console.log(`[Evolution Dispatch] Updated client phone: ${formattedPhone} → ${canonicalPhone}`)
+      } else if (canonicalPhone && canonicalPhone === formattedPhone) {
+        // Phone already correct, no update needed
+      } else {
+        // Ensure phone is set even if canonicalPhone extraction failed
+        await supabase
+          .from('clientes')
+          .update({ telefone: formattedPhone })
+          .eq('id', clienteId)
+      }
+    }
+
     // Save message in DB as bot message (initial dispatch message)
     const { error: msgError } = await supabase.from('mensagens').insert({
       ticket_id: ticketId,
