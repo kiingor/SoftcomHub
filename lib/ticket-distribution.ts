@@ -87,10 +87,12 @@ export async function criarEDistribuirTicket(
         const subsetorColaboradores = finalColaboradores.filter(c => subsetorColabIds.has(c.id))
 
         if (subsetorColaboradores.length > 0) {
-          // Prioriza colaboradores do subsetor
+          // Somente colaboradores do subsetor
           finalColaboradores = subsetorColaboradores
+        } else {
+          // Nenhum colaborador do subsetor disponível → não atribuir
+          finalColaboradores = []
         }
-        // Senão, fallback: qualquer colaborador do setor
       }
 
       if (finalColaboradores.length > 0) {
@@ -258,10 +260,10 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const subsetorColabIds = subsetorToColabs[ticket.subsetor_id]
         if (subsetorColabIds && subsetorColabIds.size > 0) {
           const filtered = allColaboradores.filter(c => subsetorColabIds.has(c.id))
-          if (filtered.length > 0) {
-            eligibleColaboradores = filtered
-          }
-          // Senão, fallback para qualquer colaborador do setor
+          eligibleColaboradores = filtered // pode ser [] se nenhum do subsetor está online
+        } else {
+          // Subsetor não tem nenhum colaborador cadastrado ou online → não atribuir
+          eligibleColaboradores = []
         }
       }
 
