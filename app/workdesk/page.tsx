@@ -47,6 +47,10 @@ import {
   FileIcon,
   Layers,
   ChevronDown,
+  FileArchive,
+  FileCode,
+  FileSpreadsheet,
+  ShieldCheck,
 } from 'lucide-react'
 import {
   Dialog,
@@ -214,16 +218,35 @@ interface MessageMediaProps {
   isOutgoing: boolean
 }
 
+// Retorna ícone, label e cores para cada tipo de arquivo
+function getFileInfo(ext: string, mediaType?: string | null) {
+  const e = ext.toLowerCase()
+  if (e === 'pdf' || mediaType === 'application/pdf')
+    return { icon: FileText, label: 'PDF', color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-950/30', border: 'border-red-200 dark:border-red-800' }
+  if (['doc', 'docx'].includes(e) || mediaType?.includes('word'))
+    return { icon: FileText, label: 'Word', color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-950/30', border: 'border-blue-200 dark:border-blue-800' }
+  if (['xls', 'xlsx', 'csv'].includes(e) || mediaType?.includes('spreadsheet') || mediaType?.includes('excel'))
+    return { icon: FileSpreadsheet, label: 'Planilha', color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-950/30', border: 'border-green-200 dark:border-green-800' }
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(e))
+    return { icon: FileArchive, label: e.toUpperCase(), color: 'text-orange-500', bg: 'bg-orange-50 dark:bg-orange-950/30', border: 'border-orange-200 dark:border-orange-800' }
+  if (['xml', 'json', 'html', 'htm', 'css', 'js', 'ts', 'txt', 'csv'].includes(e) || mediaType?.startsWith('text/'))
+    return { icon: FileCode, label: e.toUpperCase() || 'Texto', color: 'text-purple-600', bg: 'bg-purple-50 dark:bg-purple-950/30', border: 'border-purple-200 dark:border-purple-800' }
+  if (['cer', 'crt', 'pem', 'p12', 'pfx', 'key'].includes(e))
+    return { icon: ShieldCheck, label: 'Certificado', color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-800' }
+  return { icon: FileIcon, label: e.toUpperCase() || 'Arquivo', color: 'text-muted-foreground', bg: 'bg-muted/50', border: 'border-border' }
+}
+
 function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing }: MessageMediaProps) {
-  const urlLower = url.toLowerCase()
+  const urlLower = url.toLowerCase().split('?')[0]
+  const ext = urlLower.split('.').pop() || ''
 
   // Determina o tipo real pela ordem: media_type MIME > tipo do banco > extensão da URL
   const isImage = mediaType?.startsWith('image/') || (tipo === 'imagem' && !mediaType)
+    || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)
   const isVideo = mediaType?.startsWith('video/') || tipo === 'video'
+    || ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)
   const isAudio = mediaType?.startsWith('audio/') || tipo === 'audio'
-  const isPdf   = mediaType === 'application/pdf' || urlLower.endsWith('.pdf')
-  const isText  = mediaType?.startsWith('text/') && !isPdf
-  const isDoc   = tipo === 'documento' || isPdf || isText
+    || ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus'].includes(ext)
 
   const fileName = conteudo || url.split('/').pop()?.split('?')[0] || 'arquivo'
 
@@ -297,40 +320,27 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing }: MessageMed
     )
   }
 
-  if (isPdf) {
-    return (
-      <div
-        className="mb-2 flex items-center gap-3 px-3 py-2.5 bg-red-50 dark:bg-red-950/30 rounded-lg border border-red-200 dark:border-red-800 cursor-pointer hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors"
-        onClick={() => window.open(url, '_blank')}
-      >
-        <FileText className="h-6 w-6 text-red-600 shrink-0" />
-        <div className="flex flex-col min-w-0 flex-1">
-          <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
-          <span className="text-[10px] text-muted-foreground">PDF · Clique para abrir</span>
-        </div>
-        <Download className="h-4 w-4 text-muted-foreground shrink-0" />
+  // Qualquer outro arquivo com URL → card de download
+  const { icon: Icon, label, color, bg, border } = getFileInfo(ext, mediaType)
+  return (
+    <a
+      href={url}
+      download={fileName}
+      target="_blank"
+      rel="noreferrer"
+      className={cn(
+        'mb-2 flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors hover:opacity-80',
+        bg, border
+      )}
+    >
+      <Icon className={cn('h-6 w-6 shrink-0', color)} />
+      <div className="flex flex-col min-w-0 flex-1">
+        <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
+        <span className="text-[10px] text-muted-foreground">{label} · Clique para baixar</span>
       </div>
-    )
-  }
-
-  // Documento genérico / txt / outros
-  if (isDoc || isText) {
-    return (
-      <div
-        className="mb-2 flex items-center gap-3 px-3 py-2.5 bg-muted/50 rounded-lg border border-border cursor-pointer hover:bg-muted/80 transition-colors"
-        onClick={() => window.open(url, '_blank')}
-      >
-        <FileIcon className="h-6 w-6 text-muted-foreground shrink-0" />
-        <div className="flex flex-col min-w-0 flex-1">
-          <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
-          <span className="text-[10px] text-muted-foreground">Arquivo · Clique para baixar</span>
-        </div>
-        <Download className="h-4 w-4 text-muted-foreground shrink-0" />
-      </div>
-    )
-  }
-
-  return null
+      <Download className="h-4 w-4 text-muted-foreground shrink-0" />
+    </a>
+  )
 }
 // ──────────────────────────────────────────────────────────────────────────────
 
