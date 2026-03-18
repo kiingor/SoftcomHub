@@ -41,9 +41,8 @@ export async function criarEDistribuirTicket(
       status: 'aberto',
       canal: canal,
       prioridade: 'normal',
-      assignment_attempts: 0,
     }
-    
+
     if (subsetorId) {
       ticketData.subsetor_id = subsetorId
     }
@@ -55,7 +54,7 @@ export async function criarEDistribuirTicket(
       .single()
 
     if (ticketError || !ticket) {
-      console.error('Error creating ticket:', ticketError)
+      console.error('[criarEDistribuirTicket] Erro ao inserir ticket:', JSON.stringify(ticketError), 'Data:', JSON.stringify(ticketData))
       return null
     }
 
