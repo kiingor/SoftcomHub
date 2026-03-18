@@ -1928,29 +1928,24 @@ const insertEmoji = (emoji: string) => {
   const handleFileSelect = (file: File) => {
     const isImage = file.type.startsWith('image/')
     const isVideo = file.type.startsWith('video/')
-    const isPdf = file.type === 'application/pdf'
-    
-    if (!isImage && !isVideo && !isPdf) {
-      alert('Apenas imagens, videos e PDFs sao permitidos.')
-      return
-    }
-    const maxSize = isVideo ? 50 * 1024 * 1024 : 15 * 1024 * 1024
+    const isAudio = file.type.startsWith('audio/')
+    // Size limits: videos 50MB | images/audio 16MB | documents 100MB
+    const maxSize = isVideo ? 50 * 1024 * 1024 : isImage || isAudio ? 16 * 1024 * 1024 : 100 * 1024 * 1024
+    const maxLabel = isVideo ? '50MB' : isImage || isAudio ? '16MB' : '100MB'
     if (file.size > maxSize) {
-      alert(`Arquivo muito grande. Maximo ${isVideo ? '50' : '15'}MB.`)
+      toast.error(`Arquivo muito grande. Máximo ${maxLabel}.`)
       return
     }
     setSelectedFile(file)
-    
     if (isImage) {
       const reader = new FileReader()
-      reader.onloadend = () => {
-        setFilePreview(reader.result as string)
-      }
+      reader.onloadend = () => setFilePreview(reader.result as string)
       reader.readAsDataURL(file)
     } else if (isVideo) {
       setFilePreview(`video:${file.name}`)
     } else {
-      setFilePreview(`pdf:${file.name}`)
+      // Audio, documents, and any other file — generic preview with filename
+      setFilePreview(`file:${file.name}`)
     }
   }
 
@@ -2034,7 +2029,7 @@ const tempId = `temp-${Date.now()}`
     const hasFile = !!fileToUpload
   const isImage = fileToUpload?.type.startsWith('image/')
   const isVideo = fileToUpload?.type.startsWith('video/')
-  const isPdf = fileToUpload?.type === 'application/pdf'
+  const isAudio = fileToUpload?.type.startsWith('audio/')
 
     // Clear input immediately (optimistic)
     setMessageInput('')
@@ -2168,7 +2163,7 @@ const tempId = `temp-${Date.now()}`
       }
 
       // Determine message type
-      const messageType = isImage ? 'imagem' : isVideo ? 'video' : isPdf ? 'documento' : 'texto'
+      const messageType = isImage ? 'imagem' : isVideo ? 'video' : isAudio ? 'audio' : hasFile ? 'documento' : 'texto'
 
       // Add optimistic message to UI
       const optimisticMessage: Mensagem = {
@@ -2176,7 +2171,7 @@ const tempId = `temp-${Date.now()}`
         ticket_id: capturedTicketId,
         cliente_id: null,
         remetente: 'colaborador',
-  conteudo: messageContent || (isPdf ? fileToUpload?.name || 'documento.pdf' : isVideo ? fileToUpload?.name || 'video.mp4' : ''),
+  conteudo: messageContent || fileToUpload?.name || '',
   tipo: messageType,
   enviado_em: new Date().toISOString(),
   url_imagem: fileUrl,
@@ -2195,7 +2190,7 @@ const tempId = `temp-${Date.now()}`
   ticket_id: capturedTicketId,
   cliente_id: capturedTicket.cliente_id,
   remetente: 'colaborador',
-  conteudo: messageContent || (isPdf ? fileToUpload?.name || 'documento.pdf' : isVideo ? fileToUpload?.name || 'video.mp4' : ''),
+  conteudo: messageContent || fileToUpload?.name || '',
           tipo: messageType,
           url_imagem: fileUrl,
           media_type: fileToUpload?.type || null,
@@ -2842,7 +2837,7 @@ const tempId = `temp-${Date.now()}`
   type="file"
   ref={fileInputRef}
   onChange={handleFileInputChange}
-  accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.mp4,.mov,.avi,.mkv,.webm"
+  accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.xml,.json,.csv,.zip,.rar,.7z,.tar,.gz,.cer,.crt,.pem,.p12,.pfx,.key"
   className="hidden"
   />
 
@@ -2850,11 +2845,12 @@ const tempId = `temp-${Date.now()}`
                     {filePreview && (
                       <div className="mb-2 p-2 bg-muted/30 rounded-lg border">
                         <div className="relative inline-block">
-  {filePreview.startsWith('pdf:') ? (
-  <div className="flex items-center gap-2 px-3 py-2 bg-red-50 dark:bg-red-950/30 rounded border border-red-200 dark:border-red-800">
-  <FileText className="h-6 w-6 text-red-600" />
-  <span className="text-sm text-foreground">{filePreview.replace('pdf:', '')}</span>
-  </div>
+  {filePreview.startsWith('file:') ? (
+  (() => { const { icon: FIcon, label, color, bg, border } = getFileInfo(filePreview.replace('file:', '').split('.').pop() || '', selectedFile?.type); return (
+  <div className={cn('flex items-center gap-2 px-3 py-2 rounded border', bg, border)}>
+    <FIcon className={cn('h-6 w-6', color)} />
+    <span className="text-sm text-foreground max-w-[200px] truncate">{filePreview.replace('file:', '')}</span>
+  </div>) })()
   ) : filePreview.startsWith('video:') ? (
   <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950/30 rounded border border-blue-200 dark:border-blue-800">
   <Video className="h-6 w-6 text-blue-600" />
@@ -3360,15 +3356,16 @@ onClick={() => {
                     {filePreview && (
                       <div className="mb-2 p-2 bg-muted/30 rounded-lg border">
                         <div className="relative inline-block">
-  {filePreview.startsWith('pdf:') ? (
-  <div className="flex items-center gap-2 px-3 py-2 bg-red-50 dark:bg-red-950/30 rounded border border-red-200 dark:border-red-800">
-  <FileText className="h-6 w-6 text-red-600" />
-  <span className="text-sm text-foreground">{filePreview.replace('pdf:', '')}</span>
-  </div>
+  {filePreview.startsWith('file:') ? (
+  (() => { const { icon: FIcon, label, color, bg, border } = getFileInfo(filePreview.replace('file:', '').split('.').pop() || '', selectedFile?.type); return (
+  <div className={cn('flex items-center gap-2 px-2 py-1.5 rounded border', bg, border)}>
+    <FIcon className={cn('h-5 w-5', color)} />
+    <span className="text-xs text-foreground max-w-[100px] truncate">{filePreview.replace('file:', '')}</span>
+  </div>) })()
   ) : filePreview.startsWith('video:') ? (
-  <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950/30 rounded border border-blue-200 dark:border-blue-800">
-  <Video className="h-6 w-6 text-blue-600" />
-  <span className="text-sm text-foreground">{filePreview.replace('video:', '')}</span>
+  <div className="flex items-center gap-2 px-2 py-1.5 bg-blue-50 dark:bg-blue-950/30 rounded border border-blue-200 dark:border-blue-800">
+  <Video className="h-5 w-5 text-blue-600" />
+  <span className="text-xs text-foreground">{filePreview.replace('video:', '')}</span>
   </div>
   ) : (
   <img
