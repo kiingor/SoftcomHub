@@ -137,10 +137,15 @@ export async function POST(request: NextRequest) {
       colaboradorId = existingTicket.colaborador_id
     } else {
       // Criar ticket com distribuição automática (round-robin)
+      console.log(`[Disparo Externo] Criando ticket — cliente: ${clienteId}, setor: ${setor_id}, subsetor: ${subsetor_id || 'none'}, canal: ${canal}`)
       const result = await criarEDistribuirTicket(clienteId, setor_id, canal, subsetor_id)
 
       if (!result) {
-        return NextResponse.json({ error: 'Erro ao criar ticket' }, { status: 500 })
+        console.error(`[Disparo Externo] criarEDistribuirTicket retornou null — cliente: ${clienteId}, setor: ${setor_id}`)
+        return NextResponse.json(
+          { error: 'Erro ao criar ticket', hint: 'Verifique os logs do servidor para detalhes. Possíveis causas: setor_id inválido, subsetor_id inválido, ou coluna inexistente na tabela tickets.' },
+          { status: 500 },
+        )
       }
 
       ticketId = result.ticketId
