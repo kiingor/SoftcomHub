@@ -10,21 +10,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
-    // Validate file type (images, PDFs and videos)
-    if (!file.type.startsWith('image/') && !file.type.startsWith('video/') && file.type !== 'application/pdf') {
-      return NextResponse.json({ error: 'Apenas imagens, videos e PDFs sao permitidos' }, { status: 400 })
-    }
-
-    // Validate file size (max 50MB for videos, 15MB for others)
-    const maxSize = file.type.startsWith('video/') ? 50 * 1024 * 1024 : 15 * 1024 * 1024
+    // Validate file size based on type (WhatsApp/Evolution limits)
+    // Videos: 50MB | Images/Audio: 16MB | Documents: 100MB
+    const isVideo = file.type.startsWith('video/')
+    const isImageOrAudio = file.type.startsWith('image/') || file.type.startsWith('audio/')
+    const maxSize = isVideo ? 50 * 1024 * 1024 : isImageOrAudio ? 16 * 1024 * 1024 : 100 * 1024 * 1024
     if (file.size > maxSize) {
-      const maxMB = file.type.startsWith('video/') ? '50' : '15'
+      const maxMB = isVideo ? '50' : isImageOrAudio ? '16' : '100'
       return NextResponse.json({ error: `Arquivo deve ter no maximo ${maxMB}MB` }, { status: 400 })
     }
 
     // Generate unique filename
     const timestamp = Date.now()
-    const extension = file.name.split('.').pop() || 'png'
+    const extension = file.name.split('.').pop() || 'bin'
     const filename = `workdesk/${timestamp}-${Math.random().toString(36).substring(7)}.${extension}`
 
     // Upload to Vercel Blob
