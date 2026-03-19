@@ -24,15 +24,23 @@ export async function criarEDistribuirTicket(
   console.log(`[Distribuição] criarEDistribuirTicket chamada — clienteId=${clienteId}, setorId=${setorId}, canal=${canal}, subsetorId=${subsetorId}`)
 
   try {
-    // 1. Get distribution config for this sector
-    const { data: config } = await supabase
-      .from('ticket_distribution_config')
-      .select('*')
-      .eq('setor_id', setorId)
-      .maybeSingle()
-
-    const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
-    const autoAssignEnabled = config?.auto_assign_enabled ?? true
+    // 1. Get distribution config for this sector (tabela opcional)
+    let maxTicketsPerAgent = 10
+    let autoAssignEnabled = true
+    try {
+      const { data: config } = await supabase
+        .from('ticket_distribution_config')
+        .select('*')
+        .eq('setor_id', setorId)
+        .maybeSingle()
+      if (config) {
+        maxTicketsPerAgent = config.max_tickets_per_agent ?? 10
+        autoAssignEnabled = config.auto_assign_enabled ?? true
+      }
+    } catch {
+      // Tabela pode não existir — usar defaults
+      console.log('[Distribution] ticket_distribution_config não disponível, usando defaults')
+    }
 
     // 2. Create the ticket with subsetor if provided
     const ticketData: Record<string, unknown> = {
@@ -141,14 +149,16 @@ export async function criarEDistribuirTicket(
           if (!updateError) {
             assignedColaboradorId = bestColaborador.id
 
-            // Log the assignment
-            await supabase.from('ticket_assignment_logs').insert({
-              ticket_id: ticket.id,
-              colaborador_id: bestColaborador.id,
-              setor_id: setorId,
-              action: 'auto_assigned',
-              assignment_reason: `Auto-assigned via round-robin (${bestColaborador.count} tickets)`,
-            })
+            // Log the assignment (tabela opcional)
+            try {
+              await supabase.from('ticket_assignment_logs').insert({
+                ticket_id: ticket.id,
+                colaborador_id: bestColaborador.id,
+                setor_id: setorId,
+                action: 'auto_assigned',
+                assignment_reason: `Auto-assigned via round-robin (${bestColaborador.count} tickets)`,
+              })
+            } catch { /* tabela pode não existir */ }
           }
         }
       }
@@ -158,52 +168,57 @@ export async function criarEDistribuirTicket(
     if (!assignedColaboradorId && autoAssignEnabled) {
       console.log(`[Distribuição] Ticket ${ticket.id} sem atribuição — verificando transmissão do setor ${setorId}`)
 
-      const { data: setorData } = await supabase
-        .from('setores')
-        .select('transmissao_ativa, setor_receptor_id')
-        .eq('id', setorId)
-        .single()
+      try {
+        const { data: setorData } = await supabase
+          .from('setores')
+          .select('transmissao_ativa, setor_receptor_id')
+          .eq('id', setorId)
+          .single()
 
-      console.log(`[Distribuição] Setor ${setorId}: transmissao_ativa=${setorData?.transmissao_ativa}, setor_receptor_id=${setorData?.setor_receptor_id}`)
+        console.log(`[Distribuição] Setor ${setorId}: transmissao_ativa=${setorData?.transmissao_ativa}, setor_receptor_id=${setorData?.setor_receptor_id}`)
 
-      if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
-        const receptorId = setorData.setor_receptor_id
-        console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
+        if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
+          const receptorId = setorData.setor_receptor_id
+          console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
 
-        // Mover ticket para o setor receptor
-        const { error: moveError } = await supabase
-          .from('tickets')
-          .update({
-            setor_id: receptorId,
-            subsetor_id: null, // Receptor tem seus próprios subsetores
-          })
-          .eq('id', ticket.id)
+          const { error: moveError } = await supabase
+            .from('tickets')
+            .update({
+              setor_id: receptorId,
+              subsetor_id: null,
+            })
+            .eq('id', ticket.id)
 
-        if (!moveError) {
-          // Log da transferência automática
-          await supabase.from('ticket_logs').insert({
-            ticket_id: ticket.id,
-            tipo: 'transferencia_automatica',
-            descricao: `Ticket transferido automaticamente para setor receptor (sem atendentes disponíveis no setor original)`,
-          })
+          if (!moveError) {
+            try {
+              await supabase.from('ticket_logs').insert({
+                ticket_id: ticket.id,
+                tipo: 'transferencia_automatica',
+                descricao: `Ticket transferido automaticamente para setor receptor (sem atendentes disponíveis no setor original)`,
+              })
+            } catch { /* tabela pode não existir */ }
 
-          // Tentar distribuir no setor receptor (sem retransmitir)
-          const receptorResult = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
-          if (receptorResult) {
-            assignedColaboradorId = receptorResult
+            const receptorResult = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
+            if (receptorResult) {
+              assignedColaboradorId = receptorResult
+            }
           }
         }
+      } catch (transmissaoError) {
+        console.error('[Distribuição] Erro ao verificar transmissão:', transmissaoError)
       }
     }
 
-    // Log ticket creation
-    await supabase.from('ticket_logs').insert({
-      ticket_id: ticket.id,
-      tipo: 'criacao',
-      descricao: assignedColaboradorId 
-        ? `Ticket criado e atribuído automaticamente` 
-        : `Ticket criado e aguardando atribuição`,
-    })
+    // Log ticket creation (tabela opcional)
+    try {
+      await supabase.from('ticket_logs').insert({
+        ticket_id: ticket.id,
+        tipo: 'criacao',
+        descricao: assignedColaboradorId
+          ? `Ticket criado e atribuído automaticamente`
+          : `Ticket criado e aguardando atribuição`,
+      })
+    } catch { /* tabela pode não existir */ }
 
     return {
       ticketId: ticket.id,
@@ -225,13 +240,15 @@ async function _tentarDistribuirNoSetor(
   ticketId: string,
   setorId: string
 ): Promise<string | null> {
-  const { data: config } = await supabase
-    .from('ticket_distribution_config')
-    .select('max_tickets_per_agent')
-    .eq('setor_id', setorId)
-    .maybeSingle()
-
-  const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
+  let maxTicketsPerAgent = 10
+  try {
+    const { data: config } = await supabase
+      .from('ticket_distribution_config')
+      .select('max_tickets_per_agent')
+      .eq('setor_id', setorId)
+      .maybeSingle()
+    if (config) maxTicketsPerAgent = config.max_tickets_per_agent ?? 10
+  } catch { /* tabela pode não existir */ }
 
   const { data: colaboradores } = await supabase
     .from('colaboradores')
@@ -279,13 +296,15 @@ async function _tentarDistribuirNoSetor(
 
   if (error) return null
 
-  await supabase.from('ticket_assignment_logs').insert({
-    ticket_id: ticketId,
-    colaborador_id: bestColaborador.id,
-    setor_id: setorId,
-    action: 'auto_assigned',
-    assignment_reason: `Auto-assigned no setor receptor (${bestColaborador.count} tickets)`,
-  })
+  try {
+    await supabase.from('ticket_assignment_logs').insert({
+      ticket_id: ticketId,
+      colaborador_id: bestColaborador.id,
+      setor_id: setorId,
+      action: 'auto_assigned',
+      assignment_reason: `Auto-assigned no setor receptor (${bestColaborador.count} tickets)`,
+    })
+  } catch { /* tabela pode não existir */ }
 
   return bestColaborador.id
 }
@@ -314,14 +333,16 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       return 0
     }
 
-    // Get distribution config
-    const { data: config } = await supabase
-      .from('ticket_distribution_config')
-      .select('max_tickets_per_agent')
-      .eq('setor_id', setorId)
-      .maybeSingle()
-
-    const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
+    // Get distribution config (tabela opcional)
+    let maxTicketsPerAgent = 10
+    try {
+      const { data: config } = await supabase
+        .from('ticket_distribution_config')
+        .select('max_tickets_per_agent')
+        .eq('setor_id', setorId)
+        .maybeSingle()
+      if (config) maxTicketsPerAgent = config.max_tickets_per_agent ?? 10
+    } catch { /* tabela pode não existir */ }
 
     // Get ALL available collaborators in this setor
     const { data: allColaboradores } = await supabase
@@ -357,11 +378,13 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             .eq('id', ticket.id)
 
           if (!moveError) {
-            await supabase.from('ticket_logs').insert({
-              ticket_id: ticket.id,
-              tipo: 'transferencia_automatica',
-              descricao: `Ticket transferido automaticamente para setor receptor (nenhum atendente online no setor original)`,
-            })
+            try {
+              await supabase.from('ticket_logs').insert({
+                ticket_id: ticket.id,
+                tipo: 'transferencia_automatica',
+                descricao: `Ticket transferido automaticamente para setor receptor (nenhum atendente online no setor original)`,
+              })
+            } catch { /* tabela pode não existir */ }
 
             const result = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
             if (result) {
@@ -452,13 +475,15 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             ? `Redistribuição automática (subsetor: ${ticket.subsetor_id})`
             : 'Redistribuição automática de tickets pendentes'
 
-          await supabase.from('ticket_assignment_logs').insert({
-            ticket_id: ticket.id,
-            colaborador_id: bestColaborador.id,
-            setor_id: setorId,
-            action: 'redistributed',
-            assignment_reason: reason,
-          })
+          try {
+            await supabase.from('ticket_assignment_logs').insert({
+              ticket_id: ticket.id,
+              colaborador_id: bestColaborador.id,
+              setor_id: setorId,
+              action: 'redistributed',
+              assignment_reason: reason,
+            })
+          } catch { /* tabela pode não existir */ }
         }
       }
     }
@@ -493,11 +518,13 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             .eq('id', ticket.id)
 
           if (!moveError) {
-            await supabase.from('ticket_logs').insert({
-              ticket_id: ticket.id,
-              tipo: 'transferencia_automatica',
-              descricao: `Ticket transferido automaticamente para setor receptor (redistribuição sem atendentes disponíveis)`,
-            })
+            try {
+              await supabase.from('ticket_logs').insert({
+                ticket_id: ticket.id,
+                tipo: 'transferencia_automatica',
+                descricao: `Ticket transferido automaticamente para setor receptor (redistribuição sem atendentes disponíveis)`,
+              })
+            } catch { /* tabela pode não existir */ }
 
             // Tentar distribuir no receptor (sem retransmitir)
             const result = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)

@@ -138,12 +138,21 @@ export async function POST(request: NextRequest) {
     } else {
       // Criar ticket com distribuição automática (round-robin)
       console.log(`[Disparo Externo] Criando ticket — cliente: ${clienteId}, setor: ${setor_id}, subsetor: ${subsetor_id || 'none'}, canal: ${canal}`)
-      const result = await criarEDistribuirTicket(clienteId, setor_id, canal, subsetor_id)
+      let result: Awaited<ReturnType<typeof criarEDistribuirTicket>> = null
+      try {
+        result = await criarEDistribuirTicket(clienteId, setor_id, canal, subsetor_id || null)
+      } catch (distError: any) {
+        console.error(`[Disparo Externo] criarEDistribuirTicket threw:`, distError)
+        return NextResponse.json(
+          { error: 'Erro ao criar ticket', details: distError?.message || String(distError) },
+          { status: 500 },
+        )
+      }
 
       if (!result) {
         console.error(`[Disparo Externo] criarEDistribuirTicket retornou null — cliente: ${clienteId}, setor: ${setor_id}`)
         return NextResponse.json(
-          { error: 'Erro ao criar ticket', hint: 'Verifique os logs do servidor para detalhes. Possíveis causas: setor_id inválido, subsetor_id inválido, ou coluna inexistente na tabela tickets.' },
+          { error: 'Erro ao criar ticket', hint: 'criarEDistribuirTicket retornou null. Verifique os logs do servidor.' },
           { status: 500 },
         )
       }
@@ -257,16 +266,18 @@ export async function POST(request: NextRequest) {
       enviado_em: new Date().toISOString(),
     })
 
-    // ─── Salvar log de disparo ────────────────────────────────────────────────
-    await supabase.from('disparo_logs').insert({
-      setor_id: setor_id,
-      colaborador_id: colaboradorId,
-      ticket_id: ticketId,
-      cliente_nome: nome,
-      cliente_telefone: formattedPhone,
-      template_usado: `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
-      status: 'enviado',
-    })
+    // ─── Salvar log de disparo (tabela opcional) ──────────────────────────────
+    try {
+      await supabase.from('disparo_logs').insert({
+        setor_id: setor_id,
+        colaborador_id: colaboradorId,
+        ticket_id: ticketId,
+        cliente_nome: nome,
+        cliente_telefone: formattedPhone,
+        template_usado: `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+        status: 'enviado',
+      })
+    } catch { /* tabela pode não existir */ }
 
     // ─── Resposta ─────────────────────────────────────────────────────────────
     return NextResponse.json({

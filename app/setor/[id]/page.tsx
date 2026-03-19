@@ -443,6 +443,16 @@ export default function SetorPage() {
     
     setDeletingSetor(true)
     try {
+      // Remover instâncias Evolution antes de deletar os canais do banco
+      const evolutionCanais = canais.filter(c => c.tipo === 'evolution_api' && c.instancia)
+      for (const canal of evolutionCanais) {
+        try {
+          await fetch(`/api/evolution/instance/${canal.instancia}`, { method: 'DELETE' })
+        } catch (evoError) {
+          console.error(`Erro ao remover instância Evolution ${canal.instancia}:`, evoError)
+        }
+      }
+
       // Delete all related data first
       await supabase.from('colaboradores_setores').delete().eq('setor_id', setorId)
       await supabase.from('subsetores').delete().eq('setor_id', setorId)
@@ -1547,6 +1557,16 @@ const saveConfig = async () => {
       async () => {
         setDeletingCanalId(id)
         try {
+          // Se for canal Evolution com instância, remover a instância da Evolution API
+          if (canal?.tipo === 'evolution_api' && canal.instancia) {
+            try {
+              await fetch(`/api/evolution/instance/${canal.instancia}`, { method: 'DELETE' })
+            } catch (evoError) {
+              console.error('Erro ao remover instância da Evolution:', evoError)
+              // Continua com a exclusão do canal mesmo se falhar na Evolution
+            }
+          }
+
           const { error } = await supabase.from('setor_canais').delete().eq('id', id)
           if (error) throw error
           toast.success('Canal excluído!')
