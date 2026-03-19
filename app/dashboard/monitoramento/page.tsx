@@ -96,6 +96,7 @@ export default function MonitoramentoPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
   const [filtrosAtendenteOpen, setFiltrosAtendenteOpen] = useState(false)
+  const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
   const [activeTab, setActiveTab] = useState('em-andamento')
   const [searchAtendente, setSearchAtendente] = useState('')
   const [, setTick] = useState(0)
@@ -703,21 +704,33 @@ export default function MonitoramentoPage() {
                 )}
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-56 p-3" align="end">
+            <PopoverContent className="w-64 p-3" align="end" onCloseAutoFocus={() => setFiltroAtendenteSearch('')}>
               <div className="space-y-2">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filtrar por atendente</p>
-                <div className="space-y-1">
-                  <button
-                    onClick={() => { setAtendenteFilter('all'); setFiltrosAtendenteOpen(false) }}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                      atendenteFilter === 'all' && "font-medium text-primary"
-                    )}
-                  >
-                    <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
-                    Todos os atendentes
-                  </button>
-                  {atendentesUnicos.map((a) => (
+                <input
+                  type="text"
+                  placeholder="Buscar atendente..."
+                  value={filtroAtendenteSearch}
+                  onChange={(e) => setFiltroAtendenteSearch(e.target.value)}
+                  className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  autoFocus
+                />
+                <div className="space-y-1 max-h-[280px] overflow-y-auto">
+                  {!filtroAtendenteSearch && (
+                    <button
+                      onClick={() => { setAtendenteFilter('all'); setFiltrosAtendenteOpen(false) }}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
+                        atendenteFilter === 'all' && "font-medium text-primary"
+                      )}
+                    >
+                      <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
+                      Todos os atendentes
+                    </button>
+                  )}
+                  {atendentesUnicos
+                    .filter(a => !filtroAtendenteSearch || a.nome.toLowerCase().includes(filtroAtendenteSearch.toLowerCase()))
+                    .map((a) => (
                     <button
                       key={a.id}
                       onClick={() => { setAtendenteFilter(a.id); setFiltrosAtendenteOpen(false) }}
@@ -732,6 +745,9 @@ export default function MonitoramentoPage() {
                   ))}
                   {atendentesUnicos.length === 0 && (
                     <p className="px-2 py-1.5 text-xs text-muted-foreground">Nenhum atendente ativo</p>
+                  )}
+                  {filtroAtendenteSearch && atendentesUnicos.filter(a => a.nome.toLowerCase().includes(filtroAtendenteSearch.toLowerCase())).length === 0 && (
+                    <p className="px-2 py-1.5 text-xs text-muted-foreground">Nenhum resultado para &quot;{filtroAtendenteSearch}&quot;</p>
                   )}
                 </div>
               </div>

@@ -403,8 +403,10 @@ export default function SetorPage() {
   const [activeSection, setActiveSection] = useState('monitoramento')
   const [activeTab, setActiveTab] = useState('em-andamento')
   const [searchTerm, setSearchTerm] = useState('')
+  const [searchAtendente, setSearchAtendente] = useState('')
   const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
   const [filtrosOpen, setFiltrosOpen] = useState(false)
+  const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
   const [, setTick] = useState(0) // Force re-render for time updates
   const [dateFilter, setDateFilter] = useState('today')
   const [customRange, setCustomRange] = useState<DateRange | undefined>()
@@ -2601,22 +2603,33 @@ const saveConfig = async () => {
                           )}
                         </Button>
                       </PopoverTrigger>
-                      <PopoverContent className="w-56 p-3" align="end">
+                      <PopoverContent className="w-64 p-3" align="end" onCloseAutoFocus={() => setFiltroAtendenteSearch('')}>
                         <div className="space-y-2">
                           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Atendente</p>
-                          <div className="space-y-1">
-                            <button
-                              onClick={() => { setAtendenteFilter('all'); setFiltrosOpen(false) }}
-                              className={cn(
-                                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                                atendenteFilter === 'all' && "font-medium text-primary"
-                              )}
-                            >
-                              <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
-                              Todos os atendentes
-                            </button>
+                          <input
+                            type="text"
+                            placeholder="Buscar atendente..."
+                            value={filtroAtendenteSearch}
+                            onChange={(e) => setFiltroAtendenteSearch(e.target.value)}
+                            className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            autoFocus
+                          />
+                          <div className="space-y-1 max-h-[280px] overflow-y-auto">
+                            {!filtroAtendenteSearch && (
+                              <button
+                                onClick={() => { setAtendenteFilter('all'); setFiltrosOpen(false) }}
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
+                                  atendenteFilter === 'all' && "font-medium text-primary"
+                                )}
+                              >
+                                <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
+                                Todos os atendentes
+                              </button>
+                            )}
                             {atendentes
                               .filter((a: any) => a.ativo)
+                              .filter((a: any) => !filtroAtendenteSearch || a.nome?.toLowerCase().includes(filtroAtendenteSearch.toLowerCase()))
                               .map((a: any) => (
                                 <button
                                   key={a.id}
@@ -2635,6 +2648,9 @@ const saveConfig = async () => {
                                 </button>
                               ))
                             }
+                            {filtroAtendenteSearch && atendentes.filter((a: any) => a.ativo && a.nome?.toLowerCase().includes(filtroAtendenteSearch.toLowerCase())).length === 0 && (
+                              <p className="px-2 py-1.5 text-xs text-muted-foreground">Nenhum resultado</p>
+                            )}
                           </div>
                         </div>
                       </PopoverContent>
@@ -3266,6 +3282,8 @@ const saveConfig = async () => {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder="Buscar por nome ou e-mail"
+                value={searchAtendente}
+                onChange={(e) => setSearchAtendente(e.target.value)}
                 className="pl-9"
               />
             </div>
@@ -3310,7 +3328,16 @@ const saveConfig = async () => {
                 </div>
               </Card>
             ) : (
-              atendentes.map((atendente: any) => {
+              atendentes
+                .filter((atendente: any) => {
+                  if (!searchAtendente) return true
+                  const term = searchAtendente.toLowerCase()
+                  return (
+                    atendente.nome?.toLowerCase().includes(term) ||
+                    atendente.email?.toLowerCase().includes(term)
+                  )
+                })
+                .map((atendente: any) => {
                 const initials = atendente.nome
                   ?.split(' ')
                   .map((n: string) => n[0])
