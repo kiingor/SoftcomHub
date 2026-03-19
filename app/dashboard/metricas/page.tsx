@@ -8,8 +8,9 @@ import { motion } from 'framer-motion'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
-import { Clock, CheckCircle, Ticket, Timer } from 'lucide-react'
+import { Clock, CheckCircle, Ticket, Timer, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   Bar,
   BarChart,
@@ -57,11 +58,13 @@ interface DailyVolume {
 
 const COLORS = ['#F97316', '#FB923C', '#FDBA74', '#FBC02D', '#F9A825', '#F57F17', '#FFD54F', '#FFEB3B', '#FFF176', '#84CC16', '#22D3EE', '#818CF8']
 
+const ITEMS_PER_PAGE = 10
+
 export default function MetricasPage() {
   const supabase = createClient()
   const { data: colaborador } = useColaborador()
   const { data: setoresAcessiveis = [] } = useSetores(colaborador?.id, colaborador?.is_master)
-  const setorIdsAcessiveis = setoresAcessiveis.map((s: any) => s.id)
+  const setorIdsAcessiveis = useMemo(() => setoresAcessiveis.map((s: any) => s.id), [setoresAcessiveis])
   const [dateFilter, setDateFilter] = useState('30')
   const [customRange, setCustomRange] = useState<DateRange | undefined>()
   const [setorFilter, setSetorFilter] = useState<string>('all')
@@ -77,6 +80,38 @@ export default function MetricasPage() {
   const [ticketsByColaborador, setTicketsByColaborador] = useState<TicketsByColaborador[]>([])
   const [dailyVolume, setDailyVolume] = useState<DailyVolume[]>([])
   const [loading, setLoading] = useState(false)
+
+  // Chart pagination state
+  const [setorPage, setSetorPage] = useState(0)
+  const [colaboradorPage, setColaboradorPage] = useState(0)
+
+  // Chart internal filter state
+  const [chartSetorFilter, setChartSetorFilter] = useState<string>('all')
+  const [chartColaboradorFilter, setChartColaboradorFilter] = useState<string>('all')
+
+  // Fetch all colaboradores for the filter dropdown
+  const [allColaboradores, setAllColaboradores] = useState<{id: string, nome: string}[]>([])
+
+  React.useEffect(() => {
+    async function fetchColaboradores() {
+      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsAcessiveis
+      if (targetSetorIds.length === 0) return
+      const { data } = await supabase
+        .from('colaboradores_setores')
+        .select('colaborador_id, colaboradores(id, nome)')
+        .in('setor_id', targetSetorIds)
+      if (data) {
+        const map = new Map<string, string>()
+        data.forEach((d: any) => {
+          if (d.colaboradores) map.set(d.colaboradores.id, d.colaboradores.nome)
+        })
+        setAllColaboradores(Array.from(map.entries()).map(([id, nome]) => ({ id, nome })).sort((a, b) => a.nome.localeCompare(b.nome)))
+      }
+    }
+    if (colaborador && setorIdsAcessiveis.length > 0) {
+      fetchColaboradores()
+    }
+  }, [setorFilter, colaborador, setorIdsAcessiveis.length, supabase])
 
   // Fetch subsetores when setor filter changes
   React.useEffect(() => {
@@ -99,23 +134,28 @@ export default function MetricasPage() {
     }
   }, [setorFilter, colaborador, setorIdsAcessiveis.length, supabase])
 
+  // CRITICAL FIX: Only fetch metrics when setorIdsAcessiveis is loaded (prevents counting ALL tickets)
   React.useEffect(() => {
-    if (colaborador && (colaborador.is_master || setorIdsAcessiveis.length > 0)) {
+    if (colaborador && setorIdsAcessiveis.length > 0) {
       fetchMetrics()
     }
   }, [dateFilter, customRange, setorFilter, subsetorFilter, colaborador, setorIdsAcessiveis.length])
 
+  // Reset chart pages when data changes
+  React.useEffect(() => { setSetorPage(0) }, [ticketsBySetor.length])
+  React.useEffect(() => { setColaboradorPage(0) }, [ticketsByColaborador.length])
+
   async function fetchMetrics() {
-    if (!colaborador?.is_master && setorIdsAcessiveis.length === 0) return
+    // Always require setorIdsAcessiveis to be loaded - prevents counting all tickets
+    if (setorIdsAcessiveis.length === 0) return
 
     // Calculate date range for filter
     const { from: filterDate, to: filterDateTo } = getDateCutoffs(dateFilter, customRange)
 
-    // Determine which setor IDs to filter by
-    // Sempre filtra pelos setores acessíveis (mesmo para masters) para consistência com monitoramento
+    // Determine which setor IDs to filter by - ALWAYS filter by accessible setores
     const filterSetorIds = setorFilter !== 'all'
       ? [setorFilter]
-      : (setorIdsAcessiveis.length > 0 ? setorIdsAcessiveis : null)
+      : setorIdsAcessiveis
 
     // Label dinâmico para as descrições dos KPIs
     const periodLabel =
@@ -131,7 +171,7 @@ export default function MetricasPage() {
         .select('criado_em, primeira_resposta_em')
         .eq('status', 'encerrado')
         .not('primeira_resposta_em', 'is', null)
-      if (filterSetorIds) firstResponseQuery = firstResponseQuery.in('setor_id', filterSetorIds)
+        .in('setor_id', filterSetorIds)
       if (filterDate) firstResponseQuery = firstResponseQuery.gte('criado_em', filterDate)
       if (filterDateTo) firstResponseQuery = firstResponseQuery.lte('criado_em', filterDateTo)
       const { data: firstResponseData } = await firstResponseQuery
@@ -152,9 +192,9 @@ export default function MetricasPage() {
         .select('criado_em, encerrado_em')
         .eq('status', 'encerrado')
         .not('encerrado_em', 'is', null)
-      if (filterSetorIds) resolutionQuery = resolutionQuery.in('setor_id', filterSetorIds)
-      if (filterDate) resolutionQuery = resolutionQuery.gte('encerrado_em', filterDate)
-      if (filterDateTo) resolutionQuery = resolutionQuery.lte('encerrado_em', filterDateTo)
+        .in('setor_id', filterSetorIds)
+      if (filterDate) resolutionQuery = resolutionQuery.gte('criado_em', filterDate)
+      if (filterDateTo) resolutionQuery = resolutionQuery.lte('criado_em', filterDateTo)
       const { data: resolutionData } = await resolutionQuery
 
       let avgResolution = 0
@@ -168,22 +208,24 @@ export default function MetricasPage() {
       }
 
       // Fetch total tickets recebidos no período selecionado
+      // Filtra por criado_em (consistente com monitoramento)
       let totalQuery = supabase
         .from('tickets')
         .select('*', { count: 'exact', head: true })
-      if (filterSetorIds) totalQuery = totalQuery.in('setor_id', filterSetorIds)
+        .in('setor_id', filterSetorIds)
       if (filterDate) totalQuery = totalQuery.gte('criado_em', filterDate)
       if (filterDateTo) totalQuery = totalQuery.lte('criado_em', filterDateTo)
       const { count: totalTickets } = await totalQuery
 
       // Fetch tickets encerrados no período selecionado
+      // Filtra por criado_em + status encerrado (consistente com monitoramento)
       let closedQuery = supabase
         .from('tickets')
         .select('*', { count: 'exact', head: true })
         .eq('status', 'encerrado')
-      if (filterSetorIds) closedQuery = closedQuery.in('setor_id', filterSetorIds)
-      if (filterDate) closedQuery = closedQuery.gte('encerrado_em', filterDate)
-      if (filterDateTo) closedQuery = closedQuery.lte('encerrado_em', filterDateTo)
+        .in('setor_id', filterSetorIds)
+      if (filterDate) closedQuery = closedQuery.gte('criado_em', filterDate)
+      if (filterDateTo) closedQuery = closedQuery.lte('criado_em', filterDateTo)
       const { count: closedTickets } = await closedQuery
 
       // Format times for display
@@ -205,7 +247,7 @@ export default function MetricasPage() {
       let ticketQuery = supabase
         .from('tickets')
         .select('setor_id, setores(nome)')
-      if (filterSetorIds) ticketQuery = ticketQuery.in('setor_id', filterSetorIds)
+        .in('setor_id', filterSetorIds)
       if (filterDate) ticketQuery = ticketQuery.gte('criado_em', filterDate)
       if (filterDateTo) ticketQuery = ticketQuery.lte('criado_em', filterDateTo)
 
@@ -218,7 +260,9 @@ export default function MetricasPage() {
           sectorCounts[sectorName] = (sectorCounts[sectorName] || 0) + 1
         })
         setTicketsBySetor(
-          Object.entries(sectorCounts).map(([setor, count]) => ({ setor, count }))
+          Object.entries(sectorCounts)
+            .map(([setor, count]) => ({ setor, count }))
+            .sort((a, b) => b.count - a.count)
         )
       }
 
@@ -228,9 +272,9 @@ export default function MetricasPage() {
         .select('colaborador_id, colaboradores(nome)')
         .eq('status', 'encerrado')
         .not('colaborador_id', 'is', null)
-      if (filterSetorIds) colaboradorQuery = colaboradorQuery.in('setor_id', filterSetorIds)
-      if (filterDate) colaboradorQuery = colaboradorQuery.gte('encerrado_em', filterDate)
-      if (filterDateTo) colaboradorQuery = colaboradorQuery.lte('encerrado_em', filterDateTo)
+        .in('setor_id', filterSetorIds)
+      if (filterDate) colaboradorQuery = colaboradorQuery.gte('criado_em', filterDate)
+      if (filterDateTo) colaboradorQuery = colaboradorQuery.lte('criado_em', filterDateTo)
 
       const { data: colaboradorData } = await colaboradorQuery
 
@@ -251,7 +295,7 @@ export default function MetricasPage() {
       let dailyQuery = supabase
         .from('tickets')
         .select('criado_em')
-      if (filterSetorIds) dailyQuery = dailyQuery.in('setor_id', filterSetorIds)
+        .in('setor_id', filterSetorIds)
       if (filterDate) dailyQuery = dailyQuery.gte('criado_em', filterDate)
       if (filterDateTo) dailyQuery = dailyQuery.lte('criado_em', filterDateTo)
 
@@ -263,7 +307,7 @@ export default function MetricasPage() {
           const date = new Date(ticket.criado_em).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
           dailyCounts[date] = (dailyCounts[date] || 0) + 1
         })
-        
+
         // Sort by date
         const sortedDates = Object.entries(dailyCounts)
           .map(([date, count]) => ({ date, count }))
@@ -273,7 +317,7 @@ export default function MetricasPage() {
             if (monthA !== monthB) return monthA - monthB
             return dayA - dayB
           })
-        
+
         setDailyVolume(sortedDates)
       }
 
@@ -283,6 +327,30 @@ export default function MetricasPage() {
       setLoading(false)
     }
   }
+
+  // Filtered + paginated data for Tickets por Setor
+  const filteredTicketsBySetor = useMemo(() => {
+    if (chartSetorFilter === 'all') return ticketsBySetor
+    return ticketsBySetor.filter(t => t.setor === chartSetorFilter)
+  }, [ticketsBySetor, chartSetorFilter])
+
+  const setorTotalPages = Math.max(1, Math.ceil(filteredTicketsBySetor.length / ITEMS_PER_PAGE))
+  const paginatedTicketsBySetor = useMemo(() => {
+    const start = setorPage * ITEMS_PER_PAGE
+    return filteredTicketsBySetor.slice(start, start + ITEMS_PER_PAGE)
+  }, [filteredTicketsBySetor, setorPage])
+
+  // Filtered + paginated data for Atendimentos por Colaborador
+  const filteredTicketsByColaborador = useMemo(() => {
+    if (chartColaboradorFilter === 'all') return ticketsByColaborador
+    return ticketsByColaborador.filter(t => t.colaborador === chartColaboradorFilter)
+  }, [ticketsByColaborador, chartColaboradorFilter])
+
+  const colaboradorTotalPages = Math.max(1, Math.ceil(filteredTicketsByColaborador.length / ITEMS_PER_PAGE))
+  const paginatedTicketsByColaborador = useMemo(() => {
+    const start = colaboradorPage * ITEMS_PER_PAGE
+    return filteredTicketsByColaborador.slice(start, start + ITEMS_PER_PAGE)
+  }, [filteredTicketsByColaborador, colaboradorPage])
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -311,7 +379,7 @@ export default function MetricasPage() {
       </div>
 
       {/* Metric Cards */}
-      <motion.div 
+      <motion.div
         className="grid gap-4 md:grid-cols-2 lg:grid-cols-4"
         variants={containerVariants}
         initial="hidden"
@@ -374,47 +442,95 @@ export default function MetricasPage() {
           transition={{ delay: 0.2 }}
         >
           <Card className="glass-card-elevated rounded-2xl border-0">
-            <CardHeader>
-              <CardTitle className="text-foreground">Tickets por Setor</CardTitle>
-              <CardDescription>Distribuição de tickets por departamento</CardDescription>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-foreground">Tickets por Setor</CardTitle>
+                  <CardDescription>Distribuição de tickets por departamento</CardDescription>
+                </div>
+                <Select value={chartSetorFilter} onValueChange={(v) => { setChartSetorFilter(v); setSetorPage(0) }}>
+                  <SelectTrigger className="w-44 h-8 text-xs bg-card border-border">
+                    <SelectValue placeholder="Filtrar setor" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos os setores</SelectItem>
+                    {ticketsBySetor.map((s) => (
+                      <SelectItem key={s.setor} value={s.setor}>{s.setor}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </CardHeader>
             <CardContent>
-              {ticketsBySetor.length > 0 ? (
-                <ChartContainer
-                  config={{
-                    count: {
-                      label: 'Tickets',
-                      color: '#F97316',
-                    },
-                  }}
-                  className="w-full"
-                  style={{ height: Math.max(300, ticketsBySetor.length * 40 + 60) }}
-                >
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={[...ticketsBySetor].sort((a, b) => a.count - b.count)}
-                      layout="vertical"
-                      margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                      <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
-                      <YAxis
-                        dataKey="setor"
-                        type="category"
-                        tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
-                        width={140}
-                      />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="count" name="Tickets" radius={[0, 6, 6, 0]} barSize={24}>
-                        {[...ticketsBySetor].sort((a, b) => a.count - b.count).map((_, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </ChartContainer>
+              {paginatedTicketsBySetor.length > 0 ? (
+                <>
+                  <ChartContainer
+                    config={{
+                      count: {
+                        label: 'Tickets',
+                        color: '#F97316',
+                      },
+                    }}
+                    className="w-full"
+                    style={{ height: 400 }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={[...paginatedTicketsBySetor].sort((a, b) => a.count - b.count)}
+                        layout="vertical"
+                        margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                        <YAxis
+                          dataKey="setor"
+                          type="category"
+                          tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
+                          width={140}
+                        />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="count" name="Tickets" radius={[0, 6, 6, 0]} barSize={24}>
+                          {[...paginatedTicketsBySetor].sort((a, b) => a.count - b.count).map((_, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartContainer>
+                  {/* Pagination */}
+                  {filteredTicketsBySetor.length > ITEMS_PER_PAGE && (
+                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-border">
+                      <span className="text-xs text-muted-foreground">
+                        {setorPage * ITEMS_PER_PAGE + 1}-{Math.min((setorPage + 1) * ITEMS_PER_PAGE, filteredTicketsBySetor.length)} de {filteredTicketsBySetor.length}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          disabled={setorPage === 0}
+                          onClick={() => setSetorPage(p => p - 1)}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
+                        <span className="text-xs text-muted-foreground px-2">
+                          {setorPage + 1}/{setorTotalPages}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          disabled={setorPage >= setorTotalPages - 1}
+                          onClick={() => setSetorPage(p => p + 1)}
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
-                <div className="flex h-[300px] items-center justify-center text-muted-foreground">
+                <div className="flex h-[400px] items-center justify-center text-muted-foreground">
                   Nenhum dado disponível
                 </div>
               )}
@@ -429,47 +545,95 @@ export default function MetricasPage() {
           transition={{ delay: 0.3 }}
         >
           <Card className="glass-card-elevated rounded-2xl border-0">
-            <CardHeader>
-              <CardTitle className="text-foreground">Atendimentos por Colaborador</CardTitle>
-              <CardDescription>Tickets encerrados por cada colaborador</CardDescription>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-foreground">Atendimentos por Colaborador</CardTitle>
+                  <CardDescription>Tickets encerrados por cada colaborador</CardDescription>
+                </div>
+                <Select value={chartColaboradorFilter} onValueChange={(v) => { setChartColaboradorFilter(v); setColaboradorPage(0) }}>
+                  <SelectTrigger className="w-44 h-8 text-xs bg-card border-border">
+                    <SelectValue placeholder="Filtrar colaborador" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    {ticketsByColaborador.map((c) => (
+                      <SelectItem key={c.colaborador} value={c.colaborador}>{c.colaborador}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </CardHeader>
             <CardContent>
-              {ticketsByColaborador.length > 0 ? (
-                <ChartContainer
-                  config={{
-                    count: {
-                      label: 'Tickets',
-                      color: '#F97316',
-                    },
-                  }}
-                  className="w-full"
-                  style={{ height: Math.max(300, ticketsByColaborador.length * 36 + 60) }}
-                >
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={ticketsByColaborador}
-                      layout="vertical"
-                      margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                      <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
-                      <YAxis
-                        dataKey="colaborador"
-                        type="category"
-                        tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
-                        width={140}
-                      />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="count" name="Tickets" radius={[0, 6, 6, 0]} barSize={22}>
-                        {ticketsByColaborador.map((_, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </ChartContainer>
+              {paginatedTicketsByColaborador.length > 0 ? (
+                <>
+                  <ChartContainer
+                    config={{
+                      count: {
+                        label: 'Tickets',
+                        color: '#F97316',
+                      },
+                    }}
+                    className="w-full"
+                    style={{ height: 400 }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={paginatedTicketsByColaborador}
+                        layout="vertical"
+                        margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                        <YAxis
+                          dataKey="colaborador"
+                          type="category"
+                          tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
+                          width={140}
+                        />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="count" name="Tickets" radius={[0, 6, 6, 0]} barSize={22}>
+                          {paginatedTicketsByColaborador.map((_, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartContainer>
+                  {/* Pagination */}
+                  {filteredTicketsByColaborador.length > ITEMS_PER_PAGE && (
+                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-border">
+                      <span className="text-xs text-muted-foreground">
+                        {colaboradorPage * ITEMS_PER_PAGE + 1}-{Math.min((colaboradorPage + 1) * ITEMS_PER_PAGE, filteredTicketsByColaborador.length)} de {filteredTicketsByColaborador.length}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          disabled={colaboradorPage === 0}
+                          onClick={() => setColaboradorPage(p => p - 1)}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
+                        <span className="text-xs text-muted-foreground px-2">
+                          {colaboradorPage + 1}/{colaboradorTotalPages}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          disabled={colaboradorPage >= colaboradorTotalPages - 1}
+                          onClick={() => setColaboradorPage(p => p + 1)}
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
-                <div className="flex h-[300px] items-center justify-center text-muted-foreground">
+                <div className="flex h-[400px] items-center justify-center text-muted-foreground">
                   Nenhum dado disponível
                 </div>
               )}
@@ -478,7 +642,7 @@ export default function MetricasPage() {
         </motion.div>
       </div>
 
-      {/* Daily Volume Chart */}
+      {/* Daily Volume Chart - Full Width */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -498,16 +662,16 @@ export default function MetricasPage() {
                     color: '#FBC02D',
                   },
                 }}
-                className="h-[300px]"
+                className="h-[350px]"
               >
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={dailyVolume} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E5E5" />
-                    <XAxis 
-                      dataKey="date" 
-                      tick={{ fill: '#666', fontSize: 12 }}
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
                     />
-                    <YAxis tick={{ fill: '#666' }} />
+                    <YAxis tick={{ fill: 'hsl(var(--muted-foreground))' }} />
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <Legend />
                     <Line
@@ -523,7 +687,7 @@ export default function MetricasPage() {
                 </ResponsiveContainer>
               </ChartContainer>
             ) : (
-              <div className="flex h-[300px] items-center justify-center text-muted-foreground">
+              <div className="flex h-[350px] items-center justify-center text-muted-foreground">
                 Nenhum dado disponível
               </div>
             )}
