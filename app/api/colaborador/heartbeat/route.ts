@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
 
 /**
@@ -6,12 +6,13 @@ import { NextResponse } from 'next/server'
  *
  * - Atualiza last_heartbeat (keep-alive enquanto o navegador está aberto)
  * - Quando setOffline=true, marca is_online=false (chamado no beforeunload/pagehide)
+ * - Usa service role para bypassar RLS e garantir que a escrita SEMPRE funcione
  *
- * Body: { colaboradorId: string, setOffline?: boolean }
+ * Body: { colaboradorId: string, setOffline?: boolean, isOnline?: boolean }
  */
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
 
     // Aceita application/json ou text/plain (navigator.sendBeacon envia text/plain)
     let body: { colaboradorId?: string; setOffline?: boolean }
@@ -87,7 +88,7 @@ export async function POST(request: Request) {
  */
 export async function GET(request: Request) {
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const { searchParams } = new URL(request.url)
     const colaboradorId = searchParams.get('colaboradorId')
 

@@ -169,14 +169,21 @@ export function DisponibilidadePanel({
       await endPausa()
     }
 
-    // Update colaborador status
-    const { error: updateError } = await supabase
-      .from('colaboradores')
-      .update({ is_online: newStatus, pausa_atual_id: null })
-      .eq('id', colaboradorId)
-
-    if (updateError) {
-      console.error('Error updating status:', updateError)
+    // Update colaborador status via API (bypassa RLS)
+    try {
+      const res = await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId, isOnline: newStatus, pausaAtualId: null }),
+      })
+      const result = await res.json()
+      if (!res.ok) {
+        console.error('Error updating status:', result.error)
+        setLoading(false)
+        return
+      }
+    } catch (err) {
+      console.error('Error updating status:', err)
       setLoading(false)
       return
     }
@@ -241,14 +248,15 @@ export function DisponibilidadePanel({
       return
     }
 
-    // Update colaborador - set offline and pausa_atual_id (references pausas_colaboradores.id, NOT pausas.id)
-    const { error: updateError } = await supabase
-      .from('colaboradores')
-      .update({ is_online: false, pausa_atual_id: pausaColaboradorData.id })
-      .eq('id', colaboradorId)
-
-    if (updateError) {
-      console.error('Error updating colaborador:', updateError)
+    // Update colaborador via API (bypassa RLS) - set offline and pausa_atual_id
+    try {
+      await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId, isOnline: false, pausaAtualId: pausaColaboradorData.id }),
+      })
+    } catch (err) {
+      console.error('Error updating colaborador:', err)
     }
 
     // Create log entry
@@ -271,14 +279,15 @@ export function DisponibilidadePanel({
     // End the pause
     await supabase.from('pausas_colaboradores').update({ fim: new Date().toISOString() }).eq('id', pausaAtual.id)
 
-    // Update colaborador - go online and clear pausa_atual_id
-    const { error: updateError } = await supabase
-      .from('colaboradores')
-      .update({ is_online: true, pausa_atual_id: null })
-      .eq('id', colaboradorId)
-
-    if (updateError) {
-      console.error('Error updating colaborador:', updateError)
+    // Update colaborador via API (bypassa RLS) - go online and clear pausa
+    try {
+      await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId, isOnline: true, pausaAtualId: null }),
+      })
+    } catch (err) {
+      console.error('Error updating colaborador:', err)
     }
 
     // Create log entry
