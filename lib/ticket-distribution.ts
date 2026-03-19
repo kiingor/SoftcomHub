@@ -63,28 +63,36 @@ export async function criarEDistribuirTicket(
       // Mesma lógica do ticket-queue-processor:
       // com subsetor → busca diretamente em colaboradores_subsetores (fonte autoritativa)
       // sem subsetor → busca em colaboradores_setores (todos do setor)
+      // + freshness check: heartbeat deve ser < 2 min para considerar online
+      const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+      const now = Date.now()
+      const isHeartbeatFresh = (lh: string | null): boolean => {
+        if (!lh) return false
+        return (now - new Date(lh).getTime()) < HEARTBEAT_STALE_MS
+      }
+
       let finalColaboradores: Array<{ id: string; nome: string }> = []
 
       if (subsetorId) {
         const { data: subsetorLinks } = await supabase
           .from('colaboradores_subsetores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
           .eq('setor_id', setorId)
           .eq('subsetor_id', subsetorId)
 
         finalColaboradores = (subsetorLinks || [])
           .map((sl: any) => sl.colaboradores)
-          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
+          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat))
           .map((c: any) => ({ id: c.id, nome: c.nome }))
       } else {
         const { data: setorLinks } = await supabase
           .from('colaboradores_setores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
           .eq('setor_id', setorId)
 
         finalColaboradores = (setorLinks || [])
           .map((cs: any) => cs.colaboradores)
-          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
+          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat))
           .map((c: any) => ({ id: c.id, nome: c.nome }))
       }
 
