@@ -55,7 +55,7 @@ interface DailyVolume {
   count: number
 }
 
-const COLORS = ['#FBC02D', '#F9A825', '#F57F17', '#FFD54F', '#FFEB3B', '#FFF176']
+const COLORS = ['#F97316', '#FB923C', '#FDBA74', '#FBC02D', '#F9A825', '#F57F17', '#FFD54F', '#FFEB3B', '#FFF176', '#84CC16', '#22D3EE', '#818CF8']
 
 export default function MetricasPage() {
   const supabase = createClient()
@@ -112,9 +112,10 @@ export default function MetricasPage() {
     const { from: filterDate, to: filterDateTo } = getDateCutoffs(dateFilter, customRange)
 
     // Determine which setor IDs to filter by
+    // Sempre filtra pelos setores acessíveis (mesmo para masters) para consistência com monitoramento
     const filterSetorIds = setorFilter !== 'all'
       ? [setorFilter]
-      : (!colaborador?.is_master ? setorIdsAcessiveis : null)
+      : (setorIdsAcessiveis.length > 0 ? setorIdsAcessiveis : null)
 
     // Label dinâmico para as descrições dos KPIs
     const periodLabel =
@@ -359,7 +360,7 @@ export default function MetricasPage() {
             onDateFilterChange={setDateFilter}
             customRange={customRange}
             onCustomRangeChange={setCustomRange}
-            showToday={false}
+            showToday={true}
           />
         </div>
       </div>
@@ -383,25 +384,29 @@ export default function MetricasPage() {
                   config={{
                     count: {
                       label: 'Tickets',
-                      color: '#FBC02D',
+                      color: '#F97316',
                     },
                   }}
-                  className="h-[300px]"
+                  className="w-full"
+                  style={{ height: Math.max(300, ticketsBySetor.length * 40 + 60) }}
                 >
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={ticketsBySetor} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E5E5E5" />
-                      <XAxis 
-                        dataKey="setor" 
-                        tick={{ fill: '#666', fontSize: 12 }}
-                        angle={-45}
-                        textAnchor="end"
-                        height={60}
+                    <BarChart
+                      data={[...ticketsBySetor].sort((a, b) => a.count - b.count)}
+                      layout="vertical"
+                      margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
+                      <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                      <YAxis
+                        dataKey="setor"
+                        type="category"
+                        tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
+                        width={140}
                       />
-                      <YAxis tick={{ fill: '#666' }} />
                       <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="count" name="Tickets" radius={[4, 4, 0, 0]}>
-                        {ticketsBySetor.map((_, index) => (
+                      <Bar dataKey="count" name="Tickets" radius={[0, 6, 6, 0]} barSize={24}>
+                        {[...ticketsBySetor].sort((a, b) => a.count - b.count).map((_, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
                       </Bar>
@@ -434,27 +439,28 @@ export default function MetricasPage() {
                   config={{
                     count: {
                       label: 'Tickets',
-                      color: '#F9A825',
+                      color: '#F97316',
                     },
                   }}
-                  className="h-[300px]"
+                  className="w-full"
+                  style={{ height: Math.max(300, ticketsByColaborador.length * 36 + 60) }}
                 >
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart 
-                      data={ticketsByColaborador} 
-                      layout="vertical" 
-                      margin={{ top: 20, right: 30, left: 100, bottom: 20 }}
+                    <BarChart
+                      data={ticketsByColaborador}
+                      layout="vertical"
+                      margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
                     >
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E5E5E5" />
-                      <XAxis type="number" tick={{ fill: '#666' }} />
-                      <YAxis 
-                        dataKey="colaborador" 
-                        type="category" 
-                        tick={{ fill: '#666', fontSize: 12 }}
-                        width={90}
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
+                      <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                      <YAxis
+                        dataKey="colaborador"
+                        type="category"
+                        tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
+                        width={140}
                       />
                       <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="count" name="Tickets" radius={[0, 4, 4, 0]}>
+                      <Bar dataKey="count" name="Tickets" radius={[0, 6, 6, 0]} barSize={22}>
                         {ticketsByColaborador.map((_, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
@@ -504,14 +510,14 @@ export default function MetricasPage() {
                     <YAxis tick={{ fill: '#666' }} />
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <Legend />
-                    <Line 
-                      type="monotone" 
-                      dataKey="count" 
+                    <Line
+                      type="monotone"
+                      dataKey="count"
                       name="Tickets"
-                      stroke="#FBC02D" 
+                      stroke="#F97316"
                       strokeWidth={3}
-                      dot={{ fill: '#FBC02D', strokeWidth: 2, r: 4 }}
-                      activeDot={{ r: 6, fill: '#F57F17' }}
+                      dot={{ fill: '#F97316', strokeWidth: 2, r: 4 }}
+                      activeDot={{ r: 6, fill: '#EA580C' }}
                     />
                   </LineChart>
                 </ResponsiveContainer>
