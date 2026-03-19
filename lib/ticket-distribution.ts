@@ -65,38 +65,37 @@ export async function criarEDistribuirTicket(
       // Mesma lógica do ticket-queue-processor:
       // com subsetor → busca diretamente em colaboradores_subsetores (fonte autoritativa)
       // sem subsetor → busca em colaboradores_setores (todos do setor)
-      // + freshness check: heartbeat deve ser < 2 min para considerar online
+      // Prefere heartbeat fresco (< 2 min) mas fallback para qualquer online
       const HEARTBEAT_STALE_MS = 2 * 60 * 1000
       const now = Date.now()
-      const isHeartbeatFresh = (lh: string | null): boolean => {
-        if (!lh) return false
-        return (now - new Date(lh).getTime()) < HEARTBEAT_STALE_MS
-      }
+      const isHBFresh = (lh: string | null): boolean => lh ? (now - new Date(lh).getTime()) < HEARTBEAT_STALE_MS : false
 
-      let finalColaboradores: Array<{ id: string; nome: string }> = []
-
+      let rawColabs: any[] = []
       if (subsetorId) {
-        const { data: subsetorLinks } = await supabase
+        const { data } = await supabase
           .from('colaboradores_subsetores')
           .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
           .eq('setor_id', setorId)
           .eq('subsetor_id', subsetorId)
-
-        finalColaboradores = (subsetorLinks || [])
-          .map((sl: any) => sl.colaboradores)
-          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat))
-          .map((c: any) => ({ id: c.id, nome: c.nome }))
+        rawColabs = (data || []).map((sl: any) => sl.colaboradores)
       } else {
-        const { data: setorLinks } = await supabase
+        const { data } = await supabase
           .from('colaboradores_setores')
           .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
           .eq('setor_id', setorId)
-
-        finalColaboradores = (setorLinks || [])
-          .map((cs: any) => cs.colaboradores)
-          .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat))
-          .map((c: any) => ({ id: c.id, nome: c.nome }))
+        rawColabs = (data || []).map((cs: any) => cs.colaboradores)
       }
+
+      const allOnline = rawColabs
+        .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
+        .map((c: any) => ({ id: c.id, nome: c.nome }))
+      const fresh = rawColabs
+        .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id && isHBFresh(c.last_heartbeat))
+        .map((c: any) => ({ id: c.id, nome: c.nome }))
+
+      // Prefere fresh, fallback para qualquer online
+      let finalColaboradores = fresh.length > 0 ? fresh : allOnline
+      console.log(`[Distribution] Disponíveis: ${finalColaboradores.length} (fresh=${fresh.length}, allOnline=${allOnline.length}) setor=${setorId} subsetor=${subsetorId || 'null'}`)
 
       if (finalColaboradores.length > 0) {
         // Get current ticket counts for each collaborator

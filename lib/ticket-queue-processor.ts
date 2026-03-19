@@ -74,57 +74,53 @@ async function getAvailableColaboradores(
 
   console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}`)
 
-  // Heartbeat deve ser recente (< 2 min) para considerar colaborador realmente online
+  // Coleta colaboradores online: preferimos os com heartbeat fresco (< 2 min)
+  // mas se nenhum tiver heartbeat fresco, usamos qualquer online como fallback
   const HEARTBEAT_STALE_MS = 2 * 60 * 1000
   const now = Date.now()
-
-  const isHeartbeatFresh = (lastHeartbeat: string | null): boolean => {
-    if (!lastHeartbeat) return false
-    return (now - new Date(lastHeartbeat).getTime()) < HEARTBEAT_STALE_MS
+  const isHeartbeatFresh = (lh: string | null): boolean => {
+    if (!lh) return false
+    return (now - new Date(lh).getTime()) < HEARTBEAT_STALE_MS
   }
 
-  const colaboradoresMap = new Map<string, { id: string; nome: string }>()
+  const freshMap = new Map<string, { id: string; nome: string }>()
+  const allOnlineMap = new Map<string, { id: string; nome: string }>()
+
+  let rawLinks: any[] = []
 
   if (subsetorId) {
-    // Caminho A: ticket com subsetor → buscar diretamente em colaboradores_subsetores
-    const { data: subsetorLinks, error: subErr } = await supabase
+    const { data, error } = await supabase
       .from('colaboradores_subsetores')
       .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
       .eq('setor_id', setorId)
       .eq('subsetor_id', subsetorId)
-
-    console.log(`[TicketQueue] colaboradores_subsetores query: ${subsetorLinks?.length || 0} registros, error: ${subErr?.message || 'none'}`)
-
-    ;(subsetorLinks || []).forEach((sl: any) => {
-      const c = sl.colaboradores
-      if (c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat)) {
-        colaboradoresMap.set(c.id, { id: c.id, nome: c.nome })
-      } else if (c && c.ativo && c.is_online && !isHeartbeatFresh(c.last_heartbeat)) {
-        console.log(`[TicketQueue] Colaborador ${c.nome} (${c.id}) is_online=true mas heartbeat stale (${c.last_heartbeat}) — ignorado`)
-      }
-    })
-
-    console.log(`[TicketQueue] Colaboradores online+fresh no subsetor ${subsetorId}: ${colaboradoresMap.size}`)
+    rawLinks = data || []
+    console.log(`[TicketQueue] colaboradores_subsetores: ${rawLinks.length} registros, error: ${error?.message || 'none'}`)
   } else {
-    // Caminho B: ticket sem subsetor → qualquer colaborador online do setor
-    const { data: setorLinks, error: setErr } = await supabase
+    const { data, error } = await supabase
       .from('colaboradores_setores')
       .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
       .eq('setor_id', setorId)
-
-    console.log(`[TicketQueue] colaboradores_setores query: ${setorLinks?.length || 0} registros, error: ${setErr?.message || 'none'}`)
-
-    ;(setorLinks || []).forEach((cs: any) => {
-      const c = cs.colaboradores
-      if (c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat)) {
-        colaboradoresMap.set(c.id, { id: c.id, nome: c.nome })
-      } else if (c && c.ativo && c.is_online && !isHeartbeatFresh(c.last_heartbeat)) {
-        console.log(`[TicketQueue] Colaborador ${c.nome} (${c.id}) is_online=true mas heartbeat stale (${c.last_heartbeat}) — ignorado`)
-      }
-    })
-
-    console.log(`[TicketQueue] Colaboradores online+fresh no setor (sem subsetor): ${colaboradoresMap.size}`)
+    rawLinks = data || []
+    console.log(`[TicketQueue] colaboradores_setores: ${rawLinks.length} registros, error: ${error?.message || 'none'}`)
   }
+
+  rawLinks.forEach((link: any) => {
+    const c = link.colaboradores
+    if (!c || !c.ativo || !c.is_online || c.pausa_atual_id) return
+    // Está online e ativo sem pausa → candidato
+    allOnlineMap.set(c.id, { id: c.id, nome: c.nome })
+    if (isHeartbeatFresh(c.last_heartbeat)) {
+      freshMap.set(c.id, { id: c.id, nome: c.nome })
+    } else {
+      console.log(`[TicketQueue] ${c.nome} online mas heartbeat stale (${c.last_heartbeat})`)
+    }
+  })
+
+  // Preferir fresh; fallback para qualquer online
+  const colaboradoresMap = freshMap.size > 0 ? freshMap : allOnlineMap
+  const source = freshMap.size > 0 ? 'fresh' : 'fallback-online'
+  console.log(`[TicketQueue] Colaboradores disponíveis (${source}): ${colaboradoresMap.size} [subsetor=${subsetorId || 'null'}]`)
 
   if (colaboradoresMap.size === 0) return []
 
