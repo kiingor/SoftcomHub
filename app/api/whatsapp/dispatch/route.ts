@@ -228,16 +228,19 @@ export async function POST(request: NextRequest) {
     // Check for existing open ticket for this client
     const { data: existingTicket } = await supabase
       .from('tickets')
-      .select('id')
+      .select('id, numero, colaborador_id, colaboradores(nome)')
       .eq('cliente_id', clienteId)
       .in('status', ['aberto', 'em_atendimento'])
       .maybeSingle()
 
     if (existingTicket) {
+      const atendenteName = (existingTicket as any)?.colaboradores?.nome || null
       return NextResponse.json({
-        success: true,
+        success: false,
         warning: 'Ja existe um ticket aberto para este cliente',
         ticketId: existingTicket.id,
+        ticketNumero: existingTicket.numero,
+        atendente: atendenteName,
         whatsappMessageId,
         waId,
       })

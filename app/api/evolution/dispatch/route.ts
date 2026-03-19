@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
     // Check for existing open ticket for this client in this setor
     const { data: existingTicket } = await supabase
       .from('tickets')
-      .select('id, numero')
+      .select('id, numero, colaborador_id, colaboradores(nome)')
       .eq('cliente_id', clienteId)
       .eq('setor_id', setorId)
       .in('status', ['aberto', 'em_atendimento'])
@@ -123,8 +123,14 @@ export async function POST(request: NextRequest) {
     let ticketNumero: number | null = null
 
     if (existingTicket) {
-      ticketId = existingTicket.id
-      ticketNumero = existingTicket.numero
+      const atendenteName = (existingTicket as any)?.colaboradores?.nome || null
+      return NextResponse.json({
+        success: false,
+        warning: 'Ja existe um ticket aberto para este cliente',
+        ticketId: existingTicket.id,
+        ticketNumero: existingTicket.numero,
+        atendente: atendenteName,
+      })
     } else {
       // Create ticket — no is_disparo flag (agent can reply immediately, no lock)
       const { data: ticket, error: ticketError } = await supabase

@@ -1810,6 +1810,13 @@ const handleEncerrarTicket = async () => {
         }),
       })
       const data = await res.json()
+      if (data.warning) {
+        // Ticket já existe para este cliente
+        const atendenteInfo = data.atendente ? ` com o atendente ${data.atendente}` : ''
+        toast.error(`Já existe um ticket #${data.ticketNumero || ''}${atendenteInfo} aberto para este cliente.`, { duration: 6000 })
+        setDisparoSending(false)
+        return
+      }
       if (data.success) {
         toast.success(`Disparo enviado! Ticket #${data.ticketNumero || ''} criado.`)
         setDisparoDialogOpen(false)
@@ -1894,6 +1901,13 @@ const handleEncerrarTicket = async () => {
         }),
       })
       const data = await res.json()
+      if (data.warning) {
+        // Ticket já existe para este cliente
+        const atendenteInfo = data.atendente ? ` com o atendente ${data.atendente}` : ''
+        toast.error(`Já existe um ticket #${data.ticketNumero || ''}${atendenteInfo} aberto para este cliente.`, { duration: 6000 })
+        setDisparoSending(false)
+        return
+      }
       if (data.success) {
         toast.success(`Disparo enviado via Evolution! Ticket #${data.ticketNumero || ''} criado.`)
         setDisparoDialogOpen(false)
