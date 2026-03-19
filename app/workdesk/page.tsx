@@ -1383,7 +1383,16 @@ const handleEncerrarTicket = async () => {
 
         const processedMessage = processTemplateVariables(setor.mensagem_finalizacao)
 
-        if (setorCanal === 'evolution_api' && phoneNumberId && selectedTicket.clientes.telefone) {
+        if (setorCanal === 'discord') {
+          await fetch('/api/discord/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ticketId: selectedTicket.id,
+              message: processedMessage,
+            }),
+          })
+        } else if (setorCanal === 'evolution_api' && phoneNumberId && selectedTicket.clientes.telefone) {
           await fetch('/api/evolution/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1405,7 +1414,6 @@ const handleEncerrarTicket = async () => {
             }),
           })
         }
-        // Discord: não envia mensagem de finalização (sem suporte a DM de encerramento)
       }
 
       // Update ticket status
