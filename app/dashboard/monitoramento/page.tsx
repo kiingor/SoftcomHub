@@ -166,16 +166,35 @@ export default function MonitoramentoPage() {
         .in('status', ['aberto', 'em_atendimento'])
       const { data: ticketsAtivos } = await ticketsQuery
 
-      // Fetch today's tickets (for stats)
+      // Fetch today's tickets (for stats — tempo medio calculations)
       const now = new Date()
       const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
+      const effectiveDateCutoff = dateCutoff || startOfDay
       let todayQuery = supabase
         .from('tickets')
         .select('id, status, criado_em, primeira_resposta_em, encerrado_em')
         .in('setor_id', targetSetorIds)
-        .gte('criado_em', dateCutoff || startOfDay)
+        .gte('criado_em', effectiveDateCutoff)
       if (dateCutoffTo) todayQuery = todayQuery.lte('criado_em', dateCutoffTo)
       const { data: ticketsHoje } = await todayQuery
+
+      // Separate count queries to avoid Supabase 1000-row default limit
+      let countRecebidosQuery = supabase
+        .from('tickets')
+        .select('*', { count: 'exact', head: true })
+        .in('setor_id', targetSetorIds)
+        .gte('criado_em', effectiveDateCutoff)
+      if (dateCutoffTo) countRecebidosQuery = countRecebidosQuery.lte('criado_em', dateCutoffTo)
+      const { count: countRecebidos } = await countRecebidosQuery
+
+      let countResolvidosQuery = supabase
+        .from('tickets')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'encerrado')
+        .in('setor_id', targetSetorIds)
+        .gte('criado_em', effectiveDateCutoff)
+      if (dateCutoffTo) countResolvidosQuery = countResolvidosQuery.lte('criado_em', dateCutoffTo)
+      const { count: countResolvidos } = await countResolvidosQuery
 
       // Fetch atendentes across all accessible setores
       let atendentesQuery = supabase
@@ -262,8 +281,8 @@ export default function MonitoramentoPage() {
         temposHoje: {
           tempoMedioPrimeiraResposta: formatMs(avgFirstResp),
           tempoMedioResolucao: formatMs(avgResolution),
-          totalRecebidos: todayTickets.length,
-          totalResolvidos: ticketsFinalizados.length,
+          totalRecebidos: countRecebidos || 0,
+          totalResolvidos: countResolvidos || 0,
         },
       }
     },
