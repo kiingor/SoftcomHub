@@ -28,7 +28,9 @@ export async function POST(request: Request) {
       }
     }
 
-    const { colaboradorId, setOffline } = body
+    const { colaboradorId, setOffline, isOnline } = body as {
+      colaboradorId?: string; setOffline?: boolean; isOnline?: boolean
+    }
 
     if (!colaboradorId) {
       return NextResponse.json({ error: 'colaboradorId required' }, { status: 400 })
@@ -53,10 +55,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, action: 'offline' })
     }
 
-    // Keep-alive normal — apenas atualiza last_heartbeat
+    // Keep-alive normal — atualiza last_heartbeat + re-afirma is_online se informado
+    // Isso garante que o status no banco reflita o que o browser do usuário sabe
+    const updateData: Record<string, unknown> = {
+      last_heartbeat: new Date().toISOString(),
+    }
+    if (isOnline === true) {
+      updateData.is_online = true
+    }
+
     const { error } = await supabase
       .from('colaboradores')
-      .update({ last_heartbeat: new Date().toISOString() })
+      .update(updateData)
       .eq('id', colaboradorId)
 
     if (error) {

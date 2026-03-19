@@ -925,13 +925,13 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       }
     }
 
-    // ── Heartbeat a cada 30s — mantém last_heartbeat atualizado ──────────────
+    // ── Heartbeat a cada 30s — mantém last_heartbeat + re-afirma is_online ──
     const sendHeartbeat = () => {
       if (!isActive) return
       fetch('/api/colaborador/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colaboradorId }),
+        body: JSON.stringify({ colaboradorId, isOnline: colaborador.is_online }),
       }).catch(() => {})
     }
 

@@ -74,15 +74,22 @@ async function getAvailableColaboradores(
 
   console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}`)
 
+  // Heartbeat deve ser recente (< 2 min) para considerar colaborador realmente online
+  const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+  const now = Date.now()
+
+  const isHeartbeatFresh = (lastHeartbeat: string | null): boolean => {
+    if (!lastHeartbeat) return false
+    return (now - new Date(lastHeartbeat).getTime()) < HEARTBEAT_STALE_MS
+  }
+
   const colaboradoresMap = new Map<string, { id: string; nome: string }>()
 
   if (subsetorId) {
     // Caminho A: ticket com subsetor → buscar diretamente em colaboradores_subsetores
-    // Isso garante que encontramos o colaborador mesmo que colaboradores_setores
-    // não seja consultado (evita falha no estágio de pré-filtro).
     const { data: subsetorLinks, error: subErr } = await supabase
       .from('colaboradores_subsetores')
-      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
       .eq('setor_id', setorId)
       .eq('subsetor_id', subsetorId)
 
@@ -90,29 +97,33 @@ async function getAvailableColaboradores(
 
     ;(subsetorLinks || []).forEach((sl: any) => {
       const c = sl.colaboradores
-      if (c && c.ativo && c.is_online && !c.pausa_atual_id) {
+      if (c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat)) {
         colaboradoresMap.set(c.id, { id: c.id, nome: c.nome })
+      } else if (c && c.ativo && c.is_online && !isHeartbeatFresh(c.last_heartbeat)) {
+        console.log(`[TicketQueue] Colaborador ${c.nome} (${c.id}) is_online=true mas heartbeat stale (${c.last_heartbeat}) — ignorado`)
       }
     })
 
-    console.log(`[TicketQueue] Colaboradores online no subsetor ${subsetorId}: ${colaboradoresMap.size}`)
+    console.log(`[TicketQueue] Colaboradores online+fresh no subsetor ${subsetorId}: ${colaboradoresMap.size}`)
   } else {
     // Caminho B: ticket sem subsetor → qualquer colaborador online do setor
     const { data: setorLinks, error: setErr } = await supabase
       .from('colaboradores_setores')
-      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
       .eq('setor_id', setorId)
 
     console.log(`[TicketQueue] colaboradores_setores query: ${setorLinks?.length || 0} registros, error: ${setErr?.message || 'none'}`)
 
     ;(setorLinks || []).forEach((cs: any) => {
       const c = cs.colaboradores
-      if (c && c.ativo && c.is_online && !c.pausa_atual_id) {
+      if (c && c.ativo && c.is_online && !c.pausa_atual_id && isHeartbeatFresh(c.last_heartbeat)) {
         colaboradoresMap.set(c.id, { id: c.id, nome: c.nome })
+      } else if (c && c.ativo && c.is_online && !isHeartbeatFresh(c.last_heartbeat)) {
+        console.log(`[TicketQueue] Colaborador ${c.nome} (${c.id}) is_online=true mas heartbeat stale (${c.last_heartbeat}) — ignorado`)
       }
     })
 
-    console.log(`[TicketQueue] Colaboradores online no setor (sem subsetor): ${colaboradoresMap.size}`)
+    console.log(`[TicketQueue] Colaboradores online+fresh no setor (sem subsetor): ${colaboradoresMap.size}`)
   }
 
   if (colaboradoresMap.size === 0) return []
