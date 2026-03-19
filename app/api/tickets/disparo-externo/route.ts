@@ -174,29 +174,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // ─── Buscar instância Evolution do setor ──────────────────────────────────
-    const { data: canalEvolution } = await supabase
+    // ─── Buscar canal ativo do setor (Evolution OU API Oficial) ────────────────
+    // Tenta qualquer canal ativo — usa o primeiro que encontrar
+    const { data: canaisAtivos } = await supabase
       .from('setor_canais')
-      .select('evolution_base_url, evolution_api_key, instancia')
+      .select('id, tipo, instancia, evolution_base_url, evolution_api_key, phone_number_id, whatsapp_token, template_id, template_language')
       .eq('setor_id', setor_id)
-      .eq('tipo', 'evolution_api')
       .eq('ativo', true)
       .order('criado_em', { ascending: true })
-      .limit(1)
-      .maybeSingle()
 
-    const evolutionBaseUrl = canalEvolution?.evolution_base_url
-      || process.env.EVOLUTION_BASE_URL
-      || EVOLUTION_BASE_URL
-    const evolutionApiKey = canalEvolution?.evolution_api_key
-      || process.env.EVOLUTION_GLOBAL_API_KEY
-      || EVOLUTION_GLOBAL_API_KEY
-    const instanceName = canalEvolution?.instancia
+    // Também buscar config do setor como fallback para API oficial
+    const { data: setorConfig } = await supabase
+      .from('setores')
+      .select('template_id, phone_number_id, template_language, whatsapp_token')
+      .eq('id', setor_id)
+      .single()
 
-    if (!instanceName) {
+    const canalEvolution = canaisAtivos?.find((c: any) => c.tipo === 'evolution_api' && c.instancia) || null
+    const canalOficial = canaisAtivos?.find((c: any) => c.tipo === 'whatsapp' && (c.phone_number_id || setorConfig?.phone_number_id)) || null
+
+    if (!canalEvolution && !canalOficial) {
       return NextResponse.json(
         {
-          error: 'Nenhuma instância Evolution configurada e ativa neste setor',
+          error: 'Nenhum canal de atendimento (Evolution ou API Oficial) configurado e ativo neste setor',
           ticket_id: ticketId,
           ticket_numero: ticketNumero,
         },
@@ -204,65 +204,126 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // ─── Enviar mensagem via Evolution API ────────────────────────────────────
-    const baseUrl = evolutionBaseUrl.replace(/\/+$/, '')
-    const evolutionUrl = `${baseUrl}/message/sendText/${instanceName}`
+    let messageId: string | null = null
+    let canalEnvio: string = 'whatsapp'
+    let phoneNumberIdUsed: string | null = null
 
-    const evolutionResponse = await fetch(evolutionUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: evolutionApiKey,
-      },
-      body: JSON.stringify({
-        number: formattedPhone,
-        text: mensagem,
-        delay: 1000,
-      }),
-    })
+    // ─── Tentar enviar pelo primeiro canal disponível ─────────────────────────
+    if (canalEvolution) {
+      // ── EVOLUTION API ── envio de texto direto ──
+      const evolutionBaseUrl = (canalEvolution.evolution_base_url || process.env.EVOLUTION_BASE_URL || EVOLUTION_BASE_URL).replace(/\/+$/, '')
+      const evolutionApiKey = canalEvolution.evolution_api_key || process.env.EVOLUTION_GLOBAL_API_KEY || EVOLUTION_GLOBAL_API_KEY
+      const instanceName = canalEvolution.instancia
 
-    const evolutionData = await evolutionResponse.json()
+      const evolutionUrl = `${evolutionBaseUrl}/message/sendText/${instanceName}`
+      const evolutionResponse = await fetch(evolutionUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: evolutionApiKey },
+        body: JSON.stringify({ number: formattedPhone, text: mensagem, delay: 1000 }),
+      })
+      const evolutionData = await evolutionResponse.json()
 
-    if (!evolutionResponse.ok) {
-      console.error('[Disparo Externo] Evolution API error:', evolutionData)
-      return NextResponse.json(
-        {
-          error: 'Erro ao enviar mensagem via Evolution API',
-          details: evolutionData,
-          ticket_id: ticketId,
-          ticket_numero: ticketNumero,
+      if (!evolutionResponse.ok) {
+        console.error('[Disparo Externo] Evolution API error:', evolutionData)
+        return NextResponse.json(
+          { error: 'Erro ao enviar mensagem via Evolution API', details: evolutionData, ticket_id: ticketId, ticket_numero: ticketNumero },
+          { status: evolutionResponse.status },
+        )
+      }
+
+      messageId = evolutionData?.key?.id || evolutionData?.message?.key?.id || null
+      canalEnvio = 'evolutionapi'
+      phoneNumberIdUsed = instanceName
+
+      // Atualizar telefone canônico
+      const remoteJid: string | undefined = evolutionData?.key?.remoteJid || evolutionData?.message?.key?.remoteJid
+      if (remoteJid && remoteJid.endsWith('@s.whatsapp.net')) {
+        const canonicalPhone = remoteJid.replace('@s.whatsapp.net', '')
+        if (canonicalPhone && canonicalPhone !== formattedPhone) {
+          await supabase.from('clientes').update({ telefone: canonicalPhone }).eq('id', clienteId)
+          console.log(`[Disparo Externo] Telefone atualizado: ${formattedPhone} → ${canonicalPhone}`)
+        }
+      }
+    } else if (canalOficial) {
+      // ── API OFICIAL (Meta Cloud API) ── envio via template ──
+      const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
+      const templateId = canalOficial.template_id || setorConfig?.template_id
+      const officialPhoneNumberId = canalOficial.phone_number_id || setorConfig?.phone_number_id
+      const templateLanguage = canalOficial.template_language || setorConfig?.template_language || 'pt_BR'
+      const accessToken = canalOficial.whatsapp_token || setorConfig?.whatsapp_token || process.env.WHATSAPP_ACCESS_TOKEN
+
+      if (!templateId || !officialPhoneNumberId || !accessToken) {
+        return NextResponse.json(
+          { error: 'Canal oficial WhatsApp encontrado mas não configurado completamente (falta template_id, phone_number_id ou whatsapp_token)', ticket_id: ticketId, ticket_numero: ticketNumero },
+          { status: 400 },
+        )
+      }
+
+      // Enviar template — primeiro tenta com parâmetro (mensagem), depois sem
+      const buildPayload = (withParams: boolean) => ({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: formattedPhone,
+        type: 'template',
+        template: {
+          name: templateId,
+          language: { code: templateLanguage },
+          ...(withParams ? {
+            components: [{ type: 'body', parameters: [{ type: 'text', text: mensagem }] }],
+          } : {}),
         },
-        { status: evolutionResponse.status },
-      )
-    }
+      })
 
-    const evolutionMessageId =
-      evolutionData?.key?.id ||
-      evolutionData?.message?.key?.id ||
-      null
+      let whatsappResponse = await fetch(`${WHATSAPP_API_URL}/${officialPhoneNumberId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildPayload(true)),
+      })
+      let whatsappData = await whatsappResponse.json()
 
-    // ─── Atualizar telefone canônico do cliente (se @s.whatsapp.net) ──────────
-    const remoteJid: string | undefined =
-      evolutionData?.key?.remoteJid ||
-      evolutionData?.message?.key?.remoteJid
+      // Se erro de parâmetro (132000), retry sem parâmetros
+      if (!whatsappResponse.ok && whatsappData?.error?.code === 132000) {
+        whatsappResponse = await fetch(`${WHATSAPP_API_URL}/${officialPhoneNumberId}/messages`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildPayload(false)),
+        })
+        whatsappData = await whatsappResponse.json()
+      }
 
-    if (remoteJid && remoteJid.endsWith('@s.whatsapp.net')) {
-      const canonicalPhone = remoteJid.replace('@s.whatsapp.net', '')
-      if (canonicalPhone && canonicalPhone !== formattedPhone) {
-        await supabase.from('clientes').update({ telefone: canonicalPhone }).eq('id', clienteId)
-        console.log(`[Disparo Externo] Telefone atualizado: ${formattedPhone} → ${canonicalPhone}`)
+      if (!whatsappResponse.ok) {
+        console.error('[Disparo Externo] WhatsApp Official API error:', whatsappData)
+        return NextResponse.json(
+          { error: 'Erro ao enviar template via API Oficial WhatsApp', details: whatsappData, ticket_id: ticketId, ticket_numero: ticketNumero },
+          { status: whatsappResponse.status },
+        )
+      }
+
+      messageId = whatsappData.messages?.[0]?.id || null
+      canalEnvio = 'whatsapp'
+      phoneNumberIdUsed = officialPhoneNumberId
+
+      // Atualizar telefone canônico com wa_id
+      const waId = whatsappData.contacts?.[0]?.wa_id
+      if (waId && waId !== formattedPhone) {
+        await supabase.from('clientes').update({ telefone: waId }).eq('id', clienteId)
+        console.log(`[Disparo Externo] Telefone atualizado: ${formattedPhone} → ${waId}`)
       }
     }
 
     // ─── Salvar mensagem no banco ─────────────────────────────────────────────
+    const conteudoMensagem = canalEnvio === 'whatsapp'
+      ? `Cliente notificado via Template. Disparo externo. Aguardando resposta.`
+      : mensagem
+
     await supabase.from('mensagens').insert({
       ticket_id: ticketId,
       remetente: 'bot',
-      conteudo: mensagem,
+      conteudo: conteudoMensagem,
       tipo: 'texto',
-      phone_number_id: instanceName,
-      canal_envio: 'evolutionapi',
-      whatsapp_message_id: evolutionMessageId,
+      phone_number_id: phoneNumberIdUsed,
+      canal_envio: canalEnvio,
+      whatsapp_message_id: messageId,
       enviado_em: new Date().toISOString(),
     })
 
@@ -274,7 +335,9 @@ export async function POST(request: NextRequest) {
         ticket_id: ticketId,
         cliente_nome: nome,
         cliente_telefone: formattedPhone,
-        template_usado: `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+        template_usado: canalEnvio === 'whatsapp'
+          ? `[Template Oficial]`
+          : `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
         status: 'enviado',
       })
     } catch { /* tabela pode não existir */ }
@@ -287,7 +350,8 @@ export async function POST(request: NextRequest) {
       cliente_id: clienteId,
       colaborador_id: colaboradorId,
       distribuido,
-      evolution_message_id: evolutionMessageId,
+      canal_utilizado: canalEnvio === 'whatsapp' ? 'api_oficial' : 'evolution_api',
+      message_id: messageId,
     })
   } catch (error: any) {
     console.error('[Disparo Externo] Erro:', error)
