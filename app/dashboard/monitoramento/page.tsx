@@ -601,11 +601,11 @@ export default function MonitoramentoPage() {
     if (selectedAtendenteTransfer !== 'all') {
       const { data: atendenteData } = await supabase
         .from('colaboradores')
-        .select('id, is_online')
+        .select('id, is_online, ativo, last_heartbeat')
         .eq('id', selectedAtendenteTransfer)
         .single()
 
-      if (!atendenteData?.is_online) {
+      if (!isAtendenteOnline(atendenteData)) {
         toast.error('Este atendente está offline. Selecione um atendente online.')
         setTransferLoading(false)
         return
@@ -647,6 +647,16 @@ export default function MonitoramentoPage() {
     toast.success('Ticket transferido com sucesso')
     setTransferDialogOpen(false)
     setTransferLoading(false)
+
+    // Se o ticket foi para a fila (sem atendente), acionar distribuição imediata
+    if (selectedAtendenteTransfer === 'all') {
+      fetch('/api/tickets/auto-assign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }).catch(() => {})
+    }
+
     closeConversation()
     mutate()
   }

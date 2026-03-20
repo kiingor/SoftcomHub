@@ -1756,6 +1756,16 @@ const handleEncerrarTicket = async () => {
     toast.success('Ticket transferido com sucesso')
     setTransferDialogOpen(false)
 
+    // Se o ticket foi para a fila (sem atendente), acionar distribuição imediata
+    // para que o ticket seja atribuído a um atendente do novo setor
+    if (!targetAtendenteId) {
+      fetch('/api/tickets/auto-assign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }).catch(() => {})
+    }
+
     // Remove ticket from local state immediately (even if can_see_all_tickets)
     const transferredTicketId = selectedTicket.id
     setTickets((prev) => prev.filter((t) => t.id !== transferredTicketId))

@@ -462,6 +462,16 @@ export default function TicketsPage() {
       }
 
       toast({ title: 'Sucesso', description: 'Ticket transferido com sucesso' })
+
+      // Se o ticket foi para a fila (sem atendente), acionar distribuição imediata
+      if (!actualAtendenteId) {
+        fetch('/api/tickets/auto-assign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }).catch(() => {})
+      }
+
       setTransferModalOpen(false)
       setTransferSetorId('')
       setTransferAtendenteId('')
