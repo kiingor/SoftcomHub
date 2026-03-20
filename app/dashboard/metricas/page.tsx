@@ -174,7 +174,7 @@ export default function MetricasPage() {
         .in('setor_id', filterSetorIds)
       if (filterDate) firstResponseQuery = firstResponseQuery.gte('criado_em', filterDate)
       if (filterDateTo) firstResponseQuery = firstResponseQuery.lte('criado_em', filterDateTo)
-      const { data: firstResponseData } = await firstResponseQuery
+      const { data: firstResponseData } = await firstResponseQuery.limit(50000)
 
       let avgFirstResponse = 0
       if (firstResponseData && firstResponseData.length > 0) {
@@ -195,7 +195,7 @@ export default function MetricasPage() {
         .in('setor_id', filterSetorIds)
       if (filterDate) resolutionQuery = resolutionQuery.gte('criado_em', filterDate)
       if (filterDateTo) resolutionQuery = resolutionQuery.lte('criado_em', filterDateTo)
-      const { data: resolutionData } = await resolutionQuery
+      const { data: resolutionData } = await resolutionQuery.limit(50000)
 
       let avgResolution = 0
       if (resolutionData && resolutionData.length > 0) {
@@ -251,7 +251,7 @@ export default function MetricasPage() {
       if (filterDate) ticketQuery = ticketQuery.gte('criado_em', filterDate)
       if (filterDateTo) ticketQuery = ticketQuery.lte('criado_em', filterDateTo)
 
-      const { data: sectorData } = await ticketQuery
+      const { data: sectorData } = await ticketQuery.limit(50000)
 
       if (sectorData) {
         const sectorCounts: Record<string, number> = {}
@@ -276,7 +276,7 @@ export default function MetricasPage() {
       if (filterDate) colaboradorQuery = colaboradorQuery.gte('criado_em', filterDate)
       if (filterDateTo) colaboradorQuery = colaboradorQuery.lte('criado_em', filterDateTo)
 
-      const { data: colaboradorData } = await colaboradorQuery
+      const { data: colaboradorData } = await colaboradorQuery.limit(50000)
 
       if (colaboradorData) {
         const colaboradorCounts: Record<string, number> = {}
@@ -299,7 +299,7 @@ export default function MetricasPage() {
       if (filterDate) dailyQuery = dailyQuery.gte('criado_em', filterDate)
       if (filterDateTo) dailyQuery = dailyQuery.lte('criado_em', filterDateTo)
 
-      const { data: dailyData } = await dailyQuery
+      const { data: dailyData } = await dailyQuery.limit(50000)
 
       if (dailyData) {
         const dailyCounts: Record<string, number> = {}
