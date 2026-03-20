@@ -141,11 +141,33 @@ async function getAvailableColaboradores(
     }
   })
 
+  // Round-robin: desempate pelo último ticket recebido (quem recebeu há mais tempo vai primeiro)
+  const { data: lastAssigned } = await supabase
+    .from('tickets')
+    .select('colaborador_id, criado_em')
+    .in('colaborador_id', eligibleIds)
+    .not('colaborador_id', 'is', null)
+    .order('criado_em', { ascending: false })
+    .limit(eligibleIds.length * 2)
+
+  const lastAssignedMap = new Map<string, string>()
+  lastAssigned?.forEach((t: any) => {
+    if (t.colaborador_id && !lastAssignedMap.has(t.colaborador_id)) {
+      lastAssignedMap.set(t.colaborador_id, t.criado_em)
+    }
+  })
+
   return [...colaboradoresMap.values()]
-    .map(c => ({ ...c, ticketCount: countMap.get(c.id) || 0 }))
+    .map(c => ({
+      ...c,
+      ticketCount: countMap.get(c.id) || 0,
+      lastAssignedAt: lastAssignedMap.get(c.id) || '1970-01-01',
+    }))
     .sort((a, b) => {
+      // 1) Menor quantidade de tickets primeiro
       if (a.ticketCount !== b.ticketCount) return a.ticketCount - b.ticketCount
-      return a.id.localeCompare(b.id)
+      // 2) Empate: quem recebeu há MAIS tempo vai primeiro (round-robin real)
+      return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
     })
 }
 

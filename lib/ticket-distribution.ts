@@ -123,18 +123,42 @@ export async function criarEDistribuirTicket(
           }
         })
 
-        // Find collaborator with least tickets under the max limit
-        let bestColaborador: { id: string; count: number } | null = null
+        // Buscar o último ticket atribuído para desempate (round-robin real)
+        // Quem recebeu ticket mais recentemente vai pro fim da fila quando há empate
+        const { data: lastAssigned } = await supabase
+          .from('tickets')
+          .select('colaborador_id, criado_em')
+          .in('colaborador_id', colaboradorIds)
+          .not('colaborador_id', 'is', null)
+          .order('criado_em', { ascending: false })
+          .limit(colaboradorIds.length * 2)
 
-        for (const colab of finalColaboradores) {
-          const currentCount = countMap[colab.id] || 0
-          
-          if (currentCount < maxTicketsPerAgent) {
-            if (!bestColaborador || currentCount < bestColaborador.count) {
-              bestColaborador = { id: colab.id, count: currentCount }
-            }
+        // Mapa: colaboradorId → timestamp da última atribuição
+        const lastAssignedMap: Record<string, string> = {}
+        lastAssigned?.forEach(t => {
+          if (t.colaborador_id && !lastAssignedMap[t.colaborador_id]) {
+            lastAssignedMap[t.colaborador_id] = t.criado_em
           }
-        }
+        })
+
+        // Ordenar: 1) menor quantidade de tickets, 2) quem recebeu há mais tempo (ou nunca)
+        const sorted = finalColaboradores
+          .map(c => ({
+            id: c.id,
+            nome: c.nome,
+            count: countMap[c.id] || 0,
+            lastAssignedAt: lastAssignedMap[c.id] || '1970-01-01',
+          }))
+          .filter(c => c.count < maxTicketsPerAgent)
+          .sort((a, b) => {
+            if (a.count !== b.count) return a.count - b.count
+            // Empate: quem recebeu há MAIS tempo vai primeiro (round-robin)
+            return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
+          })
+
+        console.log(`[Distribution] Ranking: ${sorted.map(c => `${c.nome}(${c.count}t, last=${c.lastAssignedAt.slice(0,19)})`).join(', ')}`)
+
+        const bestColaborador = sorted.length > 0 ? sorted[0] : null
 
         if (bestColaborador) {
           // Assign the ticket to this collaborator
@@ -156,7 +180,7 @@ export async function criarEDistribuirTicket(
                 colaborador_id: bestColaborador.id,
                 setor_id: setorId,
                 action: 'auto_assigned',
-                assignment_reason: `Auto-assigned via round-robin (${bestColaborador.count} tickets)`,
+                assignment_reason: `Round-robin: ${bestColaborador.count} tickets, último recebido em ${bestColaborador.lastAssignedAt.slice(0,19)}`,
               })
             } catch { /* tabela pode não existir */ }
           }
@@ -285,15 +309,35 @@ async function _tentarDistribuirNoSetor(
     }
   })
 
-  let bestColaborador: { id: string; count: number } | null = null
-  for (const colab of colaboradores) {
-    const currentCount = countMap[colab.id] || 0
-    if (currentCount < maxTicketsPerAgent) {
-      if (!bestColaborador || currentCount < bestColaborador.count) {
-        bestColaborador = { id: colab.id, count: currentCount }
-      }
+  // Round-robin: desempate pelo último ticket recebido
+  const { data: lastAssigned } = await supabase
+    .from('tickets')
+    .select('colaborador_id, criado_em')
+    .in('colaborador_id', colaboradorIds)
+    .not('colaborador_id', 'is', null)
+    .order('criado_em', { ascending: false })
+    .limit(colaboradorIds.length * 2)
+
+  const lastAssignedMap: Record<string, string> = {}
+  lastAssigned?.forEach(t => {
+    if (t.colaborador_id && !lastAssignedMap[t.colaborador_id]) {
+      lastAssignedMap[t.colaborador_id] = t.criado_em
     }
-  }
+  })
+
+  const sorted = colaboradores
+    .map(c => ({
+      id: c.id,
+      count: countMap[c.id] || 0,
+      lastAssignedAt: lastAssignedMap[c.id] || '1970-01-01',
+    }))
+    .filter(c => c.count < maxTicketsPerAgent)
+    .sort((a, b) => {
+      if (a.count !== b.count) return a.count - b.count
+      return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
+    })
+
+  const bestColaborador = sorted.length > 0 ? sorted[0] : null
 
   if (!bestColaborador) return null
 
@@ -449,6 +493,22 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       }
     })
 
+    // Round-robin: buscar último ticket recebido por cada colaborador para desempate
+    const { data: lastAssigned } = await supabase
+      .from('tickets')
+      .select('colaborador_id, criado_em')
+      .in('colaborador_id', colaboradorIds)
+      .not('colaborador_id', 'is', null)
+      .order('criado_em', { ascending: false })
+      .limit(colaboradorIds.length * 2)
+
+    const lastAssignedMap: Record<string, string> = {}
+    lastAssigned?.forEach(t => {
+      if (t.colaborador_id && !lastAssignedMap[t.colaborador_id]) {
+        lastAssignedMap[t.colaborador_id] = t.criado_em
+      }
+    })
+
     // Distribute tickets respecting subsetor
     for (const ticket of pendingTickets) {
       let eligibleColaboradores = allColaboradores
@@ -458,25 +518,26 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const subsetorColabIds = subsetorToColabs[ticket.subsetor_id]
         if (subsetorColabIds && subsetorColabIds.size > 0) {
           const filtered = allColaboradores.filter(c => subsetorColabIds.has(c.id))
-          eligibleColaboradores = filtered // pode ser [] se nenhum do subsetor está online
+          eligibleColaboradores = filtered
         } else {
-          // Subsetor não tem nenhum colaborador cadastrado ou online → não atribuir
           eligibleColaboradores = []
         }
       }
 
-      // Find collaborator with least tickets under limit
-      let bestColaborador: { id: string; count: number } | null = null
+      // Ordenar: 1) menor qtd tickets, 2) quem recebeu há mais tempo (round-robin)
+      const sorted = eligibleColaboradores
+        .map(c => ({
+          id: c.id,
+          count: countMap[c.id] || 0,
+          lastAssignedAt: lastAssignedMap[c.id] || '1970-01-01',
+        }))
+        .filter(c => c.count < maxTicketsPerAgent)
+        .sort((a, b) => {
+          if (a.count !== b.count) return a.count - b.count
+          return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
+        })
 
-      for (const colab of eligibleColaboradores) {
-        const currentCount = countMap[colab.id] || 0
-        
-        if (currentCount < maxTicketsPerAgent) {
-          if (!bestColaborador || currentCount < bestColaborador.count) {
-            bestColaborador = { id: colab.id, count: currentCount }
-          }
-        }
-      }
+      const bestColaborador = sorted.length > 0 ? sorted[0] : null
 
       if (bestColaborador) {
         const { error } = await supabase
@@ -488,13 +549,14 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
           .eq('id', ticket.id)
 
         if (!error) {
-          // Update count map
+          // Update count map e lastAssignedMap para próximas iterações
           countMap[bestColaborador.id] = (countMap[bestColaborador.id] || 0) + 1
+          lastAssignedMap[bestColaborador.id] = new Date().toISOString()
           assignedCount++
 
-          const reason = ticket.subsetor_id 
-            ? `Redistribuição automática (subsetor: ${ticket.subsetor_id})`
-            : 'Redistribuição automática de tickets pendentes'
+          const reason = ticket.subsetor_id
+            ? `Round-robin redistribuição (subsetor: ${ticket.subsetor_id}, ${bestColaborador.count} tickets)`
+            : `Round-robin redistribuição (${bestColaborador.count} tickets)`
 
           try {
             await supabase.from('ticket_assignment_logs').insert({
