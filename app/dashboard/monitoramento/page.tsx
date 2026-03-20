@@ -4,8 +4,6 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
-import { DateRange } from 'react-day-picker'
-import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -113,8 +111,6 @@ export default function MonitoramentoPage() {
   const [setorFilter, setSetorFilter] = useState<string>('all')
   const [subsetorFilter, setSubsetorFilter] = useState<string>('all')
   const [subsetoresDisponiveis, setSubsetoresDisponiveis] = useState<{id: string, nome: string}[]>([])
-  const [dateFilter, setDateFilter] = useState<string>('today')
-  const [customRange, setCustomRange] = useState<DateRange | undefined>()
   const [searchTerm, setSearchTerm] = useState('')
   const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
   const [filtrosAtendenteOpen, setFiltrosAtendenteOpen] = useState(false)
@@ -181,13 +177,10 @@ export default function MonitoramentoPage() {
   // Fetch monitoring data
   const { data, isLoading, mutate } = useSWR(
     colaborador && setorIdsFiltrados.length > 0
-      ? ['dashboard-monitoramento', setorIdsFiltrados.join(','), setorFilter, tagFilter, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()]
+      ? ['dashboard-monitoramento', setorIdsFiltrados.join(','), setorFilter, tagFilter]
       : null,
     async () => {
       const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsFiltrados
-
-      // Calculate date cutoff
-    const { from: dateCutoff, to: dateCutoffTo } = getDateCutoffs(dateFilter, customRange)
 
       // Fetch active tickets (aberto + em_atendimento) across all accessible setores
       let ticketsQuery = supabase
@@ -197,35 +190,28 @@ export default function MonitoramentoPage() {
         .in('status', ['aberto', 'em_atendimento'])
       const { data: ticketsAtivos } = await ticketsQuery
 
-      // Fetch today's tickets (for stats — tempo medio calculations)
+      // Fetch today's tickets (for stats)
       const now = new Date()
       const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
-      const effectiveDateCutoff = dateCutoff || startOfDay
-      let todayQuery = supabase
+      const { data: ticketsHoje } = await supabase
         .from('tickets')
         .select('id, status, criado_em, primeira_resposta_em, encerrado_em')
         .in('setor_id', targetSetorIds)
-        .gte('criado_em', effectiveDateCutoff)
-      if (dateCutoffTo) todayQuery = todayQuery.lte('criado_em', dateCutoffTo)
-      const { data: ticketsHoje } = await todayQuery
+        .gte('criado_em', startOfDay)
 
       // Separate count queries to avoid Supabase 1000-row default limit
-      let countRecebidosQuery = supabase
+      const { count: countRecebidos } = await supabase
         .from('tickets')
         .select('*', { count: 'exact', head: true })
         .in('setor_id', targetSetorIds)
-        .gte('criado_em', effectiveDateCutoff)
-      if (dateCutoffTo) countRecebidosQuery = countRecebidosQuery.lte('criado_em', dateCutoffTo)
-      const { count: countRecebidos } = await countRecebidosQuery
+        .gte('criado_em', startOfDay)
 
-      let countResolvidosQuery = supabase
+      const { count: countResolvidos } = await supabase
         .from('tickets')
         .select('*', { count: 'exact', head: true })
         .eq('status', 'encerrado')
         .in('setor_id', targetSetorIds)
-        .gte('criado_em', effectiveDateCutoff)
-      if (dateCutoffTo) countResolvidosQuery = countResolvidosQuery.lte('criado_em', dateCutoffTo)
-      const { count: countResolvidos } = await countResolvidosQuery
+        .gte('criado_em', startOfDay)
 
       // Fetch atendentes across all accessible setores
       let atendentesQuery = supabase
@@ -682,9 +668,6 @@ export default function MonitoramentoPage() {
     mutate()
   }
 
-  const dateFilterLabel = dateFilter === 'custom' && customRange?.from
-    ? `${customRange.from.toLocaleDateString('pt-BR')}${customRange.to ? ' - ' + customRange.to.toLocaleDateString('pt-BR') : ''}`
-    : dateFilter === 'today' ? 'Hoje' : dateFilter === 'all' ? 'Todo periodo' : `Ultimos ${dateFilter} dias`
 
   return (
     <div className="space-y-6">
@@ -749,14 +732,6 @@ export default function MonitoramentoPage() {
               </SelectContent>
             </Select>
           )}
-          <DatePeriodFilter
-            dateFilter={dateFilter}
-            onDateFilterChange={setDateFilter}
-            customRange={customRange}
-            onCustomRangeChange={setCustomRange}
-            showToday={true}
-            triggerClassName="w-40"
-          />
           <Popover open={filtrosAtendenteOpen} onOpenChange={setFiltrosAtendenteOpen}>
             <PopoverTrigger asChild>
               <Button
@@ -927,7 +902,7 @@ export default function MonitoramentoPage() {
         <Card className="glass-card-elevated rounded-2xl border-0">
           <CardContent className="pt-6">
             <div className="text-center space-y-1">
-              <p className="text-xs text-muted-foreground">Tickets recebidos ({dateFilterLabel})</p>
+              <p className="text-xs text-muted-foreground">Tickets recebidos (Hoje)</p>
               <p className="text-2xl font-bold text-foreground">{temposHoje.totalRecebidos}</p>
             </div>
           </CardContent>
@@ -935,7 +910,7 @@ export default function MonitoramentoPage() {
         <Card className="glass-card-elevated rounded-2xl border-0">
           <CardContent className="pt-6">
             <div className="text-center space-y-1">
-              <p className="text-xs text-muted-foreground">Tickets resolvidos ({dateFilterLabel})</p>
+              <p className="text-xs text-muted-foreground">Tickets resolvidos (Hoje)</p>
               <p className="text-2xl font-bold text-green-500">{temposHoje.totalResolvidos}</p>
             </div>
           </CardContent>
