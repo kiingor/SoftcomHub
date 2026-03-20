@@ -706,6 +706,9 @@ export default function SetorPage() {
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [conversationTab, setConversationTab] = useState<'atendimento' | 'transferir' | 'info'>('atendimento')
   const [transferringTo, setTransferringTo] = useState<string>('')
+  const [transferSetorDestino, setTransferSetorDestino] = useState<string>('')
+  const [transferAtendentesDestino, setTransferAtendentesDestino] = useState<any[]>([])
+  const [loadingTransferAtendentes, setLoadingTransferAtendentes] = useState(false)
 
   const { data, isLoading, mutate } = useSWR(
     setorId ? ['setor-detail', setorId] : null,
@@ -2250,33 +2253,114 @@ const saveConfig = async () => {
   }
 
   // Transfer ticket to another attendant
-  const transferTicket = async () => {
-    if (!transferringTo || !selectedTicket) return
-    
+  // Buscar atendentes do setor destino para transferência
+  const fetchTransferAtendentes = async (targetSetorId: string) => {
+    setLoadingTransferAtendentes(true)
+    setTransferringTo('')
     try {
+      const { data: csData } = await supabase
+        .from('colaboradores_setores')
+        .select('colaborador_id')
+        .eq('setor_id', targetSetorId)
+      if (csData && csData.length > 0) {
+        const ids = csData.map((cs: any) => cs.colaborador_id)
+        const { data: colabData } = await supabase
+          .from('colaboradores')
+          .select('id, nome, is_online, ativo, last_heartbeat')
+          .in('id', ids)
+          .eq('ativo', true)
+        setTransferAtendentesDestino(colabData || [])
+      } else {
+        setTransferAtendentesDestino([])
+      }
+    } catch {
+      setTransferAtendentesDestino([])
+    } finally {
+      setLoadingTransferAtendentes(false)
+    }
+  }
+
+  const handleTransferSetorChange = (val: string) => {
+    setTransferSetorDestino(val)
+    if (val && val !== setorId) {
+      fetchTransferAtendentes(val)
+    } else if (val === setorId) {
+      // Mesmo setor: usar atendentes locais
+      setTransferAtendentesDestino([])
+    }
+  }
+
+  const HEARTBEAT_STALE_MS_TRANSFER = 3 * 60 * 1000
+  const isTransferAtendenteOnline = (a: any) => {
+    if (!a?.is_online || !a?.ativo) return false
+    if (!a.last_heartbeat) return false
+    return (Date.now() - new Date(a.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS_TRANSFER
+  }
+
+  const transferTicket = async () => {
+    if (!selectedTicket) return
+
+    const isOutroSetor = transferSetorDestino && transferSetorDestino !== setorId
+    const hasAtendente = !!transferringTo && transferringTo !== '__fila__'
+
+    // Precisa de pelo menos um setor diferente ou um atendente selecionado
+    if (!isOutroSetor && !hasAtendente) return
+
+    try {
+      const updateData: Record<string, any> = {}
+      if (isOutroSetor) {
+        updateData.setor_id = transferSetorDestino
+        updateData.subsetor_id = null
+      }
+      if (hasAtendente) {
+        updateData.colaborador_id = transferringTo
+        updateData.status = 'em_atendimento'
+      } else {
+        updateData.colaborador_id = null
+        updateData.status = 'aberto'
+      }
+
       const { error } = await supabase
         .from('tickets')
-        .update({ colaborador_id: transferringTo })
+        .update(updateData)
         .eq('id', selectedTicket.id)
 
       if (error) throw error
 
       // Insert system message in chat for transfer visibility
       const fromColabName = atendentes.find((a: any) => a.id === selectedTicket.colaborador_id)?.nome || 'Sem atendente'
-      const toColabName = atendentes.find((a: any) => a.id === transferringTo)?.nome || 'Desconhecido'
-      const setorNome = data?.setor?.nome || 'Setor'
+      const fromSetorNome = data?.setor?.nome || 'Setor'
+      const toSetorNome = isOutroSetor
+        ? todosSetores.find(s => s.id === transferSetorDestino)?.nome || 'Outro setor'
+        : fromSetorNome
+      const toColabName = hasAtendente
+        ? (isOutroSetor
+          ? transferAtendentesDestino.find((a: any) => a.id === transferringTo)?.nome
+          : atendentes.find((a: any) => a.id === transferringTo)?.nome) || 'Desconhecido'
+        : 'Aguardando atendente'
 
       await supabase.from('mensagens').insert({
         ticket_id: selectedTicket.id,
         cliente_id: selectedTicket.cliente_id,
         remetente: 'sistema',
-        conteudo: `Transferido de ${fromColabName} - ${setorNome} >> ${toColabName} - ${setorNome}`,
+        conteudo: `Transferido de ${fromColabName} - ${fromSetorNome} >> ${toColabName} - ${toSetorNome}`,
         tipo: 'texto',
         enviado_em: new Date().toISOString(),
       })
-      
+
+      // Se transferiu para fila (sem atendente), acionar distribuição imediata
+      if (!hasAtendente) {
+        fetch('/api/tickets/auto-assign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }).catch(() => {})
+      }
+
       toast.success('Ticket transferido com sucesso!')
       setTransferringTo('')
+      setTransferSetorDestino('')
+      setTransferAtendentesDestino([])
       closeConversation()
       mutate()
     } catch (error) {
@@ -5646,42 +5730,102 @@ const saveConfig = async () => {
               {/* Transferir Tab */}
               {conversationTab === 'transferir' && (
                 <div className="p-4 space-y-4">
+                  {/* Setor destino */}
                   <div>
-                    <Label>Transferir para</Label>
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Selecione um atendente online para transferir este ticket
-                    </p>
-                    <Select value={transferringTo} onValueChange={setTransferringTo}>
+                    <Label>Setor destino</Label>
+                    <Select value={transferSetorDestino} onValueChange={handleTransferSetorChange}>
                       <SelectTrigger>
-                        <SelectValue placeholder="Selecione um atendente" />
+                        <SelectValue placeholder="Selecione o setor" />
                       </SelectTrigger>
                       <SelectContent>
-                        {atendentes
-                          .filter((a: any) => a.is_online && a.id !== selectedTicket.colaborador_id)
-                          .map((atendente: any) => (
-                            <SelectItem key={atendente.id} value={atendente.id}>
-                              <div className="flex items-center gap-2">
-                                <span className="h-2 w-2 rounded-full bg-green-500" />
-                                {atendente.nome}
-                              </div>
-                            </SelectItem>
+                        {/* Setor atual */}
+                        <SelectItem value={setorId}>
+                          {data?.setor?.nome || 'Setor atual'} (atual)
+                        </SelectItem>
+                        {/* Outros setores */}
+                        {todosSetores
+                          .filter(s => s.id !== setorId)
+                          .map(s => (
+                            <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
                           ))}
                       </SelectContent>
                     </Select>
                   </div>
 
-                  {atendentes.filter((a: any) => a.is_online && a.id !== selectedTicket.colaborador_id).length === 0 && (
-                    <div className="rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
-                      <AlertCircle className="inline-block mr-2 h-4 w-4" />
-                      Nenhum outro atendente online disponível para transferência.
+                  {/* Atendente destino */}
+                  {transferSetorDestino && (
+                    <div>
+                      <Label>Transferir para</Label>
+                      <p className="text-xs text-muted-foreground mb-2">
+                        Selecione um atendente ou deixe na fila para distribuição automática
+                      </p>
+                      {loadingTransferAtendentes ? (
+                        <div className="flex items-center justify-center py-4">
+                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : (
+                        <Select value={transferringTo} onValueChange={setTransferringTo}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione um atendente" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {/* Opção para enviar à fila */}
+                            {transferSetorDestino !== setorId && (
+                              <SelectItem value="__fila__">
+                                <div className="flex items-center gap-2">
+                                  <Clock className="h-3.5 w-3.5 text-amber-500" />
+                                  <span>Deixar na fila (distribuição automática)</span>
+                                </div>
+                              </SelectItem>
+                            )}
+                            {/* Lista de atendentes */}
+                            {(transferSetorDestino === setorId ? atendentes : transferAtendentesDestino)
+                              .filter((a: any) => {
+                                if (transferSetorDestino === setorId) {
+                                  return a.id !== selectedTicket?.colaborador_id
+                                }
+                                return true
+                              })
+                              .map((a: any) => {
+                                const online = isTransferAtendenteOnline(a)
+                                return (
+                                  <SelectItem key={a.id} value={a.id}>
+                                    <div className="flex items-center gap-2">
+                                      <span className={`h-2 w-2 rounded-full ${online ? 'bg-green-500' : 'bg-gray-300'}`} />
+                                      {a.nome}
+                                      {!online && <span className="text-xs text-muted-foreground">(offline)</span>}
+                                    </div>
+                                  </SelectItem>
+                                )
+                              })}
+                          </SelectContent>
+                        </Select>
+                      )}
+
+                      {/* Aviso se nenhum atendente disponível no setor destino */}
+                      {!loadingTransferAtendentes && transferSetorDestino !== setorId && transferAtendentesDestino.length === 0 && (
+                        <div className="mt-2 rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
+                          <AlertCircle className="inline-block mr-2 h-4 w-4" />
+                          Nenhum atendente neste setor. O ticket ficará na fila.
+                        </div>
+                      )}
+
+                      {!loadingTransferAtendentes && transferSetorDestino === setorId &&
+                        atendentes.filter((a: any) => a.id !== selectedTicket?.colaborador_id).length === 0 && (
+                        <div className="mt-2 rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
+                          <AlertCircle className="inline-block mr-2 h-4 w-4" />
+                          Nenhum outro atendente disponível neste setor.
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  <Button 
-                    className="w-full" 
+                  <Button
+                    className="w-full"
                     onClick={transferTicket}
-                    disabled={!transferringTo}
+                    disabled={!transferSetorDestino || (transferSetorDestino === setorId && !transferringTo)}
                   >
+                    <ArrowRightLeft className="mr-2 h-4 w-4" />
                     Confirmar Transferência
                   </Button>
                 </div>

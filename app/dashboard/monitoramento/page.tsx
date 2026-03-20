@@ -88,6 +88,28 @@ export default function MonitoramentoPage() {
   const { data: setoresAcessiveis = [] } = useSetores(colaborador?.id, colaborador?.is_master)
   const setorIdsAcessiveis = setoresAcessiveis.map((s: any) => s.id)
 
+  const [tagFilter, setTagFilter] = useState<string>('all')
+
+  // Extrair tags únicas dos setores acessíveis
+  const tagsDisponiveis = useMemo(() => {
+    const tagMap = new Map<string, { id: string; nome: string; cor: string }>()
+    setoresAcessiveis.forEach((s: any) => {
+      if (s.tags) {
+        tagMap.set(s.tags.id, { id: s.tags.id, nome: s.tags.nome, cor: s.tags.cor })
+      }
+    })
+    return Array.from(tagMap.values()).sort((a, b) => a.nome.localeCompare(b.nome))
+  }, [setoresAcessiveis])
+
+  // Setores filtrados por tag
+  const setoresFiltradosPorTag = useMemo(() => {
+    if (tagFilter === 'all') return setoresAcessiveis
+    return setoresAcessiveis.filter((s: any) => s.tags?.id === tagFilter)
+  }, [setoresAcessiveis, tagFilter])
+
+  const setorIdsFiltrados = useMemo(() => {
+    return setoresFiltradosPorTag.map((s: any) => s.id)
+  }, [setoresFiltradosPorTag])
   const [setorFilter, setSetorFilter] = useState<string>('all')
   const [subsetorFilter, setSubsetorFilter] = useState<string>('all')
   const [subsetoresDisponiveis, setSubsetoresDisponiveis] = useState<{id: string, nome: string}[]>([])
@@ -137,7 +159,7 @@ export default function MonitoramentoPage() {
   // Fetch subsetores when setor filter changes
   useEffect(() => {
     async function fetchSubsetores() {
-      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsAcessiveis
+      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsFiltrados
       if (targetSetorIds.length === 0) {
         setSubsetoresDisponiveis([])
         return
@@ -151,18 +173,18 @@ export default function MonitoramentoPage() {
       setSubsetoresDisponiveis(data || [])
       setSubsetorFilter('all') // Reset subsetor filter when setor changes
     }
-    if (colaborador && setorIdsAcessiveis.length > 0) {
+    if (colaborador && setorIdsFiltrados.length > 0) {
       fetchSubsetores()
     }
-  }, [setorFilter, colaborador, setorIdsAcessiveis.length, supabase])
+  }, [setorFilter, tagFilter, colaborador, setorIdsFiltrados.length, supabase])
 
   // Fetch monitoring data
   const { data, isLoading, mutate } = useSWR(
-    colaborador && setorIdsAcessiveis.length > 0
-      ? ['dashboard-monitoramento', setorIdsAcessiveis.join(','), setorFilter, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()]
+    colaborador && setorIdsFiltrados.length > 0
+      ? ['dashboard-monitoramento', setorIdsFiltrados.join(','), setorFilter, tagFilter, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()]
       : null,
     async () => {
-      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsAcessiveis
+      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsFiltrados
 
       // Calculate date cutoff
     const { from: dateCutoff, to: dateCutoffTo } = getDateCutoffs(dateFilter, customRange)
@@ -364,7 +386,6 @@ export default function MonitoramentoPage() {
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         setor: t.setores?.nome || '-',
         subsetor: t.subsetores?.nome || null,
-        colaboradores: t.colaboradores || null,
         atendente: t.colaboradores?.nome || null,
         status: t.status,
         primeira_resposta_em: t.primeira_resposta_em,
@@ -681,13 +702,35 @@ export default function MonitoramentoPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {tagsDisponiveis.length > 0 && (
+            <Select value={tagFilter} onValueChange={(val) => {
+              setTagFilter(val)
+              setSetorFilter('all')
+              setSubsetorFilter('all')
+            }}>
+              <SelectTrigger className="w-40 bg-card">
+                <SelectValue placeholder="Todas as tags" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas as tags</SelectItem>
+                {tagsDisponiveis.map((tag) => (
+                  <SelectItem key={tag.id} value={tag.id}>
+                    <div className="flex items-center gap-2">
+                      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.cor || '#888' }} />
+                      {tag.nome}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select value={setorFilter} onValueChange={setSetorFilter}>
             <SelectTrigger className="w-48 bg-card">
               <SelectValue placeholder="Todos os setores" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os setores</SelectItem>
-              {setoresAcessiveis.map((s: any) => (
+              {setoresFiltradosPorTag.map((s: any) => (
                 <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
               ))}
             </SelectContent>
