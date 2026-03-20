@@ -662,10 +662,10 @@ export default function MetricasPage() {
                     color: '#FBC02D',
                   },
                 }}
-                className="h-[350px]"
+                className="h-[400px] w-full"
               >
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={dailyVolume} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                  <LineChart data={dailyVolume} margin={{ top: 20, right: 40, left: 20, bottom: 20 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                     <XAxis
                       dataKey="date"
@@ -687,7 +687,7 @@ export default function MetricasPage() {
                 </ResponsiveContainer>
               </ChartContainer>
             ) : (
-              <div className="flex h-[350px] items-center justify-center text-muted-foreground">
+              <div className="flex h-[400px] items-center justify-center text-muted-foreground">
                 Nenhum dado disponível
               </div>
             )}
