@@ -166,7 +166,13 @@ export default function WorkdeskLayout({
 
   const handleLogout = async () => {
     if (colaborador?.id) {
-      await supabase.from('colaboradores').update({ is_online: false }).eq('id', colaborador.id)
+      // Usa API route (service role) para garantir que o offline seja escrito
+      // Supabase client-side com RLS bloqueia silenciosamente esta escrita
+      await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId: colaborador.id, isOnline: false, pausaAtualId: null }),
+      }).catch(() => {})
     }
     await supabase.auth.signOut()
     router.push('/workdesk/login')
@@ -225,9 +231,13 @@ export default function WorkdeskLayout({
       return
     }
 
-    // Marcar offline e fazer logout
+    // Marcar offline e fazer logout via API route (service role)
     if (colaborador?.id) {
-      await supabase.from('colaboradores').update({ is_online: false }).eq('id', colaborador.id)
+      await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId: colaborador.id, isOnline: false, pausaAtualId: null }),
+      }).catch(() => {})
     }
     await supabase.auth.signOut()
     router.push('/workdesk/login')

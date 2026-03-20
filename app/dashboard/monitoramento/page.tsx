@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
@@ -101,6 +101,14 @@ export default function MonitoramentoPage() {
   const [searchAtendente, setSearchAtendente] = useState('')
   const [, setTick] = useState(0)
 
+  // Helper: verifica se atendente está efetivamente online (is_online + heartbeat fresco)
+  const HEARTBEAT_STALE_THRESHOLD = 3 * 60 * 1000
+  const isAtendenteOnline = useCallback((atendente: any): boolean => {
+    if (!atendente?.is_online || !atendente?.ativo) return false
+    if (!atendente.last_heartbeat) return false
+    return (Date.now() - new Date(atendente.last_heartbeat).getTime()) < HEARTBEAT_STALE_THRESHOLD
+  }, [])
+
   // Conversation panel state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
@@ -200,15 +208,16 @@ export default function MonitoramentoPage() {
       // Fetch atendentes across all accessible setores
       let atendentesQuery = supabase
         .from('colaboradores_setores')
-        .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id)')
+        .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
         .in('setor_id', targetSetorIds)
       const { data: atendentesData } = await atendentesQuery
 
       // Deduplicate atendentes (same person can be in multiple setores)
       const atendentesMap = new Map()
       for (const a of atendentesData || []) {
-        if (a.colaboradores && !atendentesMap.has(a.colaboradores.id)) {
-          atendentesMap.set(a.colaboradores.id, a.colaboradores)
+        const colab = (a as any).colaboradores
+        if (colab && !atendentesMap.has(colab.id)) {
+          atendentesMap.set(colab.id, colab)
         }
       }
       const atendentes = Array.from(atendentesMap.values())
@@ -221,7 +230,14 @@ export default function MonitoramentoPage() {
       const ticketsEmAtendimento = tickets.filter((t: any) => t.status === 'em_atendimento')
       const ticketsFinalizados = todayTickets.filter((t: any) => t.status === 'encerrado')
 
-      const atendentesOnline = atendentes.filter((c: any) => c.is_online && c.ativo && !c.pausa_atual_id)
+      // Considerar online SOMENTE se is_online=true E heartbeat é recente (< 3 min)
+      const HEARTBEAT_STALE_MS = 3 * 60 * 1000
+      const isEffectivelyOnline = (c: any) => {
+        if (!c.is_online || !c.ativo || c.pausa_atual_id) return false
+        if (!c.last_heartbeat) return false
+        return (nowMs - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
+      }
+      const atendentesOnline = atendentes.filter(isEffectivelyOnline)
       const atendentesEmPausa = atendentes.filter((c: any) => c.pausa_atual_id && c.ativo)
 
       // Max times
@@ -403,9 +419,13 @@ export default function MonitoramentoPage() {
         ticketsAtivos: ticketCountPorAtendente.get(a.id) || 0,
       }))
       .sort((a: any, b: any) => {
-        // Online first, then pausa, then offline
+        // Online (com heartbeat fresco) first, then pausa, then offline
+        const STALE_MS = 3 * 60 * 1000
+        const isReallyOnline = (x: any) =>
+          x.is_online && !x.pausa_atual_id && x.last_heartbeat &&
+          (Date.now() - new Date(x.last_heartbeat).getTime()) < STALE_MS
         const order = (x: any) => {
-          if (x.is_online && !x.pausa_atual_id) return 0
+          if (isReallyOnline(x)) return 0
           if (x.pausa_atual_id) return 1
           return 2
         }
@@ -535,7 +555,7 @@ export default function MonitoramentoPage() {
       const ids = csData.map((cs: any) => cs.colaborador_id)
       const { data: colabData } = await supabase
         .from('colaboradores')
-        .select('id, nome, is_online, ativo')
+        .select('id, nome, is_online, ativo, last_heartbeat')
         .in('id', ids)
         .eq('ativo', true)
         .neq('id', selectedTicket?.colaborador_id || '')
@@ -558,7 +578,7 @@ export default function MonitoramentoPage() {
       const ids = csData.map((cs: any) => cs.colaborador_id)
       const { data: colabData } = await supabase
         .from('colaboradores')
-        .select('id, nome, is_online, ativo')
+        .select('id, nome, is_online, ativo, last_heartbeat')
         .in('id', ids)
         .eq('ativo', true)
       setAtendentesDisponiveis(colabData || [])
@@ -1076,7 +1096,7 @@ export default function MonitoramentoPage() {
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     {atendentesLista.map((atendente: any) => {
-                      const isOnline = atendente.is_online && !atendente.pausa_atual_id
+                      const isOnline = isAtendenteOnline(atendente) && !atendente.pausa_atual_id
                       const isPausa = !!atendente.pausa_atual_id
                       return (
                         <div
@@ -1227,21 +1247,24 @@ export default function MonitoramentoPage() {
                     <SelectValue placeholder="Escolha um atendente..." />
                   </SelectTrigger>
                   <SelectContent>
-                    {atendentesDisponiveis.map((atendente) => (
-                      <SelectItem key={atendente.id} value={atendente.id} disabled={!atendente.is_online}>
-                        <div className="flex items-center gap-2">
-                          <span className={cn('h-2 w-2 rounded-full', atendente.is_online ? 'bg-green-500' : 'bg-gray-400')} />
-                          <span className={!atendente.is_online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
-                          {!atendente.is_online && <span className="text-xs text-muted-foreground">(Offline)</span>}
-                        </div>
-                      </SelectItem>
-                    ))}
+                    {atendentesDisponiveis.map((atendente) => {
+                      const online = isAtendenteOnline(atendente)
+                      return (
+                        <SelectItem key={atendente.id} value={atendente.id} disabled={!online}>
+                          <div className="flex items-center gap-2">
+                            <span className={cn('h-2 w-2 rounded-full', online ? 'bg-green-500' : 'bg-gray-400')} />
+                            <span className={!online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
+                            {!online && <span className="text-xs text-muted-foreground">(Offline)</span>}
+                          </div>
+                        </SelectItem>
+                      )
+                    })}
                   </SelectContent>
                 </Select>
                 {atendentesDisponiveis.length === 0 && (
                   <p className="text-sm text-muted-foreground">Nenhum outro atendente neste setor.</p>
                 )}
-                {atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => a.is_online) && (
+                {atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
                   <p className="text-sm text-amber-600">Todos os atendentes estão offline.</p>
                 )}
               </div>
@@ -1251,13 +1274,13 @@ export default function MonitoramentoPage() {
                   !selectedAtendenteTransfer ||
                   selectedAtendenteTransfer === 'all' ||
                   transferLoading ||
-                  !atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)?.is_online
+                  !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer))
                 }
                 className="w-full"
               >
                 {transferLoading ? 'Transferindo...' : 'Transferir para Atendente'}
               </Button>
-              {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)?.is_online && (
+              {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)) && (
                 <p className="text-sm text-destructive">Este atendente está offline. Selecione um atendente online.</p>
               )}
             </TabsContent>
@@ -1297,21 +1320,24 @@ export default function MonitoramentoPage() {
                           Deixar na fila (atribuir automaticamente)
                         </div>
                       </SelectItem>
-                      {atendentesDisponiveis.map((atendente) => (
-                        <SelectItem key={atendente.id} value={atendente.id} disabled={!atendente.is_online}>
-                          <div className="flex items-center gap-2">
-                            <span className={cn('h-2 w-2 rounded-full', atendente.is_online ? 'bg-green-500' : 'bg-gray-400')} />
-                            <span className={!atendente.is_online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
-                            {!atendente.is_online && <span className="text-xs text-muted-foreground">(Offline)</span>}
-                          </div>
-                        </SelectItem>
-                      ))}
+                      {atendentesDisponiveis.map((atendente) => {
+                        const online = isAtendenteOnline(atendente)
+                        return (
+                          <SelectItem key={atendente.id} value={atendente.id} disabled={!online}>
+                            <div className="flex items-center gap-2">
+                              <span className={cn('h-2 w-2 rounded-full', online ? 'bg-green-500' : 'bg-gray-400')} />
+                              <span className={!online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
+                              {!online && <span className="text-xs text-muted-foreground">(Offline)</span>}
+                            </div>
+                          </SelectItem>
+                        )
+                      })}
                     </SelectContent>
                   </Select>
                 </div>
               )}
 
-              {selectedSetorTransfer !== 'all' && atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => a.is_online) && (
+              {selectedSetorTransfer !== 'all' && atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
                 <p className="text-sm text-blue-600 bg-blue-50 p-2 rounded-md">
                   Nenhum atendente online neste setor. O ticket irá para a fila e será atribuído automaticamente quando alguém ficar online.
                 </p>

@@ -56,18 +56,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, action: 'offline' })
     }
 
-    // Keep-alive normal — atualiza last_heartbeat + re-afirma is_online se informado
-    // Isso garante que o status no banco reflita o que o browser do usuário sabe
-    const updateData: Record<string, unknown> = {
-      last_heartbeat: new Date().toISOString(),
-    }
-    if (isOnline === true) {
-      updateData.is_online = true
-    }
-
+    // Keep-alive normal — SOMENTE atualiza last_heartbeat
+    // NUNCA re-afirma is_online aqui. O status online/offline é controlado
+    // EXCLUSIVAMENTE por ação explícita do usuário (toggle, pausa, logout).
+    // Isso evita race conditions onde o heartbeat sobrescreve um toggle offline.
     const { error } = await supabase
       .from('colaboradores')
-      .update(updateData)
+      .update({ last_heartbeat: new Date().toISOString() })
       .eq('id', colaboradorId)
 
     if (error) {

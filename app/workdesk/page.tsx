@@ -438,6 +438,14 @@ export default function WorkdeskPage() {
   const [selectedSetorTransfer, setSelectedSetorTransfer] = useState<string>('all') // Updated default value
   const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all') // Updated default value
   const [transferLoading, setTransferLoading] = useState(false)
+
+  // Helper: verifica se atendente está efetivamente online (is_online + heartbeat fresco)
+  const HEARTBEAT_STALE_THRESHOLD = 3 * 60 * 1000
+  const isAtendenteOnline = useCallback((atendente: any): boolean => {
+    if (!atendente?.is_online || !atendente?.ativo) return false
+    if (!atendente.last_heartbeat) return false
+    return (Date.now() - new Date(atendente.last_heartbeat).getTime()) < HEARTBEAT_STALE_THRESHOLD
+  }, [])
   
   // Message input
   const [messageInput, setMessageInput] = useState('')
@@ -897,8 +905,15 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     }
   }, [colaborador, fetchTickets, supabase, playAlert])
 
-  // Heartbeat to refresh colaborador data periodically (but NOT to control online/offline status)
-  // The online/offline status is GLOBAL and controlled only by explicit user action
+  // ── Ref para status online (evita closures stale no heartbeat/BroadcastChannel) ──
+  const isOnlineRef = useRef(colaborador?.is_online ?? false)
+  useEffect(() => {
+    isOnlineRef.current = colaborador?.is_online ?? false
+  }, [colaborador?.is_online])
+
+  // Heartbeat + coordenação multi-aba
+  // O is_online é controlado EXCLUSIVAMENTE por ação explícita do usuário (toggle/pausa/logout).
+  // O heartbeat NUNCA re-afirma is_online — apenas atualiza last_heartbeat.
   useEffect(() => {
     if (!colaborador?.id) return
 
@@ -906,32 +921,34 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     const colaboradorId = colaborador.id
 
     // ── BroadcastChannel para coordenação entre abas ──────────────────────────
-    // Se o usuário tiver mais de uma aba do workdesk aberta, a aba remanescente
-    // re-afirma o status online quando outra aba fechar.
+    // Quando outra aba fecha, o beforeunload marca offline.
+    // Se ESTA aba ainda está ativa e o usuário estava online, re-afirma via API (service role).
     const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('workdesk_presence') : null
 
     if (bc) {
       bc.onmessage = (event: MessageEvent) => {
         if (event.data?.type === 'tab_closing' && event.data?.colaboradorId === colaboradorId) {
-          // Outra aba está fechando — re-afirma online se esta aba estiver ativa
-          if (isActive && colaborador.is_online) {
-            supabase
-              .from('colaboradores')
-              .update({ is_online: true, last_heartbeat: new Date().toISOString() })
-              .eq('id', colaboradorId)
-              .then(() => {})
+          // Outra aba fechou — re-afirma online via API route (service role) se esta aba está ativa
+          // Usa ref para evitar closure stale
+          if (isActive && isOnlineRef.current) {
+            fetch('/api/colaborador/toggle-status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ colaboradorId, isOnline: true, pausaAtualId: null }),
+            }).catch(() => {})
           }
         }
       }
     }
 
-    // ── Heartbeat a cada 30s — mantém last_heartbeat + re-afirma is_online ──
+    // ── Heartbeat a cada 30s — SOMENTE atualiza last_heartbeat ──
+    // NUNCA envia isOnline para evitar race conditions com o toggle offline
     const sendHeartbeat = () => {
       if (!isActive) return
       fetch('/api/colaborador/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colaboradorId, isOnline: colaborador.is_online }),
+        body: JSON.stringify({ colaboradorId }),
       }).catch(() => {})
     }
 
@@ -944,11 +961,11 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       try {
         const { data } = await supabase
           .from('colaboradores')
-          .select('is_online')
+          .select('is_online, pausa_atual_id')
           .eq('id', colaboradorId)
           .single()
         if (data) {
-          setColaborador((prev) => (prev ? { ...prev, is_online: data.is_online } : null))
+          setColaborador((prev) => (prev ? { ...prev, is_online: data.is_online, pausa_atual_id: data.pausa_atual_id } : null))
         }
       } catch {
         // Silently ignore
@@ -965,7 +982,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     // ── beforeunload / pagehide — marca offline ao fechar o navegador/aba ─────
     const handlePageClose = () => {
-      // Avisa outras abas que esta está fechando
+      // Avisa outras abas que esta está fechando (para re-afirmação se outra aba tiver aberta)
       bc?.postMessage({ type: 'tab_closing', colaboradorId })
 
       // Envia sinal de offline via sendBeacon (funciona mesmo durante unload)
@@ -984,7 +1001,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       window.removeEventListener('pagehide', handlePageClose)
       bc?.close()
     }
-  }, [colaborador?.id, colaborador?.is_online, supabase])
+  }, [colaborador?.id, supabase])
 
   // Periodic queue processor - check for unassigned tickets every 30 seconds
   useEffect(() => {
@@ -1595,7 +1612,7 @@ const handleEncerrarTicket = async () => {
         // Then fetch the actual colaboradores
         const { data: colaboradoresData, error: colabError } = await supabase
           .from('colaboradores')
-          .select('id, nome, is_online, ativo')
+          .select('id, nome, is_online, ativo, last_heartbeat')
           .in('id', colaboradorIds)
           .eq('ativo', true)
           .neq('id', colaborador?.id || '')
@@ -1642,7 +1659,7 @@ const handleEncerrarTicket = async () => {
       // Then fetch the actual colaboradores
       const { data: colaboradoresData } = await supabase
         .from('colaboradores')
-        .select('id, nome, is_online, ativo')
+        .select('id, nome, is_online, ativo, last_heartbeat')
         .in('id', colaboradorIds)
         .eq('ativo', true)
 
@@ -1680,11 +1697,11 @@ const handleEncerrarTicket = async () => {
       // Verify atendente is online before transferring - fetch fresh status from DB
       const { data: atendenteData } = await supabase
         .from('colaboradores')
-        .select('id, is_online')
+        .select('id, is_online, ativo, last_heartbeat')
         .eq('id', selectedAtendenteTransfer)
         .single()
 
-      if (!atendenteData?.is_online) {
+      if (!isAtendenteOnline(atendenteData)) {
         toast.error('Este atendente esta offline. Selecione um atendente online.')
         setTransferLoading(false)
         return
@@ -3624,33 +3641,36 @@ onClick={() => {
                           <SelectValue placeholder="Escolha um atendente..." />
                         </SelectTrigger>
                         <SelectContent>
-                          {atendentesDisponiveis.map((atendente) => (
-                            <SelectItem
-                              key={atendente.id}
-                              value={atendente.id}
-                              disabled={!atendente.is_online}
-                            >
-                              <div className="flex items-center gap-2 w-full">
-                                <span
-                                  className={cn(
-                                    'h-2 w-2 rounded-full shrink-0',
-                                    atendente.is_online ? 'bg-green-500' : 'bg-gray-400'
+                          {atendentesDisponiveis.map((atendente) => {
+                            const online = isAtendenteOnline(atendente)
+                            return (
+                              <SelectItem
+                                key={atendente.id}
+                                value={atendente.id}
+                                disabled={!online}
+                              >
+                                <div className="flex items-center gap-2 w-full">
+                                  <span
+                                    className={cn(
+                                      'h-2 w-2 rounded-full shrink-0',
+                                      online ? 'bg-green-500' : 'bg-gray-400'
+                                    )}
+                                  />
+                                  <span className={cn('flex-1', !online ? 'text-muted-foreground' : '')}>
+                                    {atendente.nome}
+                                  </span>
+                                  {atendente.handlesSubsetor && selectedTicket?.subsetor_id && (
+                                    <Badge variant="secondary" className="text-[10px] h-4 px-1 ml-auto shrink-0">
+                                      {selectedTicket.subsetores?.nome}
+                                    </Badge>
                                   )}
-                                />
-                                <span className={cn('flex-1', !atendente.is_online ? 'text-muted-foreground' : '')}>
-                                  {atendente.nome}
-                                </span>
-                                {atendente.handlesSubsetor && selectedTicket?.subsetor_id && (
-                                  <Badge variant="secondary" className="text-[10px] h-4 px-1 ml-auto shrink-0">
-                                    {selectedTicket.subsetores?.nome}
-                                  </Badge>
-                                )}
-                                {!atendente.is_online && (
-                                  <span className="text-xs text-muted-foreground">(Offline)</span>
-                                )}
-                              </div>
-                            </SelectItem>
-                          ))}
+                                  {!online && (
+                                    <span className="text-xs text-muted-foreground">(Offline)</span>
+                                  )}
+                                </div>
+                              </SelectItem>
+                            )
+                          })}
                         </SelectContent>
                       </Select>
                       {atendentesDisponiveis.length === 0 && (
@@ -3659,7 +3679,7 @@ onClick={() => {
                         </p>
                       )}
                       {atendentesDisponiveis.length > 0 &&
-                        !atendentesDisponiveis.some((a) => a.is_online) && (
+                        !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
                           <p className="text-sm text-amber-600">
                             Todos os atendentes estao offline.
                           </p>
@@ -3672,13 +3692,13 @@ onClick={() => {
   !selectedAtendenteTransfer ||
   selectedAtendenteTransfer === 'all' ||
   transferLoading ||
-  !atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)?.is_online
+  !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer))
   }
   className="w-full"
   >
   {transferLoading ? 'Transferindo...' : 'Transferir para Atendente'}
   </Button>
-  {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)?.is_online && (
+  {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)) && (
   <p className="text-sm text-destructive">
   Este atendente esta offline. Selecione um atendente online.
   </p>
@@ -3730,28 +3750,31 @@ onClick={() => {
                                 Deixar na fila (atribuir automaticamente)
                               </div>
                             </SelectItem>
-                            {atendentesDisponiveis.map((atendente) => (
-                              <SelectItem
-                                key={atendente.id}
-                                value={atendente.id}
-                                disabled={!atendente.is_online}
-                              >
-                                <div className="flex items-center gap-2">
-                                  <span
-                                    className={cn(
-                                      'h-2 w-2 rounded-full',
-                                      atendente.is_online ? 'bg-green-500' : 'bg-gray-400'
+                            {atendentesDisponiveis.map((atendente) => {
+                              const online = isAtendenteOnline(atendente)
+                              return (
+                                <SelectItem
+                                  key={atendente.id}
+                                  value={atendente.id}
+                                  disabled={!online}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={cn(
+                                        'h-2 w-2 rounded-full',
+                                        online ? 'bg-green-500' : 'bg-gray-400'
+                                      )}
+                                    />
+                                    <span className={!online ? 'text-muted-foreground' : ''}>
+                                      {atendente.nome}
+                                    </span>
+                                    {!online && (
+                                      <span className="text-xs text-muted-foreground">(Offline)</span>
                                     )}
-                                  />
-                                  <span className={!atendente.is_online ? 'text-muted-foreground' : ''}>
-                                    {atendente.nome}
-                                  </span>
-                                  {!atendente.is_online && (
-                                    <span className="text-xs text-muted-foreground">(Offline)</span>
-                                  )}
-                                </div>
-                              </SelectItem>
-                            ))}
+                                  </div>
+                                </SelectItem>
+                              )
+                            })}
                           </SelectContent>
                         </Select>
                       </div>
@@ -3759,7 +3782,7 @@ onClick={() => {
 
                     {selectedSetorTransfer !== 'all' &&
                       atendentesDisponiveis.length > 0 &&
-                      !atendentesDisponiveis.some((a) => a.is_online) && (
+                      !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
                         <p className="text-sm text-blue-600 bg-blue-50 p-2 rounded-md">
                           Nenhum atendente online neste setor. O ticket ira para a fila e sera
                           atribuido automaticamente quando alguem ficar online.

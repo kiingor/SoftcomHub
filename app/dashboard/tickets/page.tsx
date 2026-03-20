@@ -71,6 +71,14 @@ interface Colaborador {
   id: string
   nome: string
   is_online?: boolean
+  last_heartbeat?: string
+}
+
+const HEARTBEAT_STALE_THRESHOLD = 3 * 60 * 1000
+function isColabOnline(c: Colaborador | null | undefined): boolean {
+  if (!c?.is_online) return false
+  if (!c.last_heartbeat) return false
+  return (Date.now() - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_THRESHOLD
 }
 
 interface Subsetor {
@@ -394,7 +402,7 @@ export default function TicketsPage() {
     setLoadingAtendentes(true)
     const { data } = await supabase
       .from('colaboradores')
-      .select('id, nome, is_online')
+      .select('id, nome, is_online, last_heartbeat')
       .eq('ativo', true)
       .contains('setor_ids', [setorId])
       .order('nome')
@@ -1120,19 +1128,22 @@ export default function TicketsPage() {
                           Deixar na fila (atribuir automaticamente)
                         </div>
                       </SelectItem>
-                      {transferAtendentes.map((a) => (
-                        <SelectItem key={a.id} value={a.id} disabled={!a.is_online}>
-                          <div className="flex items-center gap-2">
-                            <span className={`h-2 w-2 rounded-full ${a.is_online ? 'bg-green-500' : 'bg-gray-400'}`} />
-                            <span className={!a.is_online ? 'text-muted-foreground' : ''}>
-                              {a.nome}
-                            </span>
-                            {!a.is_online && (
-                              <span className="text-xs text-muted-foreground">(Offline)</span>
-                            )}
-                          </div>
-                        </SelectItem>
-                      ))}
+                      {transferAtendentes.map((a) => {
+                        const online = isColabOnline(a)
+                        return (
+                          <SelectItem key={a.id} value={a.id} disabled={!online}>
+                            <div className="flex items-center gap-2">
+                              <span className={`h-2 w-2 rounded-full ${online ? 'bg-green-500' : 'bg-gray-400'}`} />
+                              <span className={!online ? 'text-muted-foreground' : ''}>
+                                {a.nome}
+                              </span>
+                              {!online && (
+                                <span className="text-xs text-muted-foreground">(Offline)</span>
+                              )}
+                            </div>
+                          </SelectItem>
+                        )
+                      })}
                     </SelectContent>
                   </Select>
                 )}
@@ -1141,7 +1152,7 @@ export default function TicketsPage() {
                     Nenhum atendente neste setor.
                   </p>
                 )}
-                {!loadingAtendentes && transferAtendentes.length > 0 && !transferAtendentes.some(a => a.is_online) && (
+                {!loadingAtendentes && transferAtendentes.length > 0 && !transferAtendentes.some(a => isColabOnline(a)) && (
                   <p className="text-sm text-amber-600 bg-amber-50 dark:bg-amber-950/30 p-2 rounded-md text-xs">
                     Todos os atendentes estao offline. O ticket ira para a fila.
                   </p>

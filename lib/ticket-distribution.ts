@@ -236,10 +236,13 @@ export async function criarEDistribuirTicket(
  * Não faz retransmissão — evita loops.
  */
 async function _tentarDistribuirNoSetor(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   ticketId: string,
   setorId: string
 ): Promise<string | null> {
+  const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+  const now = Date.now()
+
   let maxTicketsPerAgent = 10
   try {
     const { data: config } = await supabase
@@ -250,15 +253,23 @@ async function _tentarDistribuirNoSetor(
     if (config) maxTicketsPerAgent = config.max_tickets_per_agent ?? 10
   } catch { /* tabela pode não existir */ }
 
-  const { data: colaboradores } = await supabase
+  const { data: rawColabs } = await supabase
     .from('colaboradores')
-    .select(`id, colaboradores_setores!inner(setor_id)`)
+    .select(`id, last_heartbeat, colaboradores_setores!inner(setor_id)`)
     .eq('colaboradores_setores.setor_id', setorId)
     .eq('is_online', true)
     .eq('ativo', true)
     .is('pausa_atual_id', null)
 
-  if (!colaboradores || colaboradores.length === 0) return null
+  if (!rawColabs || rawColabs.length === 0) return null
+
+  // Filtra por heartbeat fresco — NUNCA distribui para quem tem heartbeat stale
+  const colaboradores = rawColabs.filter(c =>
+    c.last_heartbeat && (now - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
+  )
+  console.log(`[_tentarDistribuirNoSetor] setor=${setorId}: ${rawColabs.length} online, ${colaboradores.length} com heartbeat fresco`)
+
+  if (colaboradores.length === 0) return null
 
   const colaboradorIds = colaboradores.map(c => c.id)
   const { data: ticketCounts } = await supabase
@@ -345,10 +356,14 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
     } catch { /* tabela pode não existir */ }
 
     // Get ALL available collaborators in this setor
-    const { data: allColaboradores } = await supabase
+    const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+    const now = Date.now()
+
+    const { data: rawColaboradores } = await supabase
       .from('colaboradores')
       .select(`
         id,
+        last_heartbeat,
         colaboradores_setores!inner(setor_id)
       `)
       .eq('colaboradores_setores.setor_id', setorId)
@@ -356,7 +371,13 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       .eq('ativo', true)
       .is('pausa_atual_id', null)
 
-    if (!allColaboradores || allColaboradores.length === 0) {
+    // Filtra por heartbeat fresco — NUNCA distribui para quem tem heartbeat stale
+    const allColaboradores = (rawColaboradores || []).filter(c =>
+      c.last_heartbeat && (now - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
+    )
+    console.log(`[redistribuirTicketsPendentes] setor=${setorId}: ${rawColaboradores?.length || 0} online, ${allColaboradores.length} com heartbeat fresco`)
+
+    if (allColaboradores.length === 0) {
       // Nenhum atendente online — verificar se o setor tem transmissão ativa
       const { data: setorData } = await supabase
         .from('setores')
