@@ -230,6 +230,9 @@ export default function MonitoramentoPage() {
       const ticketsEmAtendimento = tickets.filter((t: any) => t.status === 'em_atendimento')
       const ticketsFinalizados = todayTickets.filter((t: any) => t.status === 'encerrado')
 
+      // Max times
+      const nowMs = Date.now()
+
       // Considerar online SOMENTE se is_online=true E heartbeat é recente (< 3 min)
       const HEARTBEAT_STALE_MS = 3 * 60 * 1000
       const isEffectivelyOnline = (c: any) => {
@@ -239,9 +242,6 @@ export default function MonitoramentoPage() {
       }
       const atendentesOnline = atendentes.filter(isEffectivelyOnline)
       const atendentesEmPausa = atendentes.filter((c: any) => c.pausa_atual_id && c.ativo)
-
-      // Max times
-      const nowMs = Date.now()
       let maxTempoFila = 0
       let maxTempoResposta = 0
 
