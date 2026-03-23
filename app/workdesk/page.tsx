@@ -440,7 +440,7 @@ export default function WorkdeskPage() {
   const [transferLoading, setTransferLoading] = useState(false)
 
   // Helper: verifica se atendente está efetivamente online (is_online + heartbeat fresco)
-  const HEARTBEAT_STALE_THRESHOLD = 3 * 60 * 1000
+  const HEARTBEAT_STALE_THRESHOLD = 2 * 60 * 1000
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
     if (!atendente?.is_online || !atendente?.ativo) return false
     if (!atendente.last_heartbeat) return false

@@ -39,6 +39,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Users, Plus, Pencil, UserX, Loader2, Circle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '@/hooks/use-toast'
@@ -81,12 +82,21 @@ export default function ColaboradoresPage() {
     senha: '',
     setor_id: '',
     permissao_id: '',
+    setores_selecionados: [] as string[],
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const supabase = createClient()
   const { toast } = useToast()
+
+  const [colaboradorSetores, setColaboradorSetores] = useState<{ colaborador_id: string; setor_id: string }[]>([])
+
+  function getSetoresDoColaborador(colaboradorId: string): string[] {
+    return colaboradorSetores
+      .filter((cs) => cs.colaborador_id === colaboradorId)
+      .map((cs) => cs.setor_id)
+  }
 
   async function fetchData() {
     setLoading(true)
@@ -123,6 +133,15 @@ export default function ColaboradoresPage() {
 
     if (permissoesData) {
       setPermissoes(permissoesData)
+    }
+
+    // Fetch colaborador_setores (join table)
+    const { data: colabSetoresData } = await supabase
+      .from('colaborador_setores')
+      .select('colaborador_id, setor_id')
+
+    if (colabSetoresData) {
+      setColaboradorSetores(colabSetoresData)
     }
 
     setLoading(false)
@@ -166,6 +185,7 @@ export default function ColaboradoresPage() {
       senha: '',
       setor_id: '',
       permissao_id: '',
+      setores_selecionados: [],
     })
     setError(null)
     setModalOpen(true)
@@ -179,9 +199,19 @@ export default function ColaboradoresPage() {
       senha: '',
       setor_id: colaborador.setor_id || '',
       permissao_id: colaborador.permissao_id || '',
+      setores_selecionados: getSetoresDoColaborador(colaborador.id),
     })
     setError(null)
     setModalOpen(true)
+  }
+
+  function toggleSetorSelection(setorId: string) {
+    setFormData((prev) => ({
+      ...prev,
+      setores_selecionados: prev.setores_selecionados.includes(setorId)
+        ? prev.setores_selecionados.filter((id) => id !== setorId)
+        : [...prev.setores_selecionados, setorId],
+    }))
   }
 
   function openDeactivateDialog(colaborador: Colaborador) {
@@ -213,6 +243,20 @@ export default function ColaboradoresPage() {
         setError('Erro ao atualizar colaborador: ' + updateError.message)
         setSaving(false)
         return
+      }
+
+      // Update colaborador_setores join table
+      await supabase
+        .from('colaborador_setores')
+        .delete()
+        .eq('colaborador_id', editingColaborador.id)
+
+      if (formData.setores_selecionados.length > 0) {
+        const relations = formData.setores_selecionados.map((setorId) => ({
+          colaborador_id: editingColaborador.id,
+          setor_id: setorId,
+        }))
+        await supabase.from('colaborador_setores').insert(relations)
       }
 
       toast({
@@ -268,6 +312,15 @@ export default function ColaboradoresPage() {
         setError('Erro ao cadastrar colaborador: ' + insertError.message)
         setSaving(false)
         return
+      }
+
+      // 3. Insert into colaborador_setores join table
+      if (formData.setores_selecionados.length > 0) {
+        const relations = formData.setores_selecionados.map((setorId) => ({
+          colaborador_id: authData.user!.id,
+          setor_id: setorId,
+        }))
+        await supabase.from('colaborador_setores').insert(relations)
       }
 
       toast({
@@ -356,7 +409,7 @@ export default function ColaboradoresPage() {
                   <TableRow>
                     <TableHead>Nome</TableHead>
                     <TableHead>E-mail</TableHead>
-                    <TableHead>Setor</TableHead>
+                    <TableHead>Setores</TableHead>
                     <TableHead>Permissao</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Acoes</TableHead>
@@ -387,7 +440,22 @@ export default function ColaboradoresPage() {
                           {colaborador.email}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
-                          {colaborador.setor?.nome || '-'}
+                          {(() => {
+                            const setorIds = getSetoresDoColaborador(colaborador.id)
+                            if (setorIds.length === 0) return <span className="text-muted-foreground">Nenhum</span>
+                            return (
+                              <div className="flex flex-wrap gap-1">
+                                {setorIds.map((sid) => {
+                                  const s = setores.find((st) => st.id === sid)
+                                  return s ? (
+                                    <Badge key={sid} variant="secondary" className="text-xs">
+                                      {s.nome}
+                                    </Badge>
+                                  ) : null
+                                })}
+                              </div>
+                            )
+                          })()}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {colaborador.permissao?.nome || '-'}
@@ -517,26 +585,35 @@ export default function ColaboradoresPage() {
             )}
 
             <div className="grid gap-2">
-              <Label htmlFor="setor" className="text-foreground">
-                Setor
+              <Label className="text-foreground">
+                Setores
               </Label>
-              <Select
-                value={formData.setor_id}
-                onValueChange={(value) =>
-                  setFormData({ ...formData, setor_id: value })
-                }
-              >
-                <SelectTrigger className="border-border bg-card">
-                  <SelectValue placeholder="Selecione um setor" />
-                </SelectTrigger>
-                <SelectContent>
-                  {setores.map((setor) => (
-                    <SelectItem key={setor.id} value={setor.id}>
-                      {setor.nome}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="max-h-40 overflow-y-auto rounded-md border border-border bg-card p-3 space-y-2">
+                {setores.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Nenhum setor cadastrado</p>
+                ) : (
+                  setores.map((setor) => (
+                    <div key={setor.id} className="flex items-center gap-2">
+                      <Checkbox
+                        id={`setor-${setor.id}`}
+                        checked={formData.setores_selecionados.includes(setor.id)}
+                        onCheckedChange={() => toggleSetorSelection(setor.id)}
+                      />
+                      <label
+                        htmlFor={`setor-${setor.id}`}
+                        className="text-sm text-foreground cursor-pointer"
+                      >
+                        {setor.nome}
+                      </label>
+                    </div>
+                  ))
+                )}
+              </div>
+              {formData.setores_selecionados.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {formData.setores_selecionados.length} setor(es) selecionado(s)
+                </p>
+              )}
             </div>
 
             <div className="grid gap-2">

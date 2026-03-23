@@ -105,6 +105,9 @@ async function getAvailableColaboradores(
     console.log(`[TicketQueue] colaboradores_setores: ${rawLinks.length} registros, error: ${error?.message || 'none'}`)
   }
 
+  const STALE_CLEANUP_MS = 5 * 60 * 1000 // 5 min — marcar offline automaticamente
+  const veryStaleIds: string[] = []
+
   rawLinks.forEach((link: any) => {
     const c = link.colaboradores
     if (!c || !c.ativo || !c.is_online || c.pausa_atual_id) return
@@ -114,13 +117,26 @@ async function getAvailableColaboradores(
       freshMap.set(c.id, { id: c.id, nome: c.nome })
     } else {
       console.log(`[TicketQueue] ${c.nome} online mas heartbeat stale (${c.last_heartbeat})`)
+      // Heartbeat muito antigo → cleanup
+      if (!c.last_heartbeat || (now - new Date(c.last_heartbeat).getTime()) > STALE_CLEANUP_MS) {
+        veryStaleIds.push(c.id)
+      }
     }
   })
 
-  // Preferir fresh; fallback para qualquer online
-  const colaboradoresMap = freshMap.size > 0 ? freshMap : allOnlineMap
-  const source = freshMap.size > 0 ? 'fresh' : 'fallback-online'
-  console.log(`[TicketQueue] Colaboradores disponíveis (${source}): ${colaboradoresMap.size} [subsetor=${subsetorId || 'null'}]`)
+  // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min)
+  if (veryStaleIds.length > 0) {
+    console.log(`[TicketQueue] Cleanup: marcando ${veryStaleIds.length} atendentes offline (heartbeat > 5 min)`)
+    await supabase
+      .from('colaboradores')
+      .update({ is_online: false })
+      .in('id', veryStaleIds)
+  }
+
+  // Somente usa atendentes com heartbeat fresco — sem fallback para stale
+  const colaboradoresMap = freshMap
+  const staleCount = allOnlineMap.size - freshMap.size
+  console.log(`[TicketQueue] Colaboradores disponíveis: ${colaboradoresMap.size} fresh (${staleCount} stale ignorados) [subsetor=${subsetorId || 'null'}]`)
 
   if (colaboradoresMap.size === 0) return []
 

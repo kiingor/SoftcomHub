@@ -120,7 +120,7 @@ export default function MonitoramentoPage() {
   const [, setTick] = useState(0)
 
   // Helper: verifica se atendente está efetivamente online (is_online + heartbeat fresco)
-  const HEARTBEAT_STALE_THRESHOLD = 3 * 60 * 1000
+  const HEARTBEAT_STALE_THRESHOLD = 2 * 60 * 1000
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
     if (!atendente?.is_online || !atendente?.ativo) return false
     if (!atendente.last_heartbeat) return false
@@ -241,8 +241,8 @@ export default function MonitoramentoPage() {
       // Max times
       const nowMs = Date.now()
 
-      // Considerar online SOMENTE se is_online=true E heartbeat é recente (< 3 min)
-      const HEARTBEAT_STALE_MS = 3 * 60 * 1000
+      // Considerar online SOMENTE se is_online=true E heartbeat é recente (< 2 min)
+      const HEARTBEAT_STALE_MS = 2 * 60 * 1000
       const isEffectivelyOnline = (c: any) => {
         if (!c.is_online || !c.ativo || c.pausa_atual_id) return false
         if (!c.last_heartbeat) return false
@@ -427,7 +427,7 @@ export default function MonitoramentoPage() {
       }))
       .sort((a: any, b: any) => {
         // Online (com heartbeat fresco) first, then pausa, then offline
-        const STALE_MS = 3 * 60 * 1000
+        const STALE_MS = 2 * 60 * 1000
         const isReallyOnline = (x: any) =>
           x.is_online && !x.pausa_atual_id && x.last_heartbeat &&
           (Date.now() - new Date(x.last_heartbeat).getTime()) < STALE_MS

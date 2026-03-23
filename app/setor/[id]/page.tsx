@@ -210,7 +210,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, ticketsRelatorioRes, colabora
     supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Tickets para relatorio (ultimos 90 dias, incluindo encerrados)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).gte('criado_em', ninetyDaysAgo).order('criado_em', { ascending: false }).limit(500),
-    supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id)').eq('setor_id', setorId),
+    supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
     supabase.from('permissoes').select('*'),
     supabase.from('pausas').select('*').eq('setor_id', setorId).order('nome'),
@@ -238,7 +238,11 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, ticketsRelatorioRes, colabora
   const ticketsNaFila = ticketsAtivos.filter((t: any) => t.status === 'aberto')
   const ticketsEmAtendimento = ticketsAtivos.filter((t: any) => t.status === 'em_atendimento')
   const ticketsFinalizadosHoje = ticketsHoje.filter((t: any) => t.status === 'encerrado')
-  const atendentesOnline = atendentes.filter((c: any) => c.is_online && c.ativo && !c.pausa_atual_id)
+  const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+  const atendentesOnline = atendentes.filter((c: any) =>
+    c.is_online && c.ativo && !c.pausa_atual_id &&
+    c.last_heartbeat && (Date.now() - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
+  )
     const atendentesEmPausa = atendentes.filter((c: any) => c.pausa_atual_id && c.ativo)
 
   // Calculate max time in queue
@@ -2291,7 +2295,7 @@ const saveConfig = async () => {
     }
   }
 
-  const HEARTBEAT_STALE_MS_TRANSFER = 3 * 60 * 1000
+  const HEARTBEAT_STALE_MS_TRANSFER = 2 * 60 * 1000
   const isTransferAtendenteOnline = (a: any) => {
     if (!a?.is_online || !a?.ativo) return false
     if (!a.last_heartbeat) return false

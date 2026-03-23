@@ -56,13 +56,28 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, action: 'offline' })
     }
 
-    // Keep-alive normal — SOMENTE atualiza last_heartbeat
-    // NUNCA re-afirma is_online aqui. O status online/offline é controlado
-    // EXCLUSIVAMENTE por ação explícita do usuário (toggle, pausa, logout).
-    // Isso evita race conditions onde o heartbeat sobrescreve um toggle offline.
+    // Keep-alive normal — atualiza last_heartbeat
+    // Se o colaborador está mandando heartbeat mas is_online=false (crash, reconexão, etc.),
+    // re-afirma is_online=true para corrigir inconsistência.
+    const { data: current } = await supabase
+      .from('colaboradores')
+      .select('is_online')
+      .eq('id', colaboradorId)
+      .single()
+
+    const updateData: Record<string, unknown> = {
+      last_heartbeat: new Date().toISOString(),
+    }
+
+    if (current && !current.is_online) {
+      // Colaborador está mandando heartbeat mas está marcado offline — corrigir
+      updateData.is_online = true
+      console.log(`[Heartbeat] Re-afirmando is_online=true para ${colaboradorId} (estava offline mas mandou heartbeat)`)
+    }
+
     const { error } = await supabase
       .from('colaboradores')
-      .update({ last_heartbeat: new Date().toISOString() })
+      .update(updateData)
       .eq('id', colaboradorId)
 
     if (error) {
@@ -70,7 +85,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    return NextResponse.json({ success: true, action: 'heartbeat' })
+    return NextResponse.json({
+      success: true,
+      action: current && !current.is_online ? 'heartbeat+reaffirm' : 'heartbeat',
+    })
   } catch (error) {
     console.error('Heartbeat error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

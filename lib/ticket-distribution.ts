@@ -94,16 +94,30 @@ export async function criarEDistribuirTicket(
         rawColabs = (data || []).map((cs: any) => cs.colaboradores)
       }
 
+      const STALE_CLEANUP_MS = 5 * 60 * 1000 // 5 min — marcar offline automaticamente
       const allOnline = rawColabs
         .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
-        .map((c: any) => ({ id: c.id, nome: c.nome }))
-      const fresh = rawColabs
-        .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id && isHBFresh(c.last_heartbeat))
+      const fresh = allOnline
+        .filter((c: any) => isHBFresh(c.last_heartbeat))
         .map((c: any) => ({ id: c.id, nome: c.nome }))
 
-      // Prefere fresh, fallback para qualquer online
-      let finalColaboradores = fresh.length > 0 ? fresh : allOnline
-      console.log(`[Distribution] Disponíveis: ${finalColaboradores.length} (fresh=${fresh.length}, allOnline=${allOnline.length}) setor=${setorId} subsetor=${subsetorId || 'null'}`)
+      // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min)
+      const veryStale = allOnline.filter((c: any) =>
+        !c.last_heartbeat || (now - new Date(c.last_heartbeat).getTime()) > STALE_CLEANUP_MS
+      )
+      if (veryStale.length > 0) {
+        const staleIds = veryStale.map((c: any) => c.id)
+        console.log(`[Distribution] Cleanup: marcando ${staleIds.length} atendentes offline (heartbeat > 5 min)`)
+        await supabase
+          .from('colaboradores')
+          .update({ is_online: false })
+          .in('id', staleIds)
+      }
+
+      // Somente distribui para atendentes com heartbeat fresco — sem fallback para stale
+      let finalColaboradores = fresh
+      const staleCount = allOnline.length - fresh.length
+      console.log(`[Distribution] Disponíveis: ${finalColaboradores.length} fresh (${staleCount} stale ignorados) setor=${setorId} subsetor=${subsetorId || 'null'}`)
 
       if (finalColaboradores.length > 0) {
         // Get current ticket counts for each collaborator
