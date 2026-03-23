@@ -941,14 +941,16 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       }
     }
 
-    // ── Heartbeat a cada 30s — SOMENTE atualiza last_heartbeat ──
-    // NUNCA envia isOnline para evitar race conditions com o toggle offline
+    // ── Heartbeat a cada 30s — atualiza last_heartbeat ──
+    // Só envia heartbeat se o atendente está online (evita re-afirmar status offline)
+    // Envia isOnline para que o backend saiba a intenção do cliente
     const sendHeartbeat = () => {
       if (!isActive) return
+      if (!isOnlineRef.current) return // Não envia heartbeat se offline
       fetch('/api/colaborador/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colaboradorId }),
+        body: JSON.stringify({ colaboradorId, isOnline: true }),
       }).catch(() => {})
     }
 

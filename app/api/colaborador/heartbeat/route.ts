@@ -57,22 +57,26 @@ export async function POST(request: Request) {
     }
 
     // Keep-alive normal — atualiza last_heartbeat
-    // Se o colaborador está mandando heartbeat mas is_online=false (crash, reconexão, etc.),
-    // re-afirma is_online=true para corrigir inconsistência.
-    const { data: current } = await supabase
-      .from('colaboradores')
-      .select('is_online')
-      .eq('id', colaboradorId)
-      .single()
-
+    // Se o cliente envia isOnline=true mas o banco tem is_online=false (crash, reconexão),
+    // re-afirma is_online=true. Só re-afirma quando o cliente EXPLICITAMENTE diz que está online.
     const updateData: Record<string, unknown> = {
       last_heartbeat: new Date().toISOString(),
     }
 
-    if (current && !current.is_online) {
-      // Colaborador está mandando heartbeat mas está marcado offline — corrigir
-      updateData.is_online = true
-      console.log(`[Heartbeat] Re-afirmando is_online=true para ${colaboradorId} (estava offline mas mandou heartbeat)`)
+    let reaffirmed = false
+    if (isOnline === true) {
+      // Cliente diz que está online — verificar se precisa re-afirmar
+      const { data: current } = await supabase
+        .from('colaboradores')
+        .select('is_online')
+        .eq('id', colaboradorId)
+        .single()
+
+      if (current && !current.is_online) {
+        updateData.is_online = true
+        reaffirmed = true
+        console.log(`[Heartbeat] Re-afirmando is_online=true para ${colaboradorId} (cliente online, banco offline)`)
+      }
     }
 
     const { error } = await supabase
@@ -87,7 +91,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      action: current && !current.is_online ? 'heartbeat+reaffirm' : 'heartbeat',
+      action: reaffirmed ? 'heartbeat+reaffirm' : 'heartbeat',
     })
   } catch (error) {
     console.error('Heartbeat error:', error)
