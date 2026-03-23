@@ -291,24 +291,46 @@ export default function MetricasPage() {
         )
       }
 
-      // Fetch daily volume
-      let dailyQuery = supabase
-        .from('tickets')
-        .select('criado_em')
-        .in('setor_id', filterSetorIds)
-      if (filterDate) dailyQuery = dailyQuery.gte('criado_em', filterDate)
-      if (filterDateTo) dailyQuery = dailyQuery.lte('criado_em', filterDateTo)
+      // Fetch daily volume — busca TODOS os tickets sem limit
+      // Usa paginação para contornar o limite de 1000 rows do Supabase
+      let allDailyData: { criado_em: string }[] = []
+      let dailyOffset = 0
+      const PAGE_SIZE = 1000
+      let hasMore = true
 
-      const { data: dailyData } = await dailyQuery.limit(50000)
+      while (hasMore) {
+        let dailyQuery = supabase
+          .from('tickets')
+          .select('criado_em')
+          .in('setor_id', filterSetorIds)
+          .order('criado_em', { ascending: true })
+          .range(dailyOffset, dailyOffset + PAGE_SIZE - 1)
+        if (filterDate) dailyQuery = dailyQuery.gte('criado_em', filterDate)
+        if (filterDateTo) dailyQuery = dailyQuery.lte('criado_em', filterDateTo)
 
-      if (dailyData) {
+        const { data: dailyPage } = await dailyQuery
+        if (dailyPage && dailyPage.length > 0) {
+          allDailyData = allDailyData.concat(dailyPage)
+          dailyOffset += PAGE_SIZE
+          hasMore = dailyPage.length === PAGE_SIZE
+        } else {
+          hasMore = false
+        }
+      }
+
+      if (allDailyData.length > 0) {
         const dailyCounts: Record<string, number> = {}
-        dailyData.forEach((ticket) => {
-          const date = new Date(ticket.criado_em).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
-          dailyCounts[date] = (dailyCounts[date] || 0) + 1
+        allDailyData.forEach((ticket) => {
+          // Extrair data diretamente da string ISO para evitar problemas de timezone
+          // criado_em vem como "2026-03-17T14:30:00.000Z" — usamos a parte da data local
+          const d = new Date(ticket.criado_em)
+          const day = String(d.getDate()).padStart(2, '0')
+          const month = String(d.getMonth() + 1).padStart(2, '0')
+          const dateKey = `${day}/${month}`
+          dailyCounts[dateKey] = (dailyCounts[dateKey] || 0) + 1
         })
 
-        // Sort by date
+        // Sort by date (month then day)
         const sortedDates = Object.entries(dailyCounts)
           .map(([date, count]) => ({ date, count }))
           .sort((a, b) => {
