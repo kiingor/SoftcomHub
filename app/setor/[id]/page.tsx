@@ -2253,6 +2253,7 @@ const saveConfig = async () => {
   }
 
   // Transfer ticket to another attendant
+
   // Buscar atendentes do setor destino para transferência
   const fetchTransferAtendentes = async (targetSetorId: string) => {
     setLoadingTransferAtendentes(true)
@@ -2307,57 +2308,33 @@ const saveConfig = async () => {
     if (!isOutroSetor && !hasAtendente) return
 
     try {
-      const updateData: Record<string, any> = {}
-      if (isOutroSetor) {
-        updateData.setor_id = transferSetorDestino
-        updateData.subsetor_id = null
-      }
-      if (hasAtendente) {
-        updateData.colaborador_id = transferringTo
-        updateData.status = 'em_atendimento'
-      } else {
-        updateData.colaborador_id = null
-        updateData.status = 'aberto'
-      }
-
-      const { error } = await supabase
-        .from('tickets')
-        .update(updateData)
-        .eq('id', selectedTicket.id)
-
-      if (error) throw error
-
-      // Insert system message in chat for transfer visibility
       const fromColabName = atendentes.find((a: any) => a.id === selectedTicket.colaborador_id)?.nome || 'Sem atendente'
       const fromSetorNome = data?.setor?.nome || 'Setor'
-      const toSetorNome = isOutroSetor
-        ? todosSetores.find(s => s.id === transferSetorDestino)?.nome || 'Outro setor'
-        : fromSetorNome
-      const toColabName = hasAtendente
-        ? (isOutroSetor
-          ? transferAtendentesDestino.find((a: any) => a.id === transferringTo)?.nome
-          : atendentes.find((a: any) => a.id === transferringTo)?.nome) || 'Desconhecido'
-        : 'Aguardando atendente'
 
-      await supabase.from('mensagens').insert({
-        ticket_id: selectedTicket.id,
-        cliente_id: selectedTicket.cliente_id,
-        remetente: 'sistema',
-        conteudo: `Transferido de ${fromColabName} - ${fromSetorNome} >> ${toColabName} - ${toSetorNome}`,
-        tipo: 'texto',
-        enviado_em: new Date().toISOString(),
+      const res = await fetch('/api/tickets/transferir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticket_id: selectedTicket.id,
+          setor_id: isOutroSetor ? transferSetorDestino : undefined,
+          colaborador_id: hasAtendente ? transferringTo : null,
+          from_colaborador_nome: fromColabName,
+          from_setor_nome: fromSetorNome,
+        }),
       })
 
-      // Se transferiu para fila (sem atendente), acionar distribuição imediata
-      if (!hasAtendente) {
-        fetch('/api/tickets/auto-assign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        }).catch(() => {})
+      const result = await res.json()
+
+      if (!res.ok) {
+        toast.error(result.error || 'Erro ao transferir ticket')
+        return
       }
 
-      toast.success('Ticket transferido com sucesso!')
+      if (result.queued) {
+        toast.info('Atendente no limite de tickets — ticket adicionado à fila de espera')
+      } else {
+        toast.success('Ticket transferido com sucesso!')
+      }
       setTransferringTo('')
       setTransferSetorDestino('')
       setTransferAtendentesDestino([])

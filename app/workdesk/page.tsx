@@ -1687,73 +1687,32 @@ const handleEncerrarTicket = async () => {
 
     setTransferLoading(true)
 
-    const updateData: any = {}
+    const res = await fetch('/api/tickets/transferir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticket_id: selectedTicket.id,
+        setor_id: selectedSetorTransfer !== 'all' ? selectedSetorTransfer : undefined,
+        colaborador_id: selectedAtendenteTransfer !== 'all' ? selectedAtendenteTransfer : null,
+        from_colaborador_nome: colaborador?.nome || 'Desconhecido',
+        from_setor_nome: selectedTicket.setores?.nome || 'Desconhecido',
+      }),
+    })
 
-    if (selectedSetorTransfer !== 'all') {
-      updateData.setor_id = selectedSetorTransfer
-    }
+    const result = await res.json()
 
-    if (selectedAtendenteTransfer !== 'all') {
-      // Verify atendente is online before transferring - fetch fresh status from DB
-      const { data: atendenteData } = await supabase
-        .from('colaboradores')
-        .select('id, is_online, ativo, last_heartbeat')
-        .eq('id', selectedAtendenteTransfer)
-        .single()
-
-      if (!isAtendenteOnline(atendenteData)) {
-        toast.error('Este atendente esta offline. Selecione um atendente online.')
-        setTransferLoading(false)
-        return
-      }
-
-      updateData.colaborador_id = selectedAtendenteTransfer
-      updateData.status = 'em_atendimento'
-    } else {
-      updateData.colaborador_id = null
-      updateData.status = 'aberto'
-    }
-
-    const { error } = await supabase
-      .from('tickets')
-      .update(updateData)
-      .eq('id', selectedTicket.id)
-
-    if (error) {
-      toast.error('Erro ao transferir ticket')
+    if (!res.ok) {
+      toast.error(result.error || 'Erro ao transferir ticket')
       setTransferLoading(false)
       return
     }
 
-    // Insert system message for transfer log in chat
-    const fromColabName = colaborador?.nome || 'Desconhecido'
-    const fromSetorName = selectedTicket.setores?.nome || 'Desconhecido'
-
-    // Resolve target setor name
-    const targetSetorId = selectedSetorTransfer && selectedSetorTransfer !== 'all' ? selectedSetorTransfer : selectedTicket.setor_id
-    const toSetorName = setores.find((s: any) => s.id === targetSetorId)?.nome || fromSetorName
-
-    // Resolve target atendente name
-    const targetAtendenteId = selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' ? selectedAtendenteTransfer : null
-    const toColabName = targetAtendenteId
-      ? atendentesDisponiveis.find((a: any) => a.id === targetAtendenteId)?.nome || 'Aguardando atendente'
-      : 'Aguardando atendente'
-
-    const transferContent = `Transferido de ${fromColabName} - ${fromSetorName} >> ${toColabName} - ${toSetorName}`
-
-    const { error: msgError } = await supabase.from('mensagens').insert({
-      ticket_id: selectedTicket.id,
-      cliente_id: selectedTicket.cliente_id,
-      remetente: 'sistema',
-      conteudo: transferContent,
-      tipo: 'texto',
-      enviado_em: new Date().toISOString(),
-    })
-    if (msgError) {
-      console.error('[v0] Erro ao inserir mensagem de transferencia:', msgError)
+    if (result.queued) {
+      toast.info('Atendente no limite de tickets — ticket adicionado à fila de espera')
+    } else {
+      toast.success('Ticket transferido com sucesso')
     }
 
-    toast.success('Ticket transferido com sucesso')
     setTransferDialogOpen(false)
 
     // Se o ticket foi para a fila (sem atendente), acionar distribuição imediata

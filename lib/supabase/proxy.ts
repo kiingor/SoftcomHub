@@ -45,8 +45,9 @@ export async function updateSession(request: NextRequest) {
   const pathname = request.nextUrl.pathname
   const isLoginPage = pathname === '/login'
   const isWorkdeskLoginPage = pathname === '/workdesk/login'
+  const isWorkdeskResetPage = pathname === '/workdesk/reset-password'
   const isDashboardRoute = pathname.startsWith('/dashboard')
-  const isWorkdeskRoute = pathname.startsWith('/workdesk') && !isWorkdeskLoginPage
+  const isWorkdeskRoute = pathname.startsWith('/workdesk') && !isWorkdeskLoginPage && !isWorkdeskResetPage
   const isSetorRoute = pathname.startsWith('/setor')
   const isProtectedRoute = isDashboardRoute || isWorkdeskRoute || isSetorRoute
 

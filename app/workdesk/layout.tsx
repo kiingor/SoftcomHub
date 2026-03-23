@@ -74,8 +74,8 @@ export default function WorkdeskLayout({
   }
 
   const fetchColaborador = useCallback(async () => {
-    // Skip auth check for login page
-    if (pathname === '/workdesk/login') {
+    // Skip auth check for login and reset-password pages
+    if (pathname === '/workdesk/login' || pathname === '/workdesk/reset-password') {
       setLoading(false)
       return
     }
@@ -254,8 +254,8 @@ export default function WorkdeskLayout({
     )
   }
 
-  // Render login page without auth wrapper
-  if (pathname === '/workdesk/login') {
+  // Render login and reset-password pages without auth wrapper
+  if (pathname === '/workdesk/login' || pathname === '/workdesk/reset-password') {
     return <>{children}</>
   }
 

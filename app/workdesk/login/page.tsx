@@ -7,13 +7,17 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
-import { Headphones, Eye, EyeOff, ArrowRight, MessageCircle, Zap, Users, Clock } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { Headphones, Eye, EyeOff, ArrowRight, MessageCircle, Zap, Users, Clock, ArrowLeft, Mail } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { ThemeToggle } from '@/components/theme-toggle'
 
+type View = 'login' | 'forgot' | 'forgot-sent'
+
 export default function WorkdeskLoginPage() {
+  const [view, setView] = useState<View>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [forgotEmail, setForgotEmail] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -53,6 +57,37 @@ export default function WorkdeskLoginPage() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const supabase = createClient()
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const origin = window.location.origin
+      const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail.trim().toLowerCase(), {
+        redirectTo: `${origin}/workdesk/reset-password`,
+      })
+      if (error) throw error
+      setView('forgot-sent')
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : 'Erro ao enviar e-mail de recuperacao')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const goToForgot = () => {
+    setForgotEmail(email)
+    setError(null)
+    setView('forgot')
+  }
+
+  const goToLogin = () => {
+    setError(null)
+    setView('login')
   }
 
   const features = [
@@ -131,7 +166,7 @@ export default function WorkdeskLoginPage() {
         </motion.div>
       </div>
 
-      {/* Right Side - Login Form */}
+      {/* Right Side - Form */}
       <div className="relative flex w-full flex-col justify-center px-8 py-12 lg:w-1/2 lg:px-16 xl:px-24 bg-background">
         {/* Theme Toggle */}
         <div className="absolute right-6 top-6">
@@ -150,127 +185,267 @@ export default function WorkdeskLoginPage() {
           <span className="text-xl font-bold text-foreground">WorkDesk</span>
         </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="mx-auto w-full max-w-sm"
-        >
-          <div className="mb-8">
-            <h2 className="text-3xl font-bold tracking-tight text-foreground">
-              Bom te ver!
-            </h2>
-            <p className="mt-2 text-muted-foreground">
-              Entre com suas credenciais para acessar sua area de trabalho
-            </p>
-          </div>
+        <div className="mx-auto w-full max-w-sm">
+          <AnimatePresence mode="wait">
 
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-sm font-medium">
-                E-mail
-              </Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="seu@email.com"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="h-12 bg-secondary/50 border-border/50 focus:border-emerald-500 focus:ring-emerald-500"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="password" className="text-sm font-medium">
-                Senha
-              </Label>
-              <div className="relative">
-                <Input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Digite sua senha"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="h-12 bg-secondary/50 border-border/50 pr-12 focus:border-emerald-500 focus:ring-emerald-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                </button>
-              </div>
-            </div>
-
-            {error && (
+            {/* ── LOGIN ── */}
+            {view === 'login' && (
               <motion.div
-                initial={{ opacity: 0, y: -10 }}
+                key="login"
+                initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.2 }}
               >
-                {error}
+                <div className="mb-8">
+                  <h2 className="text-3xl font-bold tracking-tight text-foreground">
+                    Bom te ver!
+                  </h2>
+                  <p className="mt-2 text-muted-foreground">
+                    Entre com suas credenciais para acessar sua area de trabalho
+                  </p>
+                </div>
+
+                <form onSubmit={handleLogin} className="space-y-5">
+                  <div className="space-y-2">
+                    <Label htmlFor="email" className="text-sm font-medium">
+                      E-mail
+                    </Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      placeholder="seu@email.com"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="h-12 bg-secondary/50 border-border/50 focus:border-emerald-500 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="password" className="text-sm font-medium">
+                        Senha
+                      </Label>
+                      <button
+                        type="button"
+                        onClick={goToForgot}
+                        className="text-xs text-emerald-500 hover:text-emerald-600 transition-colors font-medium"
+                      >
+                        Esqueceu sua senha?
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Input
+                        id="password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="Digite sua senha"
+                        required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="h-12 bg-secondary/50 border-border/50 pr-12 focus:border-emerald-500 focus:ring-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {error && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                    >
+                      {error}
+                    </motion.div>
+                  )}
+
+                  <Button
+                    type="submit"
+                    className="h-12 w-full bg-gradient-to-r from-emerald-500 to-teal-500 font-semibold text-white hover:from-emerald-600 hover:to-teal-600 transition-all"
+                    disabled={isLoading}
+                  >
+                    {isLoading ? (
+                      <div className="flex items-center gap-2">
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        Entrando...
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        Acessar WorkDesk
+                        <ArrowRight className="h-4 w-4" />
+                      </div>
+                    )}
+                  </Button>
+                </form>
+
+                {/* Stats */}
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="mt-12 grid grid-cols-3 gap-4 border-t border-border/50 pt-8"
+                >
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-foreground">24/7</p>
+                    <p className="text-xs text-muted-foreground">Suporte</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-foreground">99%</p>
+                    <p className="text-xs text-muted-foreground">Uptime</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-emerald-500">Ativo</p>
+                    <p className="text-xs text-muted-foreground">Status</p>
+                  </div>
+                </motion.div>
+
+                {/* Softcom Logo */}
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.5 }}
+                  className="mt-8 flex justify-center"
+                >
+                  <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-50 dark:invert" />
+                </motion.div>
               </motion.div>
             )}
 
-            <Button
-              type="submit"
-              className="h-12 w-full bg-gradient-to-r from-emerald-500 to-teal-500 font-semibold text-white hover:from-emerald-600 hover:to-teal-600 transition-all"
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <div className="flex items-center gap-2">
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                  Entrando...
+            {/* ── FORGOT PASSWORD ── */}
+            {view === 'forgot' && (
+              <motion.div
+                key="forgot"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.2 }}
+              >
+                <button
+                  type="button"
+                  onClick={goToLogin}
+                  className="mb-6 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  Voltar ao login
+                </button>
+
+                <div className="mb-8">
+                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10">
+                    <Mail className="h-7 w-7 text-emerald-500" />
+                  </div>
+                  <h2 className="text-3xl font-bold tracking-tight text-foreground">
+                    Recuperar senha
+                  </h2>
+                  <p className="mt-2 text-muted-foreground">
+                    Informe seu e-mail e enviaremos um link para redefinir sua senha.
+                  </p>
                 </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  Acessar WorkDesk
-                  <ArrowRight className="h-4 w-4" />
+
+                <form onSubmit={handleForgotPassword} className="space-y-5">
+                  <div className="space-y-2">
+                    <Label htmlFor="forgot-email" className="text-sm font-medium">
+                      E-mail
+                    </Label>
+                    <Input
+                      id="forgot-email"
+                      type="email"
+                      placeholder="seu@email.com"
+                      required
+                      value={forgotEmail}
+                      onChange={(e) => setForgotEmail(e.target.value)}
+                      className="h-12 bg-secondary/50 border-border/50 focus:border-emerald-500 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  {error && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                    >
+                      {error}
+                    </motion.div>
+                  )}
+
+                  <Button
+                    type="submit"
+                    className="h-12 w-full bg-gradient-to-r from-emerald-500 to-teal-500 font-semibold text-white hover:from-emerald-600 hover:to-teal-600 transition-all"
+                    disabled={isLoading}
+                  >
+                    {isLoading ? (
+                      <div className="flex items-center gap-2">
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        Enviando...
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        Enviar link de recuperacao
+                        <ArrowRight className="h-4 w-4" />
+                      </div>
+                    )}
+                  </Button>
+                </form>
+
+                <div className="mt-8 flex justify-center">
+                  <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-50 dark:invert" />
                 </div>
-              )}
-            </Button>
-          </form>
+              </motion.div>
+            )}
 
-          <div className="mt-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              Problemas para acessar? Fale com seu supervisor.
-            </p>
-          </div>
+            {/* ── FORGOT SENT ── */}
+            {view === 'forgot-sent' && (
+              <motion.div
+                key="forgot-sent"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.2 }}
+                className="text-center"
+              >
+                <div className="mb-6 flex justify-center">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10">
+                    <Mail className="h-10 w-10 text-emerald-500" />
+                  </div>
+                </div>
 
-          {/* Stats */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="mt-12 grid grid-cols-3 gap-4 border-t border-border/50 pt-8"
-          >
-            <div className="text-center">
-              <p className="text-2xl font-bold text-foreground">24/7</p>
-              <p className="text-xs text-muted-foreground">Suporte</p>
-            </div>
-            <div className="text-center">
-              <p className="text-2xl font-bold text-foreground">99%</p>
-              <p className="text-xs text-muted-foreground">Uptime</p>
-            </div>
-            <div className="text-center">
-              <p className="text-2xl font-bold text-emerald-500">Ativo</p>
-              <p className="text-xs text-muted-foreground">Status</p>
-            </div>
-          </motion.div>
+                <h2 className="text-3xl font-bold tracking-tight text-foreground">
+                  E-mail enviado!
+                </h2>
+                <p className="mt-3 text-muted-foreground">
+                  Enviamos um link de recuperacao para{' '}
+                  <span className="font-medium text-foreground">{forgotEmail}</span>.
+                  <br />
+                  Verifique sua caixa de entrada e spam.
+                </p>
 
-          {/* Softcom Logo - Footer */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.5 }}
-            className="mt-8 flex justify-center"
-          >
-            <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-50 dark:invert" />
-          </motion.div>
-        </motion.div>
+                <div className="mt-8 rounded-lg bg-secondary/50 px-4 py-3 text-sm text-muted-foreground">
+                  O link expira em <span className="font-medium text-foreground">1 hora</span>.
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={goToLogin}
+                  className="mt-8 h-12 w-full"
+                >
+                  <ArrowLeft className="mr-2 h-4 w-4" />
+                  Voltar ao login
+                </Button>
+
+                <div className="mt-8 flex justify-center">
+                  <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-50 dark:invert" />
+                </div>
+              </motion.div>
+            )}
+
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   )
