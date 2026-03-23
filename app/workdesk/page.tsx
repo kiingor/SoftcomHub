@@ -920,42 +920,22 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     let isActive = true
     const colaboradorId = colaborador.id
 
-    // ── BroadcastChannel para coordenação entre abas ──────────────────────────
-    // Quando outra aba fecha, o beforeunload marca offline.
-    // Se ESTA aba ainda está ativa e o usuário estava online, re-afirma via API (service role).
-    const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('workdesk_presence') : null
-
-    if (bc) {
-      bc.onmessage = (event: MessageEvent) => {
-        if (event.data?.type === 'tab_closing' && event.data?.colaboradorId === colaboradorId) {
-          // Outra aba fechou — re-afirma online via API route (service role) se esta aba está ativa
-          // Usa ref para evitar closure stale
-          if (isActive && isOnlineRef.current) {
-            fetch('/api/colaborador/toggle-status', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ colaboradorId, isOnline: true, pausaAtualId: null }),
-            }).catch(() => {})
-          }
-        }
-      }
-    }
-
-    // ── Heartbeat a cada 30s — atualiza last_heartbeat ──
-    // Só envia heartbeat se o atendente está online (evita re-afirmar status offline)
-    // Envia isOnline para que o backend saiba a intenção do cliente
+    // ── Heartbeat a cada 30s — SOMENTE atualiza last_heartbeat ──
+    // Só envia se o atendente está online. NUNCA envia isOnline para evitar
+    // re-afirmar status — o is_online é controlado exclusivamente pelo toggle/pausa.
     const sendHeartbeat = () => {
       if (!isActive) return
       if (!isOnlineRef.current) return // Não envia heartbeat se offline
       fetch('/api/colaborador/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colaboradorId, isOnline: true }),
+        body: JSON.stringify({ colaboradorId }),
       }).catch(() => {})
     }
 
     const heartbeatInterval = setInterval(sendHeartbeat, 30000)
-    sendHeartbeat() // imediato ao montar
+    // Delay inicial de 2s para garantir que isOnlineRef está sincronizado com o DB
+    const initialHeartbeatTimeout = setTimeout(sendHeartbeat, 2000)
 
     // ── Atualiza status local quando aba fica visível ─────────────────────────
     const refreshColaboradorStatus = async () => {
@@ -968,6 +948,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           .single()
         if (data) {
           setColaborador((prev) => (prev ? { ...prev, is_online: data.is_online, pausa_atual_id: data.pausa_atual_id } : null))
+          isOnlineRef.current = data.is_online ?? false
         }
       } catch {
         // Silently ignore
@@ -977,19 +958,19 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && isActive) {
         refreshColaboradorStatus()
-        sendHeartbeat()
+        // sendHeartbeat será chamado pelo intervalo normal — não enviar aqui
+        // para evitar heartbeat antes do refreshColaboradorStatus atualizar o ref
       }
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
     // ── beforeunload / pagehide — marca offline ao fechar o navegador/aba ─────
     const handlePageClose = () => {
-      // Avisa outras abas que esta está fechando (para re-afirmação se outra aba tiver aberta)
-      bc?.postMessage({ type: 'tab_closing', colaboradorId })
-
-      // Envia sinal de offline via sendBeacon (funciona mesmo durante unload)
-      const payload = JSON.stringify({ colaboradorId, setOffline: true })
-      navigator.sendBeacon('/api/colaborador/heartbeat', payload)
+      // Só envia sinal de offline se estava online (evita sobrescrever um status que já é offline)
+      if (isOnlineRef.current) {
+        const payload = JSON.stringify({ colaboradorId, setOffline: true })
+        navigator.sendBeacon('/api/colaborador/heartbeat', payload)
+      }
     }
 
     window.addEventListener('beforeunload', handlePageClose)
@@ -998,10 +979,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     return () => {
       isActive = false
       clearInterval(heartbeatInterval)
+      clearTimeout(initialHeartbeatTimeout)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('beforeunload', handlePageClose)
       window.removeEventListener('pagehide', handlePageClose)
-      bc?.close()
     }
   }, [colaborador?.id, supabase])
 
