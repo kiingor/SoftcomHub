@@ -51,6 +51,8 @@ import {
   FileCode,
   FileSpreadsheet,
   ShieldCheck,
+  Pencil,
+  Save,
 } from 'lucide-react'
 import {
   Dialog,
@@ -603,6 +605,11 @@ export default function WorkdeskPage() {
   const [selecionarClienteData, setSelecionarClienteData] = useState<any>(null)
   const [selecionarClienteLoading, setSelecionarClienteLoading] = useState(false)
   const [clienteNaoInformadoDialogOpen, setClienteNaoInformadoDialogOpen] = useState(false)
+
+  // Editar dados do cliente
+  const [editarClienteDialogOpen, setEditarClienteDialogOpen] = useState(false)
+  const [editarClienteForm, setEditarClienteForm] = useState({ nome: '', telefone: '', CNPJ: '', Registro: '', PDV: '' })
+  const [editarClienteLoading, setEditarClienteLoading] = useState(false)
 
   // Meus subsetores ativos (seleção do próprio atendente)
   const [meusSubsetorIds, setMeusSubsetorIds] = useState<string[]>([])
@@ -1603,6 +1610,64 @@ const handleEncerrarTicket = async () => {
     } catch {
       clienteSwapTicketIdRef.current = null
       toast.error('Erro ao vincular cliente')
+    }
+  }
+
+  // Abrir dialog de edição de cliente
+  const handleAbrirEditarCliente = () => {
+    if (!selectedTicket?.clientes) return
+    const c = selectedTicket.clientes
+    setEditarClienteForm({
+      nome: c.nome || '',
+      telefone: c.telefone || '',
+      CNPJ: c.CNPJ || '',
+      Registro: c.Registro || '',
+      PDV: c.PDV || '',
+    })
+    setEditarClienteDialogOpen(true)
+  }
+
+  // Salvar edição do cliente
+  const handleSalvarEditarCliente = async () => {
+    if (!selectedTicket?.clientes?.id) return
+    setEditarClienteLoading(true)
+    try {
+      const clienteId = selectedTicket.clientes.id
+      const updateData: Record<string, string | null> = {
+        nome: editarClienteForm.nome || null,
+        telefone: editarClienteForm.telefone || null,
+        CNPJ: editarClienteForm.CNPJ?.replace(/\D/g, '') || null,
+        Registro: editarClienteForm.Registro || null,
+        PDV: editarClienteForm.PDV || null,
+      }
+
+      const { error } = await supabase
+        .from('clientes')
+        .update(updateData)
+        .eq('id', clienteId)
+      if (error) throw error
+
+      // Atualiza estado local
+      const updatedCliente = { ...selectedTicket.clientes, ...updateData }
+      clienteSwapTicketIdRef.current = selectedTicket.id
+      setSelectedTicket((prev) =>
+        prev ? { ...prev, clientes: updatedCliente } : null
+      )
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.id === selectedTicket.id
+            ? { ...t, clientes: updatedCliente }
+            : t
+        )
+      )
+      setTimeout(() => { clienteSwapTicketIdRef.current = null }, 3000)
+
+      toast.success('Dados do cliente atualizados!')
+      setEditarClienteDialogOpen(false)
+    } catch {
+      toast.error('Erro ao atualizar dados do cliente')
+    } finally {
+      setEditarClienteLoading(false)
     }
   }
 
@@ -3172,19 +3237,30 @@ const tempId = `temp-${Date.now()}`
                   <User className="h-3.5 w-3.5" />
                   Dados do Cliente
                 </h3>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-6 text-[10px] px-2 gap-1 border-primary/40 text-primary hover:bg-primary/10"
-                  onClick={() => {
-                    setSelecionarClienteCnpj('')
-                    setSelecionarClienteData(null)
-                    setSelecionarClienteDialogOpen(true)
-                  }}
-                >
-                  <Search className="h-3 w-3" />
-                  {clienteTemCNPJ ? 'Trocar cliente' : 'Selecionar cliente'}
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 text-[10px] px-2 gap-1 border-amber-400/50 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+                    onClick={handleAbrirEditarCliente}
+                  >
+                    <Pencil className="h-3 w-3" />
+                    Editar
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 text-[10px] px-2 gap-1 border-primary/40 text-primary hover:bg-primary/10"
+                    onClick={() => {
+                      setSelecionarClienteCnpj('')
+                      setSelecionarClienteData(null)
+                      setSelecionarClienteDialogOpen(true)
+                    }}
+                  >
+                    <Search className="h-3 w-3" />
+                    {clienteTemCNPJ ? 'Trocar' : 'Selecionar'}
+                  </Button>
+                </div>
               </div>
 
               {/* Campo linha: label + valor + copy */}
@@ -4187,6 +4263,86 @@ onClick={() => {
                 onClick={handleConfirmarSelecionarCliente}
               >
                 Vincular Cliente
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Editar Dados do Cliente */}
+      <Dialog open={editarClienteDialogOpen} onOpenChange={setEditarClienteDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="h-5 w-5 text-amber-500" />
+              Editar Dados do Cliente
+            </DialogTitle>
+            <DialogDescription>
+              Edite os dados do cliente vinculado a este ticket.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Nome</Label>
+              <Input
+                value={editarClienteForm.nome}
+                onChange={(e) => setEditarClienteForm((f) => ({ ...f, nome: e.target.value }))}
+                placeholder="Nome do cliente"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Telefone</Label>
+              <Input
+                value={editarClienteForm.telefone}
+                onChange={(e) => setEditarClienteForm((f) => ({ ...f, telefone: e.target.value }))}
+                placeholder="5511999999999"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">CNPJ</Label>
+              <Input
+                value={editarClienteForm.CNPJ}
+                onChange={(e) => setEditarClienteForm((f) => ({ ...f, CNPJ: e.target.value }))}
+                placeholder="00.000.000/0000-00"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Registro</Label>
+                <Input
+                  value={editarClienteForm.Registro}
+                  onChange={(e) => setEditarClienteForm((f) => ({ ...f, Registro: e.target.value }))}
+                  placeholder="Registro"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">PDV</Label>
+                <Input
+                  value={editarClienteForm.PDV}
+                  onChange={(e) => setEditarClienteForm((f) => ({ ...f, PDV: e.target.value }))}
+                  placeholder="PDV"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setEditarClienteDialogOpen(false)}
+              >
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1 gap-1.5"
+                disabled={editarClienteLoading || !editarClienteForm.nome.trim()}
+                onClick={handleSalvarEditarCliente}
+              >
+                {editarClienteLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                Salvar
               </Button>
             </div>
           </div>
