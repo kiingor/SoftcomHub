@@ -208,6 +208,77 @@ const formatCNPJ = (cnpj: string) => {
   return cnpj
 }
 
+// ─── ContactCard Component ────────────────────────────────────────────────────
+// Renderiza contato compartilhado via WhatsApp (media_type === 'contact')
+function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutgoing: boolean }) {
+  const [copied, setCopied] = React.useState(false)
+
+  // Parse do JSON de contato do WhatsApp
+  let contacts: any[] = []
+  try {
+    const parsed = JSON.parse(conteudo)
+    contacts = Array.isArray(parsed) ? parsed : [parsed]
+  } catch {
+    return <p className="text-sm whitespace-pre-wrap">{conteudo}</p>
+  }
+
+  if (contacts.length === 0) return null
+
+  return (
+    <div className="space-y-2">
+      {contacts.map((contact: any, idx: number) => {
+        const name = contact?.name?.formatted_name || contact?.name?.first_name || 'Sem nome'
+        const phones = contact?.phones || []
+        const firstPhone = phones[0]?.phone || phones[0]?.wa_id || ''
+        const formattedPhone = firstPhone.startsWith('+') ? firstPhone : `+${firstPhone}`
+
+        return (
+          <div
+            key={idx}
+            className={cn(
+              'flex items-center gap-3 rounded-xl p-3 border',
+              isOutgoing
+                ? 'bg-white/15 border-white/20'
+                : 'bg-background/60 border-border/50'
+            )}
+          >
+            <div className={cn(
+              'flex h-10 w-10 shrink-0 items-center justify-center rounded-full',
+              isOutgoing ? 'bg-white/20' : 'bg-primary/10'
+            )}>
+              <User className={cn('h-5 w-5', isOutgoing ? 'text-white' : 'text-primary')} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className={cn('text-sm font-semibold truncate', isOutgoing ? 'text-white' : 'text-foreground')}>
+                {name}
+              </p>
+              <p className={cn('text-xs truncate', isOutgoing ? 'text-white/70' : 'text-muted-foreground')}>
+                {formattedPhone}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(formattedPhone.replace(/\s/g, ''))
+                setCopied(true)
+                setTimeout(() => setCopied(false), 2000)
+              }}
+              className={cn(
+                'flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all shrink-0',
+                isOutgoing
+                  ? 'bg-white/20 hover:bg-white/30 text-white'
+                  : 'bg-primary/10 hover:bg-primary/20 text-primary'
+              )}
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? 'Copiado!' : 'Copiar'}
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ─── MessageMedia Component ───────────────────────────────────────────────────
 // Renderiza mídia de mensagem baseado no media_type (MIME) com fallback no tipo
 interface MessageMediaProps {
@@ -2815,13 +2886,15 @@ const tempId = `temp-${Date.now()}`
                             isOutgoing={isOutgoingMessage(msg.remetente)}
                           />
                         )}
-                        {msg.tipo !== 'texto' && !msg.url_imagem && (
+                        {msg.tipo !== 'texto' && !msg.url_imagem && msg.media_type !== 'contact' && (
                           <div className="mb-1 flex items-center gap-1 text-xs opacity-70">
                             {getMessageIcon(msg.tipo)}
                             <span className="capitalize">{msg.tipo}</span>
                           </div>
                         )}
-                        {msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>}
+                        {msg.media_type === 'contact' && msg.conteudo ? (
+                          <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
+                        ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
@@ -3397,7 +3470,9 @@ onClick={() => {
                       isOutgoing={isOutgoingMessage(msg.remetente)}
                     />
                   )}
-                  {msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
+                  {msg.media_type === 'contact' && msg.conteudo ? (
+                    <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
+                  ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
