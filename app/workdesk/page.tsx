@@ -210,27 +210,54 @@ const formatCNPJ = (cnpj: string) => {
 
 // ─── ContactCard Component ────────────────────────────────────────────────────
 // Renderiza contato compartilhado via WhatsApp (media_type === 'contact')
+// Suporta 2 formatos:
+//   1) API oficial (array): [{"name":{"formatted_name":"X"},"phones":[{"phone":"+55..."}]}]
+//   2) Evolution (vcard):   {"displayName":"X","vcard":"BEGIN:VCARD\n...END:VCARD"}
+
+// Extrai nome e telefone de um vCard string
+function parseVCard(vcard: string): { name: string; phone: string } {
+  const fnMatch = vcard.match(/FN[;:](.+)/i)
+  const name = fnMatch ? fnMatch[1].trim() : 'Sem nome'
+  // TEL com waid: "+55 85 8184-0618" ou TEL:+5585...
+  const telMatch = vcard.match(/TEL[^:]*:([^\n]+)/i)
+  const phone = telMatch ? telMatch[1].trim() : ''
+  return { name, phone }
+}
+
 function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutgoing: boolean }) {
   const [copied, setCopied] = React.useState(false)
 
-  // Parse do JSON de contato do WhatsApp
-  let contacts: any[] = []
+  // Normaliza para lista de { name, phone }
+  let contactList: { name: string; phone: string }[] = []
   try {
     const parsed = JSON.parse(conteudo)
-    contacts = Array.isArray(parsed) ? parsed : [parsed]
+    const items = Array.isArray(parsed) ? parsed : [parsed]
+    for (const item of items) {
+      if (item.vcard) {
+        // Formato Evolution: { displayName, vcard }
+        const vc = parseVCard(item.vcard)
+        contactList.push({
+          name: item.displayName || vc.name,
+          phone: vc.phone,
+        })
+      } else if (item.name) {
+        // Formato API oficial: { name: { formatted_name }, phones: [{ phone }] }
+        const name = item.name?.formatted_name || item.name?.first_name || 'Sem nome'
+        const phones = item.phones || []
+        const firstPhone = phones[0]?.phone || phones[0]?.wa_id || ''
+        contactList.push({ name, phone: firstPhone })
+      }
+    }
   } catch {
     return <p className="text-sm whitespace-pre-wrap">{conteudo}</p>
   }
 
-  if (contacts.length === 0) return null
+  if (contactList.length === 0) return null
 
   return (
     <div className="space-y-2">
-      {contacts.map((contact: any, idx: number) => {
-        const name = contact?.name?.formatted_name || contact?.name?.first_name || 'Sem nome'
-        const phones = contact?.phones || []
-        const firstPhone = phones[0]?.phone || phones[0]?.wa_id || ''
-        const formattedPhone = firstPhone.startsWith('+') ? firstPhone : `+${firstPhone}`
+      {contactList.map((contact, idx) => {
+        const formattedPhone = contact.phone.startsWith('+') ? contact.phone : `+${contact.phone}`
 
         return (
           <div
@@ -250,7 +277,7 @@ function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutgoing: b
             </div>
             <div className="flex-1 min-w-0">
               <p className={cn('text-sm font-semibold truncate', isOutgoing ? 'text-white' : 'text-foreground')}>
-                {name}
+                {contact.name}
               </p>
               <p className={cn('text-xs truncate', isOutgoing ? 'text-white/70' : 'text-muted-foreground')}>
                 {formattedPhone}
