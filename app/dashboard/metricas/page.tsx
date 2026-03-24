@@ -164,21 +164,44 @@ export default function MetricasPage() {
       : dateFilter === 'custom' ? 'período selecionado'
       : `últimos ${dateFilter} dias`
 
+    // Helper para buscar TODOS os resultados com paginação (Supabase limita a 1000 rows)
+    const PAGE_SIZE = 1000
+    async function fetchAllPages<T>(buildQuery: (offset: number, limit: number) => any): Promise<T[]> {
+      let all: T[] = []
+      let offset = 0
+      let hasMore = true
+      while (hasMore) {
+        const { data } = await buildQuery(offset, offset + PAGE_SIZE - 1)
+        if (data && data.length > 0) {
+          all = all.concat(data)
+          offset += PAGE_SIZE
+          hasMore = data.length === PAGE_SIZE
+        } else {
+          hasMore = false
+        }
+      }
+      return all
+    }
+
     try {
       // Fetch average first response time (filtrado pelo período selecionado)
-      let firstResponseQuery = supabase
-        .from('tickets')
-        .select('criado_em, primeira_resposta_em')
-        .eq('status', 'encerrado')
-        .not('primeira_resposta_em', 'is', null)
-        .in('setor_id', filterSetorIds)
-      if (filterDate) firstResponseQuery = firstResponseQuery.gte('criado_em', filterDate)
-      if (filterDateTo) firstResponseQuery = firstResponseQuery.lte('criado_em', filterDateTo)
-      const { data: firstResponseData } = await firstResponseQuery.limit(50000)
+      const firstResponseData = await fetchAllPages<any>((from, to) => {
+        let q = supabase
+          .from('tickets')
+          .select('criado_em, primeira_resposta_em')
+          .eq('status', 'encerrado')
+          .not('primeira_resposta_em', 'is', null)
+          .in('setor_id', filterSetorIds)
+          .order('criado_em', { ascending: true })
+          .range(from, to)
+        if (filterDate) q = q.gte('criado_em', filterDate)
+        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
+        return q
+      })
 
       let avgFirstResponse = 0
-      if (firstResponseData && firstResponseData.length > 0) {
-        const totalMinutes = firstResponseData.reduce((sum, ticket) => {
+      if (firstResponseData.length > 0) {
+        const totalMinutes = firstResponseData.reduce((sum: number, ticket: any) => {
           const created = new Date(ticket.criado_em).getTime()
           const firstResponse = new Date(ticket.primeira_resposta_em).getTime()
           return sum + (firstResponse - created) / (1000 * 60)
@@ -187,19 +210,23 @@ export default function MetricasPage() {
       }
 
       // Fetch average resolution time (filtrado pelo período selecionado)
-      let resolutionQuery = supabase
-        .from('tickets')
-        .select('criado_em, encerrado_em')
-        .eq('status', 'encerrado')
-        .not('encerrado_em', 'is', null)
-        .in('setor_id', filterSetorIds)
-      if (filterDate) resolutionQuery = resolutionQuery.gte('criado_em', filterDate)
-      if (filterDateTo) resolutionQuery = resolutionQuery.lte('criado_em', filterDateTo)
-      const { data: resolutionData } = await resolutionQuery.limit(50000)
+      const resolutionData = await fetchAllPages<any>((from, to) => {
+        let q = supabase
+          .from('tickets')
+          .select('criado_em, encerrado_em')
+          .eq('status', 'encerrado')
+          .not('encerrado_em', 'is', null)
+          .in('setor_id', filterSetorIds)
+          .order('criado_em', { ascending: true })
+          .range(from, to)
+        if (filterDate) q = q.gte('criado_em', filterDate)
+        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
+        return q
+      })
 
       let avgResolution = 0
-      if (resolutionData && resolutionData.length > 0) {
-        const totalMinutes = resolutionData.reduce((sum, ticket) => {
+      if (resolutionData.length > 0) {
+        const totalMinutes = resolutionData.reduce((sum: number, ticket: any) => {
           const created = new Date(ticket.criado_em).getTime()
           const closed = new Date(ticket.encerrado_em).getTime()
           return sum + (closed - created) / (1000 * 60)
@@ -243,19 +270,21 @@ export default function MetricasPage() {
         { title: 'Tickets Encerrados', value: String(closedTickets || 0), description: `Encerrados em ${periodLabel}`, icon: CheckCircle, color: 'bg-muted' },
       ])
 
-      // Fetch tickets by sector
-      let ticketQuery = supabase
-        .from('tickets')
-        .select('setor_id, setores(nome)')
-        .in('setor_id', filterSetorIds)
-      if (filterDate) ticketQuery = ticketQuery.gte('criado_em', filterDate)
-      if (filterDateTo) ticketQuery = ticketQuery.lte('criado_em', filterDateTo)
-
-      const { data: sectorData } = await ticketQuery.limit(50000)
-
-      if (sectorData) {
+      // Fetch tickets by sector — paginação completa
+      const allSectorData = await fetchAllPages<any>((from, to) => {
+        let q = supabase
+          .from('tickets')
+          .select('setor_id, setores(nome)')
+          .in('setor_id', filterSetorIds)
+          .order('criado_em', { ascending: true })
+          .range(from, to)
+        if (filterDate) q = q.gte('criado_em', filterDate)
+        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
+        return q
+      })
+      if (allSectorData.length > 0) {
         const sectorCounts: Record<string, number> = {}
-        sectorData.forEach((ticket: any) => {
+        allSectorData.forEach((ticket: any) => {
           const sectorName = ticket.setores?.nome || 'Sem setor'
           sectorCounts[sectorName] = (sectorCounts[sectorName] || 0) + 1
         })
@@ -266,21 +295,23 @@ export default function MetricasPage() {
         )
       }
 
-      // Fetch tickets by collaborator
-      let colaboradorQuery = supabase
-        .from('tickets')
-        .select('colaborador_id, colaboradores(nome)')
-        .eq('status', 'encerrado')
-        .not('colaborador_id', 'is', null)
-        .in('setor_id', filterSetorIds)
-      if (filterDate) colaboradorQuery = colaboradorQuery.gte('criado_em', filterDate)
-      if (filterDateTo) colaboradorQuery = colaboradorQuery.lte('criado_em', filterDateTo)
-
-      const { data: colaboradorData } = await colaboradorQuery.limit(50000)
-
-      if (colaboradorData) {
+      // Fetch tickets by collaborator — paginação completa
+      const allColabData = await fetchAllPages<any>((from, to) => {
+        let q = supabase
+          .from('tickets')
+          .select('colaborador_id, colaboradores(nome)')
+          .eq('status', 'encerrado')
+          .not('colaborador_id', 'is', null)
+          .in('setor_id', filterSetorIds)
+          .order('criado_em', { ascending: true })
+          .range(from, to)
+        if (filterDate) q = q.gte('criado_em', filterDate)
+        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
+        return q
+      })
+      if (allColabData.length > 0) {
         const colaboradorCounts: Record<string, number> = {}
-        colaboradorData.forEach((ticket: any) => {
+        allColabData.forEach((ticket: any) => {
           const colaboradorName = ticket.colaboradores?.nome || 'Desconhecido'
           colaboradorCounts[colaboradorName] = (colaboradorCounts[colaboradorName] || 0) + 1
         })
@@ -291,32 +322,18 @@ export default function MetricasPage() {
         )
       }
 
-      // Fetch daily volume — busca TODOS os tickets sem limit
-      // Usa paginação para contornar o limite de 1000 rows do Supabase
-      let allDailyData: { criado_em: string }[] = []
-      let dailyOffset = 0
-      const PAGE_SIZE = 1000
-      let hasMore = true
-
-      while (hasMore) {
-        let dailyQuery = supabase
+      // Fetch daily volume — paginação completa
+      const allDailyData = await fetchAllPages<any>((from, to) => {
+        let q = supabase
           .from('tickets')
           .select('criado_em')
           .in('setor_id', filterSetorIds)
           .order('criado_em', { ascending: true })
-          .range(dailyOffset, dailyOffset + PAGE_SIZE - 1)
-        if (filterDate) dailyQuery = dailyQuery.gte('criado_em', filterDate)
-        if (filterDateTo) dailyQuery = dailyQuery.lte('criado_em', filterDateTo)
-
-        const { data: dailyPage } = await dailyQuery
-        if (dailyPage && dailyPage.length > 0) {
-          allDailyData = allDailyData.concat(dailyPage)
-          dailyOffset += PAGE_SIZE
-          hasMore = dailyPage.length === PAGE_SIZE
-        } else {
-          hasMore = false
-        }
-      }
+          .range(from, to)
+        if (filterDate) q = q.gte('criado_em', filterDate)
+        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
+        return q
+      })
 
       if (allDailyData.length > 0) {
         const dailyCounts: Record<string, number> = {}
