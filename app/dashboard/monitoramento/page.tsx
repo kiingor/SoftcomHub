@@ -426,15 +426,11 @@ export default function MonitoramentoPage() {
         ticketsAtivos: ticketCountPorAtendente.get(a.id) || 0,
       }))
       .sort((a: any, b: any) => {
-        // Online (com heartbeat fresco) first, then pausa, then offline
-        const STALE_MS = 2 * 60 * 1000
-        const isReallyOnline = (x: any) =>
-          x.is_online && !x.pausa_atual_id && x.last_heartbeat &&
-          (Date.now() - new Date(x.last_heartbeat).getTime()) < STALE_MS
+        // Ordem: Online primeiro → Pausa → Offline, e dentro de cada grupo por nome
         const order = (x: any) => {
-          if (isReallyOnline(x)) return 0
-          if (x.pausa_atual_id) return 1
-          return 2
+          if (x.is_online && !x.pausa_atual_id) return 0 // Online
+          if (x.pausa_atual_id) return 1                  // Em pausa
+          return 2                                         // Offline
         }
         return order(a) - order(b) || a.nome?.localeCompare(b.nome)
       })
