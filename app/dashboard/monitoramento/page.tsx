@@ -119,12 +119,9 @@ export default function MonitoramentoPage() {
   const [searchAtendente, setSearchAtendente] = useState('')
   const [, setTick] = useState(0)
 
-  // Helper: verifica se atendente está efetivamente online (is_online + heartbeat fresco)
-  const HEARTBEAT_STALE_THRESHOLD = 2 * 60 * 1000
+  // Helper: verifica se atendente está online (confia no is_online do banco)
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
-    if (!atendente?.is_online || !atendente?.ativo) return false
-    if (!atendente.last_heartbeat) return false
-    return (Date.now() - new Date(atendente.last_heartbeat).getTime()) < HEARTBEAT_STALE_THRESHOLD
+    return !!(atendente?.is_online && atendente?.ativo)
   }, [])
 
   // Conversation panel state
@@ -241,14 +238,8 @@ export default function MonitoramentoPage() {
       // Max times
       const nowMs = Date.now()
 
-      // Considerar online SOMENTE se is_online=true E heartbeat é recente (< 2 min)
-      const HEARTBEAT_STALE_MS = 2 * 60 * 1000
-      const isEffectivelyOnline = (c: any) => {
-        if (!c.is_online || !c.ativo || c.pausa_atual_id) return false
-        if (!c.last_heartbeat) return false
-        return (nowMs - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
-      }
-      const atendentesOnline = atendentes.filter(isEffectivelyOnline)
+      // Online = is_online true, ativo, e sem pausa
+      const atendentesOnline = atendentes.filter((c: any) => c.is_online && c.ativo && !c.pausa_atual_id)
       const atendentesEmPausa = atendentes.filter((c: any) => c.pausa_atual_id && c.ativo)
       let maxTempoFila = 0
       let maxTempoResposta = 0

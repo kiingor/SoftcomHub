@@ -4,18 +4,18 @@ import { NextResponse } from 'next/server'
 /**
  * POST /api/colaborador/heartbeat
  *
- * - Atualiza last_heartbeat (keep-alive enquanto o navegador está aberto)
- * - Quando setOffline=true, marca is_online=false (chamado no beforeunload/pagehide)
- * - Usa service role para bypassar RLS e garantir que a escrita SEMPRE funcione
+ * Apenas atualiza last_heartbeat (keep-alive para monitoramento).
+ * NUNCA altera is_online — o status é controlado EXCLUSIVAMENTE
+ * pelo usuário via toggle-status API (botão online/offline/pausa/logout).
  *
- * Body: { colaboradorId: string, setOffline?: boolean, isOnline?: boolean }
+ * Body: { colaboradorId: string }
  */
 export async function POST(request: Request) {
   try {
     const supabase = createServiceClient()
 
-    // Aceita application/json ou text/plain (navigator.sendBeacon envia text/plain)
-    let body: { colaboradorId?: string; setOffline?: boolean }
+    // Aceita application/json ou text/plain
+    let body: { colaboradorId?: string }
     const contentType = request.headers.get('content-type') || ''
 
     if (contentType.includes('application/json')) {
@@ -29,36 +29,13 @@ export async function POST(request: Request) {
       }
     }
 
-    const { colaboradorId, setOffline, isOnline } = body as {
-      colaboradorId?: string; setOffline?: boolean; isOnline?: boolean
-    }
+    const { colaboradorId } = body
 
     if (!colaboradorId) {
       return NextResponse.json({ error: 'colaboradorId required' }, { status: 400 })
     }
 
-    if (setOffline) {
-      // Chamado quando a aba/navegador fecha — marca offline
-      const { error } = await supabase
-        .from('colaboradores')
-        .update({
-          is_online: false,
-          pausa_atual_id: null,
-          last_heartbeat: new Date().toISOString(),
-        })
-        .eq('id', colaboradorId)
-
-      if (error) {
-        console.error('Heartbeat setOffline error:', error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
-      }
-
-      return NextResponse.json({ success: true, action: 'offline' })
-    }
-
-    // Keep-alive normal — SOMENTE atualiza last_heartbeat
-    // NUNCA toca em is_online aqui. O is_online é controlado EXCLUSIVAMENTE
-    // por ação explícita do usuário (toggle, pausa, logout via toggle-status API).
+    // Keep-alive — SOMENTE atualiza last_heartbeat
     const { error } = await supabase
       .from('colaboradores')
       .update({ last_heartbeat: new Date().toISOString() })

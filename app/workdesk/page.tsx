@@ -551,12 +551,9 @@ export default function WorkdeskPage() {
   const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all') // Updated default value
   const [transferLoading, setTransferLoading] = useState(false)
 
-  // Helper: verifica se atendente está efetivamente online (is_online + heartbeat fresco)
-  const HEARTBEAT_STALE_THRESHOLD = 2 * 60 * 1000
+  // Helper: verifica se atendente está online (confia no is_online do banco)
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
-    if (!atendente?.is_online || !atendente?.ativo) return false
-    if (!atendente.last_heartbeat) return false
-    return (Date.now() - new Date(atendente.last_heartbeat).getTime()) < HEARTBEAT_STALE_THRESHOLD
+    return !!(atendente?.is_online && atendente?.ativo)
   }, [])
   
   // Message input
@@ -1017,27 +1014,17 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     }
   }, [colaborador, fetchTickets, supabase, playAlert])
 
-  // ── Ref para status online (evita closures stale no heartbeat/BroadcastChannel) ──
-  const isOnlineRef = useRef(colaborador?.is_online ?? false)
-  useEffect(() => {
-    isOnlineRef.current = colaborador?.is_online ?? false
-  }, [colaborador?.is_online])
-
-  // Heartbeat + coordenação multi-aba
-  // O is_online é controlado EXCLUSIVAMENTE por ação explícita do usuário (toggle/pausa/logout).
-  // O heartbeat NUNCA re-afirma is_online — apenas atualiza last_heartbeat.
+  // ── Heartbeat simples — apenas atualiza last_heartbeat para monitoramento ──
+  // O is_online é controlado EXCLUSIVAMENTE por ação do usuário (botão online/offline/pausa/logout).
+  // NENHUMA lógica automática altera o status. Sem beforeunload, sem sendBeacon, sem stale checks.
   useEffect(() => {
     if (!colaborador?.id) return
 
     let isActive = true
     const colaboradorId = colaborador.id
 
-    // ── Heartbeat a cada 30s — SOMENTE atualiza last_heartbeat ──
-    // Só envia se o atendente está online. NUNCA envia isOnline para evitar
-    // re-afirmar status — o is_online é controlado exclusivamente pelo toggle/pausa.
     const sendHeartbeat = () => {
       if (!isActive) return
-      if (!isOnlineRef.current) return // Não envia heartbeat se offline
       fetch('/api/colaborador/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1046,57 +1033,14 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     }
 
     const heartbeatInterval = setInterval(sendHeartbeat, 30000)
-    // Delay inicial de 2s para garantir que isOnlineRef está sincronizado com o DB
     const initialHeartbeatTimeout = setTimeout(sendHeartbeat, 2000)
-
-    // ── Atualiza status local quando aba fica visível ─────────────────────────
-    const refreshColaboradorStatus = async () => {
-      if (!isActive) return
-      try {
-        const { data } = await supabase
-          .from('colaboradores')
-          .select('is_online, pausa_atual_id')
-          .eq('id', colaboradorId)
-          .single()
-        if (data) {
-          setColaborador((prev) => (prev ? { ...prev, is_online: data.is_online, pausa_atual_id: data.pausa_atual_id } : null))
-          isOnlineRef.current = data.is_online ?? false
-        }
-      } catch {
-        // Silently ignore
-      }
-    }
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && isActive) {
-        refreshColaboradorStatus()
-        // sendHeartbeat será chamado pelo intervalo normal — não enviar aqui
-        // para evitar heartbeat antes do refreshColaboradorStatus atualizar o ref
-      }
-    }
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-
-    // ── beforeunload / pagehide — marca offline ao fechar o navegador/aba ─────
-    const handlePageClose = () => {
-      // Só envia sinal de offline se estava online (evita sobrescrever um status que já é offline)
-      if (isOnlineRef.current) {
-        const payload = JSON.stringify({ colaboradorId, setOffline: true })
-        navigator.sendBeacon('/api/colaborador/heartbeat', payload)
-      }
-    }
-
-    window.addEventListener('beforeunload', handlePageClose)
-    window.addEventListener('pagehide', handlePageClose)
 
     return () => {
       isActive = false
       clearInterval(heartbeatInterval)
       clearTimeout(initialHeartbeatTimeout)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('beforeunload', handlePageClose)
-      window.removeEventListener('pagehide', handlePageClose)
     }
-  }, [colaborador?.id, supabase])
+  }, [colaborador?.id])
 
   // Periodic queue processor - check for unassigned tickets every 30 seconds
   useEffect(() => {
