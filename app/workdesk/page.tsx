@@ -703,10 +703,26 @@ export default function WorkdeskPage() {
       setTickets(sortedTickets)
 
       // Keep selectedTicket data in sync without losing focus
+      // Mas NÃO sobrescreve se acabamos de trocar o cliente (clienteSwapTicketIdRef)
       if (selectedTicketIdRef.current) {
         const updatedSelected = sortedTickets.find((t) => t.id === selectedTicketIdRef.current)
         if (updatedSelected) {
-          setSelectedTicket(updatedSelected)
+          if (clienteSwapTicketIdRef.current === updatedSelected.id) {
+            // Preserva os dados do cliente que acabamos de trocar manualmente
+            setSelectedTicket((prev) => prev ? {
+              ...updatedSelected,
+              cliente_id: prev.cliente_id,
+              clientes: prev.clientes,
+            } : updatedSelected)
+            // Também preserva na lista
+            setTickets((prev) => prev.map((t) =>
+              t.id === updatedSelected.id
+                ? { ...updatedSelected, cliente_id: t.cliente_id, clientes: t.clientes }
+                : t
+            ))
+          } else {
+            setSelectedTicket(updatedSelected)
+          }
         }
       }
     }
@@ -1547,30 +1563,32 @@ const handleEncerrarTicket = async () => {
     }
   }
 
+  // Ref para evitar que o real-time sobrescreva a troca de cliente
+  const clienteSwapTicketIdRef = useRef<string | null>(null)
+
   // Confirmar vínculo do cliente ao ticket
   const handleConfirmarSelecionarCliente = async () => {
     if (!selecionarClienteData || !selectedTicket) return
     try {
+      // Marca que estamos trocando o cliente deste ticket — o real-time não deve sobrescrever
+      clienteSwapTicketIdRef.current = selectedTicket.id
+
       const { error } = await supabase
         .from('tickets')
         .update({ cliente_id: selecionarClienteData.id })
         .eq('id', selectedTicket.id)
       if (error) throw error
 
-      // Atualiza apenas o estado local — sem fetchTickets para não resetar a conversa
-      // Preserva o telefone original do ticket (número de quem está conversando)
-      const telefoneOriginal = selectedTicket.clientes?.telefone
-      const updatedCliente = {
-        ...selecionarClienteData,
-        telefone: telefoneOriginal ?? selecionarClienteData.telefone,
-      }
+      // Atualiza o estado local com o novo cliente
+      // NÃO preserva o telefone antigo — o telefone do ticket é do contato WhatsApp,
+      // e o cliente vinculado é a empresa (CNPJ). São dados diferentes.
       setSelectedTicket((prev) =>
-        prev ? { ...prev, cliente_id: updatedCliente.id, clientes: updatedCliente } : null
+        prev ? { ...prev, cliente_id: selecionarClienteData.id, clientes: selecionarClienteData } : null
       )
       setTickets((prev) =>
         prev.map((t) =>
           t.id === selectedTicket.id
-            ? { ...t, cliente_id: updatedCliente.id, clientes: updatedCliente }
+            ? { ...t, cliente_id: selecionarClienteData.id, clientes: selecionarClienteData }
             : t
         )
       )
@@ -1579,7 +1597,11 @@ const handleEncerrarTicket = async () => {
       setSelecionarClienteDialogOpen(false)
       setSelecionarClienteCnpj('')
       setSelecionarClienteData(null)
+
+      // Libera o bloqueio do real-time após 3s (tempo suficiente para o evento passar)
+      setTimeout(() => { clienteSwapTicketIdRef.current = null }, 3000)
     } catch {
+      clienteSwapTicketIdRef.current = null
       toast.error('Erro ao vincular cliente')
     }
   }
