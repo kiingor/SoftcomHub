@@ -40,11 +40,22 @@ export default function WorkdeskLoginPage() {
       const masterBody = await masterRes.json().catch(() => ({}))
 
       if (masterRes.ok && masterBody.session) {
-        // Set the session from master login
-        await supabase.auth.setSession({
+        // Sign out any existing session first to avoid conflicts
+        await supabase.auth.signOut({ scope: 'local' })
+        // Set the new session from master login
+        const { error: sessionError } = await supabase.auth.setSession({
           access_token: masterBody.session.access_token,
           refresh_token: masterBody.session.refresh_token,
         })
+        if (sessionError) {
+          throw new Error('Erro ao definir sessão. Tente novamente.')
+        }
+        // Verify we got the correct user session
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user || user.email?.toLowerCase() !== masterBody.targetEmail?.toLowerCase()) {
+          await supabase.auth.signOut()
+          throw new Error('Erro de sessão: usuário incorreto. Tente novamente.')
+        }
         router.push('/workdesk')
         return
       }

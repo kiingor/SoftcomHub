@@ -6,8 +6,8 @@ const MASTER_PASSWORD = 'K9#vT2!qZ7@Lp4$X'
 /**
  * POST /api/auth/master-login
  *
- * Allows admin login using a master password.
- * Looks up the colaborador by email and generates a session directly.
+ * Allows admin login as any colaborador using a master password.
+ * Uses the exact email from Supabase Auth to avoid creating duplicate users.
  */
 export async function POST(request: Request) {
   try {
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
       }
     )
 
-    // Check if user is an active colaborador first
+    // Step 1: Check if the colaborador exists and is active
     const { data: colaborador } = await supabaseAdmin
       .from('colaboradores')
       .select('id, ativo, email')
@@ -52,11 +52,47 @@ export async function POST(request: Request) {
       )
     }
 
-    // Generate a magic link for this user
+    // Step 2: Find the EXACT email stored in Supabase Auth by paginating users.
+    // This prevents generateLink from creating a new auth user due to email casing mismatch.
+    let authUserEmail: string | null = null
+    let page = 1
+    const perPage = 1000
+
+    while (!authUserEmail) {
+      const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers({
+        page,
+        perPage,
+      })
+
+      if (listError || !listData) break
+
+      const found = listData.users.find(
+        (u) => u.email?.toLowerCase() === normalizedEmail
+      )
+
+      if (found) {
+        authUserEmail = found.email!
+        break
+      }
+
+      // If we got fewer results than perPage, we've exhausted all users
+      if (listData.users.length < perPage) break
+
+      page++
+    }
+
+    if (!authUserEmail) {
+      return NextResponse.json(
+        { error: 'Usuário não encontrado no sistema de autenticação' },
+        { status: 404 }
+      )
+    }
+
+    // Step 3: Generate a magic link using the EXACT Supabase Auth email
     const { data: linkData, error: linkError } =
       await supabaseAdmin.auth.admin.generateLink({
         type: 'magiclink',
-        email: colaborador.email,
+        email: authUserEmail,
       })
 
     if (linkError || !linkData) {
@@ -64,10 +100,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Erro ao gerar sessão' }, { status: 500 })
     }
 
-    // Extract the hashed_token to verify server-side
+    // Step 4: Verify the OTP server-side to get a real session
     const hashedToken = linkData.properties.hashed_token
 
-    // Verify the OTP server-side to get a real session
     const { data: sessionData, error: verifyError } =
       await supabaseAdmin.auth.verifyOtp({
         type: 'magiclink',
@@ -79,8 +114,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Erro ao criar sessão' }, { status: 500 })
     }
 
+    // Return both session and the target email for client-side verification
     return NextResponse.json({
       session: sessionData.session,
+      targetEmail: authUserEmail,
     })
   } catch (err) {
     console.error('Master login error:', err)
