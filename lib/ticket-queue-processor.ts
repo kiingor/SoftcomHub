@@ -187,66 +187,76 @@ async function getAvailableColaboradores(
     })
 }
 
-// Try to assign a single ticket with concurrency protection
+// Try to assign a single ticket with concurrency protection and max_tickets_per_agent limit
 async function tryAssignTicket(
   ticketId: string,
   setorId: string,
   subsetorId: string | null = null
 ): Promise<AssignmentResult> {
   const supabase = createServiceClient()
-  
+
   console.log(`[TicketQueue] tryAssignTicket - ticketId: ${ticketId}, setorId: ${setorId}, subsetorId: ${subsetorId}`)
-  
+
   // First, verify the ticket is still unassigned (prevent race conditions)
   const { data: ticket } = await supabase
     .from('tickets')
     .select('id, colaborador_id, status, setor_id, subsetor_id')
     .eq('id', ticketId)
     .single()
-  
+
   if (!ticket) {
     return { ticketId, colaboradorId: null, success: false, reason: 'Ticket not found' }
   }
-  
-  console.log(`[TicketQueue] Ticket data: colaborador_id=${ticket.colaborador_id}, status=${ticket.status}, subsetor_id=${ticket.subsetor_id}`)
-  
+
   if (ticket.colaborador_id) {
     return { ticketId, colaboradorId: ticket.colaborador_id, success: false, reason: 'Already assigned' }
   }
-  
+
   if (ticket.status !== 'aberto' && ticket.status !== 'em_atendimento') {
     return { ticketId, colaboradorId: null, success: false, reason: `Invalid status: ${ticket.status}` }
   }
-  
+
+  // Buscar limite max_tickets_per_agent do setor
+  const { data: config } = await supabase
+    .from('ticket_distribution_config')
+    .select('max_tickets_per_agent')
+    .eq('setor_id', setorId)
+    .maybeSingle()
+
+  const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
+
   // Use the ticket's subsetor_id if available
   const ticketSubsetorId = subsetorId || ticket.subsetor_id
-  
-  console.log(`[TicketQueue] Using subsetor_id: ${ticketSubsetorId}`)
-  
+
   let colaboradores: Array<{ id: string; nome: string; ticketCount: number }> = []
-  
+
   if (ticketSubsetorId) {
-    // Ticket tem subsetor: somente colaboradores daquele subsetor
-    console.log(`[TicketQueue] Searching for colaboradores in subsetor ${ticketSubsetorId}`)
+    // Primeiro tenta colaboradores do subsetor específico
     colaboradores = await getAvailableColaboradores(setorId, ticketSubsetorId)
     if (colaboradores.length === 0) {
-      console.log(`[TicketQueue] No colaboradores available for subsetor ${ticketSubsetorId} — ticket will remain unassigned`)
+      // Fallback: se ninguém disponível no subsetor, tenta qualquer colaborador do setor
+      console.log(`[TicketQueue] No colaboradores in subsetor ${ticketSubsetorId}, falling back to setor-level`)
+      colaboradores = await getAvailableColaboradores(setorId, null)
     }
   } else {
-    // Sem subsetor: qualquer colaborador online do setor
-    console.log(`[TicketQueue] No subsetor, getting all colaboradores from setor`)
     colaboradores = await getAvailableColaboradores(setorId, null)
   }
-  
-  console.log(`[TicketQueue] Found ${colaboradores.length} available colaboradores: ${JSON.stringify(colaboradores.map(c => ({ id: c.id, nome: c.nome })))}`)
-  
-  if (colaboradores.length === 0) {
-    return { ticketId, colaboradorId: null, success: false, reason: 'No online colaboradores in setor' }
+
+  // Filtrar colaboradores que já atingiram o limite de tickets
+  const eligibleColaboradores = colaboradores.filter(c => c.ticketCount < maxTicketsPerAgent)
+
+  console.log(`[TicketQueue] Found ${colaboradores.length} available, ${eligibleColaboradores.length} below limit (max=${maxTicketsPerAgent})`)
+
+  if (eligibleColaboradores.length === 0) {
+    const reason = colaboradores.length === 0
+      ? 'No online colaboradores in setor'
+      : `All ${colaboradores.length} colaboradores at max ticket limit (${maxTicketsPerAgent})`
+    return { ticketId, colaboradorId: null, success: false, reason }
   }
-  
+
   // Select the colaborador with least tickets (first in sorted array)
-  const selectedColaborador = colaboradores[0]
-  
+  const selectedColaborador = eligibleColaboradores[0]
+
   // Attempt atomic update with condition check (optimistic locking)
   const { data: updatedTicket, error } = await supabase
     .from('tickets')
@@ -256,33 +266,32 @@ async function tryAssignTicket(
     })
     .eq('id', ticketId)
     .is('colaborador_id', null) // Only update if still unassigned
-    .in('status', ['aberto', 'em_atendimento']) // Accept both statuses
+    .in('status', ['aberto', 'em_atendimento'])
     .select()
     .single()
-  
+
   if (error || !updatedTicket) {
-    // Another process may have assigned this ticket
-    return { 
-      ticketId, 
-      colaboradorId: null, 
-      success: false, 
-      reason: 'Concurrent assignment detected - ticket may have been assigned by another process' 
+    return {
+      ticketId,
+      colaboradorId: null,
+      success: false,
+      reason: 'Concurrent assignment detected - ticket may have been assigned by another process'
     }
   }
-  
-  // Log the successful assignment
+
   logAssignment(
     ticketId,
     selectedColaborador.id,
     null,
     'auto_queue',
-    `Auto-assigned from queue to ${selectedColaborador.nome} (${selectedColaborador.ticketCount} tickets)`,
+    `Auto-assigned from queue to ${selectedColaborador.nome} (${selectedColaborador.ticketCount}/${maxTicketsPerAgent} tickets)`,
     {
       colaborador_ticket_count: selectedColaborador.ticketCount,
-      available_colaboradores: colaboradores.length,
+      max_tickets_per_agent: maxTicketsPerAgent,
+      available_colaboradores: eligibleColaboradores.length,
     }
   )
-  
+
   return {
     ticketId,
     colaboradorId: selectedColaborador.id,
@@ -452,44 +461,73 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
   return stats
 }
 
-// Function to call when a colaborador comes online
+// Function to call when a colaborador comes online — only processes tickets from their setores
 export async function onColaboradorOnline(colaboradorId: string): Promise<ProcessorStats> {
   const supabase = createServiceClient()
-  
-  // Get setores and subsetores this colaborador belongs to
+
+  const stats: ProcessorStats = {
+    processedAt: new Date().toISOString(),
+    ticketsInQueue: 0,
+    ticketsAssigned: 0,
+    ticketsSkipped: 0,
+    errors: [],
+    assignments: [],
+  }
+
+  // Get setores this colaborador belongs to
   const { data: setores } = await supabase
     .from('colaboradores_setores')
-    .select('setor_id, subsetor_id')
+    .select('setor_id')
     .eq('colaborador_id', colaboradorId)
-  
-  console.log(`[TicketQueue] onColaboradorOnline - colaboradorId: ${colaboradorId}, setores: ${JSON.stringify(setores)}`)
-  
+
   if (!setores || setores.length === 0) {
-    return {
-      processedAt: new Date().toISOString(),
-      ticketsInQueue: 0,
-      ticketsAssigned: 0,
-      ticketsSkipped: 0,
-      errors: ['Colaborador has no setores'],
-      assignments: [],
+    stats.errors.push('Colaborador has no setores')
+    return stats
+  }
+
+  const setorIds = [...new Set(setores.map((s) => s.setor_id))]
+
+  console.log(`[TicketQueue] onColaboradorOnline - colaboradorId: ${colaboradorId}, setorIds: ${JSON.stringify(setorIds)}`)
+
+  // Only fetch unassigned tickets from the colaborador's setores
+  const { data: queuedTickets, error: fetchError } = await supabase
+    .from('tickets')
+    .select('id, setor_id, subsetor_id, criado_em')
+    .in('status', ['aberto', 'em_atendimento'])
+    .is('colaborador_id', null)
+    .in('setor_id', setorIds)
+    .order('criado_em', { ascending: true })
+
+  if (fetchError) {
+    stats.errors.push(`Error fetching queue: ${fetchError.message}`)
+    return stats
+  }
+
+  stats.ticketsInQueue = queuedTickets?.length || 0
+  console.log(`[TicketQueue] onColaboradorOnline - Found ${stats.ticketsInQueue} queued tickets in colaborador's setores`)
+
+  if (!queuedTickets || queuedTickets.length === 0) {
+    return stats
+  }
+
+  for (const ticket of queuedTickets) {
+    try {
+      const result = await tryAssignTicket(ticket.id, ticket.setor_id, ticket.subsetor_id)
+      stats.assignments.push(result)
+      if (result.success) {
+        stats.ticketsAssigned++
+      } else {
+        stats.ticketsSkipped++
+      }
+    } catch (error) {
+      stats.ticketsSkipped++
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      stats.errors.push(`Error processing ticket ${ticket.id}: ${errorMessage}`)
     }
   }
-  
-  const setorIds = setores.map((s) => s.setor_id)
-  const subsetorIds = setores.filter((s) => s.subsetor_id).map((s) => s.subsetor_id)
-  
-  // Log that colaborador came online
-  logAssignment(
-    null,
-    colaboradorId,
-    null,
-    'colaborador_online',
-    'Colaborador came online, checking queue',
-    { setorIds, subsetorIds }
-  )
-  
-  // Process the queue for these setores
-  return processTicketQueue()
+
+  console.log(`[TicketQueue] onColaboradorOnline done - assigned ${stats.ticketsAssigned}/${stats.ticketsInQueue}`)
+  return stats
 }
 
 // Export configuration update function (placeholder - can be extended to use database)

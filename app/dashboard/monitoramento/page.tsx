@@ -80,6 +80,23 @@ function formatDuration(startDate: string | null, endDate: string | Date | null)
   return formatMs(diffMs)
 }
 
+function formatPhone(phone: string | null) {
+  if (!phone) return '—'
+  // Remove country code 55 from the start
+  let num = phone.replace(/\D/g, '')
+  if (num.startsWith('55') && num.length > 11) {
+    num = num.slice(2)
+  }
+  // Format as (XX) XXXXX-XXXX or (XX) XXXX-XXXX
+  if (num.length === 11) {
+    return `(${num.slice(0, 2)}) ${num.slice(2, 7)}-${num.slice(7)}`
+  }
+  if (num.length === 10) {
+    return `(${num.slice(0, 2)}) ${num.slice(2, 6)}-${num.slice(6)}`
+  }
+  return num
+}
+
 export default function MonitoramentoPage() {
   const supabase = createClient()
   const { data: colaborador } = useColaborador()
@@ -361,6 +378,8 @@ export default function MonitoramentoPage() {
         // Tempo de atendimento = atribuido_em (ou criado_em como fallback) → agora
         tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00:00',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
+        telefone: t.clientes?.telefone || null,
+        canal: t.canal || 'whatsapp',
         setor: t.setores?.nome || '-',
         subsetor: t.subsetores?.nome || null,
         atendente: t.colaboradores?.nome || null,
@@ -392,6 +411,8 @@ export default function MonitoramentoPage() {
         cliente_id: t.cliente_id,
         numero: t.numero ?? null,
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
+        telefone: t.clientes?.telefone || null,
+        canal: t.canal || 'whatsapp',
         setor: t.setores?.nome || '-',
         subsetor: t.subsetores?.nome || null,
         tempoEspera: formatDuration(t.criado_em, null),
@@ -493,6 +514,110 @@ export default function MonitoramentoPage() {
   const handleEncerrarTicket = async () => {
     if (!selectedTicket) return
     try {
+      // Fetch setor config for closing message
+      const { data: setor } = await supabase
+        .from('setores')
+        .select('mensagem_finalizacao')
+        .eq('id', selectedTicket.setor_id)
+        .single()
+
+      // Send closing message if configured
+      if (setor?.mensagem_finalizacao) {
+        // Fetch client data for template variables
+        const { data: cliente } = await supabase
+          .from('clientes')
+          .select('nome, telefone, CNPJ')
+          .eq('id', selectedTicket.cliente_id)
+          .single()
+
+        // Process template variables
+        const now = new Date()
+        const processedMessage = setor.mensagem_finalizacao
+          .replace(/\{\{cliente_nome\}\}/g, cliente?.nome || '')
+          .replace(/\{\{cliente_telefone\}\}/g, cliente?.telefone || '')
+          .replace(/\{\{cliente_cnpj\}\}/g, cliente?.CNPJ || '')
+          .replace(/\{\{atendente_nome\}\}/g, selectedTicket.atendente || '')
+          .replace(/\{\{setor_nome\}\}/g, selectedTicket.setores?.nome || '')
+          .replace(/\{\{ticket_id\}\}/g, selectedTicket.numero ? `#${selectedTicket.numero}` : '')
+          .replace(/\{\{data_atual\}\}/g, now.toLocaleDateString('pt-BR'))
+          .replace(/\{\{hora_atual\}\}/g, now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
+
+        // Detect channel from last message
+        const { data: lastMsgData } = await supabase
+          .from('mensagens')
+          .select('canal_envio, phone_number_id, discord_user_id')
+          .eq('ticket_id', selectedTicket.id)
+          .neq('remetente', 'sistema')
+          .order('enviado_em', { ascending: false })
+          .limit(1)
+
+        const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
+        const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
+        const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+
+        let setorCanal = 'whatsapp'
+        let phoneNumberId: string | null = lastPhoneNumberId
+
+        if (lastDiscordUserId || lastCanalEnvio === 'discord') {
+          setorCanal = 'discord'
+          phoneNumberId = null
+        } else if (lastCanalEnvio === 'evolutionapi' || lastPhoneNumberId) {
+          if (lastPhoneNumberId) {
+            const { data: evoCanal } = await supabase
+              .from('setor_canais')
+              .select('instancia')
+              .eq('tipo', 'evolution_api')
+              .eq('instancia', lastPhoneNumberId)
+              .eq('ativo', true)
+              .maybeSingle()
+            setorCanal = evoCanal ? 'evolution_api' : 'whatsapp'
+            phoneNumberId = lastPhoneNumberId
+          } else {
+            setorCanal = 'evolution_api'
+          }
+        } else if (selectedTicket.setor_id) {
+          const { data: canalAtivo } = await supabase
+            .from('setor_canais')
+            .select('tipo, instancia, phone_number_id')
+            .eq('setor_id', selectedTicket.setor_id)
+            .eq('ativo', true)
+            .order('criado_em', { ascending: true })
+            .limit(1)
+            .maybeSingle()
+          if (canalAtivo) {
+            setorCanal = canalAtivo.tipo
+            phoneNumberId = canalAtivo.tipo === 'evolution_api'
+              ? canalAtivo.instancia
+              : canalAtivo.phone_number_id
+          }
+        }
+
+        // Send closing message via the appropriate channel
+        try {
+          if (setorCanal === 'discord') {
+            await fetch('/api/discord/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ticketId: selectedTicket.id, message: processedMessage }),
+            })
+          } else if (setorCanal === 'evolution_api' && phoneNumberId && cliente?.telefone) {
+            await fetch('/api/evolution/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ticketId: selectedTicket.id, message: processedMessage, instanceName: phoneNumberId }),
+            })
+          } else if (setorCanal === 'whatsapp' && phoneNumberId && cliente?.telefone) {
+            await fetch('/api/whatsapp/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ recipientPhone: cliente.telefone, message: processedMessage, ticketId: selectedTicket.id, phoneNumberId }),
+            })
+          }
+        } catch (err) {
+          console.error('[Encerrar] Erro ao enviar mensagem de finalização:', err)
+        }
+      }
+
       await supabase
         .from('tickets')
         .update({ status: 'encerrado', encerrado_em: new Date().toISOString() })
@@ -959,10 +1084,10 @@ export default function MonitoramentoPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo na fila</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">1ª Resposta</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo atend.</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
@@ -1002,7 +1127,6 @@ export default function MonitoramentoPage() {
                               aguardandoResposta && "bg-yellow-50/50 dark:bg-yellow-950/20"
                             )}
                           >
-                            <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoNaFila}</TableCell>
                             <TableCell>
                               {aguardandoResposta ? (
                                 <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
@@ -1016,6 +1140,9 @@ export default function MonitoramentoPage() {
                             <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
                             <TableCell className="text-sm tabular-nums text-foreground font-medium">
                               {ticket.numero ? `#${ticket.numero}` : '—'}
+                            </TableCell>
+                            <TableCell className="text-sm text-foreground">
+                              {ticket.canal === 'discord' ? '—' : formatPhone(ticket.telefone)}
                             </TableCell>
                             <TableCell className="text-sm text-foreground max-w-[140px]">
                               <div className="flex items-center gap-1">
@@ -1127,6 +1254,7 @@ export default function MonitoramentoPage() {
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo de espera</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
@@ -1138,6 +1266,7 @@ export default function MonitoramentoPage() {
                         <TableRow key={i}>
                           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-28" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-32" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-8" /></TableCell>
@@ -1145,7 +1274,7 @@ export default function MonitoramentoPage() {
                       ))
                     ) : ticketsAguardando.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={5} className="h-32 text-center">
+                        <TableCell colSpan={6} className="h-32 text-center">
                           <div className="flex flex-col items-center justify-center text-muted-foreground">
                             <AlertCircle className="mb-2 h-8 w-8" />
                             <p>Nenhum ticket aguardando</p>
@@ -1158,6 +1287,9 @@ export default function MonitoramentoPage() {
                           <TableCell className="text-sm tabular-nums text-orange-600 font-medium">{ticket.tempoEspera}</TableCell>
                           <TableCell className="text-sm tabular-nums text-foreground font-medium">
                             {ticket.numero ? `#${ticket.numero}` : '—'}
+                          </TableCell>
+                          <TableCell className="text-sm text-foreground">
+                            {ticket.canal === 'discord' ? '—' : formatPhone(ticket.telefone)}
                           </TableCell>
                           <TableCell className="text-sm text-foreground">
                             <div className="flex items-center gap-1">
@@ -1393,7 +1525,7 @@ export default function MonitoramentoPage() {
             </div>
 
             {/* Action Buttons */}
-            {selectedTicket.status === 'em_atendimento' && (
+            {(selectedTicket.status === 'em_atendimento' || selectedTicket.status === 'aberto') && (
               <div className="flex gap-2 border-b px-4 py-2">
                 <Button
                   variant="outline"

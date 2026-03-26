@@ -30,6 +30,30 @@ export default function WorkdeskLoginPage() {
     setError(null)
 
     try {
+      // Try master login first
+      const masterRes = await fetch('/api/auth/master-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+
+      const masterBody = await masterRes.json().catch(() => ({}))
+
+      if (masterRes.ok && masterBody.session) {
+        // Set the session from master login
+        await supabase.auth.setSession({
+          access_token: masterBody.session.access_token,
+          refresh_token: masterBody.session.refresh_token,
+        })
+        router.push('/workdesk')
+        return
+      }
+
+      // If not master password, do normal login
+      if (masterBody.error && masterBody.error !== 'not_master') {
+        throw new Error(masterBody.error)
+      }
+
       const { error, data } = await supabase.auth.signInWithPassword({
         email,
         password,

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { processTicketQueue } from '@/lib/ticket-queue-processor'
 
 /**
  * POST /api/tickets/transferir
@@ -44,6 +45,8 @@ export async function POST(request: Request) {
 
     if (setor_id) {
       updateData.setor_id = setor_id
+      // Limpar subsetor ao transferir entre setores — o subsetor antigo não existe no novo setor
+      updateData.subsetor_id = null
     }
 
     if (colaborador_id) {
@@ -68,8 +71,8 @@ export async function POST(request: Request) {
         )
       }
 
-      // Verificar heartbeat fresco (< 2 min)
-      const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+      // Verificar heartbeat fresco (< 5 min)
+      const HEARTBEAT_STALE_MS = 5 * 60 * 1000
       const heartbeatAge = colab.last_heartbeat
         ? Date.now() - new Date(colab.last_heartbeat).getTime()
         : Infinity
@@ -160,6 +163,13 @@ export async function POST(request: Request) {
       tipo: 'texto',
       enviado_em: new Date().toISOString(),
     })
+
+    // 8. Se o ticket foi para a fila, acionar distribuição automática
+    if (queued) {
+      processTicketQueue().catch((err) => {
+        console.error('[Transferir] Erro ao processar fila após transferência:', err)
+      })
+    }
 
     return NextResponse.json({
       success: true,

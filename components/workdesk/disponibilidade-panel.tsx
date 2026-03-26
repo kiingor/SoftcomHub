@@ -309,6 +309,36 @@ export function DisponibilidadePanel({
     }).catch(console.error)
   }
 
+  const goOfflineFromPausa = async () => {
+    if (!pausaAtual) return
+    setLoading(true)
+
+    // End the pause
+    await supabase.from('pausas_colaboradores').update({ fim: new Date().toISOString() }).eq('id', pausaAtual.id)
+
+    // Update colaborador via API - go OFFLINE and clear pausa
+    try {
+      await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId, isOnline: false, pausaAtualId: null }),
+      })
+    } catch (err) {
+      console.error('Error updating colaborador:', err)
+    }
+
+    // Create log entry
+    await supabase.from('disponibilidade_logs').insert({
+      colaborador_id: colaboradorId,
+      status: 'offline',
+    })
+
+    onStatusChange(false)
+    fetchLogs()
+    fetchPausaAtual()
+    setLoading(false)
+  }
+
   const getPauseDuration = () => {
     if (!pausaAtual) return ''
     const start = new Date(pausaAtual.inicio)
@@ -402,12 +432,22 @@ export function DisponibilidadePanel({
             </div>
           </div>
 
-          {/* If in pause, show return button */}
+          {/* If in pause, show return button and offline button */}
           {pausaAtual ? (
-            <Button onClick={endPausa} disabled={loading} className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white">
-              <Play className="h-4 w-4" />
-              {loading ? 'Retornando...' : 'Voltar ao Atendimento'}
-            </Button>
+            <div className="flex flex-col gap-2">
+              <Button onClick={endPausa} disabled={loading} className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white">
+                <Play className="h-4 w-4" />
+                {loading ? 'Retornando...' : 'Voltar ao Atendimento'}
+              </Button>
+              <Button
+                onClick={goOfflineFromPausa}
+                disabled={loading}
+                className="w-full gap-2 bg-gray-600 hover:bg-gray-700 text-white"
+              >
+                <Power className="h-4 w-4" />
+                {loading ? 'Alterando...' : 'Ficar Offline'}
+              </Button>
+            </div>
           ) : (
             <>
               {/* Toggle Button */}

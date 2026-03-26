@@ -552,6 +552,8 @@ export default function WorkdeskPage() {
   const [selectedSetorTransfer, setSelectedSetorTransfer] = useState<string>('all') // Updated default value
   const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all') // Updated default value
   const [transferLoading, setTransferLoading] = useState(false)
+  const [transferDataLoading, setTransferDataLoading] = useState(false)
+  const transferringTicketIdsRef = useRef<Set<string>>(new Set())
 
   // Helper: verifica se atendente está online (confia no is_online do banco)
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
@@ -683,9 +685,11 @@ export default function WorkdeskPage() {
     const { data } = await query
 
     if (data) {
+      // Filter out tickets that are currently being transferred
+      const filteredData = data.filter((t) => !transferringTicketIdsRef.current.has(t.id))
       // Fetch last message for each ticket
       const ticketsWithMessages = await Promise.all(
-        data.map(async (ticket) => {
+        filteredData.map(async (ticket) => {
           const { data: lastMsg } = await supabase
             .from('mensagens')
             .select('conteudo, enviado_em, remetente')
@@ -769,9 +773,9 @@ export default function WorkdeskPage() {
     async (ticketId: string, clienteId: string, options?: { silent?: boolean }) => {
       if (!options?.silent) setLoadingMensagens(true)
 
-      // Calculate date 7 days ago
+      // Calculate date 30 days ago
       const sevenDaysAgo = new Date()
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 30)
 
       // Resolve all cliente_ids with the same phone number (handles duplicate records)
       let allClienteIds = [clienteId]
@@ -802,7 +806,7 @@ export default function WorkdeskPage() {
       // Query 2: Messages from OTHER tickets of the same client (last 7 days)
       const { data: otherTicketMsgs, error: err2 } = await supabase
         .from('mensagens')
-        .select('*')
+        .select('*, tickets(id, status, criado_em, encerrado_em)')
         .in('cliente_id', allClienteIds)
         .neq('ticket_id', ticketId)
         .not('ticket_id', 'is', null)
@@ -1000,6 +1004,11 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           const updatedTicket = payload.new as any
           const oldTicket = payload.old as any
 
+          // Skip realtime updates for tickets we're currently transferring
+          if (transferringTicketIdsRef.current.has(updatedTicket.id)) {
+            return
+          }
+
           if (updatedTicket.colaborador_id === colaborador.id) {
             // If ticket was closed (encerrado) by another session/tab, close the panel
             if (updatedTicket.status === 'encerrado' && selectedTicketIdRef.current === updatedTicket.id) {
@@ -1187,7 +1196,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       const { data: otherTicketMsgs } = pollClienteIds.length > 0
         ? await supabase
             .from('mensagens')
-            .select('*')
+            .select('*, tickets(id, status, criado_em, encerrado_em)')
             .in('cliente_id', pollClienteIds)
             .neq('ticket_id', selectedTicketIdRef2)
             .not('ticket_id', 'is', null)
@@ -1697,74 +1706,61 @@ const handleEncerrarTicket = async () => {
     setTransferDialogOpen(true)
     setSelectedSetorTransfer('all')
     setSelectedAtendenteTransfer('all')
+    setAtendentesDisponiveis([])
+    setSetores([])
+    setTransferDataLoading(true)
 
-    // Fetch apenas os setores configurados como destino de transferência para o setor atual
-    const currentSetorId = selectedTicket?.setor_id
-    if (currentSetorId) {
-      const { data: destinosData } = await supabase
-        .from('setor_destinos_transferencia')
-        .select('setor_destino_id, setores:setor_destino_id(id, nome)')
-        .eq('setor_origem_id', currentSetorId)
+    try {
+      const currentSetorId = selectedTicket?.setor_id
+      if (currentSetorId) {
+        const { data: destinosData } = await supabase
+          .from('setor_destinos_transferencia')
+          .select('setor_destino_id, setores:setor_destino_id(id, nome)')
+          .eq('setor_origem_id', currentSetorId)
 
-      if (destinosData && destinosData.length > 0) {
-        const setoresDestino = destinosData
-          .map((d: any) => d.setores)
-          .filter(Boolean)
-          .sort((a: any, b: any) => a.nome.localeCompare(b.nome))
-        setSetores(setoresDestino)
-      } else {
-        // Sem configuração: mostra mensagem vazia (não exibe todos)
-        setSetores([])
-      }
-    } else {
-      setSetores([])
-    }
-
-    // Fetch available atendentes from same setor via colaboradores_setores
-    if (selectedTicket?.setor_id) {
-      // First get all colaborador_ids for this setor
-      const { data: colaboradoresSetores, error: csError } = await supabase
-        .from('colaboradores_setores')
-        .select('colaborador_id')
-        .eq('setor_id', selectedTicket.setor_id)
-
-      if (csError) {
-        console.error('[v0] Error fetching colaboradores_setores:', csError)
-      }
-
-      if (colaboradoresSetores && colaboradoresSetores.length > 0) {
-        const colaboradorIds = colaboradoresSetores.map((cs) => cs.colaborador_id)
-        
-        // Then fetch the actual colaboradores
-        const { data: colaboradoresData, error: colabError } = await supabase
-          .from('colaboradores')
-          .select('id, nome, is_online, ativo, last_heartbeat')
-          .in('id', colaboradorIds)
-          .eq('ativo', true)
-          .neq('id', colaborador?.id || '')
-
-        if (colabError) {
-          console.error('[v0] Error fetching colaboradores:', colabError)
+        if (destinosData && destinosData.length > 0) {
+          const setoresDestino = destinosData
+            .map((d: any) => d.setores)
+            .filter(Boolean)
+            .sort((a: any, b: any) => a.nome.localeCompare(b.nome))
+          setSetores(setoresDestino)
         }
+      }
 
-        if (colaboradoresData) {
-          // Marcar quais atendentes atendem o subsetor do ticket
-          let finalAtendentes: any[] = colaboradoresData.map((a: any) => ({ ...a, handlesSubsetor: false }))
-          if (selectedTicket?.subsetor_id) {
-            const { data: subColab } = await supabase
-              .from('colaboradores_subsetores')
-              .select('colaborador_id')
-              .eq('subsetor_id', selectedTicket.subsetor_id)
-            const subColabIds = new Set(subColab?.map((s: any) => s.colaborador_id) || [])
-            finalAtendentes = finalAtendentes.map((a: any) => ({ ...a, handlesSubsetor: subColabIds.has(a.id) }))
-            // Atendentes do subsetor primeiro
-            finalAtendentes.sort((a: any, b: any) => Number(b.handlesSubsetor) - Number(a.handlesSubsetor))
+      if (selectedTicket?.setor_id) {
+        const { data: colaboradoresSetores } = await supabase
+          .from('colaboradores_setores')
+          .select('colaborador_id')
+          .eq('setor_id', selectedTicket.setor_id)
+
+        if (colaboradoresSetores && colaboradoresSetores.length > 0) {
+          const colaboradorIds = colaboradoresSetores.map((cs) => cs.colaborador_id)
+          const { data: colaboradoresData } = await supabase
+            .from('colaboradores')
+            .select('id, nome, is_online, ativo, last_heartbeat')
+            .in('id', colaboradorIds)
+            .eq('ativo', true)
+            .neq('id', colaborador?.id || '')
+
+          if (colaboradoresData) {
+            let finalAtendentes: any[] = colaboradoresData.map((a: any) => ({ ...a, handlesSubsetor: false }))
+            if (selectedTicket?.subsetor_id) {
+              const { data: subColab } = await supabase
+                .from('colaboradores_subsetores')
+                .select('colaborador_id')
+                .eq('subsetor_id', selectedTicket.subsetor_id)
+              const subColabIds = new Set(subColab?.map((s: any) => s.colaborador_id) || [])
+              finalAtendentes = finalAtendentes.map((a: any) => ({ ...a, handlesSubsetor: subColabIds.has(a.id) }))
+              finalAtendentes.sort((a: any, b: any) => Number(b.handlesSubsetor) - Number(a.handlesSubsetor))
+            }
+            setAtendentesDisponiveis(finalAtendentes)
           }
-          setAtendentesDisponiveis(finalAtendentes)
         }
-      } else {
-        setAtendentesDisponiveis([])
       }
+    } catch (err) {
+      console.error('Error loading transfer data:', err)
+    } finally {
+      setTransferDataLoading(false)
     }
   }
 
@@ -1811,54 +1807,80 @@ const handleEncerrarTicket = async () => {
   const handleTransferTicket = async () => {
     if (!selectedTicket) return
 
+    const ticketId = selectedTicket.id
     setTransferLoading(true)
 
-    const res = await fetch('/api/tickets/transferir', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ticket_id: selectedTicket.id,
-        setor_id: selectedSetorTransfer !== 'all' ? selectedSetorTransfer : undefined,
-        colaborador_id: selectedAtendenteTransfer !== 'all' ? selectedAtendenteTransfer : null,
-        from_colaborador_nome: colaborador?.nome || 'Desconhecido',
-        from_setor_nome: selectedTicket.setores?.nome || 'Desconhecido',
-      }),
-    })
+    // Mark as transferring BEFORE the API call to prevent realtime from bringing it back
+    transferringTicketIdsRef.current.add(ticketId)
 
-    const result = await res.json()
-
-    if (!res.ok) {
-      toast.error(result.error || 'Erro ao transferir ticket')
-      setTransferLoading(false)
-      return
-    }
-
-    if (result.queued) {
-      toast.info('Atendente no limite de tickets — ticket adicionado à fila de espera')
-    } else {
-      toast.success('Ticket transferido com sucesso')
-    }
-
-    setTransferDialogOpen(false)
-
-    // Se o ticket foi para a fila (sem atendente), acionar distribuição imediata
-    // para que o ticket seja atribuído a um atendente do novo setor
-    if (!targetAtendenteId) {
-      fetch('/api/tickets/auto-assign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      }).catch(() => {})
-    }
-
-    // Remove ticket from local state immediately (even if can_see_all_tickets)
-    const transferredTicketId = selectedTicket.id
-    setTickets((prev) => prev.filter((t) => t.id !== transferredTicketId))
+    // Remove ticket from UI immediately for instant feedback
+    setTickets((prev) => prev.filter((t) => t.id !== ticketId))
     setSelectedTicket(null)
     selectedTicketIdRef.current = null
     setMobileDrawerOpen(false)
     setMensagens([])
-    setTransferLoading(false)
+    setTransferDialogOpen(false)
+
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+
+      const res = await fetch('/api/tickets/transferir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticket_id: ticketId,
+          setor_id: selectedSetorTransfer !== 'all' ? selectedSetorTransfer : undefined,
+          colaborador_id: selectedAtendenteTransfer !== 'all' ? selectedAtendenteTransfer : null,
+          from_colaborador_nome: colaborador?.nome || 'Desconhecido',
+          from_setor_nome: selectedTicket.setores?.nome || 'Desconhecido',
+        }),
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeoutId)
+
+      const result = await res.json()
+
+      if (!res.ok) {
+        toast.error(result.error || 'Erro ao transferir ticket')
+        // Transfer failed — bring ticket back
+        transferringTicketIdsRef.current.delete(ticketId)
+        if (colaborador) fetchTickets(colaborador)
+        return
+      }
+
+      if (result.queued) {
+        toast.info('Ticket transferido para a fila de espera')
+      } else {
+        toast.success('Ticket transferido com sucesso')
+      }
+
+      // Se o ticket foi para a fila, acionar distribuição automática
+      if (selectedAtendenteTransfer === 'all' || result.queued) {
+        fetch('/api/tickets/auto-assign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }).catch(() => {})
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        toast.error('Transferência demorou demais. O ticket pode ter sido transferido — atualize a página.')
+      } else {
+        console.error('Error transferring ticket:', err)
+        toast.error('Erro ao transferir ticket. Tente novamente.')
+      }
+      // On error, bring ticket back
+      transferringTicketIdsRef.current.delete(ticketId)
+      if (colaborador) fetchTickets(colaborador)
+    } finally {
+      setTransferLoading(false)
+      // Clean up after a delay to prevent realtime race condition
+      setTimeout(() => {
+        transferringTicketIdsRef.current.delete(ticketId)
+      }, 5000)
+    }
   }
 
   // Disparo - CNPJ lookup
@@ -3136,6 +3158,10 @@ const tempId = `temp-${Date.now()}`
                   autoCorrect="off"
                   autoCapitalize="off"
                   spellCheck={false}
+                  data-gramm="false"
+                  data-gramm_editor="false"
+                  data-enable-grammarly="false"
+                  data-ms-editor="false"
                   />
                       </div>
                       <Button
@@ -3656,6 +3682,10 @@ onClick={() => {
                   autoCorrect="off"
                   autoCapitalize="off"
                   spellCheck={false}
+                  data-gramm="false"
+                  data-gramm_editor="false"
+                  data-enable-grammarly="false"
+                  data-ms-editor="false"
                   />
                       <Button
                         size="icon"
@@ -3722,7 +3752,7 @@ onClick={() => {
       </AlertDialog>
 
       {/* Transfer Dialog */}
-      <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
+      <Dialog open={transferDialogOpen} onOpenChange={(open) => { setTransferDialogOpen(open); if (!open) setTransferLoading(false) }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -3734,12 +3764,17 @@ onClick={() => {
             </DialogDescription>
           </DialogHeader>
           
+          {transferDataLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            </div>
+          ) : (
           <Tabs defaultValue="atendente" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="atendente">👤 Atendente</TabsTrigger>
               <TabsTrigger value="setor">🏢 Setor</TabsTrigger>
             </TabsList>
-            
+
 <TabsContent value="atendente" className="space-y-4 pt-4">
                     <div className="space-y-2">
                       <Label>Selecione um atendente do setor atual</Label>
@@ -3910,6 +3945,7 @@ onClick={() => {
                     </Button>
                   </TabsContent>
           </Tabs>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -4434,55 +4470,75 @@ function TicketList({
     return () => clearInterval(interval)
   }, [])
 
+  const [filtersOpen, setFiltersOpen] = useState(false)
+
+  // Check if any filter is active (non-default)
+  const hasActiveFilter = statusFilter !== 'todos' || prioridadeFilter !== 'todos' || subsetorFilter !== 'todos'
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Filters */}
-      <div className="shrink-0 space-y-3 border-b border-white/30 dark:border-white/8 p-4">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder={setorCanal === 'discord' ? "Buscar colaborador..." : "Buscar cliente..."}
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-9"
-          />
-        </div>
-        <div className="flex gap-2">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="flex-1">
-              <Filter className="mr-2 h-4 w-4" />
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todos">Todos</SelectItem>
-              <SelectItem value="aberto">Aberto</SelectItem>
-              <SelectItem value="em_atendimento">Em Atendimento</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={prioridadeFilter} onValueChange={setPrioridadeFilter}>
-            <SelectTrigger className="flex-1">
-              <SelectValue placeholder="Prioridade" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todos">Todas</SelectItem>
-              <SelectItem value="normal">Normal</SelectItem>
-              <SelectItem value="urgente">Urgente</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        {subsetoresDisponiveis.length > 0 && (
-          <Select value={subsetorFilter} onValueChange={setSubsetorFilter}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Subsetor" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todos">Todos Subsetores</SelectItem>
-              <SelectItem value="sem_subsetor">Sem Subsetor</SelectItem>
-              {subsetoresDisponiveis.map((s) => (
-                <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      {/* Filters Toggle */}
+      <div className="shrink-0 border-b border-white/30 dark:border-white/8 px-4 py-2">
+        <button
+          type="button"
+          onClick={() => setFiltersOpen(!filtersOpen)}
+          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full py-1"
+        >
+          <Filter className="h-3 w-3" />
+          <span>Filtros</span>
+          {(hasActiveFilter || searchTerm) && (
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+          )}
+          <ChevronDown className={cn('h-3 w-3 ml-auto transition-transform', filtersOpen && 'rotate-180')} />
+        </button>
+        {filtersOpen && (
+          <div className="space-y-2 pt-2 pb-1">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder={setorCanal === 'discord' ? "Buscar colaborador..." : "Buscar cliente..."}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 h-8 text-xs"
+              />
+            </div>
+            <div className="flex gap-2">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="flex-1 h-8 text-xs">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todos</SelectItem>
+                  <SelectItem value="aberto">Aberto</SelectItem>
+                  <SelectItem value="em_atendimento">Em Atendimento</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={prioridadeFilter} onValueChange={setPrioridadeFilter}>
+                <SelectTrigger className="flex-1 h-8 text-xs">
+                  <SelectValue placeholder="Prioridade" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todas</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="urgente">Urgente</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {subsetoresDisponiveis.length > 0 && (
+              <Select value={subsetorFilter} onValueChange={setSubsetorFilter}>
+                <SelectTrigger className="w-full h-8 text-xs">
+                  <SelectValue placeholder="Subsetor" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todos Subsetores</SelectItem>
+                  <SelectItem value="sem_subsetor">Sem Subsetor</SelectItem>
+                  {subsetoresDisponiveis.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
         )}
       </div>
 
