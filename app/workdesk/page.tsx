@@ -975,8 +975,12 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   useEffect(() => {
     if (!colaborador) return
 
+    // Use colaboradorId (primitive) instead of colaborador (object) to prevent
+    // subscription teardown/rebuild on every setColaborador call
+    const colaboradorId = colaborador.id
+
     const channel = supabase
-      .channel('tickets-changes')
+      .channel(`tickets-changes-${colaboradorId}`)
       .on(
         'postgres_changes',
         {
@@ -986,9 +990,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         },
         (payload) => {
           const newTicket = payload.new as any
-          
-          // Only notify if ticket is assigned to THIS colaborador
-          if (newTicket.colaborador_id === colaborador.id) {
+          if (newTicket.colaborador_id === colaboradorId) {
             playAlert('new_ticket')
             toast.info('Novo ticket recebido!')
             fetchTickets(colaborador)
@@ -1011,7 +1013,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             return
           }
 
-          if (updatedTicket.colaborador_id === colaborador.id) {
+          if (updatedTicket.colaborador_id === colaboradorId) {
             // If ticket was closed (encerrado) by another session/tab, close the panel
             if (updatedTicket.status === 'encerrado' && selectedTicketIdRef.current === updatedTicket.id) {
               setSelectedTicket(null)
@@ -1021,12 +1023,12 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             }
             // Ticket was just assigned/transferred TO this colaborador
             const isNew = !knownTicketIdsRef.current.has(updatedTicket.id)
-            if (isNew || (oldTicket.colaborador_id && oldTicket.colaborador_id !== colaborador.id)) {
+            if (isNew || (oldTicket.colaborador_id && oldTicket.colaborador_id !== colaboradorId)) {
               playAlert('new_ticket')
               toast.info('Novo ticket recebido!')
             }
             fetchTickets(colaborador)
-          } else if (oldTicket.colaborador_id === colaborador.id) {
+          } else if (oldTicket.colaborador_id === colaboradorId) {
             // Ticket was transferred AWAY from this colaborador
             setTickets((prev) => prev.filter((t) => t.id !== updatedTicket.id))
             if (selectedTicketIdRef.current === updatedTicket.id) {
@@ -1046,7 +1048,9 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [colaborador, fetchTickets, supabase, playAlert])
+  // Use colaborador?.id (primitive) NOT colaborador (object) — prevents rebuilding
+  // the subscription every time any colaborador field changes
+  }, [colaborador?.id, fetchTickets, supabase, playAlert])
 
   // ── Heartbeat simples — apenas atualiza last_heartbeat para monitoramento ──
   // O is_online é controlado EXCLUSIVAMENTE por ação do usuário (botão online/offline/pausa/logout).
@@ -1082,7 +1086,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     const colaboradorRef = colaborador
 
-    // Call auto-assign when colaborador comes online
+    // Call auto-assign when colaborador comes online, then refresh tickets
     const triggerAutoAssign = async () => {
       try {
         await fetch('/api/tickets/auto-assign', {
@@ -1090,21 +1094,24 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ colaboradorId: colaboradorRef.id }),
         })
+        // After auto-assign completes, refresh ticket list immediately
+        fetchTickets(colaboradorRef)
       } catch (error) {
         console.error('Error triggering auto-assign:', error)
       }
     }
 
-    // Polling independente: atualiza os tickets do atendente a cada 15s
-    // Garante que tickets atribuídos via queue (por outro processo) apareçam mesmo sem Realtime
+    // Polling independente: atualiza os tickets do atendente a cada 5s
+    // Garante que tickets atribuídos via queue apareçam rapidamente sem depender só do Realtime
     const pollTickets = () => fetchTickets(colaboradorRef)
 
-    // Trigger immediately when online
+    // Trigger auto-assign immediately, then poll once it completes
     triggerAutoAssign()
+    // Also poll immediately for any already-assigned tickets
     pollTickets()
 
     const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
-    const pollInterval = setInterval(pollTickets, 15000)
+    const pollInterval = setInterval(pollTickets, 5000)
 
     return () => {
       clearInterval(autoAssignInterval)
