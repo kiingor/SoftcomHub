@@ -171,6 +171,34 @@ export async function POST(request: NextRequest) {
   --header 'Content-Type: application/json' \\
   --data '${JSON.stringify(evolutionBody, null, 4)}'`)
 
+    // Verificar se a instância está conectada antes de enviar
+    try {
+      const statusUrl = `${baseUrl}/instance/connectionState/${resolvedInstance}`
+      const statusResponse = await fetch(statusUrl, {
+        method: 'GET',
+        headers: { apikey: evolutionApiKey },
+      })
+
+      if (statusResponse.ok) {
+        const statusData = await statusResponse.json()
+        const state = statusData?.instance?.state || statusData?.state
+        if (state && state !== 'open' && state !== 'connected') {
+          console.error(`[EvolutionAPI Send] Instância ${resolvedInstance} offline (state: ${state})`)
+          return NextResponse.json(
+            {
+              error: `Dispositivo offline. A instância "${resolvedInstance}" não está conectada ao WhatsApp. Verifique a conexão do dispositivo.`,
+              details: { state, instance: resolvedInstance },
+              deviceOffline: true,
+            },
+            { status: 503 },
+          )
+        }
+      }
+    } catch (statusErr) {
+      console.warn('[EvolutionAPI Send] Não foi possível verificar status da instância:', statusErr)
+      // Continua tentando enviar mesmo sem conseguir checar status
+    }
+
     // Send message via EvolutionAPI
     const evolutionResponse = await fetch(evolutionUrl, {
       method: 'POST',
@@ -181,10 +209,36 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(evolutionBody),
     })
 
-    const evolutionData = await evolutionResponse.json()
+    let evolutionData: any
+    try {
+      evolutionData = await evolutionResponse.json()
+    } catch {
+      evolutionData = { message: 'Resposta inválida da Evolution API' }
+    }
 
     if (!evolutionResponse.ok) {
       console.error('[EvolutionAPI Send] API error:', evolutionData)
+
+      // Detectar erro de dispositivo desconectado nas respostas de erro
+      const errorStr = JSON.stringify(evolutionData).toLowerCase()
+      const isDeviceOffline = errorStr.includes('not connected') ||
+        errorStr.includes('disconnected') ||
+        errorStr.includes('qr code') ||
+        errorStr.includes('connection closed') ||
+        errorStr.includes('not found') ||
+        evolutionResponse.status === 404
+
+      if (isDeviceOffline) {
+        return NextResponse.json(
+          {
+            error: `Dispositivo offline. Não foi possível enviar a mensagem porque a instância "${resolvedInstance}" está desconectada. Verifique a conexão do WhatsApp.`,
+            details: evolutionData,
+            deviceOffline: true,
+          },
+          { status: 503 },
+        )
+      }
+
       return NextResponse.json(
         { error: 'Erro ao enviar mensagem via EvolutionAPI', details: evolutionData },
         { status: evolutionResponse.status },

@@ -2500,8 +2500,17 @@ const tempId = `temp-${Date.now()}`
 
         if (!response.ok) {
           console.error('[workdesk] Send API failed:', result)
-          const errorMsg = result?.details?.message || result?.error || 'Erro ao enviar mensagem'
-          toast.error(errorMsg)
+
+          // Aviso especial para dispositivo offline (Evolution API)
+          if (result?.deviceOffline) {
+            toast.error('📱 Dispositivo desconectado! A mensagem não foi enviada porque o WhatsApp do dispositivo está offline. Verifique a conexão.', {
+              duration: 8000,
+            })
+          } else {
+            const errorMsg = result?.details?.message || result?.error || 'Erro ao enviar mensagem'
+            toast.error(errorMsg)
+          }
+
           setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
           return
         }
