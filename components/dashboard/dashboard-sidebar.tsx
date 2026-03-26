@@ -16,6 +16,7 @@ import {
   Activity,
   HelpCircle,
   ExternalLink,
+  Bug,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
@@ -30,6 +31,7 @@ const baseNavigation = [
 
 const masterNavigation = [
   { name: 'Usuarios Master', href: '/dashboard/usuarios', icon: UserCog },
+  { name: 'Logs de Erros', href: '/dashboard/logs', icon: Bug },
 ]
 
 interface DashboardSidebarProps {

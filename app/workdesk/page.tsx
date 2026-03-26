@@ -644,6 +644,8 @@ export default function WorkdeskPage() {
 
   if (colab) {
   setColaborador(colab)
+  // Salvar info do colaborador para o error logger
+  try { localStorage.setItem('colaborador_info', JSON.stringify({ id: colab.id, nome: colab.nome })) } catch {}
   // Fetch setor canal config
   const sId = colab.setor_id || colab.setores_vinculados?.[0]?.setor_id
   if (sId) {

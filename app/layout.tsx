@@ -3,6 +3,8 @@ import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { Toaster } from '@/components/ui/toaster'
+import { ErrorBoundary } from '@/components/error-boundary'
+import { GlobalErrorHandler } from '@/components/global-error-handler'
 import './globals.css'
 
 const _inter = Inter({ subsets: ["latin"] });
@@ -25,7 +27,10 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`font-sans antialiased`} suppressHydrationWarning>
-        {children}
+        <ErrorBoundary tela="Global">
+          {children}
+        </ErrorBoundary>
+        <GlobalErrorHandler />
         <Toaster />
         <Analytics />
       </body>
