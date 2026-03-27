@@ -520,6 +520,9 @@ export default function WorkdeskPage() {
   const { playAlert, initAudioContext } = useAudioAlert()
 
   const [colaborador, setColaborador] = useState<Colaborador | null>(null)
+  // Always-current ref so intervals/closures read the latest colaborador
+  const colaboradorCurrentRef = useRef<Colaborador | null>(null)
+  useEffect(() => { colaboradorCurrentRef.current = colaborador }, [colaborador])
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const selectedTicketIdRef = useRef<string | null>(null)
@@ -991,9 +994,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         (payload) => {
           const newTicket = payload.new as any
           if (newTicket.colaborador_id === colaboradorId) {
+            const colab = colaboradorCurrentRef.current
             playAlert('new_ticket')
             toast.info('Novo ticket recebido!')
-            fetchTickets(colaborador)
+            if (colab) fetchTickets(colab)
           }
         }
       )
@@ -1007,6 +1011,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         (payload) => {
           const updatedTicket = payload.new as any
           const oldTicket = payload.old as any
+          const colab = colaboradorCurrentRef.current
 
           // Skip realtime updates for tickets we're currently transferring
           if (transferringTicketIdsRef.current.has(updatedTicket.id)) {
@@ -1027,7 +1032,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
               playAlert('new_ticket')
               toast.info('Novo ticket recebido!')
             }
-            fetchTickets(colaborador)
+            if (colab) fetchTickets(colab)
           } else if (oldTicket.colaborador_id === colaboradorId) {
             // Ticket was transferred AWAY from this colaborador
             setTickets((prev) => prev.filter((t) => t.id !== updatedTicket.id))
@@ -1037,8 +1042,8 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             }
           } else {
             // Other update on a ticket we own (status change, etc)
-            if (knownTicketIdsRef.current.has(updatedTicket.id)) {
-              fetchTickets(colaborador)
+            if (knownTicketIdsRef.current.has(updatedTicket.id) && colab) {
+              fetchTickets(colab)
             }
           }
         }
@@ -1051,6 +1056,19 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // Use colaborador?.id (primitive) NOT colaborador (object) — prevents rebuilding
   // the subscription every time any colaborador field changes
   }, [colaborador?.id, fetchTickets, supabase, playAlert])
+
+  // Refresh tickets when tab regains visibility (user switches back to the tab)
+  useEffect(() => {
+    if (!colaborador?.id) return
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        const colab = colaboradorCurrentRef.current
+        if (colab) fetchTickets(colab)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [colaborador?.id, fetchTickets])
 
   // ── Heartbeat simples — apenas atualiza last_heartbeat para monitoramento ──
   // O is_online é controlado EXCLUSIVAMENTE por ação do usuário (botão online/offline/pausa/logout).
@@ -1080,34 +1098,45 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     }
   }, [colaborador?.id])
 
-  // Periodic queue processor - check for unassigned tickets every 30 seconds
+  // Periodic ticket refresh + queue processor
+  // Runs whenever colaborador.id is set — NOT gated on is_online.
+  // Reason: the page's colaborador.is_online only updates via Realtime (colaboradores-sync).
+  // If that Realtime event doesn't fire, is_online stays false and polling never starts,
+  // causing tickets to only appear after F5. Using colaboradorCurrentRef ensures we always
+  // read the latest status without rebuilding the interval on every status change.
   useEffect(() => {
-    if (!colaborador?.is_online) return
+    if (!colaborador?.id) return
 
-    const colaboradorRef = colaborador
+    const colaboradorId = colaborador.id
 
-    // Call auto-assign when colaborador comes online, then refresh tickets
+    // Auto-assign: only trigger when the agent is actually online (reads live ref)
     const triggerAutoAssign = async () => {
+      const colab = colaboradorCurrentRef.current
+      if (!colab?.is_online) return
       try {
         await fetch('/api/tickets/auto-assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ colaboradorId: colaboradorRef.id }),
+          body: JSON.stringify({ colaboradorId }),
         })
-        // After auto-assign completes, refresh ticket list immediately
-        fetchTickets(colaboradorRef)
+        // Refresh tickets right after assignment
+        const fresh = colaboradorCurrentRef.current
+        if (fresh) fetchTickets(fresh)
       } catch (error) {
         console.error('Error triggering auto-assign:', error)
       }
     }
 
-    // Polling independente: atualiza os tickets do atendente a cada 5s
-    // Garante que tickets atribuídos via queue apareçam rapidamente sem depender só do Realtime
-    const pollTickets = () => fetchTickets(colaboradorRef)
+    // Poll tickets every 5 s regardless of online status
+    // This guarantees that assignments made by the queue processor appear quickly
+    // even if Realtime events are delayed or missed
+    const pollTickets = () => {
+      const colab = colaboradorCurrentRef.current
+      if (colab) fetchTickets(colab)
+    }
 
-    // Trigger auto-assign immediately, then poll once it completes
+    // Run immediately
     triggerAutoAssign()
-    // Also poll immediately for any already-assigned tickets
     pollTickets()
 
     const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
@@ -1117,7 +1146,8 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       clearInterval(autoAssignInterval)
       clearInterval(pollInterval)
     }
-  }, [colaborador?.id, colaborador?.is_online, fetchTickets])
+  // Only depend on colaborador.id — status changes go through colaboradorCurrentRef
+  }, [colaborador?.id, fetchTickets])
 
 // Real-time subscription for messages of current ticket
   // Stable refs for realtime subscription
