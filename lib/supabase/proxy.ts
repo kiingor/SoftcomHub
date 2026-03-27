@@ -43,6 +43,12 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser()
 
   const pathname = request.nextUrl.pathname
+
+  // Rota /doc é pública (documentação da API)
+  if (pathname.startsWith('/doc')) {
+    return supabaseResponse
+  }
+
   const isLoginPage = pathname === '/login'
   const isWorkdeskLoginPage = pathname === '/workdesk/login'
   const isWorkdeskResetPage = pathname === '/workdesk/reset-password'
