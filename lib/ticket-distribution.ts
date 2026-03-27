@@ -74,7 +74,7 @@ export async function criarEDistribuirTicket(
       // com subsetor → busca diretamente em colaboradores_subsetores (fonte autoritativa)
       // sem subsetor → busca em colaboradores_setores (todos do setor)
       // Prefere heartbeat fresco (< 2 min) mas fallback para qualquer online
-      const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+      const HEARTBEAT_STALE_MS = 5 * 60 * 1000
       const now = Date.now()
       const isHBFresh = (lh: string | null): boolean => lh ? (now - new Date(lh).getTime()) < HEARTBEAT_STALE_MS : false
 
@@ -278,7 +278,7 @@ async function _tentarDistribuirNoSetor(
   ticketId: string,
   setorId: string
 ): Promise<string | null> {
-  const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+  const HEARTBEAT_STALE_MS = 5 * 60 * 1000
   const now = Date.now()
 
   let maxTicketsPerAgent = 10
@@ -414,7 +414,7 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
     } catch { /* tabela pode não existir */ }
 
     // Get ALL available collaborators in this setor
-    const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+    const HEARTBEAT_STALE_MS = 5 * 60 * 1000
     const now = Date.now()
 
     const { data: rawColaboradores } = await supabase

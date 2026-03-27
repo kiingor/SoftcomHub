@@ -74,9 +74,10 @@ async function getAvailableColaboradores(
 
   console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}`)
 
-  // Coleta colaboradores online: preferimos os com heartbeat fresco (< 2 min)
-  // mas se nenhum tiver heartbeat fresco, usamos qualquer online como fallback
-  const HEARTBEAT_STALE_MS = 2 * 60 * 1000
+  // Coleta colaboradores online com heartbeat fresco (< 5 min).
+  // Browsers throttleiam timers em tabs background (heartbeat de 30s pode virar 60s+),
+  // então usamos 5 min como margem segura — alinhado com o cleanup que marca offline.
+  const HEARTBEAT_STALE_MS = 5 * 60 * 1000
   const now = Date.now()
   const isHeartbeatFresh = (lh: string | null): boolean => {
     if (!lh) return false
