@@ -218,31 +218,28 @@ export default function DocPage() {
             </p>
           </div>
 
-          <h3 className="text-lg font-semibold text-white mt-4">Exemplo com cURL</h3>
-          <CodeBlock lang="bash">{`curl -u "usuario:senha" \\
-  ${BASE_URL}/api/painel/setores`}</CodeBlock>
+          <h3 className="text-lg font-semibold text-white mt-4">Formato da requisição (cURL)</h3>
+          <p className="text-gray-400 text-sm mb-3">
+            Todas as requisições seguem este formato. O header <code className="text-violet-400 bg-violet-500/10 px-1 py-0.5 rounded text-xs">Authorization</code> deve
+            conter <code className="text-violet-400 bg-violet-500/10 px-1 py-0.5 rounded text-xs">Basic</code> seguido das credenciais em Base64 (<code className="text-violet-400 bg-violet-500/10 px-1 py-0.5 rounded text-xs">usuario:senha</code>).
+          </p>
+          <CodeBlock lang="bash">{`curl --request GET \\
+  --url "${BASE_URL}/api/painel/setores" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"`}</CodeBlock>
 
           <h3 className="text-lg font-semibold text-white mt-4">Exemplo com JavaScript (fetch)</h3>
           <CodeBlock lang="javascript">{`const credentials = btoa("usuario:senha");
 
 const response = await fetch("${BASE_URL}/api/painel/setores", {
+  method: "GET",
   headers: {
+    "Content-Type": "application/json",
     "Authorization": \`Basic \${credentials}\`
   }
 });
 
 const data = await response.json();`}</CodeBlock>
-
-          <h3 className="text-lg font-semibold text-white mt-4">Exemplo com Python</h3>
-          <CodeBlock lang="python">{`import requests
-from requests.auth import HTTPBasicAuth
-
-response = requests.get(
-    "${BASE_URL}/api/painel/setores",
-    auth=HTTPBasicAuth("usuario", "senha")
-)
-
-data = response.json()`}</CodeBlock>
         </Section>
 
         {/* GET Setores */}
@@ -279,8 +276,10 @@ data = response.json()`}</CodeBlock>
 }`}</CodeBlock>
 
           <h3 className="text-lg font-semibold text-white mt-4">Exemplo cURL</h3>
-          <CodeBlock lang="bash">{`curl -u "usuario:senha" \\
-  ${BASE_URL}/api/painel/setores`}</CodeBlock>
+          <CodeBlock lang="bash">{`curl --request GET \\
+  --url "${BASE_URL}/api/painel/setores" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"`}</CodeBlock>
         </Section>
 
         {/* GET Atendentes */}
@@ -351,12 +350,16 @@ data = response.json()`}</CodeBlock>
 
           <h3 className="text-lg font-semibold text-white mt-4">Exemplo cURL</h3>
           <CodeBlock lang="bash">{`# Todos os atendentes
-curl -u "usuario:senha" \\
-  "${BASE_URL}/api/painel/atendentes"
+curl --request GET \\
+  --url "${BASE_URL}/api/painel/atendentes" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"
 
 # Filtrar por setor e período
-curl -u "usuario:senha" \\
-  "${BASE_URL}/api/painel/atendentes?setor_id=UUID&date_from=2025-03-01T00:00:00Z&date_to=2025-03-31T23:59:59Z"`}</CodeBlock>
+curl --request GET \\
+  --url "${BASE_URL}/api/painel/atendentes?setor_id=UUID&date_from=2025-03-01T00:00:00Z&date_to=2025-03-31T23:59:59Z" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"`}</CodeBlock>
         </Section>
 
         {/* GET Produtividade */}
@@ -412,12 +415,16 @@ curl -u "usuario:senha" \\
 
           <h3 className="text-lg font-semibold text-white mt-4">Exemplo cURL</h3>
           <CodeBlock lang="bash">{`# Produtividade de hoje
-curl -u "usuario:senha" \\
-  "${BASE_URL}/api/painel/atendentes/produtividade"
+curl --request GET \\
+  --url "${BASE_URL}/api/painel/atendentes/produtividade" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"
 
 # Produtividade de uma data específica, filtrada por setor
-curl -u "usuario:senha" \\
-  "${BASE_URL}/api/painel/atendentes/produtividade?date=2025-03-15&setor_id=UUID"`}</CodeBlock>
+curl --request GET \\
+  --url "${BASE_URL}/api/painel/atendentes/produtividade?date=2025-03-15&setor_id=UUID" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"`}</CodeBlock>
         </Section>
 
         {/* GET Tickets */}
@@ -505,12 +512,16 @@ curl -u "usuario:senha" \\
 
           <h3 className="text-lg font-semibold text-white mt-4">Exemplo cURL</h3>
           <CodeBlock lang="bash">{`# Tickets abertos de um setor
-curl -u "usuario:senha" \\
-  "${BASE_URL}/api/painel/tickets?setor_id=UUID&status=aberto"
+curl --request GET \\
+  --url "${BASE_URL}/api/painel/tickets?setor_id=UUID&status=aberto" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"
 
 # Tickets encerrados em março, página 2
-curl -u "usuario:senha" \\
-  "${BASE_URL}/api/painel/tickets?status=encerrado&date_from=2025-03-01T00:00:00Z&date_to=2025-03-31T23:59:59Z&page=2&per_page=25"`}</CodeBlock>
+curl --request GET \\
+  --url "${BASE_URL}/api/painel/tickets?status=encerrado&date_from=2025-03-01T00:00:00Z&date_to=2025-03-31T23:59:59Z&page=2&per_page=25" \\
+  --header "Content-Type: application/json" \\
+  --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"`}</CodeBlock>
         </Section>
 
         {/* Footer */}
