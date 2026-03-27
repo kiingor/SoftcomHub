@@ -37,8 +37,8 @@ function CodeBlock({ children, lang = 'bash' }: { children: string; lang?: strin
         <span className="text-xs text-gray-500 uppercase tracking-wider">{lang}</span>
         <CopyButton text={children.trim()} />
       </div>
-      <pre className="p-4 overflow-x-auto text-sm leading-relaxed">
-        <code className="text-gray-300">{children.trim()}</code>
+      <pre className="p-4 overflow-x-auto text-[13px] leading-relaxed font-mono">
+        <code className="text-gray-300 font-mono">{children.trim()}</code>
       </pre>
     </div>
   )
@@ -228,18 +228,6 @@ export default function DocPage() {
   --header "Content-Type: application/json" \\
   --header "Authorization: Basic $(echo -n 'usuario:senha' | base64)"`}</CodeBlock>
 
-          <h3 className="text-lg font-semibold text-white mt-4">Exemplo com JavaScript (fetch)</h3>
-          <CodeBlock lang="javascript">{`const credentials = btoa("usuario:senha");
-
-const response = await fetch("${BASE_URL}/api/painel/setores", {
-  method: "GET",
-  headers: {
-    "Content-Type": "application/json",
-    "Authorization": \`Basic \${credentials}\`
-  }
-});
-
-const data = await response.json();`}</CodeBlock>
         </Section>
 
         {/* GET Setores */}
