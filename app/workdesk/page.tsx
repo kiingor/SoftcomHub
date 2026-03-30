@@ -687,7 +687,17 @@ export default function WorkdeskPage() {
     // Even users with can_see_all_tickets should use the dashboard for viewing all
     query = query.eq('colaborador_id', colab.id)
 
-    const { data } = await query
+    const { data, error } = await query
+
+    if (error) {
+      console.error('[WorkDesk] fetchTickets error:', error.message, error.code)
+      // If auth error, try to refresh session
+      if (error.code === 'PGRST301' || error.message?.includes('JWT') || error.code === '401') {
+        console.warn('[WorkDesk] Auth error detected, refreshing session...')
+        await supabase.auth.getUser()
+      }
+      return
+    }
 
     if (data) {
       // Filter out tickets that are currently being transferred
@@ -934,7 +944,13 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           )
         }
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('[WorkDesk] Colaborador sync subscription connected')
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.error(`[WorkDesk] Colaborador sync subscription error: ${status}`, err)
+        }
+      })
 
     return () => {
       supabase.removeChannel(channel)
@@ -1048,7 +1064,19 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           }
         }
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('[WorkDesk] Tickets realtime subscription connected')
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.error(`[WorkDesk] Tickets realtime subscription error: ${status}`, err)
+          // On error, try to re-subscribe after a short delay
+          setTimeout(() => {
+            supabase.removeChannel(channel)
+          }, 5000)
+        } else if (status === 'CLOSED') {
+          console.warn('[WorkDesk] Tickets realtime subscription closed')
+        }
+      })
 
     return () => {
       supabase.removeChannel(channel)
@@ -1109,30 +1137,57 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     const colaboradorId = colaborador.id
 
-    // Auto-assign: only trigger when the agent is actually online (reads live ref)
+    // Auto-assign: checks is_online directly from the DB via the API
+    // instead of relying on local state that may be stale if Realtime disconnects.
     const triggerAutoAssign = async () => {
-      const colab = colaboradorCurrentRef.current
-      if (!colab?.is_online) return
       try {
-        await fetch('/api/tickets/auto-assign', {
+        // The auto-assign API checks is_online in the DB (server-side via service role),
+        // so we don't gate on the local is_online state which may be stale.
+        const res = await fetch('/api/tickets/auto-assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ colaboradorId }),
         })
-        // Refresh tickets right after assignment
-        const fresh = colaboradorCurrentRef.current
-        if (fresh) fetchTickets(fresh)
+        if (res.ok) {
+          // Refresh tickets right after assignment
+          const fresh = colaboradorCurrentRef.current
+          if (fresh) fetchTickets(fresh)
+        }
       } catch (error) {
-        console.error('Error triggering auto-assign:', error)
+        console.error('[WorkDesk] Error triggering auto-assign:', error)
       }
     }
 
     // Poll tickets every 5 s regardless of online status
     // This guarantees that assignments made by the queue processor appear quickly
     // even if Realtime events are delayed or missed
-    const pollTickets = () => {
-      const colab = colaboradorCurrentRef.current
-      if (colab) fetchTickets(colab)
+    let pollInFlight = false
+    const pollTickets = async () => {
+      if (pollInFlight) return // Prevent overlapping polls
+      pollInFlight = true
+      try {
+        const colab = colaboradorCurrentRef.current
+        if (colab) await fetchTickets(colab)
+      } finally {
+        pollInFlight = false
+      }
+    }
+
+    // Also periodically sync is_online from DB to prevent stale local state
+    // This catches the case where Realtime subscription for colaborador-sync failed
+    const syncColaboradorStatus = async () => {
+      try {
+        const { data } = await supabase
+          .from('colaboradores')
+          .select('is_online, pausa_atual_id')
+          .eq('id', colaboradorId)
+          .single()
+        if (data) {
+          setColaborador((prev) =>
+            prev ? { ...prev, is_online: data.is_online } : null
+          )
+        }
+      } catch { /* ignore sync errors */ }
     }
 
     // Run immediately
@@ -1141,13 +1196,24 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
     const pollInterval = setInterval(pollTickets, 5000)
+    const syncStatusInterval = setInterval(syncColaboradorStatus, 60000)
+
+    // Periodically refresh Supabase auth session to prevent token expiry
+    const refreshSession = async () => {
+      try {
+        await supabase.auth.getUser()
+      } catch { /* ignore */ }
+    }
+    const sessionRefreshInterval = setInterval(refreshSession, 4 * 60 * 1000) // every 4 min
 
     return () => {
       clearInterval(autoAssignInterval)
       clearInterval(pollInterval)
+      clearInterval(syncStatusInterval)
+      clearInterval(sessionRefreshInterval)
     }
   // Only depend on colaborador.id — status changes go through colaboradorCurrentRef
-  }, [colaborador?.id, fetchTickets])
+  }, [colaborador?.id, fetchTickets, supabase])
 
 // Real-time subscription for messages of current ticket
   // Stable refs for realtime subscription

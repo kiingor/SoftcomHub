@@ -119,8 +119,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Format phone number (remove non-digits)
-    const formattedPhone = clientePhone.replace(/\D/g, '')
+    // Format phone number
+    // If phone has @lid suffix (Evolution API LID format), preserve it exactly as-is.
+    // Otherwise strip non-digits for the standard number format.
+    const formattedPhone = clientePhone.includes('@')
+      ? clientePhone
+      : clientePhone.replace(/\D/g, '')
 
     // Remove trailing slash from base URL
     const baseUrl = evolutionBaseUrl.replace(/\/+$/, '')
