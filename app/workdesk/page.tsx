@@ -4,6 +4,7 @@ import React from "react"
 
 import { useEffect, useState, useCallback, useRef, useMemo, startTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { logError } from '@/lib/error-logger'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
@@ -691,6 +692,12 @@ export default function WorkdeskPage() {
 
     if (error) {
       console.error('[WorkDesk] fetchTickets error:', error.message, error.code)
+      logError({
+        tela: 'WorkDesk',
+        error: `fetchTickets: ${error.message}`,
+        componente: 'fetchTickets',
+        metadata: { type: 'supabase_error', code: error.code, colaboradorId: colab.id, ticketId: selectedTicketIdRef.current },
+      })
       // If auth error, try to refresh session
       if (error.code === 'PGRST301' || error.message?.includes('JWT') || error.code === '401') {
         console.warn('[WorkDesk] Auth error detected, refreshing session...')
@@ -1948,6 +1955,12 @@ const handleEncerrarTicket = async () => {
       const result = await res.json()
 
       if (!res.ok) {
+        logError({
+          tela: 'WorkDesk',
+          error: `Falha ao transferir ticket (${res.status}): ${result.error || 'desconhecido'}`,
+          componente: 'handleTransferTicket',
+          metadata: { type: 'transfer_error', status: res.status, ticketId, error: result.error },
+        })
         toast.error(result.error || 'Erro ao transferir ticket')
         // Transfer failed — bring ticket back
         transferringTicketIdsRef.current.delete(ticketId)
@@ -1974,6 +1987,12 @@ const handleEncerrarTicket = async () => {
         toast.error('Transferência demorou demais. O ticket pode ter sido transferido — atualize a página.')
       } else {
         console.error('Error transferring ticket:', err)
+        logError({
+          tela: 'WorkDesk',
+          error: err,
+          componente: 'handleTransferTicket',
+          metadata: { type: 'transfer_network_error', ticketId },
+        })
         toast.error('Erro ao transferir ticket. Tente novamente.')
       }
       // On error, bring ticket back
@@ -2605,6 +2624,12 @@ const tempId = `temp-${Date.now()}`
 
         if (!response.ok) {
           console.error('[workdesk] Send API failed:', result)
+          logError({
+            tela: 'WorkDesk',
+            error: `Falha ao enviar mensagem (${response.status}): ${result?.error || 'desconhecido'}`,
+            componente: 'sendMessage',
+            metadata: { type: 'send_api_error', status: response.status, sendUrl, ticketId: selectedTicketIdRef.current, details: result?.details },
+          })
 
           // Aviso especial para dispositivo offline (Evolution API)
           if (result?.deviceOffline) {
@@ -2621,6 +2646,12 @@ const tempId = `temp-${Date.now()}`
         }
       } catch (sendError) {
         console.error('[v0] Send request failed:', sendError)
+        logError({
+          tela: 'WorkDesk',
+          error: sendError,
+          componente: 'sendMessage',
+          metadata: { type: 'send_network_error', sendUrl, ticketId: selectedTicketIdRef.current },
+        })
         toast.error('Erro de conexao ao enviar mensagem')
         setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
         return

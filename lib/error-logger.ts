@@ -116,8 +116,17 @@ export function logError({ tela, error, componente, metadata }: LogErrorParams):
 
 let globalHandlersSetup = false
 
+// Padrões de mensagem a ignorar no console.error para evitar ruído
+const CONSOLE_ERROR_IGNORE = [
+  'Auth session missing',
+  'AuthSessionMissingError',
+  'Warning:',           // React dev warnings
+  'Download the React', // React devtools
+]
+
 /**
  * Registra handlers globais para capturar erros não tratados.
+ * Também intercepta console.error para enviar ao log de erros.
  * Chamar 1x no layout raiz.
  */
 export function setupGlobalErrorHandlers(): void {
@@ -158,4 +167,34 @@ export function setupGlobalErrorHandlers(): void {
       },
     })
   })
+
+  // Interceptar console.error para capturar erros explícitos da aplicação
+  const originalConsoleError = console.error.bind(console)
+  console.error = (...args: unknown[]) => {
+    // Sempre chama o console.error original (continua aparecendo no DevTools)
+    originalConsoleError(...args)
+
+    try {
+      const message = args.map(a =>
+        a instanceof Error ? `${a.name}: ${a.message}` : String(a)
+      ).join(' ')
+
+      // Ignorar ruído conhecido
+      if (CONSOLE_ERROR_IGNORE.some(pattern => message.includes(pattern))) return
+
+      logError({
+        error: message,
+        componente: 'console.error',
+        metadata: {
+          type: 'console_error',
+          args: args.map(a => {
+            if (a instanceof Error) return { name: a.name, message: a.message, stack: a.stack }
+            try { return JSON.parse(JSON.stringify(a)) } catch { return String(a) }
+          }),
+        },
+      })
+    } catch {
+      // Nunca interfere com o console original
+    }
+  }
 }
