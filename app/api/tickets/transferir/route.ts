@@ -71,17 +71,9 @@ export async function POST(request: Request) {
         )
       }
 
-      // Verificar heartbeat fresco (< 5 min)
-      const HEARTBEAT_STALE_MS = 5 * 60 * 1000
-      const heartbeatAge = colab.last_heartbeat
-        ? Date.now() - new Date(colab.last_heartbeat).getTime()
-        : Infinity
-      if (heartbeatAge > HEARTBEAT_STALE_MS) {
-        return NextResponse.json(
-          { error: 'Este atendente parece estar desconectado (heartbeat expirado). Selecione outro atendente.' },
-          { status: 422 }
-        )
-      }
+      // Nota: heartbeat NÃO é verificado em transferências manuais.
+      // O operador que transfere vê o atendente online no dashboard — isso já é suficiente.
+      // A verificação de heartbeat é reservada para distribuição automática (ticket-queue-processor).
 
       // 3. Buscar limite max_tickets_per_agent do setor destino
       const { data: config } = await supabase
