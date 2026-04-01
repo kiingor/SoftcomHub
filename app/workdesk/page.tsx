@@ -691,7 +691,7 @@ export default function WorkdeskPage() {
     const { data, error } = await query
 
     if (error) {
-      console.error('[WorkDesk] fetchTickets error:', error.message, error.code)
+      console.warn('[WorkDesk] fetchTickets error:', error.message, error.code)
       logError({
         tela: 'WorkDesk',
         error: `fetchTickets: ${error.message}`,
@@ -1146,22 +1146,90 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     // Auto-assign: checks is_online directly from the DB via the API
     // instead of relying on local state that may be stale if Realtime disconnects.
-    const triggerAutoAssign = async () => {
+    let autoAssignInFlight = false
+    const triggerAutoAssign = async (attempt = 1) => {
+      if (autoAssignInFlight) return // Prevent overlapping calls
+      autoAssignInFlight = true
+
+      const MAX_ATTEMPTS = 3
+      const TIMEOUT_MS = 15000
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
       try {
+        console.log(
+          `[WorkDesk] Disparando auto-assign — colaborador: ${colaboradorId}, tentativa: ${attempt}/${MAX_ATTEMPTS}`
+        )
+
         // The auto-assign API checks is_online in the DB (server-side via service role),
         // so we don't gate on the local is_online state which may be stale.
         const res = await fetch('/api/tickets/auto-assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ colaboradorId }),
+          signal: controller.signal,
         })
+
+        clearTimeout(timeoutId)
+
         if (res.ok) {
+          const data = await res.json().catch(() => ({}))
+          console.log(
+            `[WorkDesk] Auto-assign concluído — inQueue: ${data.stats?.ticketsInQueue ?? '?'}, assigned: ${data.stats?.ticketsAssigned ?? '?'}, elapsed: ${data.elapsed_ms ?? '?'}ms`
+          )
           // Refresh tickets right after assignment
           const fresh = colaboradorCurrentRef.current
           if (fresh) fetchTickets(fresh)
+        } else {
+          const errorText = await res.text().catch(() => 'sem body')
+          console.warn(
+            `[WorkDesk] Auto-assign HTTP error — status: ${res.status} ${res.statusText} — body: ${errorText}`
+          )
+          // Log no servidor
+          fetch('/api/logs/error', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              tela: 'WorkDesk',
+              rota: '/workdesk',
+              componente: 'triggerAutoAssign',
+              log: `Auto-assign HTTP error: ${res.status} ${res.statusText} — ${errorText}`,
+              usuario_id: colaboradorId,
+            }),
+          }).catch(() => {})
         }
       } catch (error) {
-        console.error('[WorkDesk] Error triggering auto-assign:', error)
+        clearTimeout(timeoutId)
+
+        const isAbort = error instanceof Error && error.name === 'AbortError'
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        const errorType = isAbort ? 'TIMEOUT (AbortError após 15s)' : `NETWORK ERROR: ${errorMsg}`
+
+        console.warn(`[WorkDesk] Auto-assign falhou — ${errorType} — tentativa: ${attempt}/${MAX_ATTEMPTS}`)
+
+        // Retry com backoff (só em erros de rede, não em abort/timeout)
+        if (!isAbort && attempt < MAX_ATTEMPTS) {
+          const backoff = attempt * 2000
+          console.log(`[WorkDesk] Auto-assign retry em ${backoff}ms...`)
+          autoAssignInFlight = false
+          await new Promise(resolve => setTimeout(resolve, backoff))
+          return triggerAutoAssign(attempt + 1)
+        }
+
+        // Log no servidor após esgotar tentativas
+        fetch('/api/logs/error', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tela: 'WorkDesk',
+            rota: '/workdesk',
+            componente: 'triggerAutoAssign',
+            log: `Auto-assign falhou após ${attempt} tentativa(s): ${errorType}`,
+            usuario_id: colaboradorId,
+          }),
+        }).catch(() => {})
+      } finally {
+        autoAssignInFlight = false
       }
     }
 
@@ -1986,7 +2054,7 @@ const handleEncerrarTicket = async () => {
       if (err?.name === 'AbortError') {
         toast.error('Transferência demorou demais. O ticket pode ter sido transferido — atualize a página.')
       } else {
-        console.error('Error transferring ticket:', err)
+        console.warn('Error transferring ticket:', err)
         logError({
           tela: 'WorkDesk',
           error: err,
@@ -2502,7 +2570,7 @@ const tempId = `temp-${Date.now()}`
 
       // Validate phone_number_id for WhatsApp/Evolution
       if ((setorCanal === 'whatsapp' || setorCanal === 'evolution_api') && !phoneNumberId) {
-        console.error('[workdesk] No phone_number_id found for ticket:', capturedTicketId)
+        console.warn('[workdesk] No phone_number_id found for ticket:', capturedTicketId)
         setPendingMessages((prev) => new Map(prev).set(tempId, 'error'))
         toast.error('Nao foi possivel determinar o canal de envio. Nenhum phone_number_id encontrado.')
         return
@@ -2623,7 +2691,7 @@ const tempId = `temp-${Date.now()}`
         console.log(`[workdesk] Resposta ${sendUrl} (status ${response.status}):`, result)
 
         if (!response.ok) {
-          console.error('[workdesk] Send API failed:', result)
+          console.warn('[workdesk] Send API failed:', result)
           logError({
             tela: 'WorkDesk',
             error: `Falha ao enviar mensagem (${response.status}): ${result?.error || 'desconhecido'}`,
@@ -2645,7 +2713,7 @@ const tempId = `temp-${Date.now()}`
           return
         }
       } catch (sendError) {
-        console.error('[v0] Send request failed:', sendError)
+        console.warn('[v0] Send request failed:', sendError)
         logError({
           tela: 'WorkDesk',
           error: sendError,

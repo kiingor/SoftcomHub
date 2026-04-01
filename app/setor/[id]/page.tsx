@@ -671,6 +671,7 @@ export default function SetorPage() {
     email: '',
     senha: '',
     confirmarSenha: '',
+    suporte_id: '',
   })
   const [savingAtendente, setSavingAtendente] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -1966,7 +1967,7 @@ const saveConfig = async () => {
   const openCreateAtendenteModal = () => {
     setEditingAtendente(null)
     setAtendenteSubsetorIds([])
-    setAtendenteForm({ nome: '', email: '', senha: '', confirmarSenha: '' })
+    setAtendenteForm({ nome: '', email: '', senha: '', confirmarSenha: '', suporte_id: '' })
     setShowPassword(false)
     setShowConfirmPassword(false)
     setExistingColaborador(null)
@@ -2036,6 +2037,7 @@ const saveConfig = async () => {
       email: atendente.email || '',
       senha: '',
       confirmarSenha: '',
+      suporte_id: atendente.suporte_id || '',
     })
     setExistingColaborador(null)
     setIsAtendenteModalOpen(true)
@@ -2110,7 +2112,7 @@ const saveConfig = async () => {
         // Update existing atendente
         const { error } = await supabase
           .from('colaboradores')
-          .update({ nome: atendenteForm.nome })
+          .update({ nome: atendenteForm.nome, suporte_id: atendenteForm.suporte_id.trim() || null })
           .eq('id', editingAtendente.id)
 
         if (error) throw error
@@ -2147,6 +2149,7 @@ const saveConfig = async () => {
             nome: atendenteForm.nome,
             email: atendenteForm.email.trim().toLowerCase(),
             permissao_id: atendentePermissao?.id,
+            suporte_id: atendenteForm.suporte_id.trim() || null,
             ativo: true,
             is_online: false,
             is_master: false,
@@ -5495,6 +5498,24 @@ const saveConfig = async () => {
                 </div>
               </>
             )}
+
+            <div className="space-y-2">
+              <Label htmlFor="atendente-suporte-id">ID Suporte (opcional)</Label>
+              <Input
+                id="atendente-suporte-id"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                placeholder="Ex: 12345"
+                value={atendenteForm.suporte_id}
+                onChange={(e) => {
+                  const value = e.target.value.replace(/\D/g, '')
+                  setAtendenteForm((prev) => ({ ...prev, suporte_id: value }))
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                ID do atendente no sistema externo de suporte
+              </p>
+            </div>
 
             {/* Subsetor selection - checkboxes para múltipla seleção */}
             {subsetores.filter(s => s.ativo).length > 0 && (

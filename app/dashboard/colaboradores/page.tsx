@@ -82,6 +82,7 @@ export default function ColaboradoresPage() {
     senha: '',
     setor_id: '',
     permissao_id: '',
+    suporte_id: '',
     setores_selecionados: [] as string[],
   })
   const [saving, setSaving] = useState(false)
@@ -185,6 +186,7 @@ export default function ColaboradoresPage() {
       senha: '',
       setor_id: '',
       permissao_id: '',
+      suporte_id: '',
       setores_selecionados: [],
     })
     setError(null)
@@ -199,6 +201,7 @@ export default function ColaboradoresPage() {
       senha: '',
       setor_id: colaborador.setor_id || '',
       permissao_id: colaborador.permissao_id || '',
+      suporte_id: (colaborador as any).suporte_id || '',
       setores_selecionados: getSetoresDoColaborador(colaborador.id),
     })
     setError(null)
@@ -236,6 +239,7 @@ export default function ColaboradoresPage() {
           nome: formData.nome.trim(),
           setor_id: formData.setor_id || null,
           permissao_id: formData.permissao_id || null,
+          suporte_id: formData.suporte_id.trim() || null,
         })
         .eq('id', editingColaborador.id)
 
@@ -304,6 +308,7 @@ export default function ColaboradoresPage() {
         email: formData.email.trim().toLowerCase(),
         setor_id: formData.setor_id || null,
         permissao_id: formData.permissao_id || null,
+        suporte_id: formData.suporte_id.trim() || null,
         is_online: false,
         ativo: true,
       })
@@ -583,6 +588,27 @@ export default function ColaboradoresPage() {
                 />
               </div>
             )}
+
+            <div className="grid gap-2">
+              <Label htmlFor="suporte_id" className="text-foreground">
+                ID Suporte (opcional)
+              </Label>
+              <Input
+                id="suporte_id"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                placeholder="Ex: 12345"
+                value={formData.suporte_id}
+                onChange={(e) => {
+                  const value = e.target.value.replace(/\D/g, '')
+                  setFormData({ ...formData, suporte_id: value })
+                }}
+                className="border-border bg-card"
+              />
+              <p className="text-xs text-muted-foreground">
+                ID do atendente no sistema externo de suporte
+              </p>
+            </div>
 
             <div className="grid gap-2">
               <Label className="text-foreground">

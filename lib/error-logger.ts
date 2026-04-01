@@ -122,6 +122,22 @@ const CONSOLE_ERROR_IGNORE = [
   'AuthSessionMissingError',
   'Warning:',           // React dev warnings
   'Download the React', // React devtools
+  'Error fetching colaborador:',    // Login flow — transient
+  'Error loading transfer data:',   // UI load — retry by user
+  'Error saving user:',             // Form validation — not a system error
+  'Error saving atendente:',        // Form validation
+  'Error saving canal:',            // Form config
+  'Error saving tipos atendimento:',// Form config
+  'Error saving subsetor:',         // Form config
+  'Error checking email:',          // Form validation
+  'Error fetching setores:',        // Dashboard load
+  'Exception fetching setores:',    // Dashboard load
+  'Erro ao buscar métricas:',       // Dashboard metrics
+  'Erro ao carregar avisos:',       // Notifications load
+  '[EvoPolling]',                   // Evolution polling — transient
+  '[Evolution Check]',              // Evolution status check — transient
+  'hydration',                      // Next.js hydration mismatch
+  'Hydration',                      // Next.js hydration mismatch
 ]
 
 /**
@@ -175,9 +191,11 @@ export function setupGlobalErrorHandlers(): void {
     originalConsoleError(...args)
 
     try {
-      const message = args.map(a =>
-        a instanceof Error ? `${a.name}: ${a.message}` : String(a)
-      ).join(' ')
+      const message = args.map(a => {
+        if (a instanceof Error) return `${a.name}: ${a.message}`
+        if (typeof a === 'string') return a
+        try { return JSON.stringify(a) } catch { return String(a) }
+      }).join(' ')
 
       // Ignorar ruído conhecido
       if (CONSOLE_ERROR_IGNORE.some(pattern => message.includes(pattern))) return

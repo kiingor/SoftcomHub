@@ -303,6 +303,8 @@ async function tryAssignTicket(
 
 // Main queue processor function
 export async function processTicketQueue(): Promise<ProcessorStats> {
+  console.log('[TicketQueue] processTicketQueue() iniciado —', new Date().toISOString())
+  const _queueStart = Date.now()
   const supabase = createServiceClient()
   const stats: ProcessorStats = {
     processedAt: new Date().toISOString(),
@@ -444,6 +446,8 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
     }
   }
   
+  console.log(`[TicketQueue] processTicketQueue() concluído em ${Date.now() - _queueStart}ms`)
+
   // Log processor run
   logAssignment(
     null,
@@ -464,6 +468,8 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
 
 // Function to call when a colaborador comes online — only processes tickets from their setores
 export async function onColaboradorOnline(colaboradorId: string): Promise<ProcessorStats> {
+  console.log('[TicketQueue] onColaboradorOnline() iniciado para:', colaboradorId, '—', new Date().toISOString())
+  const _onlineStart = Date.now()
   const supabase = createServiceClient()
 
   const stats: ProcessorStats = {
@@ -527,7 +533,7 @@ export async function onColaboradorOnline(colaboradorId: string): Promise<Proces
     }
   }
 
-  console.log(`[TicketQueue] onColaboradorOnline done - assigned ${stats.ticketsAssigned}/${stats.ticketsInQueue}`)
+  console.log(`[TicketQueue] onColaboradorOnline() concluído em ${Date.now() - _onlineStart}ms — assigned ${stats.ticketsAssigned}/${stats.ticketsInQueue}`)
   return stats
 }
 

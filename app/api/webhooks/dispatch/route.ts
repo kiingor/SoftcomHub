@@ -100,13 +100,15 @@ export async function POST(request: Request) {
 
     // Fetch colaborador name if assigned
     let colaboradorNome: string | null = null
+    let colaboradorSuporteId: string | null = null
     if (ticket.colaborador_id) {
       const { data: colab } = await supabase
         .from('colaboradores')
-        .select('nome')
+        .select('nome, suporte_id')
         .eq('id', ticket.colaborador_id)
         .single()
       colaboradorNome = colab?.nome || null
+      colaboradorSuporteId = colab?.suporte_id || null
     }
 
     // Fetch all messages for this ticket (conversation history)
@@ -178,7 +180,7 @@ export async function POST(request: Request) {
           : null,
 
         atendente: colaboradorNome
-          ? { id: ticket.colaborador_id, nome: colaboradorNome }
+          ? { id: ticket.colaborador_id, nome: colaboradorNome, suporte_id: colaboradorSuporteId }
           : null,
 
         // Timestamps ISO + BR

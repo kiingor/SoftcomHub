@@ -137,19 +137,26 @@ export default function WorkdeskLayout({
         },
         (payload) => {
           const newData = payload.new as any
+          if (!newData) return
           // Update local state with the new status from database
           setColaborador((prev) =>
             prev
               ? {
                   ...prev,
-                  is_online: newData.is_online,
-                  pausa_atual_id: newData.pausa_atual_id,
+                  is_online: newData.is_online ?? prev.is_online,
+                  pausa_atual_id: newData.pausa_atual_id ?? prev.pausa_atual_id,
                 }
               : null
           )
         }
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('[WorkDesk Layout] Colaborador status subscription connected')
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.error(`[WorkDesk Layout] Colaborador status subscription error: ${status}`, err)
+        }
+      })
 
     return () => {
       supabase.removeChannel(channel)
