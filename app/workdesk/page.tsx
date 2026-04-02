@@ -1094,11 +1094,23 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // the subscription every time any colaborador field changes
   }, [colaborador?.id, fetchTickets, supabase, playAlert])
 
-  // Refresh tickets when tab regains visibility (user switches back to the tab)
+  // Refresh tickets + heartbeat when tab regains visibility
+  // Browsers throttle setInterval in background tabs (Chrome: min 1x/min).
+  // This ensures heartbeat is sent immediately on return + tickets are refreshed.
   useEffect(() => {
     if (!colaborador?.id) return
+    const colaboradorId = colaborador.id
+
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
+        // Heartbeat imediato ao voltar foco — evita ficar "stale" no distribuidor
+        fetch('/api/colaborador/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ colaboradorId }),
+        }).catch(() => {})
+
+        // Refresh tickets imediato
         const colab = colaboradorCurrentRef.current
         if (colab) fetchTickets(colab)
       }
@@ -1340,7 +1352,14 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         },
         handleNewMessage
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('[WorkDesk] Messages subscription connected for ticket:', selectedTicketIdRef2)
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[WorkDesk] Messages subscription error: ${status}`, err)
+          setTimeout(() => supabase.removeChannel(channel), 5000)
+        }
+      })
 
     // Fallback polling every 10s to catch any missed messages
     const pollInterval = setInterval(async () => {
@@ -1504,12 +1523,20 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           })
         }
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('[WorkDesk] All-messages alert subscription connected')
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[WorkDesk] All-messages alert subscription error: ${status}`, err)
+          setTimeout(() => supabase.removeChannel(channel), 5000)
+        }
+      })
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [colaborador, supabase, playAlert])
+  // Use colaborador?.id (primitive) — avoids rebuilding subscription on every setColaborador call
+  }, [colaborador?.id, supabase, playAlert])
 
   // Filter tickets — memoized so typing in the message input does NOT re-filter the list
   const filteredTickets = useMemo(() => tickets.filter((ticket) => {

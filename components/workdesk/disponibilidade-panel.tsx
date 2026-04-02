@@ -145,7 +145,12 @@ export function DisponibilidadePanel({
           fetchLogs()
         }
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[DisponibilidadePanel] Subscription error: ${status}`, err)
+          setTimeout(() => supabase.removeChannel(channel), 5000)
+        }
+      })
 
     return () => {
       supabase.removeChannel(channel)
