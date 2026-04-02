@@ -136,6 +136,8 @@ const CONSOLE_ERROR_IGNORE = [
   'Erro ao carregar avisos:',       // Notifications load
   '[EvoPolling]',                   // Evolution polling — transient
   '[Evolution Check]',              // Evolution status check — transient
+  'subscription error: CHANNEL_ERROR', // Supabase Realtime — transient, has retry
+  'subscription error: TIMED_OUT',     // Supabase Realtime — transient, has retry
   'hydration',                      // Next.js hydration mismatch
   'Hydration',                      // Next.js hydration mismatch
 ]

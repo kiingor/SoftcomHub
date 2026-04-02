@@ -955,7 +955,9 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         if (status === 'SUBSCRIBED') {
           console.log('[WorkDesk] Colaborador sync subscription connected')
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.error(`[WorkDesk] Colaborador sync subscription error: ${status}`, err)
+          console.warn(`[WorkDesk] Colaborador sync subscription error: ${status}`, err)
+          // Retry: remove canal para forçar remontagem do useEffect
+          setTimeout(() => supabase.removeChannel(channel), 5000)
         }
       })
 
@@ -1075,7 +1077,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         if (status === 'SUBSCRIBED') {
           console.log('[WorkDesk] Tickets realtime subscription connected')
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.error(`[WorkDesk] Tickets realtime subscription error: ${status}`, err)
+          console.warn(`[WorkDesk] Tickets realtime subscription error: ${status}`, err)
           // On error, try to re-subscribe after a short delay
           setTimeout(() => {
             supabase.removeChannel(channel)

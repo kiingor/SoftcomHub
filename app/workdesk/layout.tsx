@@ -47,6 +47,7 @@ export default function WorkdeskLayout({
 }) {
   const [colaborador, setColaborador] = useState<Colaborador | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   const [ticketSound, setTicketSound] = useState<TicketSoundType>('default')
   const supabase = createClient()
   const router = useRouter()
@@ -80,41 +81,49 @@ export default function WorkdeskLayout({
       return
     }
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) {
-      router.push('/workdesk/login')
-      return
-    }
+    try {
+      setLoadError(false)
 
-    // First get colaborador
-    const { data: colaboradorData } = await supabase
-      .from('colaboradores')
-      .select('id, nome, email, is_online, pausa_atual_id')
-      .eq('email', user.email)
-      .single()
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (!user) {
+        router.push('/workdesk/login')
+        return
+      }
 
-    if (!colaboradorData) {
+      // First get colaborador
+      const { data: colaboradorData } = await supabase
+        .from('colaboradores')
+        .select('id, nome, email, is_online, pausa_atual_id')
+        .eq('email', user.email)
+        .single()
+
+      if (!colaboradorData) {
+        setLoading(false)
+        return
+      }
+
+      // Then get their setores
+      const { data: setoresData } = await supabase
+        .from('colaboradores_setores')
+        .select('setor_id')
+        .eq('colaborador_id', colaboradorData.id)
+
+      const data = {
+        ...colaboradorData,
+        setores_vinculados: setoresData || [],
+      }
+
+      if (data) {
+        setColaborador(data)
+      }
+    } catch (error) {
+      console.warn('[WorkDesk Layout] Erro ao carregar colaborador:', error)
+      setLoadError(true)
+    } finally {
       setLoading(false)
-      return
     }
-
-    // Then get their setores
-    const { data: setoresData } = await supabase
-      .from('colaboradores_setores')
-      .select('setor_id')
-      .eq('colaborador_id', colaboradorData.id)
-
-    const data = {
-      ...colaboradorData,
-      setores_vinculados: setoresData || [],
-    }
-
-    if (data) {
-      setColaborador(data)
-    }
-    setLoading(false)
   }, [supabase, router, pathname])
 
   useEffect(() => {
@@ -154,7 +163,9 @@ export default function WorkdeskLayout({
         if (status === 'SUBSCRIBED') {
           console.log('[WorkDesk Layout] Colaborador status subscription connected')
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.error(`[WorkDesk Layout] Colaborador status subscription error: ${status}`, err)
+          console.warn(`[WorkDesk Layout] Colaborador status subscription error: ${status}`, err)
+          // Retry: remove canal para forçar remontagem do useEffect
+          setTimeout(() => supabase.removeChannel(channel), 5000)
         }
       })
 
@@ -264,6 +275,29 @@ export default function WorkdeskLayout({
   // Render login and reset-password pages without auth wrapper
   if (pathname === '/workdesk/login' || pathname === '/workdesk/reset-password') {
     return <>{children}</>
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex min-h-svh items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4 text-center px-4">
+          <div className="text-4xl">⚠️</div>
+          <p className="text-sm text-muted-foreground max-w-xs">
+            Nao foi possivel conectar ao servidor. Verifique sua conexao e tente novamente.
+          </p>
+          <Button
+            onClick={() => {
+              setLoading(true)
+              fetchColaborador()
+            }}
+            variant="outline"
+            className="gap-2"
+          >
+            Tentar novamente
+          </Button>
+        </div>
+      </div>
+    )
   }
 
   if (!colaborador) {

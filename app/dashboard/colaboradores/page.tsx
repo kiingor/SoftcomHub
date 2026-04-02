@@ -171,7 +171,14 @@ export default function ColaboradoresPage() {
           )
         }
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('[Colaboradores] Realtime subscription connected')
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[Colaboradores] Realtime subscription error: ${status}`, err)
+          setTimeout(() => supabase.removeChannel(channel), 5000)
+        }
+      })
 
     return () => {
       supabase.removeChannel(channel)
