@@ -82,14 +82,14 @@ export async function criarEDistribuirTicket(
       if (subsetorId) {
         const { data } = await supabase
           .from('colaboradores_subsetores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
           .eq('setor_id', setorId)
           .eq('subsetor_id', subsetorId)
         rawColabs = (data || []).map((sl: any) => sl.colaboradores)
       } else {
         const { data } = await supabase
           .from('colaboradores_setores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
           .eq('setor_id', setorId)
         rawColabs = (data || []).map((cs: any) => cs.colaboradores)
       }
@@ -99,7 +99,7 @@ export async function criarEDistribuirTicket(
         .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
       const fresh = allOnline
         .filter((c: any) => isHBFresh(c.last_heartbeat))
-        .map((c: any) => ({ id: c.id, nome: c.nome }))
+        .map((c: any) => ({ id: c.id, nome: c.nome, last_ticket_received_at: c.last_ticket_received_at || null }))
 
       // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min)
       const veryStale = allOnline.filter((c: any) =>
@@ -137,40 +137,23 @@ export async function criarEDistribuirTicket(
           }
         })
 
-        // Buscar o último ticket atribuído para desempate (round-robin real)
-        // Quem recebeu ticket mais recentemente vai pro fim da fila quando há empate
-        const { data: lastAssigned } = await supabase
-          .from('tickets')
-          .select('colaborador_id, criado_em')
-          .in('colaborador_id', colaboradorIds)
-          .not('colaborador_id', 'is', null)
-          .order('criado_em', { ascending: false })
-          .limit(colaboradorIds.length * 2)
-
-        // Mapa: colaboradorId → timestamp da última atribuição
-        const lastAssignedMap: Record<string, string> = {}
-        lastAssigned?.forEach(t => {
-          if (t.colaborador_id && !lastAssignedMap[t.colaborador_id]) {
-            lastAssignedMap[t.colaborador_id] = t.criado_em
-          }
-        })
-
-        // Ordenar: 1) menor quantidade de tickets, 2) quem recebeu há mais tempo (ou nunca)
+        // Ordenar: 1) menor quantidade de tickets, 2) quem recebeu ticket há MAIS tempo (round-robin real)
+        // Usa last_ticket_received_at (atualizado no momento da atribuição) em vez de criado_em do ticket
         const sorted = finalColaboradores
           .map(c => ({
             id: c.id,
             nome: c.nome,
             count: countMap[c.id] || 0,
-            lastAssignedAt: lastAssignedMap[c.id] || '1970-01-01',
+            lastReceivedAt: c.last_ticket_received_at || '1970-01-01',
           }))
           .filter(c => c.count < maxTicketsPerAgent)
           .sort((a, b) => {
             if (a.count !== b.count) return a.count - b.count
-            // Empate: quem recebeu há MAIS tempo vai primeiro (round-robin)
-            return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
+            // Empate: quem recebeu há MAIS tempo vai primeiro (round-robin real)
+            return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
           })
 
-        console.log(`[Distribution] Ranking: ${sorted.map(c => `${c.nome}(${c.count}t, last=${c.lastAssignedAt.slice(0,19)})`).join(', ')}`)
+        console.log(`[Distribution] Ranking: ${sorted.map(c => `${c.nome}(${c.count}t, lastRcv=${c.lastReceivedAt.slice(0,19)})`).join(', ')}`)
 
         const bestColaborador = sorted.length > 0 ? sorted[0] : null
 
@@ -187,6 +170,12 @@ export async function criarEDistribuirTicket(
           if (!updateError) {
             assignedColaboradorId = bestColaborador.id
 
+            // Atualizar last_ticket_received_at para round-robin correto
+            await supabase
+              .from('colaboradores')
+              .update({ last_ticket_received_at: new Date().toISOString() })
+              .eq('id', bestColaborador.id)
+
             // Log the assignment (tabela opcional)
             try {
               await supabase.from('ticket_assignment_logs').insert({
@@ -194,7 +183,7 @@ export async function criarEDistribuirTicket(
                 colaborador_id: bestColaborador.id,
                 setor_id: setorId,
                 action: 'auto_assigned',
-                assignment_reason: `Round-robin: ${bestColaborador.count} tickets, último recebido em ${bestColaborador.lastAssignedAt.slice(0,19)}`,
+                assignment_reason: `Round-robin: ${bestColaborador.count} tickets, último recebido em ${bestColaborador.lastReceivedAt.slice(0,19)}`,
               })
             } catch { /* tabela pode não existir */ }
           }
@@ -293,7 +282,7 @@ async function _tentarDistribuirNoSetor(
 
   const { data: rawColabs } = await supabase
     .from('colaboradores')
-    .select(`id, last_heartbeat, colaboradores_setores!inner(setor_id)`)
+    .select(`id, last_heartbeat, last_ticket_received_at, colaboradores_setores!inner(setor_id)`)
     .eq('colaboradores_setores.setor_id', setorId)
     .eq('is_online', true)
     .eq('ativo', true)
@@ -323,32 +312,17 @@ async function _tentarDistribuirNoSetor(
     }
   })
 
-  // Round-robin: desempate pelo último ticket recebido
-  const { data: lastAssigned } = await supabase
-    .from('tickets')
-    .select('colaborador_id, criado_em')
-    .in('colaborador_id', colaboradorIds)
-    .not('colaborador_id', 'is', null)
-    .order('criado_em', { ascending: false })
-    .limit(colaboradorIds.length * 2)
-
-  const lastAssignedMap: Record<string, string> = {}
-  lastAssigned?.forEach(t => {
-    if (t.colaborador_id && !lastAssignedMap[t.colaborador_id]) {
-      lastAssignedMap[t.colaborador_id] = t.criado_em
-    }
-  })
-
+  // Round-robin: desempate por last_ticket_received_at (atualizado no momento da atribuição)
   const sorted = colaboradores
     .map(c => ({
       id: c.id,
       count: countMap[c.id] || 0,
-      lastAssignedAt: lastAssignedMap[c.id] || '1970-01-01',
+      lastReceivedAt: (c as any).last_ticket_received_at || '1970-01-01',
     }))
     .filter(c => c.count < maxTicketsPerAgent)
     .sort((a, b) => {
       if (a.count !== b.count) return a.count - b.count
-      return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
+      return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
     })
 
   const bestColaborador = sorted.length > 0 ? sorted[0] : null
@@ -364,6 +338,12 @@ async function _tentarDistribuirNoSetor(
     .eq('id', ticketId)
 
   if (error) return null
+
+  // Atualizar last_ticket_received_at para round-robin correto
+  await supabase
+    .from('colaboradores')
+    .update({ last_ticket_received_at: new Date().toISOString() })
+    .eq('id', bestColaborador.id)
 
   try {
     await supabase.from('ticket_assignment_logs').insert({
@@ -422,6 +402,7 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       .select(`
         id,
         last_heartbeat,
+        last_ticket_received_at,
         colaboradores_setores!inner(setor_id)
       `)
       .eq('colaboradores_setores.setor_id', setorId)
@@ -507,20 +488,10 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       }
     })
 
-    // Round-robin: buscar último ticket recebido por cada colaborador para desempate
-    const { data: lastAssigned } = await supabase
-      .from('tickets')
-      .select('colaborador_id, criado_em')
-      .in('colaborador_id', colaboradorIds)
-      .not('colaborador_id', 'is', null)
-      .order('criado_em', { ascending: false })
-      .limit(colaboradorIds.length * 2)
-
-    const lastAssignedMap: Record<string, string> = {}
-    lastAssigned?.forEach(t => {
-      if (t.colaborador_id && !lastAssignedMap[t.colaborador_id]) {
-        lastAssignedMap[t.colaborador_id] = t.criado_em
-      }
+    // Round-robin: usar last_ticket_received_at (atualizado no momento real da atribuição)
+    const lastReceivedMap: Record<string, string> = {}
+    allColaboradores.forEach(c => {
+      lastReceivedMap[c.id] = (c as any).last_ticket_received_at || '1970-01-01'
     })
 
     // Distribute tickets respecting subsetor
@@ -538,17 +509,17 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         }
       }
 
-      // Ordenar: 1) menor qtd tickets, 2) quem recebeu há mais tempo (round-robin)
+      // Ordenar: 1) menor qtd tickets, 2) quem recebeu há mais tempo (round-robin real)
       const sorted = eligibleColaboradores
         .map(c => ({
           id: c.id,
           count: countMap[c.id] || 0,
-          lastAssignedAt: lastAssignedMap[c.id] || '1970-01-01',
+          lastReceivedAt: lastReceivedMap[c.id] || '1970-01-01',
         }))
         .filter(c => c.count < maxTicketsPerAgent)
         .sort((a, b) => {
           if (a.count !== b.count) return a.count - b.count
-          return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
+          return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
         })
 
       const bestColaborador = sorted.length > 0 ? sorted[0] : null
@@ -563,10 +534,17 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
           .eq('id', ticket.id)
 
         if (!error) {
-          // Update count map e lastAssignedMap para próximas iterações
+          // Update count map e lastReceivedMap para próximas iterações
           countMap[bestColaborador.id] = (countMap[bestColaborador.id] || 0) + 1
-          lastAssignedMap[bestColaborador.id] = new Date().toISOString()
+          const nowIso = new Date().toISOString()
+          lastReceivedMap[bestColaborador.id] = nowIso
           assignedCount++
+
+          // Atualizar last_ticket_received_at no banco para round-robin correto
+          await supabase
+            .from('colaboradores')
+            .update({ last_ticket_received_at: nowIso })
+            .eq('id', bestColaborador.id)
 
           const reason = ticket.subsetor_id
             ? `Round-robin redistribuição (subsetor: ${ticket.subsetor_id}, ${bestColaborador.count} tickets)`

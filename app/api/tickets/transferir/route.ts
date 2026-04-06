@@ -108,6 +108,12 @@ export async function POST(request: Request) {
         updateData.colaborador_id = colaborador_id
         updateData.status = 'em_atendimento'
         toColabNome = colab.nome
+
+        // Atualizar last_ticket_received_at para round-robin correto
+        await supabase
+          .from('colaboradores')
+          .update({ last_ticket_received_at: new Date().toISOString() })
+          .eq('id', colaborador_id)
       }
     } else {
       // Transferir para fila (sem atendente específico)

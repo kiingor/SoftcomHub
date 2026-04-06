@@ -84,7 +84,7 @@ async function getAvailableColaboradores(
     return (now - new Date(lh).getTime()) < HEARTBEAT_STALE_MS
   }
 
-  const freshMap = new Map<string, { id: string; nome: string }>()
+  const freshMap = new Map<string, { id: string; nome: string; lastReceivedAt: string }>()
   const allOnlineMap = new Map<string, { id: string; nome: string }>()
 
   let rawLinks: any[] = []
@@ -92,7 +92,7 @@ async function getAvailableColaboradores(
   if (subsetorId) {
     const { data, error } = await supabase
       .from('colaboradores_subsetores')
-      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
       .eq('setor_id', setorId)
       .eq('subsetor_id', subsetorId)
     rawLinks = data || []
@@ -100,7 +100,7 @@ async function getAvailableColaboradores(
   } else {
     const { data, error } = await supabase
       .from('colaboradores_setores')
-      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
       .eq('setor_id', setorId)
     rawLinks = data || []
     console.log(`[TicketQueue] colaboradores_setores: ${rawLinks.length} registros, error: ${error?.message || 'none'}`)
@@ -115,7 +115,7 @@ async function getAvailableColaboradores(
     // Está online e ativo sem pausa → candidato
     allOnlineMap.set(c.id, { id: c.id, nome: c.nome })
     if (isHeartbeatFresh(c.last_heartbeat)) {
-      freshMap.set(c.id, { id: c.id, nome: c.nome })
+      freshMap.set(c.id, { id: c.id, nome: c.nome, lastReceivedAt: c.last_ticket_received_at || '1970-01-01' })
     } else {
       console.log(`[TicketQueue] ${c.nome} online mas heartbeat stale (${c.last_heartbeat})`)
       // Heartbeat muito antigo → cleanup
@@ -158,33 +158,17 @@ async function getAvailableColaboradores(
     }
   })
 
-  // Round-robin: desempate pelo último ticket recebido (quem recebeu há mais tempo vai primeiro)
-  const { data: lastAssigned } = await supabase
-    .from('tickets')
-    .select('colaborador_id, criado_em')
-    .in('colaborador_id', eligibleIds)
-    .not('colaborador_id', 'is', null)
-    .order('criado_em', { ascending: false })
-    .limit(eligibleIds.length * 2)
-
-  const lastAssignedMap = new Map<string, string>()
-  lastAssigned?.forEach((t: any) => {
-    if (t.colaborador_id && !lastAssignedMap.has(t.colaborador_id)) {
-      lastAssignedMap.set(t.colaborador_id, t.criado_em)
-    }
-  })
-
+  // Round-robin: desempate por last_ticket_received_at (atualizado no momento real da atribuição)
   return [...colaboradoresMap.values()]
     .map(c => ({
       ...c,
       ticketCount: countMap.get(c.id) || 0,
-      lastAssignedAt: lastAssignedMap.get(c.id) || '1970-01-01',
     }))
     .sort((a, b) => {
       // 1) Menor quantidade de tickets primeiro
       if (a.ticketCount !== b.ticketCount) return a.ticketCount - b.ticketCount
       // 2) Empate: quem recebeu há MAIS tempo vai primeiro (round-robin real)
-      return a.lastAssignedAt.localeCompare(b.lastAssignedAt)
+      return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
     })
 }
 
@@ -279,6 +263,12 @@ async function tryAssignTicket(
       reason: 'Concurrent assignment detected - ticket may have been assigned by another process'
     }
   }
+
+  // Atualizar last_ticket_received_at para round-robin correto
+  await supabase
+    .from('colaboradores')
+    .update({ last_ticket_received_at: new Date().toISOString() })
+    .eq('id', selectedColaborador.id)
 
   logAssignment(
     ticketId,
