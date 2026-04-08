@@ -790,14 +790,14 @@ export default function WorkdeskPage() {
     setMeusSubsetorIds(data?.map((d: any) => d.subsetor_id) || [])
   }, [supabase])
 
-// Fetch messages for selected ticket (including client history from last 7 days)
+// Fetch messages for selected ticket (including client history from today only)
   const fetchMensagens = useCallback(
     async (ticketId: string, clienteId: string, options?: { silent?: boolean }) => {
       if (!options?.silent) setLoadingMensagens(true)
 
-      // Calculate date 30 days ago
-      const sevenDaysAgo = new Date()
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 30)
+      // Only show history from today (since midnight)
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
 
       // Resolve all cliente_ids with the same phone number (handles duplicate records)
       let allClienteIds = [clienteId]
@@ -832,7 +832,7 @@ export default function WorkdeskPage() {
         .in('cliente_id', allClienteIds)
         .neq('ticket_id', ticketId)
         .not('ticket_id', 'is', null)
-        .gte('enviado_em', sevenDaysAgo.toISOString())
+        .gte('enviado_em', todayStart.toISOString())
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
       // Query 3: Orphan messages (ticket_id IS NULL) — bot conversations before ticket creation
@@ -841,7 +841,7 @@ export default function WorkdeskPage() {
         .select('*')
         .in('cliente_id', allClienteIds)
         .is('ticket_id', null)
-        .gte('enviado_em', sevenDaysAgo.toISOString())
+        .gte('enviado_em', todayStart.toISOString())
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
       console.log('[fetchMensagens] Q1 ticketMsgs:', ticketMsgs?.length, err1 ? `ERR: ${JSON.stringify(err1)}` : 'OK')
@@ -1364,8 +1364,8 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     // Fallback polling every 10s to catch any missed messages
     const pollInterval = setInterval(async () => {
       if (!selectedTicketIdRef2) return
-      const sevenDaysAgo = new Date()
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
 
       // Resolve all cliente_ids with the same phone (handles duplicate client records)
       let pollClienteIds: string[] = selectedClienteIdRef ? [selectedClienteIdRef] : []
@@ -1401,7 +1401,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             .in('cliente_id', pollClienteIds)
             .neq('ticket_id', selectedTicketIdRef2)
             .not('ticket_id', 'is', null)
-            .gte('enviado_em', sevenDaysAgo.toISOString())
+            .gte('enviado_em', todayStart.toISOString())
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
@@ -1412,7 +1412,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             .select('*')
             .in('cliente_id', pollClienteIds)
             .is('ticket_id', null)
-            .gte('enviado_em', sevenDaysAgo.toISOString())
+            .gte('enviado_em', todayStart.toISOString())
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
