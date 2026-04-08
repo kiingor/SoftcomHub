@@ -748,24 +748,12 @@ export default function SetorPage() {
       )
       .subscribe()
 
-    const colaboradoresChannel = supabase
-      .channel('setor-colaboradores-realtime')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'colaboradores',
-        },
-        () => {
-          mutate()
-        }
-      )
-      .subscribe()
+    // Removed the unfiltered `setor-colaboradores-realtime` channel — it was a global
+    // subscription on the entire `colaboradores` table. SWR already polls this page
+    // every 5s (refreshInterval: 5000), so colaborador status updates land within 5s.
 
     return () => {
       supabase.removeChannel(ticketsChannel)
-      supabase.removeChannel(colaboradoresChannel)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setorId])

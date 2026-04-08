@@ -124,38 +124,14 @@ export function DisponibilidadePanel({
     fetchPausaAtual()
   }, [fetchLogs, fetchPausas, fetchPausaAtual])
 
-  // Real-time subscription to sync status across all sessions/browsers
+  // Cross-tab sync: the workdesk layout already subscribes to `colaboradores` UPDATE
+  // for this same id and propagates `is_online` down via the `isOnline` prop. When that
+  // prop flips (another tab/session toggled status or started/ended a pause), refetch
+  // pause state & logs. This removes the duplicate realtime channel this panel used to open.
   useEffect(() => {
-    const channel = supabase
-      .channel(`colaborador-disponibilidade-${colaboradorId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'colaboradores',
-          filter: `id=eq.${colaboradorId}`,
-        },
-        (payload) => {
-          const newData = payload.new as any
-          // Update parent component with new status
-          onStatusChange(newData.is_online)
-          // Refresh pause status
-          fetchPausaAtual()
-          fetchLogs()
-        }
-      )
-      .subscribe((status, err) => {
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.warn(`[DisponibilidadePanel] Subscription error: ${status}`, err)
-          setTimeout(() => supabase.removeChannel(channel), 5000)
-        }
-      })
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [colaboradorId, supabase, onStatusChange, fetchPausaAtual, fetchLogs])
+    fetchPausaAtual()
+    fetchLogs()
+  }, [isOnline, fetchPausaAtual, fetchLogs])
 
   // Timer for pause duration
   useEffect(() => {

@@ -1007,6 +1007,9 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     // subscription teardown/rebuild on every setColaborador call
     const colaboradorId = colaborador.id
 
+    // Server-side filter by colaborador_id reduces realtime load dramatically.
+    // Transfer-away from this colaborador (new.colaborador_id != me) is NOT delivered
+    // by this subscription — that case is covered by the existing 5s pollTickets interval.
     const channel = supabase
       .channel(`tickets-changes-${colaboradorId}`)
       .on(
@@ -1015,6 +1018,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           event: 'INSERT',
           schema: 'public',
           table: 'tickets',
+          filter: `colaborador_id=eq.${colaboradorId}`,
         },
         (payload) => {
           const newTicket = payload.new as any
@@ -1032,6 +1036,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           event: 'UPDATE',
           schema: 'public',
           table: 'tickets',
+          filter: `colaborador_id=eq.${colaboradorId}`,
         },
         (payload) => {
           const updatedTicket = payload.new as any

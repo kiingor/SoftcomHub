@@ -151,38 +151,10 @@ export default function ColaboradoresPage() {
   useEffect(() => {
     fetchData()
 
-    // Subscribe to real-time changes on is_online
-    const channel = supabase
-      .channel('colaboradores-status')
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'colaboradores',
-        },
-        (payload) => {
-          setColaboradores((current) =>
-            current.map((c) =>
-              c.id === payload.new.id
-                ? { ...c, is_online: payload.new.is_online, ativo: payload.new.ativo }
-                : c
-            )
-          )
-        }
-      )
-      .subscribe((status, err) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[Colaboradores] Realtime subscription connected')
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.warn(`[Colaboradores] Realtime subscription error: ${status}`, err)
-          setTimeout(() => supabase.removeChannel(channel), 5000)
-        }
-      })
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
+    // Admin page: polling every 30s instead of a global unfiltered realtime channel
+    // on `colaboradores` (which was broadcasting every status update to every admin).
+    const interval = setInterval(fetchData, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   function openCreateModal() {

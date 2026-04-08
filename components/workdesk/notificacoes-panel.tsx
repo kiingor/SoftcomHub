@@ -97,25 +97,18 @@ export function NotificacoesPanel({ colaboradorId, setorIds }: NotificacoesPanel
   useEffect(() => {
     if (setorIds.length === 0) return
 
-    const channel = supabase
-      .channel('notificacoes-realtime')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notificacoes',
-        },
-        async (payload) => {
-          const newNotif = payload.new as Notificacao
+    // Server-side filtering: only receive notifications for my setores OR directed to me.
+    // Uses two subscriptions on the same channel since Supabase accepts only one filter per .on().
+    const handleInsert = async (payload: any) => {
+      const newNotif = payload.new as Notificacao
 
-          // Check if this notification is for this user
-          const isForMe =
-            (newNotif.setor_id && setorIds.includes(newNotif.setor_id)) ||
-            newNotif.destinatario_id === colaboradorId
+      // Re-check client-side (filter may have widened match; also dedupe)
+      const isForMe =
+        (newNotif.setor_id && setorIds.includes(newNotif.setor_id)) ||
+        newNotif.destinatario_id === colaboradorId
 
-          // Don't show notification if I sent it
-          if (isForMe && newNotif.remetente_id !== colaboradorId) {
+      // Don't show notification if I sent it
+      if (isForMe && newNotif.remetente_id !== colaboradorId) {
             // Fetch remetente name
             const { data: remetenteData } = await supabase
               .from('colaboradores')
@@ -141,13 +134,39 @@ export function NotificacoesPanel({ colaboradorId, setorIds }: NotificacoesPanel
             fetchNotificacoes()
           }
         }
-      )
-      .subscribe((status, err) => {
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.warn(`[NotificacoesPanel] Subscription error: ${status}`, err)
-          setTimeout(() => supabase.removeChannel(channel), 5000)
-        }
-      })
+
+    const channel = supabase.channel('notificacoes-realtime')
+
+    // Filter 1: notifications sent to any of my setores
+    channel.on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'notificacoes',
+        filter: `setor_id=in.(${setorIds.join(',')})`,
+      },
+      handleInsert
+    )
+
+    // Filter 2: notifications directed specifically to me
+    channel.on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'notificacoes',
+        filter: `destinatario_id=eq.${colaboradorId}`,
+      },
+      handleInsert
+    )
+
+    channel.subscribe((status, err) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn(`[NotificacoesPanel] Subscription error: ${status}`, err)
+        setTimeout(() => supabase.removeChannel(channel), 5000)
+      }
+    })
 
     return () => {
       supabase.removeChannel(channel)
