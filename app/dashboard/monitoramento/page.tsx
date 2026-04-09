@@ -319,7 +319,7 @@ export default function MonitoramentoPage() {
         },
       }
     },
-    { revalidateOnFocus: false, refreshInterval: 5000 },
+    { revalidateOnFocus: false, refreshInterval: 30000 }, // reduzido de 5s para 30s — otimização de polling Supabase
   )
 
   const stats = data?.stats || { total: 0, naFila: 0, emAtendimento: 0, finalizados: 0, tempoMaximoFila: '00:00:00', tempoMaximoResposta: '00:00:00' }

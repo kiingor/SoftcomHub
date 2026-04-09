@@ -718,7 +718,7 @@ export default function SetorPage() {
   const { data, isLoading, mutate } = useSWR(
     setorId ? ['setor-detail', setorId] : null,
     () => fetchSetorData(setorId),
-    { revalidateOnFocus: false, refreshInterval: 5000 }
+    { revalidateOnFocus: false, refreshInterval: 30000 } // reduzido de 5s para 30s — otimização de polling Supabase
   )
 
   // Timer to update time displays every second when on monitoramento section
@@ -750,7 +750,7 @@ export default function SetorPage() {
 
     // Removed the unfiltered `setor-colaboradores-realtime` channel — it was a global
     // subscription on the entire `colaboradores` table. SWR already polls this page
-    // every 5s (refreshInterval: 5000), so colaborador status updates land within 5s.
+    // every 30s (refreshInterval: 30000), so colaborador status updates land within 30s.
 
     return () => {
       supabase.removeChannel(ticketsChannel)

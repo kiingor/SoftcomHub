@@ -1009,7 +1009,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     // Server-side filter by colaborador_id reduces realtime load dramatically.
     // Transfer-away from this colaborador (new.colaborador_id != me) is NOT delivered
-    // by this subscription — that case is covered by the existing 5s pollTickets interval.
+    // by this subscription — that case is covered by the existing 30s pollTickets interval.
     const channel = supabase
       .channel(`tickets-changes-${colaboradorId}`)
       .on(
@@ -1289,7 +1289,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     pollTickets()
 
     const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
-    const pollInterval = setInterval(pollTickets, 5000)
+    const pollInterval = setInterval(pollTickets, 30000) // reduzido de 5s para 30s — Realtime é o primário, polling é fallback
     const syncStatusInterval = setInterval(syncColaboradorStatus, 60000)
 
     // Periodically refresh Supabase auth session to prevent token expiry
@@ -1366,7 +1366,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         }
       })
 
-    // Fallback polling every 10s to catch any missed messages
+    // Fallback polling every 60s to catch any missed messages (Realtime é o primário)
     const pollInterval = setInterval(async () => {
       if (!selectedTicketIdRef2) return
       const todayStart = new Date()
@@ -1451,7 +1451,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           return [...merged, ...remainingTemps]
         })
       }
-    }, 10000)
+    }, 60000) // reduzido de 10s para 60s — Realtime é o primário para mensagens
 
     return () => {
       supabase.removeChannel(channel)
