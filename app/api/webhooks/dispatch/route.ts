@@ -85,7 +85,7 @@ export async function POST(request: Request) {
     // Fetch setor with webhook config
     const { data: setor } = await supabase
       .from('setores')
-      .select('id, nome, canal, webhook_url, webhook_eventos')
+      .select('id, nome, canal, webhook_url, webhook_eventos, phone_number_id')
       .eq('id', ticket.setor_id)
       .single()
 
@@ -170,6 +170,7 @@ export async function POST(request: Request) {
         status:     ticket.status,
         prioridade: ticket.prioridade,
         canal:      ticket.canal || setor.canal,
+        phone_number_id: setor.phone_number_id || null,
 
         setor: {
           id:   setor.id,
