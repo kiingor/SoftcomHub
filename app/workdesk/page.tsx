@@ -709,25 +709,33 @@ export default function WorkdeskPage() {
     if (data) {
       // Filter out tickets that are currently being transferred
       const filteredData = data.filter((t) => !transferringTicketIdsRef.current.has(t.id))
-      // Fetch last message for each ticket
-      const ticketsWithMessages = await Promise.all(
-        filteredData.map(async (ticket) => {
-          const { data: lastMsg } = await supabase
-            .from('mensagens')
-            .select('conteudo, enviado_em, remetente')
-            .eq('ticket_id', ticket.id)
-            .order('enviado_em', { ascending: false })
-            .limit(1)
-            .single()
-
-          return {
-            ...ticket,
-            ultima_mensagem: lastMsg?.conteudo || 'Sem mensagens',
-            ultima_mensagem_em: lastMsg?.enviado_em || ticket.criado_em,
-            ultima_mensagem_remetente: lastMsg?.remetente || null,
+      // Fetch last message for all tickets in a single batch query (evita N+1)
+      const ticketIds = filteredData.map((t) => t.id)
+      let lastMsgMap = new Map<string, { conteudo: string; enviado_em: string; remetente: string }>()
+      if (ticketIds.length > 0) {
+        const { data: allLastMsgs } = await supabase
+          .from('mensagens')
+          .select('ticket_id, conteudo, enviado_em, remetente')
+          .in('ticket_id', ticketIds)
+          .order('enviado_em', { ascending: false })
+        if (allLastMsgs) {
+          // Manter apenas a mensagem mais recente por ticket_id
+          for (const msg of allLastMsgs) {
+            if (!lastMsgMap.has(msg.ticket_id)) {
+              lastMsgMap.set(msg.ticket_id, msg)
+            }
           }
-        })
-      )
+        }
+      }
+      const ticketsWithMessages = filteredData.map((ticket) => {
+        const lastMsg = lastMsgMap.get(ticket.id)
+        return {
+          ...ticket,
+          ultima_mensagem: lastMsg?.conteudo || 'Sem mensagens',
+          ultima_mensagem_em: lastMsg?.enviado_em || ticket.criado_em,
+          ultima_mensagem_remetente: lastMsg?.remetente || null,
+        }
+      })
       // Sort by ultima_mensagem_em descending (most recent first, like WhatsApp)
       const sortedTickets = ticketsWithMessages.sort((a, b) => 
         new Date(b.ultima_mensagem_em || b.criado_em).getTime() - 
@@ -1289,7 +1297,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     pollTickets()
 
     const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
-    const pollInterval = setInterval(pollTickets, 30000) // reduzido de 5s para 30s — Realtime é o primário, polling é fallback
+    const pollInterval = setInterval(pollTickets, 120000) // 2min — fallback de segurança, Realtime é o primário
     const syncStatusInterval = setInterval(syncColaboradorStatus, 60000)
 
     // Periodically refresh Supabase auth session to prevent token expiry
@@ -1298,7 +1306,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         await supabase.auth.getUser()
       } catch { /* ignore */ }
     }
-    const sessionRefreshInterval = setInterval(refreshSession, 4 * 60 * 1000) // every 4 min
+    const sessionRefreshInterval = setInterval(refreshSession, 15 * 60 * 1000) // every 15 min — Supabase SDK renova tokens automaticamente
 
     return () => {
       clearInterval(autoAssignInterval)
@@ -1451,7 +1459,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           return [...merged, ...remainingTemps]
         })
       }
-    }, 60000) // reduzido de 10s para 60s — Realtime é o primário para mensagens
+    }, 120000) // 2min — fallback de segurança, Realtime é o primário para mensagens
 
     return () => {
       supabase.removeChannel(channel)

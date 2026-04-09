@@ -202,14 +202,14 @@ async function fetchSetorData(setorId: string) {
   // Date range for reports (last 90 days to support all filter options)
   const ninetyDaysAgo = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
-const [setorRes, ticketsAtivosRes, ticketsHojeRes, ticketsRelatorioRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes] = await Promise.all([
+// Queries de monitoramento (dados ao vivo — atualizados pelo Realtime)
+const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes] = await Promise.all([
     supabase.from('setores').select('*').eq('id', setorId).single(),
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
     // Tickets de hoje (para estatisticas)
     supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em').eq('setor_id', setorId).gte('criado_em', startOfDay),
-    // Tickets para relatorio (ultimos 90 dias, incluindo encerrados)
-    supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).gte('criado_em', ninetyDaysAgo).order('criado_em', { ascending: false }).limit(500),
+    // Relatório de 90 dias removido daqui — agora é carregado separadamente
     supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
     supabase.from('permissoes').select('*'),
@@ -220,7 +220,6 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, ticketsRelatorioRes, colabora
 
   const ticketsAtivos = ticketsAtivosRes.data || []
   const ticketsHoje = ticketsHojeRes.data || []
-  const ticketsRelatorio = ticketsRelatorioRes.data || []
   const atendentesSetor = colaboradoresRes.data || []
   // Agrupar subsetores por colaborador
   const colabSubsetoresMap: Record<string, { id: string; nome: string }[]> = {}
@@ -336,9 +335,9 @@ temposHoje: (() => {
         tempoMedioAtendimento: formatMs(tempoMedioAtend),
       }
     })(),
-// Relatorio data
-    ticketsRelatorio,
-    relatorioStats: calculateRelatorioStats(ticketsRelatorio, formatMs),
+// Relatorio data — carregado separadamente via fetchRelatorio para não sobrecarregar o Realtime
+    ticketsRelatorio: [] as any[],
+    relatorioStats: calculateRelatorioStats([], formatMs),
     // Pausas
     pausas: pausasRes.data || [],
   }
@@ -718,7 +717,24 @@ export default function SetorPage() {
   const { data, isLoading, mutate } = useSWR(
     setorId ? ['setor-detail', setorId] : null,
     () => fetchSetorData(setorId),
-    { revalidateOnFocus: false, refreshInterval: 30000 } // reduzido de 5s para 30s — otimização de polling Supabase
+    { revalidateOnFocus: false } // sem polling — Realtime com mutate() já atualiza a cada mudança de ticket
+  )
+
+  // Relatório separado: carrega uma vez e só revalida quando filtro muda (sem polling)
+  const { data: relatorioData } = useSWR(
+    setorId ? ['setor-relatorio', setorId] : null,
+    async () => {
+      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+      const { data: tickets } = await supabase
+        .from('tickets')
+        .select('*, numero, colaboradores(nome), clientes(nome, telefone)')
+        .eq('setor_id', setorId)
+        .gte('criado_em', ninetyDaysAgo)
+        .order('criado_em', { ascending: false })
+        .limit(500)
+      return tickets || []
+    },
+    { revalidateOnFocus: false } // sem polling — dados históricos, carga inicial apenas
   )
 
   // Timer to update time displays every second when on monitoramento section
@@ -764,7 +780,7 @@ export default function SetorPage() {
   const ticketsHoje = data?.ticketsHoje || { perdidos: 0, abandonados: 0, finalizados: 0, fechados: 0 }
   const temposHoje = data?.temposHoje || { tempoMedioEspera: '00:00:00', tempoMedioResposta: '00:00:00', tempoMedioPrimeiraResposta: '00:00:00', tempoMedioAtendimento: '00:00:00' }
   const tickets = data?.tickets || []
-  const ticketsRelatorioRaw = data?.ticketsRelatorio || []
+  const ticketsRelatorioRaw = relatorioData || []
 
   // Filter relatorio tickets based on dateFilter
   const ticketsRelatorio = useMemo(() => {
