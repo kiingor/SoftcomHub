@@ -324,6 +324,101 @@ function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutgoing: b
   )
 }
 
+// ─── AudioTranscriptionPlayer Component ──────────────────────────────────────
+const AudioTranscriptionPlayer = React.memo(function AudioTranscriptionPlayer({ url, mediaType, fileName, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: {
+  url: string
+  mediaType?: string | null
+  fileName: string
+  conteudo?: string
+  isOutgoing: boolean
+  mensagemId?: string
+  setorId?: string
+  setorIAAtivo?: boolean
+  onTranscricao?: (mensagemId: string, transcricao: string) => void
+}) {
+  const audioExts = ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus', 'oga', 'weba', 'webm', 'mp4', 'amr']
+  const isFileNameOnly = !conteudo || conteudo === fileName ||
+    audioExts.some(e => conteudo?.toLowerCase().endsWith(`.${e}`)) ||
+    conteudo?.startsWith('audio') || conteudo?.startsWith('PTT-')
+  const existingTranscription = !isFileNameOnly ? conteudo : null
+
+  const [transcricao, setTranscricao] = useState<string | null>(existingTranscription || null)
+  const [transcrevendo, setTranscrevendo] = useState(false)
+
+  const handleTranscrever = async () => {
+    if (!mensagemId || !setorId || transcrevendo) return
+    setTranscrevendo(true)
+    try {
+      const res = await fetch('/api/ia/transcrever-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_url: url, setor_id: setorId, mensagem_id: mensagemId }),
+      })
+      const data = await res.json()
+      if (res.ok && data.transcricao) {
+        setTranscricao(data.transcricao)
+        if (onTranscricao && mensagemId) onTranscricao(mensagemId, data.transcricao)
+      }
+    } catch (err) {
+      console.error('[AudioTranscription] Error:', err)
+    } finally {
+      setTranscrevendo(false)
+    }
+  }
+
+  return (
+    <div className="mb-2 space-y-1">
+      <div className={cn(
+        'flex items-center gap-2 rounded-xl px-3 py-2',
+        isOutgoing ? 'bg-white/15' : 'bg-muted/60'
+      )}>
+        <Music className="h-4 w-4 shrink-0 opacity-70" />
+        <audio controls className="flex-1 h-8 min-w-0" preload="metadata" style={{ height: '32px' }}>
+          <source src={url} type={mediaType || 'audio/ogg'} />
+        </audio>
+        {setorIAAtivo && !transcricao && (
+          <button
+            onClick={handleTranscrever}
+            disabled={transcrevendo}
+            className={cn(
+              'shrink-0 rounded p-1 transition-colors',
+              isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
+            )}
+            title="Transcrever áudio"
+          >
+            {transcrevendo ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FileText className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
+        <a
+          href={url}
+          download={fileName}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            'shrink-0 rounded p-1 transition-colors',
+            isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
+          )}
+          title="Baixar áudio"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </a>
+      </div>
+      {transcricao && (
+        <div className={cn(
+          'rounded-lg px-3 py-2 text-xs italic leading-relaxed',
+          isOutgoing ? 'bg-white/10 text-white/90' : 'bg-muted/40 text-muted-foreground'
+        )}>
+          {transcricao}
+        </div>
+      )}
+    </div>
+  )
+})
+
 // ─── MessageMedia Component ───────────────────────────────────────────────────
 // Renderiza mídia de mensagem baseado no media_type (MIME) com fallback no tipo
 interface MessageMediaProps {
@@ -402,7 +497,7 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, 
 
   if (isAudio) {
     return (
-      <AudioMessageWrapper
+      <AudioTranscriptionPlayer
         url={url}
         mediaType={mediaType}
         fileName={fileName}
@@ -453,103 +548,6 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, 
 }
 // ──────────────────────────────────────────────────────────────────────────────
 
-// ─── AudioMessageWrapper Component ───────────────────────────────────────────
-function AudioMessageWrapper({ url, mediaType, fileName, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: {
-  url: string
-  mediaType?: string | null
-  fileName: string
-  conteudo?: string
-  isOutgoing: boolean
-  mensagemId?: string
-  setorId?: string
-  setorIAAtivo?: boolean
-  onTranscricao?: (mensagemId: string, transcricao: string) => void
-}) {
-  // Detect if conteudo has a real transcription (not just filename)
-  const audioExts = ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus', 'oga', 'weba', 'webm', 'mp4', 'amr']
-  const isFileNameOnly = !conteudo || conteudo === fileName ||
-    audioExts.some(e => conteudo?.toLowerCase().endsWith(`.${e}`)) ||
-    conteudo?.startsWith('audio') || conteudo?.startsWith('PTT-')
-  const existingTranscription = !isFileNameOnly ? conteudo : null
-
-  const [transcricao, setTranscricao] = useState<string | null>(existingTranscription || null)
-  const [transcrevendo, setTranscrevendo] = useState(false)
-
-  const handleTranscrever = async () => {
-    if (!mensagemId || !setorId || transcrevendo) return
-    setTranscrevendo(true)
-    try {
-      const res = await fetch('/api/ia/transcrever-audio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio_url: url, setor_id: setorId, mensagem_id: mensagemId }),
-      })
-      const data = await res.json()
-      if (res.ok && data.transcricao) {
-        setTranscricao(data.transcricao)
-        if (onTranscricao && mensagemId) onTranscricao(mensagemId, data.transcricao)
-      } else {
-        console.warn('[AudioMessage] Transcription error:', data.error)
-      }
-    } catch (err) {
-      console.error('[AudioMessage] Fetch error:', err)
-    } finally {
-      setTranscrevendo(false)
-    }
-  }
-
-  return (
-    <div className="mb-2 space-y-1">
-      <div className={cn(
-        'flex items-center gap-2 rounded-xl px-3 py-2',
-        isOutgoing ? 'bg-white/15' : 'bg-muted/60'
-      )}>
-        <Music className="h-4 w-4 shrink-0 opacity-70" />
-        <audio controls className="flex-1 h-8 min-w-0" preload="metadata" style={{ height: '32px' }}>
-          <source src={url} type={mediaType || 'audio/ogg'} />
-        </audio>
-        {setorIAAtivo && !transcricao && (
-          <button
-            onClick={handleTranscrever}
-            disabled={transcrevendo}
-            className={cn(
-              'shrink-0 rounded p-1 transition-colors',
-              isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
-            )}
-            title="Transcrever áudio"
-          >
-            {transcrevendo ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <FileText className="h-3.5 w-3.5" />
-            )}
-          </button>
-        )}
-        <a
-          href={url}
-          download={fileName}
-          target="_blank"
-          rel="noreferrer"
-          className={cn(
-            'shrink-0 rounded p-1 transition-colors',
-            isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
-          )}
-          title="Baixar áudio"
-        >
-          <Download className="h-3.5 w-3.5" />
-        </a>
-      </div>
-      {transcricao && (
-        <div className={cn(
-          'rounded-lg px-3 py-2 text-xs italic leading-relaxed',
-          isOutgoing ? 'bg-white/10 text-white/90' : 'bg-muted/40 text-muted-foreground'
-        )}>
-          {transcricao}
-        </div>
-      )}
-    </div>
-  )
-}
 
 // Disparo Timer Component
 function renderTextWithLinks(text: string, isOutgoing: boolean) {
