@@ -654,6 +654,12 @@ export default function WorkdeskPage() {
     return !!(atendente?.is_online && atendente?.ativo)
   }, [])
 
+  // Message input
+  const [messageInput, setMessageInput] = useState('')
+  const [melhorandoIA, setMelhorandoIA] = useState(false)
+  const [setorIAAtivo, setSetorIAAtivo] = useState(false)
+  const [setorAssinaturaAtiva, setSetorAssinaturaAtiva] = useState(false)
+
   // Melhorar mensagem com IA
   const handleMelhorarIA = useCallback(async () => {
     if (!messageInput.trim() || !selectedTicket?.setor_id || melhorandoIA) return
@@ -676,11 +682,6 @@ export default function WorkdeskPage() {
       setMelhorandoIA(false)
     }
   }, [messageInput, selectedTicket?.setor_id, melhorandoIA])
-  
-  // Message input
-  const [messageInput, setMessageInput] = useState('')
-  const [melhorandoIA, setMelhorandoIA] = useState(false)
-  const [setorIAAtivo, setSetorIAAtivo] = useState(false)
   const [pendingMessages, setPendingMessages] = useState<Map<string, 'sending' | 'sent' | 'error'>>(new Map())
   
   // File upload (images and PDFs)
@@ -1706,8 +1707,11 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (ticket.setor_id) {
       fetchTemplates(ticket.setor_id)
       // Check if setor has OpenAI enabled
-      supabase.from('setores').select('openai_ativo').eq('id', ticket.setor_id).single()
-        .then(({ data }) => setSetorIAAtivo(data?.openai_ativo || false))
+      supabase.from('setores').select('openai_ativo, assinatura_ativa').eq('id', ticket.setor_id).single()
+        .then(({ data }) => {
+          setSetorIAAtivo(data?.openai_ativo || false)
+          setSetorAssinaturaAtiva(data?.assinatura_ativa || false)
+        })
     }
     // Clear unread count for this ticket
     setUnreadCounts((prev) => {
@@ -2614,7 +2618,11 @@ const insertEmoji = (emoji: string) => {
     const capturedTicket = selectedTicket
     
 const tempId = `temp-${Date.now()}`
-    const messageContent = messageInput.trim()
+    const rawMessage = messageInput.trim()
+    // Aplicar assinatura se ativa no setor e houver texto
+    const messageContent = (setorAssinaturaAtiva && rawMessage && colaborador?.nome)
+      ? `*${colaborador.nome}:*\n\n${rawMessage}`
+      : rawMessage
     const fileToUpload = selectedFile
     const hasFile = !!fileToUpload
   const isImage = fileToUpload?.type.startsWith('image/')
@@ -3541,13 +3549,13 @@ const tempId = `temp-${Date.now()}`
                         </Button>
                       )}
                       <div className="relative flex-1">
-                  <Input
+                  <textarea
                   value={messageInput}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
                   onPaste={handlePaste}
                   placeholder={(selectedTicket?.is_disparo && isDisparoLocked(selectedTicket)) ? 'Aguardando resposta do cliente...' : isWindowExpired ? 'Janela expirada - Encerre o ticket' : 'Digite / para atalhos...'}
-                  className="w-full"
+                  className="w-full resize-none overflow-hidden rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                   autoComplete="off"
                   autoCorrect="off"
@@ -3557,6 +3565,9 @@ const tempId = `temp-${Date.now()}`
                   data-gramm_editor="false"
                   data-enable-grammarly="false"
                   data-ms-editor="false"
+                  rows={1}
+                  style={{ minHeight: '36px', maxHeight: '120px' }}
+                  onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }}
                   />
                       </div>
                       <Button
@@ -4072,13 +4083,13 @@ onClick={() => {
                       >
                         <ImageIcon className="h-5 w-5 text-muted-foreground" />
                       </Button>
-                  <Input
+                  <textarea
                   value={messageInput}
                   onChange={(e) => setMessageInput(e.target.value)}
                   onKeyDown={handleKeyPress}
                   onPaste={handlePaste}
                   placeholder="Mensagem..."
-                  className="flex-1"
+                  className="flex-1 resize-none overflow-hidden rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="off"
@@ -4087,6 +4098,9 @@ onClick={() => {
                   data-gramm_editor="false"
                   data-enable-grammarly="false"
                   data-ms-editor="false"
+                  rows={1}
+                  style={{ minHeight: '36px', maxHeight: '120px' }}
+                  onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }}
                   />
                       <Button
                         size="icon"

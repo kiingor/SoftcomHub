@@ -523,6 +523,7 @@ export default function SetorPage() {
   setor_receptor_id: '' as string,
   openai_api_key: '',
   openai_ativo: false,
+  assinatura_ativa: false,
   })
 
 // Templates state
@@ -723,21 +724,23 @@ export default function SetorPage() {
     { revalidateOnFocus: false } // sem polling — Realtime com mutate() já atualiza a cada mudança de ticket
   )
 
-  // Relatório separado: carrega uma vez e só revalida quando filtro muda (sem polling)
+  // Relatório separado: recarrega quando filtro de data muda (server-side filtering)
+  const { from: dateFrom, to: dateTo } = getDateCutoffs(dateFilter, customRange)
   const { data: relatorioData } = useSWR(
-    setorId ? ['setor-relatorio', setorId] : null,
+    setorId ? ['setor-relatorio', setorId, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()] : null,
     async () => {
-      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
-      const { data: tickets } = await supabase
+      let query = supabase
         .from('tickets')
-        .select('*, numero, colaboradores(nome), clientes(nome, telefone)')
+        .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ)')
         .eq('setor_id', setorId)
-        .gte('criado_em', ninetyDaysAgo)
         .order('criado_em', { ascending: false })
-        .limit(500)
+        .limit(1000)
+      if (dateFrom) query = query.gte('criado_em', dateFrom)
+      if (dateTo) query = query.lte('criado_em', dateTo)
+      const { data: tickets } = await query
       return tickets || []
     },
-    { revalidateOnFocus: false } // sem polling — dados históricos, carga inicial apenas
+    { revalidateOnFocus: false }
   )
 
   // Timer to update time displays every second when on monitoramento section
@@ -785,18 +788,25 @@ export default function SetorPage() {
   const tickets = data?.tickets || []
   const ticketsRelatorioRaw = relatorioData || []
 
-  // Filter relatorio tickets based on dateFilter
+  // Busca por cliente (telefone/CNPJ/nome) — filtro client-side
+  const [searchCliente, setSearchCliente] = useState('')
   const ticketsRelatorio = useMemo(() => {
-    const { from, to } = getDateCutoffs(dateFilter, customRange)
-    if (!from) return ticketsRelatorioRaw
-
+    if (!searchCliente.trim()) return ticketsRelatorioRaw
+    const term = searchCliente.trim().toLowerCase()
+    // Normalizar telefone: remover +55, 55 do início para busca parcial
+    const termPhone = term.replace(/\D/g, '')
     return ticketsRelatorioRaw.filter((t: any) => {
-      const d = new Date(t.criado_em)
-      if (d < new Date(from)) return false
-      if (to && d > new Date(to)) return false
-      return true
+      const nome = (t.clientes?.nome || '').toLowerCase()
+      const cnpj = (t.clientes?.CNPJ || '').replace(/\D/g, '')
+      const telefone = (t.clientes?.telefone || '').replace(/\D/g, '')
+      // Normalizar: remover 55 do início do telefone do banco
+      const telefoneNorm = telefone.startsWith('55') ? telefone.slice(2) : telefone
+      if (nome.includes(term)) return true
+      if (termPhone && telefoneNorm.includes(termPhone)) return true
+      if (termPhone && cnpj.includes(termPhone)) return true
+      return false
     })
-  }, [ticketsRelatorioRaw, dateFilter, customRange])
+  }, [ticketsRelatorioRaw, searchCliente])
 
   // Recalculate stats from filtered tickets
   const relatorioStats = useMemo(() => {
@@ -857,6 +867,7 @@ export default function SetorPage() {
         setor_receptor_id: setor.setor_receptor_id || '',
         openai_api_key: setor.openai_api_key || '',
         openai_ativo: setor.openai_ativo || false,
+        assinatura_ativa: setor.assinatura_ativa || false,
       })
       fetchTemplates()
       fetchCanais()
@@ -1221,6 +1232,7 @@ const saveConfig = async () => {
   setor_receptor_id: configForm.setor_receptor_id || null,
   openai_api_key: configForm.openai_api_key || null,
   openai_ativo: configForm.openai_ativo || false,
+  assinatura_ativa: configForm.assinatura_ativa || false,
   })
         .eq('id', setorId)
 
@@ -2239,24 +2251,60 @@ const saveConfig = async () => {
     }
   }
 
-  // Open conversation slide-out
+  // Open conversation slide-out — inclui histórico pré-ticket (bot/orphans)
   const openConversation = async (ticket: any) => {
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)
-    
+
     try {
-      const { data: messages, error } = await supabase
+      // Query 1: Mensagens do ticket
+      const { data: ticketMsgs } = await supabase
         .from('mensagens')
         .select('*')
         .eq('ticket_id', ticket.id)
         .order('enviado_em', { ascending: true })
-      
-      if (error) {
-        toast.error('Erro ao carregar mensagens')
-      } else {
-        setConversationMessages(messages || [])
+
+      // Query 2: Mensagens órfãs do cliente (bot) nas 24h antes do ticket
+      let preTicketMsgs: any[] = []
+      const clienteTelefone = ticket.clientes?.telefone
+      if (clienteTelefone) {
+        // Buscar todos cliente_ids com mesmo telefone (handles duplicates)
+        const { data: allClientes } = await supabase
+          .from('clientes')
+          .select('id')
+          .eq('telefone', clienteTelefone)
+        const clienteIds = allClientes?.map((c: any) => c.id) || [ticket.cliente_id].filter(Boolean)
+
+        if (clienteIds.length > 0 && ticket.criado_em) {
+          const before24h = new Date(new Date(ticket.criado_em).getTime() - 24 * 60 * 60 * 1000).toISOString()
+          const { data: orphanMsgs } = await supabase
+            .from('mensagens')
+            .select('*')
+            .in('cliente_id', clienteIds)
+            .is('ticket_id', null)
+            .gte('enviado_em', before24h)
+            .lt('enviado_em', ticket.criado_em)
+            .order('enviado_em', { ascending: true })
+          preTicketMsgs = orphanMsgs || []
+        }
       }
+
+      // Merge e deduplicar
+      const allMsgs = [...preTicketMsgs, ...(ticketMsgs || [])]
+      const seen = new Set<string>()
+      const deduped = allMsgs.filter(m => {
+        if (seen.has(m.id)) return false
+        seen.add(m.id)
+        return true
+      })
+
+      // Marcar onde começa o ticket para separador visual
+      if (preTicketMsgs.length > 0 && ticketMsgs && ticketMsgs.length > 0) {
+        ticketMsgs[0]._ticketStart = true
+      }
+
+      setConversationMessages(deduped)
     } catch (error) {
       toast.error('Erro ao carregar mensagens')
     } finally {
@@ -3271,10 +3319,21 @@ const saveConfig = async () => {
             {/* Últimos atendimentos */}
             <Card className="glass-card-elevated rounded-2xl border-0">
               <CardHeader className="pb-2">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <MessageCircle className="h-4 w-4" />
-                  Últimos atendimentos
-                </CardTitle>
+                <div className="flex items-center justify-between gap-4">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <MessageCircle className="h-4 w-4" />
+                    Últimos atendimentos
+                  </CardTitle>
+                  <div className="relative w-72">
+                    <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      placeholder="Buscar por nome, telefone ou CNPJ..."
+                      value={searchCliente}
+                      onChange={(e) => setSearchCliente(e.target.value)}
+                      className="pl-8 h-8 text-xs"
+                    />
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="px-4 pb-4 pt-2">
                 {ticketsRelatorio.length === 0 ? (
@@ -4439,6 +4498,32 @@ const saveConfig = async () => {
                 <p className="text-xs text-muted-foreground">A chave será usada para chamar a OpenAI ao melhorar mensagens. Modelo utilizado: GPT-4o mini.</p>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Assinatura do Atendente */}
+        <Card className="glass-card-elevated rounded-2xl border-0">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Pencil className="h-5 w-5" />
+              Assinatura do Atendente
+            </CardTitle>
+            <CardDescription>Adiciona o nome do atendente automaticamente antes de cada mensagem enviada</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Ativar assinatura</p>
+                <p className="text-xs text-muted-foreground">Exemplo: <span className="font-semibold">*Filipe Cardone:*</span> seguido da mensagem</p>
+              </div>
+              <Switch
+                checked={configForm.assinatura_ativa}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, assinatura_ativa: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -5715,7 +5800,34 @@ const saveConfig = async () => {
                       </div>
                     ) : (
                       conversationMessages.map((msg: any) => (
-                        msg.remetente === 'sistema' ? (
+                        msg._ticketStart ? (
+                          <React.Fragment key={`sep-${msg.id}`}>
+                            <div className="flex items-center gap-3 py-2">
+                              <div className="flex-1 border-t border-dashed border-primary/30" />
+                              <span className="text-[10px] font-medium text-primary/70 whitespace-nowrap">Início do Ticket #{selectedTicket?.numero}</span>
+                              <div className="flex-1 border-t border-dashed border-primary/30" />
+                            </div>
+                            <div
+                              key={msg.id}
+                              className={cn(
+                                "flex",
+                                msg.remetente === 'cliente' ? "justify-start" : "justify-end"
+                              )}
+                            >
+                              <div className={cn(
+                                "max-w-[85%] rounded-lg px-3 py-2",
+                                msg.remetente === 'cliente'
+                                  ? "bg-muted text-foreground rounded-bl-none"
+                                  : "bg-primary text-primary-foreground rounded-br-none"
+                              )}>
+                                <p className="text-xs whitespace-pre-wrap">{msg.conteudo}</p>
+                                <p className="text-[10px] mt-1 opacity-60 text-right">
+                                  {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                </p>
+                              </div>
+                            </div>
+                          </React.Fragment>
+                        ) : msg.remetente === 'sistema' ? (
                           <div key={msg.id} className="flex justify-center">
                             <div className={cn(
                               "flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[11px] max-w-[90%]",
