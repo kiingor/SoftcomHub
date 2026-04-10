@@ -324,19 +324,154 @@ function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutgoing: b
   )
 }
 
-// ─── AudioMessage Component ──────────────────────────────────────────────────
-// Renderiza áudio com botão de transcrição IA e exibição do texto transcrito
-function AudioMessage({ url, mediaType, fileName, isOutgoing, existingTranscription, mensagemId, setorId, setorIAAtivo, onTranscricao }: {
+// ─── MessageMedia Component ───────────────────────────────────────────────────
+// Renderiza mídia de mensagem baseado no media_type (MIME) com fallback no tipo
+interface MessageMediaProps {
+  url: string
+  mediaType?: string | null
+  tipo?: string
+  conteudo?: string
+  isOutgoing: boolean
+  mensagemId?: string
+  setorId?: string
+  setorIAAtivo?: boolean
+  onTranscricao?: (mensagemId: string, transcricao: string) => void
+}
+
+// Retorna ícone, label e cores para cada tipo de arquivo
+function getFileInfo(ext: string, mediaType?: string | null) {
+  const e = ext.toLowerCase()
+  if (e === 'pdf' || mediaType === 'application/pdf')
+    return { icon: FileText, label: 'PDF', color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-950/30', border: 'border-red-200 dark:border-red-800' }
+  if (['doc', 'docx'].includes(e) || mediaType?.includes('word'))
+    return { icon: FileText, label: 'Word', color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-950/30', border: 'border-blue-200 dark:border-blue-800' }
+  if (['xls', 'xlsx', 'csv'].includes(e) || mediaType?.includes('spreadsheet') || mediaType?.includes('excel'))
+    return { icon: FileSpreadsheet, label: 'Planilha', color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-950/30', border: 'border-green-200 dark:border-green-800' }
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(e))
+    return { icon: FileArchive, label: e.toUpperCase(), color: 'text-orange-500', bg: 'bg-orange-50 dark:bg-orange-950/30', border: 'border-orange-200 dark:border-orange-800' }
+  if (['xml', 'json', 'html', 'htm', 'css', 'js', 'ts', 'txt', 'csv'].includes(e) || mediaType?.startsWith('text/'))
+    return { icon: FileCode, label: e.toUpperCase() || 'Texto', color: 'text-purple-600', bg: 'bg-purple-50 dark:bg-purple-950/30', border: 'border-purple-200 dark:border-purple-800' }
+  if (['cer', 'crt', 'pem', 'p12', 'pfx', 'key'].includes(e))
+    return { icon: ShieldCheck, label: 'Certificado', color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-800' }
+  return { icon: FileIcon, label: e.toUpperCase() || 'Arquivo', color: 'text-muted-foreground', bg: 'bg-muted/50', border: 'border-border' }
+}
+
+function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: MessageMediaProps) {
+  const urlLower = url.toLowerCase().split('?')[0]
+  const ext = urlLower.split('.').pop() || ''
+
+  // Determina o tipo real pela ordem: media_type MIME > tipo do banco > extensão da URL
+  const isImage = mediaType?.startsWith('image/') || (tipo === 'imagem' && !mediaType)
+    || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)
+  const isVideo = mediaType?.startsWith('video/') || tipo === 'video'
+    || ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)
+  const isAudio = mediaType?.startsWith('audio/') || tipo === 'audio'
+    || ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus'].includes(ext)
+
+  const fileName = conteudo || url.split('/').pop()?.split('?')[0] || 'arquivo'
+
+  if (isVideo) {
+    return (
+      <div className="mb-2 space-y-1.5">
+        <video
+          controls
+          className="max-w-full rounded-lg max-h-64 w-full bg-black"
+          preload="metadata"
+        >
+          <source src={url} type={mediaType || 'video/mp4'} />
+          Seu navegador não suporta vídeo.
+        </video>
+        <a
+          href={url}
+          download={fileName}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            'inline-flex items-center gap-1.5 text-[11px] rounded-md px-2 py-1 transition-colors',
+            isOutgoing
+              ? 'bg-white/20 hover:bg-white/30 text-white'
+              : 'bg-muted hover:bg-muted/80 text-foreground'
+          )}
+        >
+          <Download className="h-3 w-3" />
+          Baixar vídeo
+        </a>
+      </div>
+    )
+  }
+
+  if (isAudio) {
+    return (
+      <AudioMessageWrapper
+        url={url}
+        mediaType={mediaType}
+        fileName={fileName}
+        conteudo={conteudo}
+        isOutgoing={isOutgoing}
+        mensagemId={mensagemId}
+        setorId={setorId}
+        setorIAAtivo={setorIAAtivo}
+        onTranscricao={onTranscricao}
+      />
+    )
+  }
+
+  if (isImage) {
+    return (
+      <div className="mb-2">
+        <img
+          src={url}
+          alt="Imagem"
+          className="max-w-full rounded-lg max-h-64 object-contain cursor-pointer hover:opacity-90 transition-opacity"
+          onClick={() => window.open(url, '_blank')}
+        />
+      </div>
+    )
+  }
+
+  // Qualquer outro arquivo com URL → card de download
+  const { icon: Icon, label, color, bg, border } = getFileInfo(ext, mediaType)
+  return (
+    <a
+      href={url}
+      download={fileName}
+      target="_blank"
+      rel="noreferrer"
+      className={cn(
+        'mb-2 flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors hover:opacity-80',
+        bg, border
+      )}
+    >
+      <Icon className={cn('h-6 w-6 shrink-0', color)} />
+      <div className="flex flex-col min-w-0 flex-1">
+        <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
+        <span className="text-[10px] text-muted-foreground">{label} · Clique para baixar</span>
+      </div>
+      <Download className="h-4 w-4 text-muted-foreground shrink-0" />
+    </a>
+  )
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ─── AudioMessageWrapper Component ───────────────────────────────────────────
+function AudioMessageWrapper({ url, mediaType, fileName, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: {
   url: string
   mediaType?: string | null
   fileName: string
+  conteudo?: string
   isOutgoing: boolean
-  existingTranscription?: string
   mensagemId?: string
   setorId?: string
   setorIAAtivo?: boolean
   onTranscricao?: (mensagemId: string, transcricao: string) => void
 }) {
+  // Detect if conteudo has a real transcription (not just filename)
+  const audioExts = ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus', 'oga', 'weba', 'webm', 'mp4', 'amr']
+  const isFileNameOnly = !conteudo || conteudo === fileName ||
+    audioExts.some(e => conteudo?.toLowerCase().endsWith(`.${e}`)) ||
+    conteudo?.startsWith('audio') || conteudo?.startsWith('PTT-')
+  const existingTranscription = !isFileNameOnly ? conteudo : null
+
   const [transcricao, setTranscricao] = useState<string | null>(existingTranscription || null)
   const [transcrevendo, setTranscrevendo] = useState(false)
 
@@ -415,142 +550,6 @@ function AudioMessage({ url, mediaType, fileName, isOutgoing, existingTranscript
     </div>
   )
 }
-
-// ─── MessageMedia Component ───────────────────────────────────────────────────
-// Renderiza mídia de mensagem baseado no media_type (MIME) com fallback no tipo
-interface MessageMediaProps {
-  url: string
-  mediaType?: string | null
-  tipo?: string
-  conteudo?: string
-  isOutgoing: boolean
-  mensagemId?: string
-  setorId?: string
-  setorIAAtivo?: boolean
-  onTranscricao?: (mensagemId: string, transcricao: string) => void
-}
-
-// Retorna ícone, label e cores para cada tipo de arquivo
-function getFileInfo(ext: string, mediaType?: string | null) {
-  const e = ext.toLowerCase()
-  if (e === 'pdf' || mediaType === 'application/pdf')
-    return { icon: FileText, label: 'PDF', color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-950/30', border: 'border-red-200 dark:border-red-800' }
-  if (['doc', 'docx'].includes(e) || mediaType?.includes('word'))
-    return { icon: FileText, label: 'Word', color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-950/30', border: 'border-blue-200 dark:border-blue-800' }
-  if (['xls', 'xlsx', 'csv'].includes(e) || mediaType?.includes('spreadsheet') || mediaType?.includes('excel'))
-    return { icon: FileSpreadsheet, label: 'Planilha', color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-950/30', border: 'border-green-200 dark:border-green-800' }
-  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(e))
-    return { icon: FileArchive, label: e.toUpperCase(), color: 'text-orange-500', bg: 'bg-orange-50 dark:bg-orange-950/30', border: 'border-orange-200 dark:border-orange-800' }
-  if (['xml', 'json', 'html', 'htm', 'css', 'js', 'ts', 'txt', 'csv'].includes(e) || mediaType?.startsWith('text/'))
-    return { icon: FileCode, label: e.toUpperCase() || 'Texto', color: 'text-purple-600', bg: 'bg-purple-50 dark:bg-purple-950/30', border: 'border-purple-200 dark:border-purple-800' }
-  if (['cer', 'crt', 'pem', 'p12', 'pfx', 'key'].includes(e))
-    return { icon: ShieldCheck, label: 'Certificado', color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-800' }
-  return { icon: FileIcon, label: e.toUpperCase() || 'Arquivo', color: 'text-muted-foreground', bg: 'bg-muted/50', border: 'border-border' }
-}
-
-function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: MessageMediaProps) {
-  const urlLower = url.toLowerCase().split('?')[0]
-  const ext = urlLower.split('.').pop() || ''
-
-  // Determina o tipo real pela ordem: media_type MIME > tipo do banco > extensão da URL
-  const isImage = mediaType?.startsWith('image/') || (tipo === 'imagem' && !mediaType)
-    || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)
-  const isVideo = mediaType?.startsWith('video/') || tipo === 'video'
-    || ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)
-  const isAudio = mediaType?.startsWith('audio/') || tipo === 'audio'
-    || ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus'].includes(ext)
-
-  const fileName = conteudo || url.split('/').pop()?.split('?')[0] || 'arquivo'
-
-  if (isVideo) {
-    return (
-      <div className="mb-2 space-y-1.5">
-        <video
-          controls
-          className="max-w-full rounded-lg max-h-64 w-full bg-black"
-          preload="metadata"
-        >
-          <source src={url} type={mediaType || 'video/mp4'} />
-          Seu navegador não suporta vídeo.
-        </video>
-        <a
-          href={url}
-          download={fileName}
-          target="_blank"
-          rel="noreferrer"
-          className={cn(
-            'inline-flex items-center gap-1.5 text-[11px] rounded-md px-2 py-1 transition-colors',
-            isOutgoing
-              ? 'bg-white/20 hover:bg-white/30 text-white'
-              : 'bg-muted hover:bg-muted/80 text-foreground'
-          )}
-        >
-          <Download className="h-3 w-3" />
-          Baixar vídeo
-        </a>
-      </div>
-    )
-  }
-
-  if (isAudio) {
-    // Detect if conteudo has a real transcription (not just filename)
-    const audioExts = ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus', 'oga', 'weba', 'webm', 'mp4', 'amr']
-    const isFileNameOnly = !conteudo || conteudo === fileName ||
-      audioExts.some(e => conteudo?.toLowerCase().endsWith(`.${e}`)) ||
-      conteudo?.startsWith('audio') || conteudo?.startsWith('PTT-')
-    const existingTranscription = !isFileNameOnly ? conteudo : null
-
-    return (
-      <AudioMessage
-        url={url}
-        mediaType={mediaType}
-        fileName={fileName}
-        isOutgoing={isOutgoing}
-        existingTranscription={existingTranscription || undefined}
-        mensagemId={mensagemId}
-        setorId={setorId}
-        setorIAAtivo={setorIAAtivo}
-        onTranscricao={onTranscricao}
-      />
-    )
-  }
-
-  if (isImage) {
-    return (
-      <div className="mb-2">
-        <img
-          src={url}
-          alt="Imagem"
-          className="max-w-full rounded-lg max-h-64 object-contain cursor-pointer hover:opacity-90 transition-opacity"
-          onClick={() => window.open(url, '_blank')}
-        />
-      </div>
-    )
-  }
-
-  // Qualquer outro arquivo com URL → card de download
-  const { icon: Icon, label, color, bg, border } = getFileInfo(ext, mediaType)
-  return (
-    <a
-      href={url}
-      download={fileName}
-      target="_blank"
-      rel="noreferrer"
-      className={cn(
-        'mb-2 flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors hover:opacity-80',
-        bg, border
-      )}
-    >
-      <Icon className={cn('h-6 w-6 shrink-0', color)} />
-      <div className="flex flex-col min-w-0 flex-1">
-        <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
-        <span className="text-[10px] text-muted-foreground">{label} · Clique para baixar</span>
-      </div>
-      <Download className="h-4 w-4 text-muted-foreground shrink-0" />
-    </a>
-  )
-}
-// ──────────────────────────────────────────────────────────────────────────────
 
 // Disparo Timer Component
 function renderTextWithLinks(text: string, isOutgoing: boolean) {
