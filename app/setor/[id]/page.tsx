@@ -10,7 +10,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useColaborador } from '@/lib/hooks/use-data'
 import { DateRange } from 'react-day-picker'
 import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -121,6 +121,7 @@ import {
   MoreHorizontal,
   CircleOff,
   CircleCheck,
+  Sparkles,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
@@ -520,6 +521,8 @@ export default function SetorPage() {
   is_receptor: false,
   transmissao_ativa: false,
   setor_receptor_id: '' as string,
+  openai_api_key: '',
+  openai_ativo: false,
   })
 
 // Templates state
@@ -852,6 +855,8 @@ export default function SetorPage() {
         is_receptor: setor.is_receptor || false,
         transmissao_ativa: setor.transmissao_ativa || false,
         setor_receptor_id: setor.setor_receptor_id || '',
+        openai_api_key: setor.openai_api_key || '',
+        openai_ativo: setor.openai_ativo || false,
       })
       fetchTemplates()
       fetchCanais()
@@ -1214,6 +1219,8 @@ const saveConfig = async () => {
   is_receptor: configForm.is_receptor,
   transmissao_ativa: configForm.transmissao_ativa,
   setor_receptor_id: configForm.setor_receptor_id || null,
+  openai_api_key: configForm.openai_api_key || null,
+  openai_ativo: configForm.openai_ativo || false,
   })
         .eq('id', setorId)
 
@@ -4388,6 +4395,48 @@ const saveConfig = async () => {
                     ))}
                   </TableBody>
                 </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* IA - Melhorar Mensagem */}
+        <Card className="glass-card-elevated rounded-2xl border-0">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5" />
+              Inteligência Artificial
+            </CardTitle>
+            <CardDescription>Configure a IA para melhorar mensagens dos atendentes</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Ativar Melhoria com IA</p>
+                <p className="text-xs text-muted-foreground">Permite que atendentes melhorem mensagens antes de enviar</p>
+              </div>
+              <Switch
+                checked={configForm.openai_ativo}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, openai_ativo: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
+            {configForm.openai_ativo && (
+              <div className="space-y-2">
+                <Label htmlFor="openai_api_key">Chave da API OpenAI</Label>
+                <Input
+                  id="openai_api_key"
+                  type="password"
+                  placeholder="sk-..."
+                  value={configForm.openai_api_key}
+                  onChange={(e) => {
+                    setConfigForm((prev) => ({ ...prev, openai_api_key: e.target.value }))
+                    setHasUnsavedConfig(true)
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">A chave será usada para chamar a OpenAI ao melhorar mensagens. Modelo utilizado: GPT-4o mini.</p>
               </div>
             )}
           </CardContent>

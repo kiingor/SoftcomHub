@@ -54,6 +54,7 @@ import {
   ShieldCheck,
   Pencil,
   Save,
+  Sparkles,
 } from 'lucide-react'
 import {
   Dialog,
@@ -563,9 +564,34 @@ export default function WorkdeskPage() {
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
     return !!(atendente?.is_online && atendente?.ativo)
   }, [])
+
+  // Melhorar mensagem com IA
+  const handleMelhorarIA = useCallback(async () => {
+    if (!messageInput.trim() || !selectedTicket?.setor_id || melhorandoIA) return
+    setMelhorandoIA(true)
+    try {
+      const res = await fetch('/api/ia/melhorar-mensagem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mensagem: messageInput, setor_id: selectedTicket.setor_id }),
+      })
+      const data = await res.json()
+      if (res.ok && data.mensagem_melhorada) {
+        setMessageInput(data.mensagem_melhorada)
+      } else {
+        console.warn('[WorkDesk] IA error:', data.error)
+      }
+    } catch (err) {
+      console.error('[WorkDesk] IA fetch error:', err)
+    } finally {
+      setMelhorandoIA(false)
+    }
+  }, [messageInput, selectedTicket?.setor_id, melhorandoIA])
   
   // Message input
   const [messageInput, setMessageInput] = useState('')
+  const [melhorandoIA, setMelhorandoIA] = useState(false)
+  const [setorIAAtivo, setSetorIAAtivo] = useState(false)
   const [pendingMessages, setPendingMessages] = useState<Map<string, 'sending' | 'sent' | 'error'>>(new Map())
   
   // File upload (images and PDFs)
@@ -1590,6 +1616,9 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     // Fetch templates for this setor
     if (ticket.setor_id) {
       fetchTemplates(ticket.setor_id)
+      // Check if setor has OpenAI enabled
+      supabase.from('setores').select('openai_ativo').eq('id', ticket.setor_id).single()
+        .then(({ data }) => setSetorIAAtivo(data?.openai_ativo || false))
     }
     // Clear unread count for this ticket
     setUnreadCounts((prev) => {
@@ -3400,6 +3429,22 @@ const tempId = `temp-${Date.now()}`
                       >
                         <ImageIcon className="h-5 w-5 text-muted-foreground" />
                       </Button>
+                      {setorIAAtivo && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={handleMelhorarIA}
+                          disabled={!messageInput.trim() || melhorandoIA || isWindowExpired}
+                          className="shrink-0"
+                          title="Melhorar com IA"
+                        >
+                          {melhorandoIA ? (
+                            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                          ) : (
+                            <Sparkles className="h-5 w-5 text-primary" />
+                          )}
+                        </Button>
+                      )}
                       <div className="relative flex-1">
                   <Input
                   value={messageInput}
