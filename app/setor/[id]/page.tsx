@@ -380,6 +380,18 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
     }
   }
 
+  // NPS calculation
+  const ticketsComAvaliacao = tickets.filter((t) => t.avaliacoes?.[0]?.nota != null)
+  const totalAvaliacoes = ticketsComAvaliacao.length
+  const mediaNotas = totalAvaliacoes > 0
+    ? ticketsComAvaliacao.reduce((acc, t) => acc + t.avaliacoes[0].nota, 0) / totalAvaliacoes
+    : 0
+  const promotores = ticketsComAvaliacao.filter((t) => t.avaliacoes[0].nota >= 9).length
+  const detratores = ticketsComAvaliacao.filter((t) => t.avaliacoes[0].nota <= 6).length
+  const npsScore = totalAvaliacoes > 0
+    ? Math.round(((promotores - detratores) / totalAvaliacoes) * 100)
+    : 0
+
   return {
     totalRecebidos: tickets.length,
     totalResolvidos: ticketsEncerrados.length,
@@ -387,6 +399,9 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
     tempoMedioResolucao: formatMs(tempoMedioResolucao),
     ticketsPorAtendente: Object.values(ticketsPorAtendente).sort((a, b) => b.count - a.count),
     taxaResolucao: tickets.length > 0 ? Math.round((ticketsEncerrados.length / tickets.length) * 100) : 0,
+    npsScore,
+    totalAvaliacoes,
+    mediaNotas,
   }
 }
 
@@ -731,7 +746,7 @@ export default function SetorPage() {
     async () => {
       let query = supabase
         .from('tickets')
-        .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ)')
+        .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ), avaliacoes(nota)')
         .eq('setor_id', setorId)
         .order('criado_em', { ascending: false })
         .limit(1000)
@@ -742,6 +757,33 @@ export default function SetorPage() {
     },
     { revalidateOnFocus: false }
   )
+
+  // Avaliacoes por colaborador (para NPS nos cards de atendentes)
+  const { data: avaliacoesColaboradores } = useSWR(
+    setorId ? ['setor-avaliacoes-colaboradores', setorId] : null,
+    async () => {
+      const { data } = await supabase
+        .from('avaliacoes')
+        .select('colaborador_id, nota')
+      return data || []
+    },
+    { revalidateOnFocus: false }
+  )
+
+  const mediaNPSPorColaborador = useMemo(() => {
+    const map = new Map<string, { total: number; soma: number }>()
+    if (avaliacoesColaboradores) {
+      for (const av of avaliacoesColaboradores) {
+        if (av.colaborador_id && av.nota != null) {
+          const entry = map.get(av.colaborador_id) || { total: 0, soma: 0 }
+          entry.total++
+          entry.soma += av.nota
+          map.set(av.colaborador_id, entry)
+        }
+      }
+    }
+    return map
+  }, [avaliacoesColaboradores])
 
   // Timer to update time displays every second when on monitoramento section
   useEffect(() => {
@@ -3199,7 +3241,7 @@ const saveConfig = async () => {
             </div>
 
             {/* KPIs - Clean minimal design */}
-            <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
+            <div className="grid gap-4 grid-cols-2 lg:grid-cols-6">
               {/* Tempo médio 1a resposta */}
               <Card className="glass-card-elevated rounded-2xl border-0">
                 <CardContent className="p-5">
@@ -3273,6 +3315,22 @@ const saveConfig = async () => {
                     </div>
                   </div>
                 </CardContent>
+              </Card>
+
+              {/* NPS Score */}
+              <Card className="glass-card-elevated rounded-2xl border-0 p-4 flex flex-col justify-between">
+                <div>
+                  <p className="text-xs text-muted-foreground">NPS Score</p>
+                  <p className={cn(
+                    "text-xl lg:text-2xl font-semibold tracking-tight",
+                    relatorioStats.npsScore >= 50 ? 'text-green-600' :
+                    relatorioStats.npsScore >= 0 ? 'text-yellow-600' :
+                    'text-red-600'
+                  )}>
+                    {relatorioStats.totalAvaliacoes > 0 ? relatorioStats.npsScore : '—'}
+                  </p>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">{relatorioStats.totalAvaliacoes} avaliações</p>
               </Card>
             </div>
 
@@ -3350,6 +3408,7 @@ const saveConfig = async () => {
                           <TableHead className="text-xs font-medium">Cliente</TableHead>
                           <TableHead className="text-xs font-medium">Atendente</TableHead>
                           <TableHead className="text-xs font-medium">Status</TableHead>
+                          <TableHead className="text-xs font-medium">NPS</TableHead>
                           <TableHead className="text-xs font-medium">Data</TableHead>
                           <TableHead className="text-xs font-medium w-[60px] pr-4">Ações</TableHead>
                         </TableRow>
@@ -3377,6 +3436,20 @@ const saveConfig = async () => {
                               >
                                 {ticket.status === 'encerrado' ? 'Finalizado' : ticket.status === 'em_atendimento' ? 'Em atend.' : 'Aberto'}
                               </Badge>
+                            </TableCell>
+                            <TableCell className="text-xs text-center">
+                              {ticket.avaliacoes?.[0]?.nota != null ? (
+                                <span className={cn(
+                                  'inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white',
+                                  ticket.avaliacoes[0].nota >= 9 ? 'bg-green-500' :
+                                  ticket.avaliacoes[0].nota >= 7 ? 'bg-yellow-500' :
+                                  'bg-red-500'
+                                )}>
+                                  {ticket.avaliacoes[0].nota}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                               {ticket.criado_em ? new Date(ticket.criado_em).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}
@@ -3510,6 +3583,23 @@ const saveConfig = async () => {
                           <div>
                             <p className="text-[10px] uppercase text-muted-foreground tracking-wide">E-mail</p>
                             <p className="text-sm text-primary truncate">{atendente.email}</p>
+                            {(() => {
+                              const npsData = mediaNPSPorColaborador.get(atendente.id)
+                              if (!npsData) return null
+                              const mediaNPS = npsData.soma / npsData.total
+                              return (
+                                <div className="flex items-center gap-1 text-xs mt-1">
+                                  <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                                  <span className={cn(
+                                    'font-semibold',
+                                    mediaNPS >= 9 ? 'text-green-600' : mediaNPS >= 7 ? 'text-yellow-600' : 'text-red-600'
+                                  )}>
+                                    {mediaNPS.toFixed(1)}
+                                  </span>
+                                  <span className="text-muted-foreground">({npsData.total})</span>
+                                </div>
+                              )
+                            })()}
                           </div>
 
                           {/* Filas/Setor */}

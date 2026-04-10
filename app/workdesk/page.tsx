@@ -638,7 +638,7 @@ export default function WorkdeskPage() {
   const [encerrarDialogOpen, setEncerrarDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
-  const [showClientInfo, setShowClientInfo] = useState(false)
+  const [showClientInfo, setShowClientInfo] = useState(true)
   
   // Transfer data
   const [setores, setSetores] = useState<any[]>([])
@@ -659,6 +659,11 @@ export default function WorkdeskPage() {
   const [melhorandoIA, setMelhorandoIA] = useState(false)
   const [setorIAAtivo, setSetorIAAtivo] = useState(false)
   const [setorAssinaturaAtiva, setSetorAssinaturaAtiva] = useState(false)
+
+  // Nexus AI
+  const [nexusLoading, setNexusLoading] = useState(false)
+  const [nexusResponse, setNexusResponse] = useState<string | null>(null)
+  const [nexusProductPicker, setNexusProductPicker] = useState(false)
 
   // Melhorar mensagem com IA
   const handleMelhorarIA = useCallback(async () => {
@@ -682,6 +687,44 @@ export default function WorkdeskPage() {
       setMelhorandoIA(false)
     }
   }, [messageInput, selectedTicket?.setor_id, melhorandoIA])
+
+  // Consultar Nexus AI com histórico da conversa
+  const handleNexusAjuda = useCallback(async (productSlug: string) => {
+    if (nexusLoading || !selectedTicket) return
+    setNexusProductPicker(false)
+    setNexusLoading(true)
+    setNexusResponse(null)
+    try {
+      const msgs = mensagens.filter(m => m.remetente !== 'sistema' && m.conteudo && m.ticket_id === selectedTicket.id)
+      const history = msgs.slice(-20).map(m => ({
+        role: m.remetente === 'cliente' ? 'user' as const : 'assistant' as const,
+        content: m.conteudo
+      }))
+      const lastClientMsg = [...msgs].reverse().find(m => m.remetente === 'cliente')
+      const message = lastClientMsg?.conteudo || msgs[msgs.length - 1]?.conteudo || ''
+
+      const res = await fetch('/api/ia/nexus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          productSlug,
+          history: history.slice(0, -1),
+        }),
+      })
+      const data = await res.json()
+      if (res.ok && data.response) {
+        setNexusResponse(data.response)
+      } else {
+        console.warn('[Nexus] Error:', data)
+      }
+    } catch (err) {
+      console.error('[Nexus] Fetch error:', err)
+    } finally {
+      setNexusLoading(false)
+    }
+  }, [nexusLoading, selectedTicket, mensagens])
+
   const [pendingMessages, setPendingMessages] = useState<Map<string, 'sending' | 'sent' | 'error'>>(new Map())
   
   // File upload (images and PDFs)
@@ -689,7 +732,14 @@ export default function WorkdeskPage() {
   const [filePreview, setFilePreview] = useState<string | null>(null)
   const [uploadingFile, setUploadingFile] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const messageTextareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+
+  // Auto-resize textarea quando messageInput muda (colar, limpar, IA)
+  useEffect(() => {
+    const t = messageTextareaRef.current
+    if (t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }
+  }, [messageInput])
   
   // Templates
   const [templates, setTemplates] = useState<any[]>([])
@@ -2481,7 +2531,7 @@ const insertEmoji = (emoji: string) => {
   }
 
   // Handle input change for template detection
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
   const value = e.target.value
   setMessageInput(value)
 
@@ -3125,35 +3175,9 @@ const tempId = `temp-${Date.now()}`
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary/20 to-primary/10">
                     <User className="h-4 w-4 text-primary" />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-xs font-sans font-bold text-muted-foreground shrink-0">#{selectedTicket.numero}</span>
-                      <h2 className="text-xs font-semibold text-foreground truncate max-w-[180px]">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</h2>
-                    </div>
-                    <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                      {selectedTicket.setores && (
-                        <Badge
-                          variant="outline"
-                          className="text-[9px] px-1 py-0 font-medium"
-                          style={{
-                            borderColor: selectedTicket.setores.cor || '#6b7280',
-                            color: selectedTicket.setores.cor || '#6b7280',
-                          }}
-                        >
-                          {selectedTicket.setores.nome}
-                        </Badge>
-                      )}
-                      <Badge
-                        variant={selectedTicket.status === 'aberto' ? 'default' : 'secondary'}
-                        className={cn(
-                          'text-[9px] px-1 py-0',
-                          selectedTicket.status === 'aberto' && 'bg-blue-100 text-blue-700',
-                          selectedTicket.status === 'em_atendimento' && 'bg-yellow-100 text-yellow-700'
-                        )}
-                      >
-                        {selectedTicket.status === 'aberto' ? 'Aberto' : 'Atendendo'}
-                      </Badge>
-                    </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-semibold truncate">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</span>
+                    <span className="text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
                   </div>
                 </div>
 
@@ -3208,29 +3232,6 @@ const tempId = `temp-${Date.now()}`
                 </div>
               </div>
 
-              {/* Chat Info Bar */}
-              <div className="flex items-center justify-between border-b border-white/30 dark:border-white/8 bg-white/40 dark:bg-white/3 backdrop-blur-sm px-4 py-2 text-xs text-muted-foreground">
-                <div className="flex items-center gap-4">
-                  <span className="flex items-center gap-1">
-                      <Clock className="h-3.5 w-3.5" />
-                      Aberto{' '}
-                      {formatDistanceToNow(new Date(selectedTicket.criado_em), {
-                        locale: ptBR,
-                        addSuffix: true,
-                      })}
-                    </span>
-                    {selectedTicket.primeira_resposta_em && (
-                      <span className="flex items-center gap-1">
-                        <CheckCircle className="h-3.5 w-3.5 text-green-600" />
-                        Primeira resposta{' '}
-                        {formatDistanceToNow(new Date(selectedTicket.primeira_resposta_em), {
-                          locale: ptBR,
-                          addSuffix: true,
-                        })}
-                      </span>
-                    )}
-                  </div>
-                </div>
 
               {/* Messages */}
               <div className="flex-1 overflow-hidden">
@@ -3345,7 +3346,7 @@ const tempId = `temp-${Date.now()}`
                                 >
                                   <div
                                     className={cn(
-                                      'max-w-[85%] lg:max-w-[75%] rounded-2xl px-3 py-2 lg:px-4 lg:py-2.5 break-all overflow-hidden',
+                                      'max-w-[85%] lg:max-w-[75%] rounded-2xl px-3 py-2 lg:px-4 lg:py-2.5 break-words overflow-hidden',
                                       isOutgoingMessage(msg.remetente)
                                         ? 'bg-primary text-primary-foreground rounded-br-md'
                                         : 'bg-secondary text-secondary-foreground rounded-bl-md',
@@ -3550,12 +3551,13 @@ const tempId = `temp-${Date.now()}`
                       )}
                       <div className="relative flex-1">
                   <textarea
+                  ref={messageTextareaRef}
                   value={messageInput}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
                   onPaste={handlePaste}
                   placeholder={(selectedTicket?.is_disparo && isDisparoLocked(selectedTicket)) ? 'Aguardando resposta do cliente...' : isWindowExpired ? 'Janela expirada - Encerre o ticket' : 'Digite / para atalhos...'}
-                  className="w-full resize-none overflow-hidden rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                   autoComplete="off"
                   autoCorrect="off"
@@ -3567,7 +3569,6 @@ const tempId = `temp-${Date.now()}`
                   data-ms-editor="false"
                   rows={1}
                   style={{ minHeight: '36px', maxHeight: '120px' }}
-                  onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }}
                   />
                       </div>
                       <Button
@@ -3598,7 +3599,7 @@ const tempId = `temp-${Date.now()}`
         {selectedTicket && (
           <aside className={cn(
             "w-56 shrink-0 border-l border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl overflow-y-auto transition-all duration-200 lg:w-64 xl:w-72",
-            showClientInfo ? "hidden xl:block" : "hidden"
+            showClientInfo ? "hidden lg:block" : "hidden"
           )}>
             <div className="p-4">
               {setorCanalConfig === 'discord' ? (
@@ -3802,19 +3803,18 @@ const tempId = `temp-${Date.now()}`
                     </span>
                   </div>
 
-                  {/* Prioridade */}
-                  <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
-                    <span className="text-muted-foreground shrink-0 w-16">Prioridade</span>
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        'text-[10px] px-1.5 py-0 h-4',
-                        selectedTicket.prioridade === 'urgente' && 'border-red-300 text-red-600'
-                      )}
-                    >
-                      {selectedTicket.prioridade === 'urgente' ? 'Urgente' : 'Normal'}
-                    </Badge>
-                  </div>
+                  {/* Prioridade — só aparece se urgente */}
+                  {selectedTicket.prioridade === 'urgente' && (
+                    <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                      <span className="text-muted-foreground shrink-0 w-16">Prioridade</span>
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] px-1.5 py-0 h-4 border-red-300 text-red-600"
+                      >
+                        Urgente
+                      </Badge>
+                    </div>
+                  )}
 
                   {/* Canal */}
                   <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
@@ -3835,7 +3835,121 @@ const tempId = `temp-${Date.now()}`
                       })}
                     </span>
                   </div>
+
+                  {/* Aberto há */}
+                  <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                    <span className="text-muted-foreground shrink-0 w-16">Aberto</span>
+                    <span className="font-medium text-foreground">
+                      {formatDistanceToNow(new Date(selectedTicket.criado_em), {
+                        locale: ptBR,
+                        addSuffix: true,
+                      })}
+                    </span>
+                  </div>
+
+                  {/* 1ª resposta */}
+                  {selectedTicket.primeira_resposta_em && (
+                    <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                      <span className="text-muted-foreground shrink-0 w-16">1ª resposta</span>
+                      <span className="font-medium text-foreground">
+                        {formatDistanceToNow(new Date(selectedTicket.primeira_resposta_em), {
+                          locale: ptBR,
+                          addSuffix: true,
+                        })}
+                      </span>
+                    </div>
+                  )}
                 </div>
+              </div>
+
+              {/* Nexus AI Section — sempre visível, usa API própria */}
+              <div className="mt-4 pt-4 border-t border-border">
+                <div className="flex items-center gap-2 mb-3">
+                  <svg width="87" height="16" viewBox="0 0 87 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-4 w-auto">
+                    <path d="M15.744 12.36L14.736 12.768V-4.62532e-05H17.928V15.528H14.736L2.18401 3.26395L3.19201 2.85595V15.528H8.22544e-06V-4.62532e-05H3.19201L15.744 12.36ZM32.0968 11.568H35.1208C34.9928 12.384 34.6488 13.112 34.0888 13.752C33.5448 14.392 32.8008 14.896 31.8568 15.264C30.9128 15.632 29.7608 15.816 28.4008 15.816C26.8808 15.816 25.5368 15.576 24.3688 15.096C23.2008 14.6 22.2888 13.888 21.6328 12.96C20.9768 12.032 20.6488 10.912 20.6488 9.59995C20.6488 8.28795 20.9688 7.16795 21.6088 6.23995C22.2488 5.29595 23.1368 4.57595 24.2728 4.07995C25.4248 3.58395 26.7688 3.33595 28.3048 3.33595C29.8728 3.33595 31.1768 3.58395 32.2168 4.07995C33.2568 4.57595 34.0248 5.32795 34.5208 6.33595C35.0328 7.32795 35.2488 8.59995 35.1688 10.152H23.7928C23.8728 10.76 24.0968 11.312 24.4648 11.808C24.8488 12.304 25.3608 12.696 26.0008 12.984C26.6568 13.272 27.4328 13.416 28.3288 13.416C29.3208 13.416 30.1448 13.248 30.8008 12.912C31.4728 12.56 31.9048 12.112 32.0968 11.568ZM28.1608 5.71195C27.0088 5.71195 26.0728 5.96795 25.3528 6.47995C24.6328 6.97595 24.1688 7.59195 23.9608 8.32795H32.0728C31.9928 7.52795 31.6088 6.89595 30.9208 6.43195C30.2488 5.95195 29.3288 5.71195 28.1608 5.71195ZM50.4634 3.59995L44.2714 10.248L39.8074 15.528H35.9914L42.4474 8.54395L46.6714 3.59995H50.4634ZM35.9914 3.59995H39.8074L44.3194 8.49595L50.7994 15.528H46.9834L42.3514 10.32L35.9914 3.59995ZM66.5248 15.528H63.4048V3.59995H66.5248V15.528ZM63.5728 9.79195L63.5968 10.608C63.5648 10.832 63.4848 11.16 63.3568 11.592C63.2288 12.008 63.0288 12.456 62.7568 12.936C62.5008 13.416 62.1648 13.88 61.7488 14.328C61.3328 14.76 60.8208 15.12 60.2128 15.408C59.6048 15.68 58.8848 15.816 58.0528 15.816C57.3968 15.816 56.7488 15.736 56.1088 15.576C55.4848 15.416 54.9168 15.152 54.4048 14.784C53.8928 14.4 53.4848 13.888 53.1808 13.248C52.8768 12.608 52.7248 11.8 52.7248 10.824V3.59995H55.8448V10.296C55.8448 11.064 55.9648 11.672 56.2048 12.12C56.4608 12.552 56.8288 12.856 57.3088 13.032C57.7888 13.208 58.3568 13.296 59.0128 13.296C59.8768 13.296 60.6208 13.112 61.2448 12.744C61.8688 12.36 62.3728 11.896 62.7568 11.352C63.1568 10.808 63.4288 10.288 63.5728 9.79195ZM68.8854 11.568H71.7654C71.9414 12.112 72.3014 12.56 72.8454 12.912C73.4054 13.248 74.1334 13.416 75.0294 13.416C75.6374 13.416 76.1094 13.36 76.4454 13.248C76.7814 13.136 77.0134 12.976 77.1414 12.768C77.2694 12.544 77.3334 12.296 77.3334 12.024C77.3334 11.688 77.2294 11.432 77.0214 11.256C76.8134 11.064 76.4934 10.912 76.0614 10.8C75.6294 10.688 75.0774 10.584 74.4054 10.488C73.7334 10.376 73.0854 10.24 72.4614 10.08C71.8374 9.91995 71.2854 9.71195 70.8054 9.45595C70.3254 9.18395 69.9414 8.84795 69.6534 8.44795C69.3814 8.03195 69.2454 7.52795 69.2454 6.93595C69.2454 6.35995 69.3814 5.84795 69.6534 5.39995C69.9414 4.95195 70.3334 4.57595 70.8294 4.27195C71.3414 3.96795 71.9334 3.73595 72.6054 3.57595C73.2934 3.41595 74.0294 3.33595 74.8134 3.33595C75.9974 3.33595 76.9814 3.51195 77.7654 3.86395C78.5494 4.19995 79.1334 4.67995 79.5174 5.30395C79.9174 5.91195 80.1174 6.61595 80.1174 7.41595H77.3574C77.2294 6.82395 76.9734 6.39995 76.5894 6.14395C76.2054 5.87195 75.6134 5.73595 74.8134 5.73595C74.0294 5.73595 73.4374 5.85595 73.0374 6.09595C72.6374 6.33595 72.4374 6.66395 72.4374 7.07995C72.4374 7.41595 72.5574 7.67995 72.7974 7.87195C73.0534 8.04795 73.4214 8.19195 73.9014 8.30395C74.3974 8.41595 75.0134 8.53595 75.7494 8.66395C76.3734 8.79195 76.9654 8.93595 77.5254 9.09595C78.1014 9.25595 78.6134 9.46395 79.0614 9.71995C79.5094 9.95995 79.8614 10.288 80.1174 10.704C80.3894 11.104 80.5254 11.616 80.5254 12.24C80.5254 13.008 80.3014 13.656 79.8534 14.184C79.4214 14.712 78.7974 15.12 77.9814 15.408C77.1654 15.68 76.1894 15.816 75.0534 15.816C74.0454 15.816 73.1734 15.712 72.4374 15.504C71.7174 15.28 71.1174 15 70.6374 14.664C70.1574 14.312 69.7814 13.944 69.5094 13.56C69.2534 13.16 69.0774 12.784 68.9814 12.432C68.8854 12.08 68.8534 11.792 68.8854 11.568Z" fill="currentColor"/>
+                    <path d="M86.5363 12.792V15.528H82.9123V12.792H86.5363Z" fill="#FF6B00"/>
+                  </svg>
+                  <div className="h-4 w-px bg-border" />
+                  <span className="text-[10px] text-muted-foreground">Assistente IA</span>
+                </div>
+
+                {!nexusResponse && !nexusLoading && !nexusProductPicker && (
+                  <button
+                    onClick={() => setNexusProductPicker(true)}
+                    className="w-full flex items-center justify-center gap-2 rounded-lg border border-primary/20 bg-primary/5 hover:bg-primary/10 px-3 py-2.5 text-xs font-medium text-primary transition-colors"
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                    Ajuda com o Nexus?
+                  </button>
+                )}
+
+                {nexusProductPicker && !nexusLoading && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground text-center">Qual o software do cliente?</p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleNexusAjuda('softshop')}
+                        className="flex-1 rounded-lg border border-primary/20 bg-primary/5 hover:bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition-colors"
+                      >
+                        Softshop
+                      </button>
+                      <button
+                        onClick={() => handleNexusAjuda('softcomshop')}
+                        className="flex-1 rounded-lg border border-primary/20 bg-primary/5 hover:bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition-colors"
+                      >
+                        Softcomshop
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => setNexusProductPicker(false)}
+                      className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
+
+                {nexusLoading && (
+                  <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    Consultando Nexus...
+                  </div>
+                )}
+
+                {nexusResponse && !nexusLoading && (
+                  <div className="space-y-2">
+                    <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs leading-relaxed text-foreground max-h-48 overflow-y-auto whitespace-pre-wrap">
+                      {nexusResponse}
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <button
+                        onClick={() => {
+                          setMessageInput(nexusResponse)
+                          setNexusResponse(null)
+                        }}
+                        className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+                      >
+                        <Send className="h-3 w-3" />
+                        Enviar ao cliente
+                      </button>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => { setNexusResponse(null); setNexusProductPicker(true) }}
+                          className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-border px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-muted/50 transition-colors"
+                        >
+                          <Zap className="h-3 w-3" />
+                          Consultar novamente
+                        </button>
+                        <button
+                          onClick={() => setNexusResponse(null)}
+                          className="flex-1 flex items-center justify-center rounded-lg border border-border px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-muted/50 transition-colors"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </aside>
@@ -3854,18 +3968,9 @@ const tempId = `temp-${Date.now()}`
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-secondary">
                     <User className="h-5 w-5 text-secondary-foreground" />
                   </div>
-                  <div>
-                    <h2 className="font-semibold text-foreground">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</h2>
-                    <Badge
-                      variant={selectedTicket.status === 'aberto' ? 'default' : 'secondary'}
-                      className={cn(
-                        'text-[10px] px-1.5 py-0',
-                        selectedTicket.status === 'aberto' && 'bg-blue-100 text-blue-700',
-                        selectedTicket.status === 'em_atendimento' && 'bg-yellow-100 text-yellow-700'
-                      )}
-                    >
-                      {selectedTicket.status === 'aberto' ? 'Aberto' : 'Atendendo'}
-                    </Badge>
+                  <div className="min-w-0">
+                    <span className="text-sm font-semibold truncate">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</span>
+                    <span className="text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
                   </div>
                 </div>
                 <Button
@@ -3969,7 +4074,7 @@ onClick={() => {
                                 >
                                   <div
                                     className={cn(
-'max-w-[85%] rounded-2xl px-3 py-2 break-all overflow-hidden',
+'max-w-[85%] rounded-2xl px-3 py-2 break-words overflow-hidden',
                     isOutgoingMessage(msg.remetente)
                       ? 'bg-primary text-primary-foreground rounded-br-md'
                       : 'bg-secondary text-secondary-foreground rounded-bl-md',
@@ -4089,7 +4194,7 @@ onClick={() => {
                   onKeyDown={handleKeyPress}
                   onPaste={handlePaste}
                   placeholder="Mensagem..."
-                  className="flex-1 resize-none overflow-hidden rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex-1 resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="off"
@@ -4100,7 +4205,6 @@ onClick={() => {
                   data-ms-editor="false"
                   rows={1}
                   style={{ minHeight: '36px', maxHeight: '120px' }}
-                  onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }}
                   />
                       <Button
                         size="icon"
@@ -5039,36 +5143,24 @@ function TicketList({
                             {unreadCount > 99 ? '99+' : unreadCount}
                           </span>
                         )}
-                        {/* Ticket Iframe Button */}
-                        <button
-                          type="button"
-                          title="Abrir detalhes do ticket"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onOpenTicketIframe(ticket)
-                          }}
-                          className="flex h-7 w-7 items-center justify-center rounded-md text-primary opacity-70 hover:opacity-100 hover:bg-primary/10 transition-all"
-                        >
-                          <Ticket className="h-5 w-5" />
-                        </button>
                       </div>
                     </div>
-                    
-                    {/* Row 2: Nome do Cliente */}
-                    <p className={cn(
-                      "text-sm font-medium line-clamp-1",
-                      isSelected ? "text-primary" : "text-foreground"
-                    )}>
-  {setorCanal === 'discord' ? (ticket.user_name_discord || ticket.clientes.nome) : ticket.clientes.nome}
-  </p>
-  
-  {/* Row 3: Tempo */}
-                    <span className="text-[10px] text-muted-foreground">
-                      {formatDistanceToNow(new Date(ticket.ultima_mensagem_em || ticket.criado_em), {
-                        locale: ptBR,
-                        addSuffix: true,
-                      })}
-                    </span>
+
+                    {/* Row 2: Nome do Cliente + Tempo */}
+                    <div className="flex items-center justify-between gap-2">
+                      <p className={cn(
+                        "text-sm font-medium line-clamp-1 min-w-0",
+                        isSelected ? "text-primary" : "text-foreground"
+                      )}>
+                        {setorCanal === 'discord' ? (ticket.user_name_discord || ticket.clientes.nome) : ticket.clientes.nome}
+                      </p>
+                      <span className="text-[10px] text-muted-foreground shrink-0">
+                        {formatDistanceToNow(new Date(ticket.ultima_mensagem_em || ticket.criado_em), {
+                          locale: ptBR,
+                          addSuffix: true,
+                        })}
+                      </span>
+                    </div>
                   </div>
                 </motion.div>
               )

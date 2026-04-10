@@ -39,6 +39,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Users, Plus, Pencil, UserX, Loader2, Circle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -92,6 +93,7 @@ export default function ColaboradoresPage() {
   const { toast } = useToast()
 
   const [colaboradorSetores, setColaboradorSetores] = useState<{ colaborador_id: string; setor_id: string }[]>([])
+  const [mediasNPS, setMediasNPS] = useState<Map<string, { media: number; total: number }>>(new Map())
 
   function getSetoresDoColaborador(colaboradorId: string): string[] {
     return colaboradorSetores
@@ -144,6 +146,24 @@ export default function ColaboradoresPage() {
     if (colabSetoresData) {
       setColaboradorSetores(colabSetoresData)
     }
+
+    // Fetch avaliacoes para NPS
+    const { data: avaliacoesData } = await supabase
+      .from('avaliacoes')
+      .select('colaborador_id, nota')
+
+    const npsMap = new Map<string, { media: number; total: number }>()
+    if (avaliacoesData) {
+      const grouped = new Map<string, number[]>()
+      for (const a of avaliacoesData) {
+        if (!grouped.has(a.colaborador_id)) grouped.set(a.colaborador_id, [])
+        grouped.get(a.colaborador_id)!.push(a.nota)
+      }
+      for (const [id, notas] of grouped) {
+        npsMap.set(id, { media: notas.reduce((s, n) => s + n, 0) / notas.length, total: notas.length })
+      }
+    }
+    setMediasNPS(npsMap)
 
     setLoading(false)
   }
@@ -396,6 +416,7 @@ export default function ColaboradoresPage() {
                     <TableHead>Setores</TableHead>
                     <TableHead>Permissao</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>NPS</TableHead>
                     <TableHead className="text-right">Acoes</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -459,6 +480,23 @@ export default function ColaboradoresPage() {
                                 : 'Offline'}
                             </span>
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {mediasNPS.get(colaborador.id) ? (
+                            <div className="flex items-center gap-1 text-xs">
+                              <span className={cn(
+                                'font-semibold',
+                                mediasNPS.get(colaborador.id)!.media >= 9 ? 'text-green-600' :
+                                mediasNPS.get(colaborador.id)!.media >= 7 ? 'text-yellow-600' :
+                                'text-red-600'
+                              )}>
+                                {mediasNPS.get(colaborador.id)!.media.toFixed(1)}
+                              </span>
+                              <span className="text-muted-foreground">({mediasNPS.get(colaborador.id)!.total})</span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-2">
