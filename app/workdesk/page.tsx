@@ -324,6 +324,98 @@ function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutgoing: b
   )
 }
 
+// ─── AudioMessage Component ──────────────────────────────────────────────────
+// Renderiza áudio com botão de transcrição IA e exibição do texto transcrito
+function AudioMessage({ url, mediaType, fileName, isOutgoing, existingTranscription, mensagemId, setorId, setorIAAtivo, onTranscricao }: {
+  url: string
+  mediaType?: string | null
+  fileName: string
+  isOutgoing: boolean
+  existingTranscription?: string
+  mensagemId?: string
+  setorId?: string
+  setorIAAtivo?: boolean
+  onTranscricao?: (mensagemId: string, transcricao: string) => void
+}) {
+  const [transcricao, setTranscricao] = useState<string | null>(existingTranscription || null)
+  const [transcrevendo, setTranscrevendo] = useState(false)
+
+  const handleTranscrever = async () => {
+    if (!mensagemId || !setorId || transcrevendo) return
+    setTranscrevendo(true)
+    try {
+      const res = await fetch('/api/ia/transcrever-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_url: url, setor_id: setorId, mensagem_id: mensagemId }),
+      })
+      const data = await res.json()
+      if (res.ok && data.transcricao) {
+        setTranscricao(data.transcricao)
+        if (onTranscricao && mensagemId) onTranscricao(mensagemId, data.transcricao)
+      } else {
+        console.warn('[AudioMessage] Transcription error:', data.error)
+      }
+    } catch (err) {
+      console.error('[AudioMessage] Fetch error:', err)
+    } finally {
+      setTranscrevendo(false)
+    }
+  }
+
+  return (
+    <div className="mb-2 space-y-1">
+      <div className={cn(
+        'flex items-center gap-2 rounded-xl px-3 py-2',
+        isOutgoing ? 'bg-white/15' : 'bg-muted/60'
+      )}>
+        <Music className="h-4 w-4 shrink-0 opacity-70" />
+        <audio controls className="flex-1 h-8 min-w-0" preload="metadata" style={{ height: '32px' }}>
+          <source src={url} type={mediaType || 'audio/ogg'} />
+        </audio>
+        {setorIAAtivo && !transcricao && (
+          <button
+            onClick={handleTranscrever}
+            disabled={transcrevendo}
+            className={cn(
+              'shrink-0 rounded p-1 transition-colors',
+              isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
+            )}
+            title="Transcrever áudio"
+          >
+            {transcrevendo ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FileText className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
+        <a
+          href={url}
+          download={fileName}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            'shrink-0 rounded p-1 transition-colors',
+            isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
+          )}
+          title="Baixar áudio"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </a>
+      </div>
+      {transcricao && (
+        <div className={cn(
+          'rounded-lg px-3 py-2 text-xs italic leading-relaxed',
+          isOutgoing ? 'bg-white/10 text-white/90' : 'bg-muted/40 text-muted-foreground'
+        )}>
+          {transcricao}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── MessageMedia Component ───────────────────────────────────────────────────
 // Renderiza mídia de mensagem baseado no media_type (MIME) com fallback no tipo
 interface MessageMediaProps {
@@ -332,6 +424,10 @@ interface MessageMediaProps {
   tipo?: string
   conteudo?: string
   isOutgoing: boolean
+  mensagemId?: string
+  setorId?: string
+  setorIAAtivo?: boolean
+  onTranscricao?: (mensagemId: string, transcricao: string) => void
 }
 
 // Retorna ícone, label e cores para cada tipo de arquivo
@@ -352,7 +448,7 @@ function getFileInfo(ext: string, mediaType?: string | null) {
   return { icon: FileIcon, label: e.toUpperCase() || 'Arquivo', color: 'text-muted-foreground', bg: 'bg-muted/50', border: 'border-border' }
 }
 
-function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing }: MessageMediaProps) {
+function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: MessageMediaProps) {
   const urlLower = url.toLowerCase().split('?')[0]
   const ext = urlLower.split('.').pop() || ''
 
@@ -397,29 +493,25 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing }: MessageMed
   }
 
   if (isAudio) {
+    // Detect if conteudo has a real transcription (not just filename)
+    const audioExts = ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus', 'oga', 'weba', 'webm', 'mp4', 'amr']
+    const isFileNameOnly = !conteudo || conteudo === fileName ||
+      audioExts.some(e => conteudo?.toLowerCase().endsWith(`.${e}`)) ||
+      conteudo?.startsWith('audio') || conteudo?.startsWith('PTT-')
+    const existingTranscription = !isFileNameOnly ? conteudo : null
+
     return (
-      <div className={cn(
-        'mb-2 flex items-center gap-2 rounded-xl px-3 py-2',
-        isOutgoing ? 'bg-white/15' : 'bg-muted/60'
-      )}>
-        <Music className="h-4 w-4 shrink-0 opacity-70" />
-        <audio controls className="flex-1 h-8 min-w-0" preload="metadata" style={{ height: '32px' }}>
-          <source src={url} type={mediaType || 'audio/ogg'} />
-        </audio>
-        <a
-          href={url}
-          download={fileName}
-          target="_blank"
-          rel="noreferrer"
-          className={cn(
-            'shrink-0 rounded p-1 transition-colors',
-            isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
-          )}
-          title="Baixar áudio"
-        >
-          <Download className="h-3.5 w-3.5" />
-        </a>
-      </div>
+      <AudioMessage
+        url={url}
+        mediaType={mediaType}
+        fileName={fileName}
+        isOutgoing={isOutgoing}
+        existingTranscription={existingTranscription || undefined}
+        mensagemId={mensagemId}
+        setorId={setorId}
+        setorIAAtivo={setorIAAtivo}
+        onTranscricao={onTranscricao}
+      />
     )
   }
 
@@ -3262,6 +3354,12 @@ const tempId = `temp-${Date.now()}`
                             tipo={msg.tipo}
                             conteudo={msg.conteudo}
                             isOutgoing={isOutgoingMessage(msg.remetente)}
+                            mensagemId={msg.id}
+                            setorId={selectedTicket?.setor_id}
+                            setorIAAtivo={setorIAAtivo}
+                            onTranscricao={(id, text) => {
+                              setMensagens(prev => prev.map(m => m.id === id ? { ...m, conteudo: text } : m))
+                            }}
                           />
                         )}
                         {msg.tipo !== 'texto' && !msg.url_imagem && msg.media_type !== 'contact' && (
@@ -3877,6 +3975,12 @@ onClick={() => {
                       tipo={msg.tipo}
                       conteudo={msg.conteudo}
                       isOutgoing={isOutgoingMessage(msg.remetente)}
+                      mensagemId={msg.id}
+                      setorId={selectedTicket?.setor_id}
+                      setorIAAtivo={setorIAAtivo}
+                      onTranscricao={(id, text) => {
+                        setMensagens(prev => prev.map(m => m.id === id ? { ...m, conteudo: text } : m))
+                      }}
                     />
                   )}
                   {msg.media_type === 'contact' && msg.conteudo ? (
