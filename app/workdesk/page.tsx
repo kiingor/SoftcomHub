@@ -55,6 +55,8 @@ import {
   Pencil,
   Save,
   Sparkles,
+  Star,
+  Info,
 } from 'lucide-react'
 import {
   Dialog,
@@ -659,6 +661,25 @@ export default function WorkdeskPage() {
   const [melhorandoIA, setMelhorandoIA] = useState(false)
   const [setorIAAtivo, setSetorIAAtivo] = useState(false)
   const [setorAssinaturaAtiva, setSetorAssinaturaAtiva] = useState(false)
+  const [setorNexusAtivo, setSetorNexusAtivo] = useState(false)
+
+  // Avaliação NPS do atendente
+  const [avaliacaoMedia, setAvaliacaoMedia] = useState<number | null>(null)
+  const [avaliacaoTotal, setAvaliacaoTotal] = useState(0)
+  useEffect(() => {
+    if (!colaborador?.id) return
+    supabase.from('avaliacoes').select('nota').eq('colaborador_id', colaborador.id)
+      .then(({ data }) => {
+        if (data && data.length > 0) {
+          const media = data.reduce((s, a) => s + a.nota, 0) / data.length
+          setAvaliacaoMedia(Math.round(media * 10) / 10)
+          setAvaliacaoTotal(data.length)
+        } else {
+          setAvaliacaoMedia(0)
+          setAvaliacaoTotal(0)
+        }
+      })
+  }, [colaborador?.id])
 
   // Nexus AI
   const [nexusLoading, setNexusLoading] = useState(false)
@@ -1757,9 +1778,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (ticket.setor_id) {
       fetchTemplates(ticket.setor_id)
       // Check if setor has OpenAI enabled
-      supabase.from('setores').select('openai_ativo, assinatura_ativa').eq('id', ticket.setor_id).single()
+      supabase.from('setores').select('openai_ativo, nexus_ativo, assinatura_ativa').eq('id', ticket.setor_id).single()
         .then(({ data }) => {
           setSetorIAAtivo(data?.openai_ativo || false)
+          setSetorNexusAtivo(data?.nexus_ativo || false)
           setSetorAssinaturaAtiva(data?.assinatura_ativa || false)
         })
     }
@@ -3862,7 +3884,8 @@ const tempId = `temp-${Date.now()}`
                 </div>
               </div>
 
-              {/* Nexus AI Section — sempre visível, usa API própria */}
+              {/* Nexus AI Section */}
+              {setorNexusAtivo && (
               <div className="mt-4 pt-4 border-t border-border">
                 <div className="flex items-center gap-2 mb-3">
                   <svg width="87" height="16" viewBox="0 0 87 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-4 w-auto">
@@ -3951,6 +3974,7 @@ const tempId = `temp-${Date.now()}`
                   </div>
                 )}
               </div>
+            )}
             </div>
           </aside>
         )}
@@ -4919,7 +4943,7 @@ onClick={() => {
               <div className="flex items-center gap-1.5">
                 <Ticket className="h-3.5 w-3.5 text-primary" />
                 <span className="text-xs font-semibold">
-                  Ticket #{ticketIframeTicket.numero} — {ticketIframeTicket.clientes.nome}
+                  Ticket #{ticketIframeTicket.numero} — {ticketIframeTicket.clientes?.nome || 'Cliente'}
                 </span>
               </div>
               <Button
@@ -5137,6 +5161,17 @@ function TicketList({
                         )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        {/* Ticket link */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setTicketIframeTicket(ticket as any)
+                          }}
+                          className="p-0.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                          title="Abrir ticket"
+                        >
+                          <Ticket className="h-3.5 w-3.5" />
+                        </button>
                         {/* Unread badge */}
                         {unreadCount > 0 && (
                           <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground">

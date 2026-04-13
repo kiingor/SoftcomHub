@@ -5,7 +5,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
-import { User, LogOut, MessageCircle, Volume2, Play, KeyRound } from 'lucide-react'
+import { User, LogOut, MessageCircle, Volume2, Play, KeyRound, Star, Info } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,6 +49,8 @@ export default function WorkdeskLayout({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
   const [ticketSound, setTicketSound] = useState<TicketSoundType>('default')
+  const [avaliacaoMedia, setAvaliacaoMedia] = useState<number>(0)
+  const [avaliacaoTotal, setAvaliacaoTotal] = useState(0)
   const supabase = createClient()
   const router = useRouter()
   const pathname = usePathname()
@@ -117,6 +119,15 @@ export default function WorkdeskLayout({
 
       if (data) {
         setColaborador(data)
+        // Buscar avaliações do colaborador
+        supabase.from('avaliacoes').select('nota').eq('colaborador_id', data.id)
+          .then(({ data: avaliacoes }) => {
+            if (avaliacoes && avaliacoes.length > 0) {
+              const media = avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length
+              setAvaliacaoMedia(Math.round(media * 10) / 10)
+              setAvaliacaoTotal(avaliacoes.length)
+            }
+          })
       }
     } catch (error) {
       console.warn('[WorkDesk Layout] Erro ao carregar colaborador:', error)
@@ -346,6 +357,13 @@ export default function WorkdeskLayout({
                   <User className="h-4 w-4 text-primary" />
                 </div>
                 <span className="hidden text-sm font-medium md:inline">{colaborador.nome}</span>
+                <div className="hidden md:flex items-center gap-1 group relative">
+                  <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                  <span className="text-xs font-semibold">{avaliacaoMedia.toFixed(1)}</span>
+                  <div className="absolute right-0 top-8 z-50 hidden group-hover:block w-44 rounded-lg border bg-popover px-3 py-2 text-[10px] text-popover-foreground shadow-md">
+                    NPS médio dos seus atendimentos ({avaliacaoTotal} {avaliacaoTotal === 1 ? 'avaliação' : 'avaliações'})
+                  </div>
+                </div>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64 glass-dropdown rounded-2xl border-0">

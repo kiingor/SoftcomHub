@@ -1,9 +1,6 @@
 'use client'
 
-import { useEffect } from "react"
-
-import React, { useState, useMemo } from "react"
-import useSWR from 'swr'
+import React, { useState, useMemo, useEffect, useCallback } from "react"
 import { motion } from 'framer-motion'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -29,7 +26,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from '@/components/ui/chart'
-import { useColaborador, useSetores } from '@/lib/hooks/use-data'
+import { useDashboardData } from '@/lib/hooks/use-data'
 import { DateRange } from 'react-day-picker'
 import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
 
@@ -56,14 +53,14 @@ interface DailyVolume {
   count: number
 }
 
-const COLORS = ['#F97316', '#FB923C', '#FDBA74', '#FBC02D', '#F9A825', '#F57F17', '#FFD54F', '#FFEB3B', '#FFF176', '#84CC16', '#22D3EE', '#818CF8']
+const COLORS = ['#F97316', '#FB923C', '#FDBA74', '#FBC02D', '#FDBA74', '#FB923C', '#F97316', '#22D3EE', '#818CF8', '#84CC16', '#FFD54F', '#FFF176']
 
 const ITEMS_PER_PAGE = 10
 
 export default function MetricasPage() {
-  const supabase = createClient()
-  const { data: colaborador } = useColaborador()
-  const { data: setoresAcessiveis = [] } = useSetores(colaborador?.id, colaborador?.is_master)
+  const { data: dashboardData, isLoading: loadingDash } = useDashboardData()
+  const colaborador = dashboardData?.colaborador ?? null
+  const setoresAcessiveis = dashboardData?.setores ?? []
   const setorIdsAcessiveis = useMemo(() => setoresAcessiveis.map((s: any) => s.id), [setoresAcessiveis])
   const [dateFilter, setDateFilter] = useState('30')
   const [customRange, setCustomRange] = useState<DateRange | undefined>()
@@ -73,17 +70,21 @@ export default function MetricasPage() {
   const [metrics, setMetrics] = useState<MetricCard[]>([
     { title: 'Tempo Médio 1ª Resposta', value: '0 min', description: 'Tempo até primeira resposta', icon: Timer, color: 'bg-primary' },
     { title: 'Tempo Médio Resolução', value: '0 min', description: 'Tempo para encerrar ticket', icon: Clock, color: 'bg-accent' },
-    { title: 'Tickets Recebidos', value: '0', description: 'Total no mês atual', icon: Ticket, color: 'bg-secondary' },
-    { title: 'Tickets Encerrados', value: '0', description: 'Encerrados no mês atual', icon: CheckCircle, color: 'bg-muted' },
+    { title: 'Tickets Recebidos', value: '0', description: 'Total no período', icon: Ticket, color: 'bg-secondary' },
+    { title: 'Tickets Encerrados', value: '0', description: 'Encerrados no período', icon: CheckCircle, color: 'bg-muted' },
   ])
   const [ticketsBySetor, setTicketsBySetor] = useState<TicketsBySetor[]>([])
   const [ticketsByColaborador, setTicketsByColaborador] = useState<TicketsByColaborador[]>([])
+  const [ticketsByPDV, setTicketsByPDV] = useState<{ pdv: string; count: number }[]>([])
+  const [ticketsByCliente, setTicketsByCliente] = useState<{ cliente: string; count: number }[]>([])
   const [dailyVolume, setDailyVolume] = useState<DailyVolume[]>([])
   const [loading, setLoading] = useState(false)
 
   // Chart pagination state
   const [setorPage, setSetorPage] = useState(0)
   const [colaboradorPage, setColaboradorPage] = useState(0)
+  const [pdvPage, setPdvPage] = useState(0)
+  const [clientePage, setClientePage] = useState(0)
 
   // Chart internal filter state
   const [chartSetorFilter, setChartSetorFilter] = useState<string>('all')
@@ -92,8 +93,32 @@ export default function MetricasPage() {
   // Fetch all colaboradores for the filter dropdown
   const [allColaboradores, setAllColaboradores] = useState<{id: string, nome: string}[]>([])
 
-  React.useEffect(() => {
+  // Fetch subsetores when setor filter changes
+  useEffect(() => {
+    async function fetchSubsetores() {
+      const supabase = createClient()
+      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsAcessiveis
+      if (targetSetorIds.length === 0) {
+        setSubsetoresDisponiveis([])
+        return
+      }
+      const { data } = await supabase
+        .from('subsetores')
+        .select('id, nome')
+        .in('setor_id', targetSetorIds)
+        .eq('ativo', true)
+        .order('nome')
+      setSubsetoresDisponiveis(data || [])
+    }
+    if (colaborador && setorIdsAcessiveis.length > 0) {
+      fetchSubsetores()
+    }
+  }, [setorFilter, colaborador, setorIdsAcessiveis])
+
+  // Fetch colaboradores for filter
+  useEffect(() => {
     async function fetchColaboradores() {
+      const supabase = createClient()
       const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsAcessiveis
       if (targetSetorIds.length === 0) return
       const { data } = await supabase
@@ -111,151 +136,103 @@ export default function MetricasPage() {
     if (colaborador && setorIdsAcessiveis.length > 0) {
       fetchColaboradores()
     }
-  }, [setorFilter, colaborador, setorIdsAcessiveis.length, supabase])
-
-  // Fetch subsetores when setor filter changes
-  React.useEffect(() => {
-    async function fetchSubsetores() {
-      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsAcessiveis
-      if (targetSetorIds.length === 0) {
-        setSubsetoresDisponiveis([])
-        return
-      }
-      const { data } = await supabase
-        .from('subsetores')
-        .select('id, nome')
-        .in('setor_id', targetSetorIds)
-        .eq('ativo', true)
-        .order('nome')
-      setSubsetoresDisponiveis(data || [])
-    }
-    if (colaborador && setorIdsAcessiveis.length > 0) {
-      fetchSubsetores()
-    }
-  }, [setorFilter, colaborador, setorIdsAcessiveis.length, supabase])
-
-  // CRITICAL FIX: Only fetch metrics when setorIdsAcessiveis is loaded (prevents counting ALL tickets)
-  React.useEffect(() => {
-    if (colaborador && setorIdsAcessiveis.length > 0) {
-      fetchMetrics()
-    }
-  }, [dateFilter, customRange, setorFilter, subsetorFilter, colaborador, setorIdsAcessiveis.length])
+  }, [setorFilter, colaborador, setorIdsAcessiveis])
 
   // Reset chart pages when data changes
-  React.useEffect(() => { setSetorPage(0) }, [ticketsBySetor.length])
-  React.useEffect(() => { setColaboradorPage(0) }, [ticketsByColaborador.length])
+  useEffect(() => { setSetorPage(0) }, [ticketsBySetor.length])
+  useEffect(() => { setColaboradorPage(0) }, [ticketsByColaborador.length])
 
-  async function fetchMetrics() {
-    // Always require setorIdsAcessiveis to be loaded - prevents counting all tickets
+  const fetchMetrics = useCallback(async () => {
     if (setorIdsAcessiveis.length === 0) return
 
-    // Calculate date range for filter
+    const supabase = createClient()
     const { from: filterDate, to: filterDateTo } = getDateCutoffs(dateFilter, customRange)
+    const filterSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsAcessiveis
 
-    // Determine which setor IDs to filter by - ALWAYS filter by accessible setores
-    const filterSetorIds = setorFilter !== 'all'
-      ? [setorFilter]
-      : setorIdsAcessiveis
-
-    // Label dinâmico para as descrições dos KPIs
     const periodLabel =
       dateFilter === 'today' ? 'hoje'
       : dateFilter === 'all' ? 'todo o período'
       : dateFilter === 'custom' ? 'período selecionado'
       : `últimos ${dateFilter} dias`
 
-    // Helper para buscar TODOS os resultados com paginação (Supabase limita a 1000 rows)
-    const PAGE_SIZE = 1000
-    async function fetchAllPages<T>(buildQuery: (offset: number, limit: number) => any): Promise<T[]> {
-      let all: T[] = []
-      let offset = 0
-      let hasMore = true
-      while (hasMore) {
-        const { data } = await buildQuery(offset, offset + PAGE_SIZE - 1)
-        if (data && data.length > 0) {
-          all = all.concat(data)
-          offset += PAGE_SIZE
-          hasMore = data.length === PAGE_SIZE
-        } else {
-          hasMore = false
+    setLoading(true)
+    try {
+      // ─── 2 parallel queries instead of 7 sequential ───
+      // Query 1: KPI counts via Supabase aggregate (no pagination needed)
+      // Query 2: All ticket data for charts in ONE paginated fetch
+
+      // KPI queries (head count, fast)
+      const [totalResult, closedResult] = await Promise.all([
+        buildRangeQuery(supabase, 'tickets', '*', filterSetorIds, filterDate, filterDateTo)
+          .select('*', { count: 'exact', head: true }),
+        buildRangeQuery(supabase, 'tickets', '*', filterSetorIds, filterDate, filterDateTo)
+          .eq('status', 'encerrado')
+          .select('*', { count: 'exact', head: true }),
+      ])
+
+      const totalTickets = totalResult.count || 0
+      const closedTickets = closedResult.count || 0
+
+      // For time averages, fetch ONLY the 2 date columns needed (not full rows)
+      // and use a larger page size to reduce round trips
+      const allTicketData = await fetchAllTicketData(supabase, filterSetorIds, filterDate, filterDateTo)
+
+      // Compute KPIs from aggregated data
+      let avgFirstResponse = 0
+      let avgResolution = 0
+      const sectorCounts: Record<string, number> = {}
+      const colaboradorCounts: Record<string, number> = {}
+      const pdvCounts: Record<string, number> = {}
+      const clienteCounts: Record<string, number> = {}
+      const dailyCounts: Record<string, number> = {}
+
+      for (const t of allTicketData) {
+        // First response time
+        if (t.status === 'encerrado' && t.primeira_resposta_em && t.criado_em) {
+          const created = new Date(t.criado_em).getTime()
+          const firstResp = new Date(t.primeira_resposta_em).getTime()
+          avgFirstResponse += (firstResp - created) / (1000 * 60)
+        }
+        // Resolution time
+        if (t.status === 'encerrado' && t.encerrado_em && t.criado_em) {
+          const created = new Date(t.criado_em).getTime()
+          const closed = new Date(t.encerrado_em).getTime()
+          avgResolution += (closed - created) / (1000 * 60)
+        }
+
+        // Sector count
+        const sectorName = t.setor_nome || 'Sem setor'
+        sectorCounts[sectorName] = (sectorCounts[sectorName] || 0) + 1
+
+        // Colaborador count (encerrados only)
+        if (t.status === 'encerrado' && t.colaborador_nome) {
+          colaboradorCounts[t.colaborador_nome] = (colaboradorCounts[t.colaborador_nome] || 0) + 1
+        }
+
+        // PDV count
+        const pdvName = t.pdv || 'Sem PDV'
+        pdvCounts[pdvName] = (pdvCounts[pdvName] || 0) + 1
+
+        // Cliente count
+        const clienteName = t.cliente_nome || 'Desconhecido'
+        clienteCounts[clienteName] = (clienteCounts[clienteName] || 0) + 1
+
+        // Daily volume
+        if (t.criado_em) {
+          const d = new Date(t.criado_em)
+          const day = String(d.getDate()).padStart(2, '0')
+          const month = String(d.getMonth() + 1).padStart(2, '0')
+          const dateKey = `${day}/${month}`
+          dailyCounts[dateKey] = (dailyCounts[dateKey] || 0) + 1
         }
       }
-      return all
-    }
 
-    try {
-      // Fetch average first response time (filtrado pelo período selecionado)
-      const firstResponseData = await fetchAllPages<any>((from, to) => {
-        let q = supabase
-          .from('tickets')
-          .select('criado_em, primeira_resposta_em')
-          .eq('status', 'encerrado')
-          .not('primeira_resposta_em', 'is', null)
-          .in('setor_id', filterSetorIds)
-          .order('criado_em', { ascending: true })
-          .range(from, to)
-        if (filterDate) q = q.gte('criado_em', filterDate)
-        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
-        return q
-      })
+      const firstRespCount = allTicketData.filter(t => t.status === 'encerrado' && t.primeira_resposta_em && t.criado_em).length
+      const resolutionCount = allTicketData.filter(t => t.status === 'encerrado' && t.encerrado_em && t.criado_em).length
 
-      let avgFirstResponse = 0
-      if (firstResponseData.length > 0) {
-        const totalMinutes = firstResponseData.reduce((sum: number, ticket: any) => {
-          const created = new Date(ticket.criado_em).getTime()
-          const firstResponse = new Date(ticket.primeira_resposta_em).getTime()
-          return sum + (firstResponse - created) / (1000 * 60)
-        }, 0)
-        avgFirstResponse = Math.round(totalMinutes / firstResponseData.length)
-      }
+      if (firstRespCount > 0) avgFirstResponse = Math.round(avgFirstResponse / firstRespCount)
+      if (resolutionCount > 0) avgResolution = Math.round(avgResolution / resolutionCount)
 
-      // Fetch average resolution time (filtrado pelo período selecionado)
-      const resolutionData = await fetchAllPages<any>((from, to) => {
-        let q = supabase
-          .from('tickets')
-          .select('criado_em, encerrado_em')
-          .eq('status', 'encerrado')
-          .not('encerrado_em', 'is', null)
-          .in('setor_id', filterSetorIds)
-          .order('criado_em', { ascending: true })
-          .range(from, to)
-        if (filterDate) q = q.gte('criado_em', filterDate)
-        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
-        return q
-      })
-
-      let avgResolution = 0
-      if (resolutionData.length > 0) {
-        const totalMinutes = resolutionData.reduce((sum: number, ticket: any) => {
-          const created = new Date(ticket.criado_em).getTime()
-          const closed = new Date(ticket.encerrado_em).getTime()
-          return sum + (closed - created) / (1000 * 60)
-        }, 0)
-        avgResolution = Math.round(totalMinutes / resolutionData.length)
-      }
-
-      // Fetch total tickets recebidos no período selecionado
-      // Filtra por criado_em (consistente com monitoramento)
-      let totalQuery = supabase
-        .from('tickets')
-        .select('*', { count: 'exact', head: true })
-        .in('setor_id', filterSetorIds)
-      if (filterDate) totalQuery = totalQuery.gte('criado_em', filterDate)
-      if (filterDateTo) totalQuery = totalQuery.lte('criado_em', filterDateTo)
-      const { count: totalTickets } = await totalQuery
-
-      // Fetch tickets encerrados no período selecionado
-      // Filtra por criado_em + status encerrado (consistente com monitoramento)
-      let closedQuery = supabase
-        .from('tickets')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'encerrado')
-        .in('setor_id', filterSetorIds)
-      if (filterDate) closedQuery = closedQuery.gte('criado_em', filterDate)
-      if (filterDateTo) closedQuery = closedQuery.lte('criado_em', filterDateTo)
-      const { count: closedTickets } = await closedQuery
-
-      // Format times for display
       const formatTime = (minutes: number) => {
         if (minutes < 60) return `${minutes} min`
         const hours = Math.floor(minutes / 60)
@@ -266,106 +243,114 @@ export default function MetricasPage() {
       setMetrics([
         { title: 'Tempo Médio 1ª Resposta', value: formatTime(avgFirstResponse), description: `Tempo médio em ${periodLabel}`, icon: Timer, color: 'bg-primary' },
         { title: 'Tempo Médio Resolução', value: formatTime(avgResolution), description: `Tempo médio em ${periodLabel}`, icon: Clock, color: 'bg-accent' },
-        { title: 'Tickets Recebidos', value: String(totalTickets || 0), description: `Recebidos em ${periodLabel}`, icon: Ticket, color: 'bg-secondary' },
-        { title: 'Tickets Encerrados', value: String(closedTickets || 0), description: `Encerrados em ${periodLabel}`, icon: CheckCircle, color: 'bg-muted' },
+        { title: 'Tickets Recebidos', value: String(totalTickets), description: `Recebidos em ${periodLabel}`, icon: Ticket, color: 'bg-secondary' },
+        { title: 'Tickets Encerrados', value: String(closedTickets), description: `Encerrados em ${periodLabel}`, icon: CheckCircle, color: 'bg-muted' },
       ])
 
-      // Fetch tickets by sector — paginação completa
-      const allSectorData = await fetchAllPages<any>((from, to) => {
-        let q = supabase
-          .from('tickets')
-          .select('setor_id, setores(nome)')
-          .in('setor_id', filterSetorIds)
-          .order('criado_em', { ascending: true })
-          .range(from, to)
-        if (filterDate) q = q.gte('criado_em', filterDate)
-        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
-        return q
-      })
-      if (allSectorData.length > 0) {
-        const sectorCounts: Record<string, number> = {}
-        allSectorData.forEach((ticket: any) => {
-          const sectorName = ticket.setores?.nome || 'Sem setor'
-          sectorCounts[sectorName] = (sectorCounts[sectorName] || 0) + 1
+      setTicketsBySetor(
+        Object.entries(sectorCounts)
+          .map(([setor, count]) => ({ setor, count }))
+          .sort((a, b) => b.count - a.count)
+      )
+
+      setTicketsByColaborador(
+        Object.entries(colaboradorCounts)
+          .map(([colaborador, count]) => ({ colaborador, count }))
+          .sort((a, b) => b.count - a.count)
+      )
+
+      setTicketsByPDV(
+        Object.entries(pdvCounts)
+          .map(([pdv, count]) => ({ pdv, count }))
+          .sort((a, b) => b.count - a.count)
+      )
+
+      setTicketsByCliente(
+        Object.entries(clienteCounts)
+          .map(([cliente, count]) => ({ cliente, count }))
+          .sort((a, b) => b.count - a.count)
+      )
+
+      const sortedDates = Object.entries(dailyCounts)
+        .map(([date, count]) => ({ date, count }))
+        .sort((a, b) => {
+          const [dayA, monthA] = a.date.split('/').map(Number)
+          const [dayB, monthB] = b.date.split('/').map(Number)
+          if (monthA !== monthB) return monthA - monthB
+          return dayA - dayB
         })
-        setTicketsBySetor(
-          Object.entries(sectorCounts)
-            .map(([setor, count]) => ({ setor, count }))
-            .sort((a, b) => b.count - a.count)
-        )
-      }
-
-      // Fetch tickets by collaborator — paginação completa
-      const allColabData = await fetchAllPages<any>((from, to) => {
-        let q = supabase
-          .from('tickets')
-          .select('colaborador_id, colaboradores(nome)')
-          .eq('status', 'encerrado')
-          .not('colaborador_id', 'is', null)
-          .in('setor_id', filterSetorIds)
-          .order('criado_em', { ascending: true })
-          .range(from, to)
-        if (filterDate) q = q.gte('criado_em', filterDate)
-        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
-        return q
-      })
-      if (allColabData.length > 0) {
-        const colaboradorCounts: Record<string, number> = {}
-        allColabData.forEach((ticket: any) => {
-          const colaboradorName = ticket.colaboradores?.nome || 'Desconhecido'
-          colaboradorCounts[colaboradorName] = (colaboradorCounts[colaboradorName] || 0) + 1
-        })
-        setTicketsByColaborador(
-          Object.entries(colaboradorCounts)
-            .map(([colaborador, count]) => ({ colaborador, count }))
-            .sort((a, b) => b.count - a.count)
-        )
-      }
-
-      // Fetch daily volume — paginação completa
-      const allDailyData = await fetchAllPages<any>((from, to) => {
-        let q = supabase
-          .from('tickets')
-          .select('criado_em')
-          .in('setor_id', filterSetorIds)
-          .order('criado_em', { ascending: true })
-          .range(from, to)
-        if (filterDate) q = q.gte('criado_em', filterDate)
-        if (filterDateTo) q = q.lte('criado_em', filterDateTo)
-        return q
-      })
-
-      if (allDailyData.length > 0) {
-        const dailyCounts: Record<string, number> = {}
-        allDailyData.forEach((ticket) => {
-          // Extrair data diretamente da string ISO para evitar problemas de timezone
-          // criado_em vem como "2026-03-17T14:30:00.000Z" — usamos a parte da data local
-          const d = new Date(ticket.criado_em)
-          const day = String(d.getDate()).padStart(2, '0')
-          const month = String(d.getMonth() + 1).padStart(2, '0')
-          const dateKey = `${day}/${month}`
-          dailyCounts[dateKey] = (dailyCounts[dateKey] || 0) + 1
-        })
-
-        // Sort by date (month then day)
-        const sortedDates = Object.entries(dailyCounts)
-          .map(([date, count]) => ({ date, count }))
-          .sort((a, b) => {
-            const [dayA, monthA] = a.date.split('/').map(Number)
-            const [dayB, monthB] = b.date.split('/').map(Number)
-            if (monthA !== monthB) return monthA - monthB
-            return dayA - dayB
-          })
-
-        setDailyVolume(sortedDates)
-      }
+      setDailyVolume(sortedDates)
 
     } catch (error) {
       console.error('Erro ao buscar métricas:', error)
     } finally {
       setLoading(false)
     }
+  }, [dateFilter, customRange, setorFilter, setorIdsAcessiveis])
+
+  // Optimized: single paginated fetch with minimal columns
+  async function fetchAllTicketData(supabase: any, setorIds: string[], fromDate: string | null, toDate: string | null) {
+    const PAGE_SIZE = 1000
+    let all: Array<{
+      criado_em: string | null
+      primeira_resposta_em: string | null
+      encerrado_em: string | null
+      status: string | null
+      colaborador_nome: string | null
+      setor_nome: string | null
+      pdv: string | null
+      cliente_nome: string | null
+    }> = []
+    let offset = 0
+    let hasMore = true
+
+    while (hasMore) {
+      let query = supabase
+        .from('tickets')
+        .select('criado_em, primeira_resposta_em, encerrado_em, status, colaboradores:colaborador_id(nome), setores:setor_id(nome), clientes:cliente_id(nome, PDV)')
+        .in('setor_id', setorIds)
+        .order('criado_em', { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1)
+
+      if (fromDate) query = query.gte('criado_em', fromDate)
+      if (toDate) query = query.lte('criado_em', toDate)
+
+      const { data } = await query
+
+      if (data && data.length > 0) {
+        for (const row of data) {
+          all.push({
+            criado_em: row.criado_em,
+            primeira_resposta_em: row.primeira_resposta_em,
+            encerrado_em: row.encerrado_em,
+            status: row.status,
+            colaborador_nome: row.colaboradores?.nome ?? null,
+            setor_nome: row.setores?.nome ?? null,
+            pdv: row.clientes?.PDV ?? null,
+            cliente_nome: row.clientes?.nome ?? null,
+          })
+        }
+        offset += PAGE_SIZE
+        hasMore = data.length === PAGE_SIZE
+      } else {
+        hasMore = false
+      }
+    }
+    return all
   }
+
+  function buildRangeQuery(supabase: any, table: string, columns: string, setorIds: string[], fromDate: string | null, toDate: string | null) {
+    let q = supabase.from(table).select(columns).in('setor_id', setorIds)
+    if (fromDate) q = q.gte('criado_em', fromDate)
+    if (toDate) q = q.lte('criado_em', toDate)
+    return q
+  }
+
+  useEffect(() => {
+    if (colaborador && setorIdsAcessiveis.length > 0) {
+      fetchMetrics()
+    }
+  }, [colaborador, setorIdsAcessiveis.length, fetchMetrics])
 
   // Filtered + paginated data for Tickets por Setor
   const filteredTicketsBySetor = useMemo(() => {
@@ -391,6 +376,20 @@ export default function MetricasPage() {
     return filteredTicketsByColaborador.slice(start, start + ITEMS_PER_PAGE)
   }, [filteredTicketsByColaborador, colaboradorPage])
 
+  // Paginated data for Tickets por PDV
+  const pdvTotalPages = Math.max(1, Math.ceil(ticketsByPDV.length / ITEMS_PER_PAGE))
+  const paginatedTicketsByPDV = useMemo(() => {
+    const start = pdvPage * ITEMS_PER_PAGE
+    return ticketsByPDV.slice(start, start + ITEMS_PER_PAGE)
+  }, [ticketsByPDV, pdvPage])
+
+  // Paginated data for Tickets por Cliente
+  const clienteTotalPages = Math.max(1, Math.ceil(ticketsByCliente.length / ITEMS_PER_PAGE))
+  const paginatedTicketsByCliente = useMemo(() => {
+    const start = clientePage * ITEMS_PER_PAGE
+    return ticketsByCliente.slice(start, start + ITEMS_PER_PAGE)
+  }, [ticketsByCliente, clientePage])
+
   const containerVariants = {
     hidden: { opacity: 0 },
     visible: {
@@ -405,6 +404,8 @@ export default function MetricasPage() {
     hidden: { opacity: 0, y: 20 },
     visible: { opacity: 1, y: 0 }
   }
+
+  const isLoading = loadingDash || loading
 
   return (
     <div className="flex flex-col gap-6">
@@ -424,24 +425,38 @@ export default function MetricasPage() {
         initial="hidden"
         animate="visible"
       >
-        {metrics.map((metric, index) => (
-          <motion.div key={metric.title} variants={itemVariants}>
-            <Card className="glass-card-elevated rounded-2xl border-0 overflow-hidden">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-foreground">{metric.title}</CardTitle>
-                <div className={`rounded-lg ${metric.color} p-2`}>
-                  <metric.icon className="h-4 w-4 text-foreground" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold text-foreground">{metric.value}</div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {metric.description}
-                </p>
-              </CardContent>
-            </Card>
-          </motion.div>
-        ))}
+        {isLoading
+          ? Array.from({ length: 4 }).map((_, i) => (
+              <Card key={i} className="glass-card-elevated rounded-2xl border-0 overflow-hidden">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-8 w-8 rounded-lg" />
+                </CardHeader>
+                <CardContent>
+                  <Skeleton className="h-8 w-16 mb-1" />
+                  <Skeleton className="h-3 w-32" />
+                </CardContent>
+              </Card>
+            ))
+          : metrics.map((metric, index) => (
+              <motion.div key={metric.title} variants={itemVariants}>
+                <Card className="glass-card-elevated rounded-2xl border-0 overflow-hidden">
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium text-foreground">{metric.title}</CardTitle>
+                    <div className={`rounded-lg ${metric.color} p-2`}>
+                      <metric.icon className="h-4 w-4 text-foreground" />
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-3xl font-bold text-foreground">{metric.value}</div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {metric.description}
+                    </p>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            ))
+        }
       </motion.div>
 
       {/* Filters */}
@@ -675,6 +690,91 @@ export default function MetricasPage() {
                 <div className="flex h-[400px] items-center justify-center text-muted-foreground">
                   Nenhum dado disponível
                 </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+      </div>
+
+      {/* Tickets por PDV + Tickets por Cliente — Side by Side */}
+      <div className="grid gap-6 md:grid-cols-2">
+        {/* Tickets por PDV */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}>
+          <Card className="glass-card-elevated rounded-2xl border-0">
+            <CardHeader>
+              <CardTitle className="text-foreground">Tickets por PDV</CardTitle>
+              <CardDescription>Distribuição por ponto de venda</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {paginatedTicketsByPDV.length > 0 ? (
+                <>
+                  <ResponsiveContainer width="100%" height={Math.max(200, paginatedTicketsByPDV.length * 40)}>
+                    <BarChart data={paginatedTicketsByPDV} layout="vertical" margin={{ left: 10, right: 30 }}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                      <XAxis type="number" className="text-xs fill-muted-foreground" />
+                      <YAxis dataKey="pdv" type="category" width={100} className="text-xs fill-muted-foreground" tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '12px' }}
+                        formatter={(value: number) => [`${value} tickets`, 'Quantidade']}
+                      />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                        {paginatedTicketsByPDV.map((_, index) => (
+                          <Cell key={`cell-pdv-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  {pdvTotalPages > 1 && (
+                    <div className="flex items-center justify-between mt-4 text-xs text-muted-foreground">
+                      <Button variant="outline" size="sm" disabled={pdvPage === 0} onClick={() => setPdvPage(p => p - 1)}>Anterior</Button>
+                      <span>{pdvPage + 1} / {pdvTotalPages}</span>
+                      <Button variant="outline" size="sm" disabled={pdvPage >= pdvTotalPages - 1} onClick={() => setPdvPage(p => p + 1)}>Próximo</Button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex h-[200px] items-center justify-center text-muted-foreground">Nenhum dado de PDV disponível</div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* Tickets por Cliente */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+          <Card className="glass-card-elevated rounded-2xl border-0">
+            <CardHeader>
+              <CardTitle className="text-foreground">Tickets por Cliente</CardTitle>
+              <CardDescription>Clientes que mais abrem tickets</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {paginatedTicketsByCliente.length > 0 ? (
+                <>
+                  <ResponsiveContainer width="100%" height={Math.max(200, paginatedTicketsByCliente.length * 40)}>
+                    <BarChart data={paginatedTicketsByCliente} layout="vertical" margin={{ left: 10, right: 30 }}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                      <XAxis type="number" className="text-xs fill-muted-foreground" />
+                      <YAxis dataKey="cliente" type="category" width={100} className="text-xs fill-muted-foreground" tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '12px' }}
+                        formatter={(value: number) => [`${value} tickets`, 'Quantidade']}
+                      />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                        {paginatedTicketsByCliente.map((_, index) => (
+                          <Cell key={`cell-cli-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  {clienteTotalPages > 1 && (
+                    <div className="flex items-center justify-between mt-4 text-xs text-muted-foreground">
+                      <Button variant="outline" size="sm" disabled={clientePage === 0} onClick={() => setClientePage(p => p - 1)}>Anterior</Button>
+                      <span>{clientePage + 1} / {clienteTotalPages}</span>
+                      <Button variant="outline" size="sm" disabled={clientePage >= clienteTotalPages - 1} onClick={() => setClientePage(p => p + 1)}>Próximo</Button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex h-[200px] items-center justify-center text-muted-foreground">Nenhum dado disponível</div>
               )}
             </CardContent>
           </Card>

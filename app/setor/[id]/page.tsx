@@ -2,7 +2,7 @@
 
 import { useRef } from "react"
 
-import { useState, useMemo, useEffect, useTransition } from 'react'
+import React, { useState, useMemo, useEffect, useTransition, Fragment } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import useSWR from 'swr'
@@ -380,6 +380,16 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
     }
   }
 
+  // Tickets por PDV
+  const ticketsPorPDV: Record<string, { pdv: string; count: number }> = {}
+  for (const ticket of tickets) {
+    const pdv = ticket.clientes?.PDV || 'Sem PDV'
+    if (!ticketsPorPDV[pdv]) {
+      ticketsPorPDV[pdv] = { pdv, count: 0 }
+    }
+    ticketsPorPDV[pdv].count++
+  }
+
   // NPS calculation
   const ticketsComAvaliacao = tickets.filter((t) => t.avaliacoes?.[0]?.nota != null)
   const totalAvaliacoes = ticketsComAvaliacao.length
@@ -398,6 +408,7 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
     tempoMedioPrimeiraResposta: formatMs(tempoMedioPrimeiraResposta),
     tempoMedioResolucao: formatMs(tempoMedioResolucao),
     ticketsPorAtendente: Object.values(ticketsPorAtendente).sort((a, b) => b.count - a.count),
+    ticketsPorPDV: Object.values(ticketsPorPDV).sort((a, b) => b.count - a.count),
     taxaResolucao: tickets.length > 0 ? Math.round((ticketsEncerrados.length / tickets.length) * 100) : 0,
     npsScore,
     totalAvaliacoes,
@@ -538,6 +549,7 @@ export default function SetorPage() {
   setor_receptor_id: '' as string,
   openai_api_key: '',
   openai_ativo: false,
+  nexus_ativo: false,
   assinatura_ativa: false,
   })
 
@@ -746,14 +758,32 @@ export default function SetorPage() {
     async () => {
       let query = supabase
         .from('tickets')
-        .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ), avaliacoes(nota)')
+        .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ, PDV)')
         .eq('setor_id', setorId)
         .order('criado_em', { ascending: false })
         .limit(1000)
       if (dateFrom) query = query.gte('criado_em', dateFrom)
       if (dateTo) query = query.lte('criado_em', dateTo)
       const { data: tickets } = await query
-      return tickets || []
+      // Buscar avaliações separadamente (join direto não funciona via client RLS)
+      const ticketIds = (tickets || []).map((t: any) => t.id)
+      let avaliacoesMap = new Map<string, number>()
+      if (ticketIds.length > 0) {
+        const { data: avaliacoes } = await supabase
+          .from('avaliacoes')
+          .select('ticket_id, nota')
+          .in('ticket_id', ticketIds)
+        if (avaliacoes) {
+          for (const a of avaliacoes) {
+            avaliacoesMap.set(a.ticket_id, a.nota)
+          }
+        }
+      }
+      // Merge avaliações nos tickets
+      return (tickets || []).map((t: any) => ({
+        ...t,
+        avaliacoes: avaliacoesMap.has(t.id) ? [{ nota: avaliacoesMap.get(t.id) }] : [],
+      }))
     },
     { revalidateOnFocus: false }
   )
@@ -909,6 +939,7 @@ export default function SetorPage() {
         setor_receptor_id: setor.setor_receptor_id || '',
         openai_api_key: setor.openai_api_key || '',
         openai_ativo: setor.openai_ativo || false,
+        nexus_ativo: setor.nexus_ativo || false,
         assinatura_ativa: setor.assinatura_ativa || false,
       })
       fetchTemplates()
@@ -1274,6 +1305,7 @@ const saveConfig = async () => {
   setor_receptor_id: configForm.setor_receptor_id || null,
   openai_api_key: configForm.openai_api_key || null,
   openai_ativo: configForm.openai_ativo || false,
+  nexus_ativo: configForm.nexus_ativo || false,
   assinatura_ativa: configForm.assinatura_ativa || false,
   })
         .eq('id', setorId)
@@ -3374,6 +3406,46 @@ const saveConfig = async () => {
               </CardContent>
             </Card>
 
+            {/* Tickets por PDV */}
+            <Card className="glass-card-elevated rounded-2xl border-0">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Hash className="h-4 w-4" />
+                  Tickets por PDV
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {relatorioStats.ticketsPorPDV.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-center">
+                    <Hash className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                    <p className="text-sm text-muted-foreground">Nenhum dado de PDV encontrado</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto">
+                    {relatorioStats.ticketsPorPDV.map((item: { pdv: string; count: number }, index: number) => (
+                      <div key={item.pdv} className="flex items-center gap-3">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/50 text-xs font-medium">
+                          {index + 1}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-sm font-medium">{item.pdv}</span>
+                            <span className="text-sm text-muted-foreground">{item.count} tickets</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-accent rounded-full transition-all"
+                              style={{ width: `${Math.min(100, (item.count / Math.max(...relatorioStats.ticketsPorPDV.map((a: { count: number }) => a.count))) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Últimos atendimentos */}
             <Card className="glass-card-elevated rounded-2xl border-0">
               <CardHeader className="pb-2">
@@ -3585,8 +3657,8 @@ const saveConfig = async () => {
                             <p className="text-sm text-primary truncate">{atendente.email}</p>
                             {(() => {
                               const npsData = mediaNPSPorColaborador.get(atendente.id)
-                              if (!npsData) return null
-                              const mediaNPS = npsData.soma / npsData.total
+                              const mediaNPS = npsData ? npsData.soma / npsData.total : 0
+                              const total = npsData?.total || 0
                               return (
                                 <div className="flex items-center gap-1 text-xs mt-1">
                                   <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
@@ -3596,7 +3668,7 @@ const saveConfig = async () => {
                                   )}>
                                     {mediaNPS.toFixed(1)}
                                   </span>
-                                  <span className="text-muted-foreground">({npsData.total})</span>
+                                  <span className="text-muted-foreground">({total} {total === 1 ? 'avaliação' : 'avaliações'})</span>
                                 </div>
                               )
                             })()}
@@ -4588,6 +4660,19 @@ const saveConfig = async () => {
                 <p className="text-xs text-muted-foreground">A chave será usada para chamar a OpenAI ao melhorar mensagens. Modelo utilizado: GPT-4o mini.</p>
               </div>
             )}
+            <div className="flex items-center justify-between pt-2 border-t border-border">
+              <div>
+                <p className="text-sm font-medium">Ativar Nexus (Assistente IA)</p>
+                <p className="text-xs text-muted-foreground">Exibe o assistente Nexus no painel lateral do workdesk</p>
+              </div>
+              <Switch
+                checked={configForm.nexus_ativo}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, nexus_ativo: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -5891,14 +5976,13 @@ const saveConfig = async () => {
                     ) : (
                       conversationMessages.map((msg: any) => (
                         msg._ticketStart ? (
-                          <React.Fragment key={`sep-${msg.id}`}>
+                          <Fragment key={`sep-${msg.id}`}>
                             <div className="flex items-center gap-3 py-2">
                               <div className="flex-1 border-t border-dashed border-primary/30" />
                               <span className="text-[10px] font-medium text-primary/70 whitespace-nowrap">Início do Ticket #{selectedTicket?.numero}</span>
                               <div className="flex-1 border-t border-dashed border-primary/30" />
                             </div>
                             <div
-                              key={msg.id}
                               className={cn(
                                 "flex",
                                 msg.remetente === 'cliente' ? "justify-start" : "justify-end"
@@ -5916,7 +6000,7 @@ const saveConfig = async () => {
                                 </p>
                               </div>
                             </div>
-                          </React.Fragment>
+                          </Fragment>
                         ) : msg.remetente === 'sistema' ? (
                           <div key={msg.id} className="flex justify-center">
                             <div className={cn(
