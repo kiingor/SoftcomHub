@@ -1,0 +1,1046 @@
+================================================================================
+             SOFTCOMHUB — MANUAL COMPLETO DO SISTEMA
+             Guia para Atendentes e Administradores
+================================================================================
+
+Versão: Março 2026
+Público: Atendentes, Supervisores e Administradores
+
+================================================================================
+ÍNDICE
+================================================================================
+
+  PARTE 1 — WORKDESK (Tela do Atendente)
+    1.1  Acesso e Login
+    1.2  Status de Disponibilidade (Online / Offline / Pausa)
+    1.3  Lista de Tickets
+    1.4  Conversa e Mensagens
+    1.5  Envio de Arquivos e Mídias
+    1.6  Templates (Respostas Rápidas)
+    1.7  Ações no Ticket (Fechar, Transferir, Prioridade)
+    1.8  Dados do Cliente
+    1.9  Notificações e Alertas Sonoros
+    1.10 Menu do Usuário (Perfil e Senha)
+
+  PARTE 2 — DASHBOARD (Painel Administrativo)
+    2.1  Acesso ao Dashboard
+    2.2  Monitoramento em Tempo Real
+    2.3  Métricas e Relatórios
+    2.4  Gerenciamento de Atendentes
+    2.5  Gerenciamento de Setores
+    2.6  Subsetores
+    2.7  Templates por Setor
+    2.8  Pausas
+    2.9  Horários de Atendimento
+    2.10 Canais de Comunicação
+    2.11 Usuários Administradores
+    2.12 Permissões
+    2.13 Logs de Disparos
+
+  PARTE 3 — FAQ (Perguntas Frequentes)
+
+================================================================================
+PARTE 1 — WORKDESK (TELA DO ATENDENTE)
+================================================================================
+
+O Workdesk é a tela principal de trabalho dos atendentes. Tudo que o atendente
+precisa para receber e responder tickets está nessa tela.
+
+Palavras-chave: workdesk, atendente, ticket, atendimento, chat, conversa
+
+
+------------------------------------------------------------------------
+1.1  ACESSO E LOGIN
+------------------------------------------------------------------------
+
+Endereço de acesso:
+  https://[seu-dominio]/workdesk
+
+Como fazer login:
+  1. Informe seu e-mail cadastrado
+  2. Informe sua senha
+  3. Clique em "Entrar"
+
+Esqueci minha senha:
+  1. Clique em "Esqueceu a senha?"
+  2. Informe seu e-mail
+  3. Você receberá um link de redefinição por e-mail (válido por 1 hora)
+  4. Clique no link recebido e defina a nova senha
+
+Acesso negado / conta inativa:
+  Se aparecer mensagem de conta inativa, contate o administrador para
+  reativar seu cadastro.
+
+Palavras-chave: login, entrar, senha, acesso, esqueci senha, redefinir senha,
+                conta inativa, e-mail
+
+
+------------------------------------------------------------------------
+1.2  STATUS DE DISPONIBILIDADE (ONLINE / OFFLINE / PAUSA)
+------------------------------------------------------------------------
+
+O status controla se o sistema vai te enviar novos tickets automaticamente.
+Somente atendentes com status ONLINE recebem tickets.
+
+--- COMO FICAR ONLINE ---
+  1. No canto superior da tela, clique no botão de status
+  2. Clique em "Ir Online"
+  3. O indicador ficará VERDE com animação pulsante
+  → A partir desse momento você começa a receber tickets
+
+--- COMO FICAR OFFLINE ---
+  1. Clique no botão de status
+  2. Clique em "Ir Offline"
+  3. O indicador ficará CINZA
+  → Você não receberá novos tickets, mas os que já tem continuam
+  → Os tickets existentes permanecem com você
+
+--- COMO ENTRAR EM PAUSA ---
+  1. Clique no botão de status
+  2. Clique em "Iniciar Pausa"
+  3. Selecione o motivo da pausa (ex: Almoço, Banheiro, Reunião)
+  4. Clique em confirmar
+  → O indicador ficará AMARELO com o nome da pausa
+  → Um cronômetro mostra o tempo de pausa (MM:SS)
+  → Você não receberá novos tickets durante a pausa
+
+--- COMO RETORNAR DA PAUSA ---
+  1. Clique no botão de status
+  2. Clique em "Retornar ao Atendimento"
+  → Você voltará automaticamente para o status Online
+
+IMPORTANTE: Sempre fique Offline ou em Pausa quando se ausentar.
+O sistema monitora o tempo de pausa para relatórios.
+
+Palavras-chave: online, offline, pausa, disponível, indisponível, status,
+                almoço, intervalo, cronômetro, presença, disponibilidade
+
+
+------------------------------------------------------------------------
+1.3  LISTA DE TICKETS
+------------------------------------------------------------------------
+
+A coluna esquerda da tela mostra todos os seus tickets ativos.
+
+--- O QUE É UM TICKET ---
+Um ticket representa um atendimento com um cliente. Cada conversa aberta
+é um ticket. Um cliente pode ter tickets em setores diferentes.
+
+--- INFORMAÇÕES EXIBIDAS EM CADA TICKET ---
+  • Nome do cliente
+  • Número do ticket (ex: #1042)
+  • Prévia da última mensagem
+  • Hora ou data da última mensagem
+  • Contador de mensagens não lidas (bolinha vermelha com número)
+  • Badge de prioridade (URGENTE em vermelho)
+  • Badge de subsetor (se houver)
+
+--- COMO FILTRAR TICKETS ---
+  Use os filtros no topo da lista:
+
+  • BUSCA: Digite o nome do cliente, número do ticket ou telefone
+  • STATUS: Todos / Em Aberto / Em Atendimento
+  • PRIORIDADE: Todos / Normal / Urgente
+  • SUBSETOR: Filtra por subsetor específico
+
+--- ORDENAÇÃO ---
+  Os tickets são ordenados pela mensagem mais recente (igual ao WhatsApp).
+  O ticket com a mensagem mais nova aparece no topo.
+
+--- SELECIONANDO UM TICKET ---
+  Clique em qualquer ticket da lista para abrir a conversa.
+  O ticket selecionado fica destacado.
+
+Palavras-chave: ticket, lista, fila, busca, filtro, pesquisa, prioridade,
+                urgente, subsetor, não lido, atendimento, abertura
+
+
+------------------------------------------------------------------------
+1.4  CONVERSA E MENSAGENS
+------------------------------------------------------------------------
+
+Após clicar em um ticket, a conversa aparece na área central/direita da tela.
+
+--- VISUALIZAÇÃO DAS MENSAGENS ---
+  As mensagens são exibidas em bolhas de chat:
+  • Mensagens do CLIENTE ficam à esquerda (cor neutra)
+  • Mensagens suas (COLABORADOR) ficam à direita (cor do setor)
+  • Mensagens de BOT ou SISTEMA ficam centralizadas com ícone próprio
+
+  Cada mensagem mostra:
+  • Conteúdo da mensagem
+  • Horário de envio
+  • Indicador de leitura (✓ enviado / ✓✓ recebido)
+
+--- COMO ENVIAR UMA MENSAGEM ---
+  1. Clique na caixa de texto no rodapé da conversa
+  2. Digite sua mensagem
+  3. Pressione ENTER ou clique no botão de envio (seta)
+
+--- COMO ENVIAR UMA MENSAGEM LONGA ---
+  • Pressione SHIFT + ENTER para quebrar linha sem enviar
+
+--- HISTÓRICO DE MENSAGENS ---
+  Todo o histórico da conversa é carregado automaticamente.
+  Role para cima para ver mensagens mais antigas.
+
+Palavras-chave: mensagem, enviar, chat, conversa, histórico, responder,
+                texto, bolha, envio, resposta, atendimento
+
+
+------------------------------------------------------------------------
+1.5  ENVIO DE ARQUIVOS E MÍDIAS
+------------------------------------------------------------------------
+
+Você pode enviar diferentes tipos de arquivo para o cliente.
+
+--- COMO ENVIAR ARQUIVO ---
+  1. Clique no ícone de clipe/anexo ao lado da caixa de texto
+  2. Selecione o arquivo no seu computador
+  3. Uma prévia aparecerá (para imagens)
+  4. Clique em enviar
+
+--- TIPOS DE ARQUIVO SUPORTADOS ---
+  IMAGENS:  .jpg, .jpeg, .png, .gif, .webp
+  VÍDEOS:   .mp4, .mov, .avi
+  ÁUDIOS:   .mp3, .ogg, .wav, .m4a
+  DOCS:     .pdf, .doc, .docx, .xls, .xlsx, .csv
+  OUTROS:   .zip, .rar, .7z, .xml, .json, .cer, .crt, .pem
+
+--- COMO GRAVAR ÁUDIO ---
+  1. Clique no ícone de microfone
+  2. Permita o acesso ao microfone quando solicitado
+  3. Grave sua mensagem de voz
+  4. Confirme o envio
+
+--- COMO ENVIAR EMOJI ---
+  1. Clique no ícone de emoji (rosto sorridente)
+  2. Selecione o emoji desejado
+  3. Ele será inserido na sua mensagem
+
+--- VISUALIZAÇÃO DE MÍDIAS RECEBIDAS ---
+  • Imagens: aparecem em miniatura, clique para ampliar
+  • Áudios: aparecem com player, clique para ouvir
+  • Vídeos: aparecem com player embutido
+  • Documentos: aparecem com ícone e botão de download
+  • Contatos (vCard): aparecem com ícone de pessoa e botão para copiar telefone
+
+Palavras-chave: arquivo, imagem, foto, vídeo, áudio, documento, pdf, anexo,
+                upload, enviar arquivo, microfone, voz, emoji, mídia, download
+
+
+------------------------------------------------------------------------
+1.6  TEMPLATES (RESPOSTAS RÁPIDAS)
+------------------------------------------------------------------------
+
+Templates são mensagens pré-definidas para agilizar o atendimento.
+Evitam que você precise digitar as mesmas respostas repetidamente.
+
+--- COMO USAR UM TEMPLATE ---
+  1. Clique no ícone de relâmpago ⚡ ou templates na caixa de texto
+  2. Uma lista de templates disponíveis aparecerá
+  3. Use a busca para filtrar por nome ou conteúdo
+  4. Clique no template desejado
+  5. O texto é inserido automaticamente na caixa de mensagem
+  6. Você pode editar o texto antes de enviar
+
+--- EXEMPLO DE USO ---
+  Template "Saudação": "Olá! Seja bem-vindo ao suporte SoftcomHub.
+  Como posso te ajudar hoje?"
+
+  Em vez de digitar isso toda vez, você seleciona o template com 2 cliques.
+
+NOTA: Os templates são configurados pelo administrador por setor.
+      Se precisar de um template novo, peça ao seu gestor.
+
+Palavras-chave: template, resposta rápida, atalho, mensagem pronta,
+                canned response, automático, padrão, modelo
+
+
+------------------------------------------------------------------------
+1.7  AÇÕES NO TICKET
+------------------------------------------------------------------------
+
+Cada ticket aberto tem ações disponíveis no topo da conversa.
+
+--- FECHAR TICKET ---
+  Quando o atendimento for concluído:
+  1. Clique no botão "Fechar Ticket" (ícone X ou "Encerrar")
+  2. Confirme na caixa de diálogo
+  → O ticket vai para o status "Encerrado"
+  → Sai automaticamente da sua lista
+  → O histórico fica salvo para consulta no Dashboard
+
+  QUANDO FECHAR: Apenas quando o problema do cliente foi resolvido
+  ou quando o cliente não responde mais.
+
+--- TRANSFERIR TICKET ---
+  Para transferir o atendimento para outro atendente ou setor:
+  1. Clique no botão "Transferir" (ícone de setas)
+  2. Selecione o SETOR de destino (obrigatório)
+  3. Selecione o ATENDENTE de destino (opcional — se não selecionar,
+     vai para a fila do setor)
+  4. Clique em "Transferir"
+  → O ticket desaparece da sua lista imediatamente
+  → O atendente de destino recebe o ticket com todo o histórico
+
+  DICA: Use a busca para encontrar o atendente pelo nome.
+  Atendentes online aparecem com indicador verde.
+
+--- ALTERAR PRIORIDADE ---
+  Para marcar um ticket como urgente:
+  1. Clique no ícone de prioridade (bandeira ou raio)
+  2. Selecione "Urgente" ou "Normal"
+  3. Confirme
+  → Badge "URGENTE" aparece em vermelho no ticket
+  → Ajuda na visualização para supervisores
+
+--- ALTERAR SUBSETOR ---
+  Para mover o ticket para um subsetor específico:
+  1. Clique na opção de subsetor
+  2. Selecione o subsetor da lista
+  3. Confirme
+  → O badge de subsetor é atualizado no ticket
+
+Palavras-chave: fechar, encerrar, transferir, transferência, prioridade,
+                urgente, subsetor, ação, mover, encaminhar, conclusão
+
+
+------------------------------------------------------------------------
+1.8  DADOS DO CLIENTE
+------------------------------------------------------------------------
+
+Ao abrir um ticket, você pode ver e editar as informações do cliente.
+
+--- ONDE VER OS DADOS ---
+  Na área da conversa, há um painel ou aba com os dados do cliente.
+
+--- INFORMAÇÕES DISPONÍVEIS ---
+  • Nome completo
+  • Número de telefone
+  • E-mail
+  • CNPJ
+  • Registro / PDV
+  • Data de cadastro no sistema
+
+--- COMO EDITAR OS DADOS DO CLIENTE ---
+  1. Clique no ícone de edição (lápis) ao lado dos dados
+  2. Edite os campos desejados
+  3. Clique em "Salvar"
+  → Os dados são atualizados em tempo real
+
+--- COMO TROCAR O CLIENTE DO TICKET ---
+  Em casos onde o ticket foi criado com o cliente errado:
+  1. Clique na opção "Trocar Cliente"
+  2. Busque pelo nome ou telefone do cliente correto
+  3. Selecione o cliente
+  4. Confirme a troca
+  → O histórico de mensagens permanece, apenas o cadastro muda
+
+Palavras-chave: cliente, dados, informações, telefone, nome, editar,
+                CNPJ, registro, PDV, atualizar, cadastro, perfil do cliente
+
+
+------------------------------------------------------------------------
+1.9  NOTIFICAÇÕES E ALERTAS SONOROS
+------------------------------------------------------------------------
+
+--- NOTIFICAÇÕES ---
+  O ícone de sino 🔔 no topo da tela mostra suas notificações.
+  Um número em vermelho indica notificações não lidas.
+
+  Clique no sino para ver:
+  • Mensagens do sistema
+  • Avisos do gestor
+  • Notificações do setor
+
+  Cada notificação mostra o remetente e o tempo (ex: "há 5 minutos").
+  Clique na notificação para marcá-la como lida.
+
+--- ALERTAS SONOROS ---
+  Quando um novo ticket chega, o sistema toca um som de alerta.
+
+  Para configurar o som:
+  1. Clique no seu nome/avatar no canto superior direito
+  2. Acesse a opção de som
+  3. Escolha entre:
+     • "Padrão" — som de sino/notificação clássico
+     • "Buh Buh" — som alternativo
+  4. Clique em "Testar" para ouvir antes de escolher
+  5. A preferência é salva automaticamente
+
+  DICA: Se não estiver ouvindo os alertas, verifique se o volume
+  do computador está ligado e se o navegador tem permissão de som.
+
+Palavras-chave: notificação, alerta, sino, som, áudio, novo ticket,
+                aviso, alerta sonoro, configurar som, notificação push
+
+
+------------------------------------------------------------------------
+1.10 MENU DO USUÁRIO (PERFIL E SENHA)
+------------------------------------------------------------------------
+
+Clique no seu nome no canto superior direito para acessar o menu.
+
+--- OPÇÕES DISPONÍVEIS ---
+
+  PREFERÊNCIA DE SOM:
+  Escolha o tipo de alerta para novos tickets.
+  (ver seção 1.9)
+
+  ALTERAR SENHA:
+  1. Clique em "Alterar Senha"
+  2. Informe a senha atual
+  3. Informe a nova senha (mínimo 6 caracteres)
+  4. Confirme a nova senha
+  5. Clique em "Salvar"
+  → Após salvar, você será redirecionado ao login novamente
+
+  SAIR (LOGOUT):
+  1. Clique em "Sair"
+  → Você será desconectado e redirecionado para a tela de login
+  → Seu status é definido como Offline automaticamente
+
+--- MODO ESCURO / CLARO ---
+  No topo da tela, há um botão de alternância de tema (sol/lua).
+  Clique para trocar entre modo claro e escuro.
+  A preferência é salva automaticamente.
+
+Palavras-chave: perfil, senha, alterar senha, sair, logout, tema,
+                modo escuro, dark mode, preferências, conta
+
+
+================================================================================
+PARTE 2 — DASHBOARD (PAINEL ADMINISTRATIVO)
+================================================================================
+
+O Dashboard é o painel de gestão e configuração do sistema.
+Acesso restrito a usuários com permissão de administrador ou supervisor.
+
+Endereço: https://[seu-dominio]/dashboard
+
+Palavras-chave: dashboard, painel, admin, administrador, gestão, gerenciamento
+
+
+------------------------------------------------------------------------
+2.1  ACESSO AO DASHBOARD
+------------------------------------------------------------------------
+
+  Endereço: https://[seu-dominio]/login  (ou /dashboard)
+
+  O sistema redireciona automaticamente:
+  • Usuários com permissão de dashboard → vai para /dashboard
+  • Usuários sem permissão → vai para /workdesk
+
+  NOTA: Atendentes comuns NÃO têm acesso ao Dashboard.
+  Apenas gestores e administradores.
+
+Palavras-chave: acesso, login admin, dashboard login, permissão
+
+
+------------------------------------------------------------------------
+2.2  MONITORAMENTO EM TEMPO REAL
+------------------------------------------------------------------------
+
+Caminho: Dashboard → Monitoramento  (ou Dashboard → [Setor] → Monitoramento)
+
+Esta é a tela de visão geral de tudo que está acontecendo agora.
+
+--- CONTADORES NO TOPO ---
+  • Tickets na Fila: aguardando atendente
+  • Em Atendimento: sendo atendidos agora
+  • Encerrados Hoje: finalizados no dia atual
+  • Tempo Máx. na Fila: maior tempo de espera ativo
+  • Tempo Máx. de Resposta: maior tempo sem resposta
+
+--- PAINEL DE ATENDENTES ---
+  Mostra cada atendente do setor e seu status atual:
+  • 🟢 Online — disponível para receber tickets
+  • 🟡 Em Pausa — nome da pausa exibido
+  • ⚪ Offline — fora do atendimento
+
+  Para cada atendente você vê:
+  • Nome
+  • Status atual
+  • Quantidade de tickets ativos
+  • Último acesso (heartbeat)
+
+--- LISTA DE TICKETS ATIVOS ---
+  Aba "Em Andamento": tickets abertos e em atendimento
+  Aba "Completados": tickets encerrados hoje
+
+  Para cada ticket:
+  • Número do ticket
+  • Nome do cliente
+  • Atendente responsável
+  • Setor / Subsetor
+  • Tempo na fila ou tempo de atendimento
+  • Prioridade
+  • Botões de ação rápida (fechar, transferir)
+
+--- FILTROS ---
+  • Por Tag
+  • Por Setor
+  • Por Subsetor
+  • Por Atendente
+  • Busca por texto (nome do cliente, número do ticket)
+
+--- ABRIR CONVERSA DE UM TICKET ---
+  No monitoramento, clique em qualquer ticket para ver o histórico
+  completo de mensagens no modo leitura (sem poder enviar mensagens).
+
+  Como supervisor, você pode:
+  • Ver toda a conversa
+  • Fechar o ticket
+  • Transferir o ticket para outro atendente/setor
+
+Palavras-chave: monitoramento, tempo real, fila, online, supervisão,
+                acompanhamento, atendentes online, tickets ativos,
+                em andamento, hoje, contadores
+
+
+------------------------------------------------------------------------
+2.3  MÉTRICAS E RELATÓRIOS
+------------------------------------------------------------------------
+
+Caminho: Dashboard → Métricas  (ou [Setor] → Relatórios)
+
+--- FILTROS DE PERÍODO ---
+  • Hoje
+  • Últimos 7 dias
+  • Últimos 30 dias
+  • Personalizado (escolha data inicial e final)
+
+  Também filtre por:
+  • Setor
+  • Atendente específico
+
+--- MÉTRICAS EXIBIDAS ---
+  • Total de Tickets Recebidos: quantos tickets chegaram no período
+  • Tickets Resolvidos: quantos foram encerrados
+  • Taxa de Resolução: percentual de tickets encerrados vs recebidos
+  • Tempo Médio de 1ª Resposta: quanto tempo até o atendente responder
+  • Tempo Médio de Resolução: tempo médio para fechar um ticket
+  • Ranking de Atendentes: quem mais atendeu no período
+  • Tabela detalhada: todos os tickets com datas e responsáveis
+
+--- COMO EXPORTAR ---
+  Os dados podem ser visualizados na tela. Para exportar, use as
+  ferramentas do navegador (Ctrl+P para imprimir/salvar como PDF).
+
+Palavras-chave: métricas, relatório, estatísticas, produtividade,
+                tempo resposta, resolução, ranking, atendente,
+                período, desempenho, KPI, SLA
+
+
+------------------------------------------------------------------------
+2.4  GERENCIAMENTO DE ATENDENTES
+------------------------------------------------------------------------
+
+Caminho: Dashboard → Colaboradores  OU  [Setor] → Atendentes
+
+--- LISTA DE ATENDENTES ---
+  Exibe todos os atendentes cadastrados com:
+  • Nome
+  • E-mail
+  • Setores vinculados (badges coloridos)
+  • Nível de permissão
+  • Status online/offline atual
+  • Botões: Editar, Desativar/Reativar
+
+--- CRIAR NOVO ATENDENTE ---
+  1. Clique em "Novo Atendente" ou "Adicionar"
+  2. Preencha:
+     • Nome completo
+     • E-mail (será o login do atendente)
+     • Senha inicial
+     • Permissão (nível de acesso)
+     • Setores (selecione um ou mais setores)
+  3. Clique em "Criar"
+  → O atendente já pode fazer login imediatamente
+
+--- EDITAR ATENDENTE ---
+  1. Clique no ícone de edição (lápis) ao lado do atendente
+  2. Altere os campos desejados
+     (NOTA: O e-mail NÃO pode ser alterado após o cadastro)
+  3. Salve as alterações
+
+--- DESATIVAR ATENDENTE ---
+  Para atendentes que saíram da equipe:
+  1. Clique em "Desativar"
+  2. Confirme na caixa de diálogo
+  → O atendente aparece em cinza na lista
+  → Não pode mais fazer login
+  → O histórico de atendimentos é preservado
+
+--- REATIVAR ATENDENTE ---
+  1. Clique em "Reativar" ao lado do atendente desativado
+  2. Confirme
+  → O acesso é restaurado imediatamente
+
+--- VINCULAR ATENDENTE A SUBSETOR ---
+  No setor específico ([Setor] → Atendentes):
+  1. Clique no atendente
+  2. Selecione os subsetores que ele atende
+  → O atendente só recebe tickets dos subsetores configurados
+
+Palavras-chave: atendente, colaborador, usuário, criar conta, cadastro,
+                equipe, desativar, reativar, setor, subsetor, permissão,
+                novo atendente, acesso
+
+
+------------------------------------------------------------------------
+2.5  GERENCIAMENTO DE SETORES
+------------------------------------------------------------------------
+
+Caminho: Dashboard → página inicial (cards de setores)
+
+Os setores representam áreas de atendimento (ex: Suporte, Vendas, Financeiro).
+
+--- CRIAR SETOR ---
+  1. Clique em "Novo Setor" ou "+"
+  2. Informe o nome do setor
+  3. Escolha uma cor identificadora
+  4. Clique em "Criar"
+  → O novo setor aparece como card na tela inicial
+
+--- EDITAR SETOR ---
+  Clique no ícone de edição do card do setor.
+  Você pode alterar:
+  • Nome
+  • Cor
+  • Descrição
+  • Configurações de canal (WhatsApp, etc.)
+
+--- DELETAR SETOR ---
+  1. Acesse as configurações do setor
+  2. Role até o fim da página
+  3. Clique em "Excluir Setor"
+  4. Digite o nome para confirmar
+  → CUIDADO: Esta ação não pode ser desfeita
+
+--- ACESSAR CONFIGURAÇÕES DO SETOR ---
+  Clique no card do setor na tela inicial do Dashboard.
+  Você é levado à página completa do setor com todas as configurações.
+
+Palavras-chave: setor, departamento, área, criar setor, configurar,
+                canal, WhatsApp, nome, cor, configuração
+
+
+------------------------------------------------------------------------
+2.6  SUBSETORES
+------------------------------------------------------------------------
+
+Caminho: [Setor] → Configurações → Subsetores
+
+Subsetores são subdivisões dentro de um setor.
+Exemplo: Setor "Suporte" pode ter subsetores "Nível 1", "Nível 2", "Pós-venda".
+
+--- CRIAR SUBSETOR ---
+  1. Acesse as configurações do setor
+  2. Na seção "Subsetores", clique em "Adicionar"
+  3. Informe o nome do subsetor
+  4. Confirme
+
+--- EDITAR SUBSETOR ---
+  Clique no ícone de edição ao lado do subsetor.
+
+--- DELETAR SUBSETOR ---
+  Clique no ícone de exclusão ao lado do subsetor.
+
+--- VINCULAR ATENDENTES AO SUBSETOR ---
+  Na tela de Atendentes do setor, selecione quais subsetores cada
+  atendente está habilitado a atender.
+
+--- USO PRÁTICO ---
+  • Tickets podem ser roteados automaticamente para subsetores
+  • Atendentes podem filtrar tickets por subsetor no Workdesk
+  • Supervisores podem monitorar por subsetor no Dashboard
+
+Palavras-chave: subsetor, subdivisão, nível, categoria, fila,
+                roteamento, especialização
+
+
+------------------------------------------------------------------------
+2.7  TEMPLATES POR SETOR
+------------------------------------------------------------------------
+
+Caminho: [Setor] → Configurações → Templates
+
+Templates são respostas rápidas disponíveis para os atendentes.
+Cada setor tem seus próprios templates.
+
+--- CRIAR TEMPLATE ---
+  1. Clique em "Novo Template"
+  2. Informe:
+     • Nome do template (identificação interna)
+     • Atalho (palavra curta para buscar)
+     • Conteúdo (o texto que será enviado)
+  3. Salve
+
+--- EDITAR TEMPLATE ---
+  Clique no ícone de edição ao lado do template.
+
+--- DELETAR TEMPLATE ---
+  Clique no ícone de exclusão.
+
+--- BOAS PRÁTICAS ---
+  • Crie templates para saudações, despedidas e respostas frequentes
+  • Use nomes descritivos (ex: "saudacao", "encerramento", "aguarde")
+  • Inclua os templates mais usados para agilizar o time
+
+Palavras-chave: template, resposta rápida, atalho, mensagem pronta,
+                modelo, canned response, texto padrão
+
+
+------------------------------------------------------------------------
+2.8  PAUSAS
+------------------------------------------------------------------------
+
+Caminho: [Setor] → Pausas
+
+Pausas são os motivos pelos quais atendentes podem se ausentar.
+
+--- CRIAR TIPO DE PAUSA ---
+  1. Clique em "Nova Pausa"
+  2. Informe o nome (ex: "Almoço", "Banheiro", "Reunião", "Treinamento")
+  3. Informe uma descrição (opcional)
+  4. Salve
+  → Fica disponível para todos os atendentes do setor
+
+--- EDITAR PAUSA ---
+  Clique no nome da pausa para editar.
+
+--- DESATIVAR PAUSA ---
+  Clique no toggle de ativo/inativo para desativar sem excluir.
+
+--- EXCLUIR PAUSA ---
+  Clique no ícone de exclusão.
+
+--- RELATÓRIOS DE PAUSA ---
+  O sistema registra:
+  • Quando cada atendente iniciou a pausa
+  • Qual foi o motivo
+  • Quando retornou
+  Esses dados aparecem nos relatórios de produtividade.
+
+Palavras-chave: pausa, intervalo, motivo, ausência, almoço, reunião,
+                controle de pausa, registro de tempo
+
+
+------------------------------------------------------------------------
+2.9  HORÁRIOS DE ATENDIMENTO
+------------------------------------------------------------------------
+
+Caminho: [Setor] → Horários de Atendimento
+
+Define os dias e horários em que o setor opera.
+
+--- CONFIGURAR HORÁRIO ---
+  Para cada dia da semana:
+  1. Ative o dia (toggle)
+  2. Informe o horário de início (ex: 08:00)
+  3. Informe o horário de fim (ex: 18:00)
+  4. Salve
+
+--- MÚLTIPLOS TURNOS ---
+  Você pode adicionar mais de um turno por dia.
+  Exemplo: 08:00-12:00 e 13:00-18:00 (intervalo de almoço)
+
+--- USO ---
+  Os horários podem ser usados pelo fluxo de atendimento (n8n)
+  para informar ao cliente quando o setor está disponível.
+
+Palavras-chave: horário, funcionamento, expediente, turno, dia,
+                hora, disponibilidade, atendimento
+
+
+------------------------------------------------------------------------
+2.10 CANAIS DE COMUNICAÇÃO
+------------------------------------------------------------------------
+
+Caminho: [Setor] → Configurações → Canais
+
+Canais são as formas de contato integradas ao setor.
+
+--- TIPOS DE CANAL ---
+  • WhatsApp (Meta Cloud API): integração oficial do WhatsApp
+  • Evolution API: WhatsApp via Baileys (open source)
+  • Discord: atendimento via Discord
+
+--- CONFIGURAR CANAL EVOLUTION API ---
+  1. Informe o nome da instância
+  2. Informe a URL base da API (ex: https://evolution.servidor.com)
+  3. Informe a API Key
+  4. Ative o canal
+  5. Salve
+
+--- CONFIGURAR CANAL WHATSAPP CLOUD ---
+  1. Informe o Phone Number ID (do Meta Business)
+  2. Informe o Token de Acesso
+  3. Ative o canal
+  4. Salve
+
+--- MÚLTIPLOS CANAIS ---
+  Um setor pode ter mais de um canal ativo simultaneamente.
+  O sistema identifica automaticamente por qual canal a mensagem chegou
+  e responde pelo mesmo canal.
+
+Palavras-chave: canal, WhatsApp, Evolution API, Discord, integração,
+                instância, API key, configurar canal, token, phone number
+
+
+------------------------------------------------------------------------
+2.11 USUÁRIOS ADMINISTRADORES
+------------------------------------------------------------------------
+
+Caminho: Dashboard → Usuários
+
+Gerencia os usuários com acesso ao Dashboard (gestores, supervisores, admins).
+DIFERENTE dos atendentes — esses usuários têm acesso administrativo.
+
+--- CRIAR USUÁRIO ADMIN ---
+  1. Clique em "Novo Usuário"
+  2. Preencha:
+     • Nome
+     • E-mail
+     • Senha (mínimo 8 caracteres)
+     • Permissão
+     • Admin (sim/não): admins veem todos os setores
+     • Setores (se não for admin): defina quais setores o usuário gerencia
+  3. Crie
+
+--- EDITAR USUÁRIO ---
+  Clique no ícone de edição.
+  Você pode alterar nome, permissão, status admin e setores.
+
+--- EXCLUIR USUÁRIO ---
+  Clique no ícone de exclusão e confirme.
+  CUIDADO: A exclusão é permanente.
+
+Palavras-chave: usuário admin, administrador, gestor, supervisor,
+                acesso dashboard, permissão admin, criar usuário
+
+
+------------------------------------------------------------------------
+2.12 PERMISSÕES
+------------------------------------------------------------------------
+
+Caminho: Dashboard → Permissões
+
+Define o que cada nível de usuário pode ver e fazer no sistema.
+
+--- NÍVEIS DE PERMISSÃO ---
+  As permissões controlam:
+  • Acesso ao Dashboard (can_view_dashboard)
+  • Visualização de todos os tickets (can_see_all_tickets)
+  • Outras funcionalidades administrativas
+
+--- USO ---
+  Ao criar um atendente ou usuário, você seleciona a permissão.
+  Diferentes permissões concedem diferentes acessos.
+
+  Exemplo:
+  • Atendente comum: sem acesso ao dashboard
+  • Supervisor: acesso ao monitoramento, sem configurações
+  • Administrador: acesso completo
+
+Palavras-chave: permissão, acesso, nível, papel, role, admin,
+                supervisor, atendente, controle de acesso
+
+
+------------------------------------------------------------------------
+2.13 LOGS DE DISPAROS
+------------------------------------------------------------------------
+
+Caminho: Dashboard → Logs  OU  [Setor] → Log de Disparos
+
+Registro de todas as mensagens enviadas pelo sistema de forma automática
+(disparos em massa, mensagens de bot, etc.).
+
+--- O QUE É EXIBIDO ---
+  • Data e hora do disparo
+  • Instância usada
+  • Mensagem enviada (prévia)
+  • Status do envio
+  • Destinatário
+  • Canal utilizado
+
+--- USO ---
+  Use os logs para:
+  • Verificar se uma mensagem foi enviada corretamente
+  • Auditar comunicações
+  • Identificar falhas no envio
+
+Palavras-chave: log, disparo, histórico, envio, auditoria, registro,
+                mensagem automática, bot, relatório de envio
+
+
+================================================================================
+PARTE 3 — FAQ (PERGUNTAS FREQUENTES)
+================================================================================
+
+
+P: Não estou recebendo tickets novos. O que fazer?
+R: Verifique se você está com status ONLINE (indicador verde pulsante).
+   Se estiver offline ou em pausa, mude para online. Caso já esteja online
+   e ainda não receber, atualize a página (F5).
+
+
+P: Um ticket sumiu da minha lista. O que aconteceu?
+R: O ticket pode ter sido:
+   a) Fechado por você ou por um supervisor
+   b) Transferido para outro atendente
+   c) O cliente foi transferido para outro setor
+   Para verificar, o supervisor pode buscar o ticket no Monitoramento.
+
+
+P: Como sei que uma nova mensagem chegou em um ticket que não estou vendo?
+R: O ticket na lista mostrará um contador vermelho com o número de mensagens
+   não lidas. O sistema também tocará o alerta sonoro configurado.
+
+
+P: Posso atender um cliente de outro setor?
+R: Somente se você estiver vinculado àquele setor. Peça ao administrador
+   para adicionar você ao setor desejado.
+
+
+P: Como faço para enviar a mesma mensagem para vários clientes?
+R: O Workdesk é para atendimento individual. Para disparos em massa,
+   use a funcionalidade de Disparo Externo, que é configurada pelo
+   administrador via integração com n8n/bot.
+
+
+P: O cliente me enviou um arquivo mas não consigo abrir. O que fazer?
+R: Clique no botão de download que aparece ao lado do arquivo e
+   abra no seu computador. Se não aparecer, pode ser que o tipo
+   de arquivo não seja suportado para visualização no navegador.
+
+
+P: Como transfiro um ticket sem nenhum atendente disponível online?
+R: Na janela de transferência, selecione o setor de destino sem
+   selecionar um atendente específico. O ticket vai para a fila
+   daquele setor e será atribuído automaticamente quando um
+   atendente ficar online.
+
+
+P: Posso ver os tickets que já fechei?
+R: No Workdesk você só vê tickets ativos (abertos e em atendimento).
+   Para ver tickets encerrados, o supervisor pode acessar o
+   Monitoramento no Dashboard ou as Métricas.
+
+
+P: Esqueci minha senha. Como recupero?
+R: Na tela de login, clique em "Esqueceu a senha?" e informe seu e-mail.
+   Você receberá um link de redefinição. O link expira em 1 hora.
+   Se não receber o e-mail, verifique o spam ou contate o administrador.
+
+
+P: Posso estar logado em dois dispositivos ao mesmo tempo?
+R: Sim. Seu status é sincronizado entre todos os dispositivos em tempo real.
+   Se você ficar online em um dispositivo, todos os outros refletem isso.
+   Cuidado: fazer logout em um dispositivo não desconecta os outros.
+
+
+P: O que acontece com meus tickets se eu ficar offline?
+R: Os tickets que já estão com você permanecem atribuídos a você.
+   Você apenas para de receber NOVOS tickets. Ao voltar online,
+   o sistema pode te atribuir tickets da fila pendente automaticamente.
+
+
+P: Atendente novo não aparece na lista de transferência. Por quê?
+R: Verifique se o atendente está:
+   a) Cadastrado no sistema
+   b) Vinculado ao setor de destino
+   c) Com conta ativa (não desativada)
+   O administrador pode verificar isso em Dashboard → Colaboradores.
+
+
+P: Como sei que o cliente recebeu minha mensagem?
+R: A mensagem mostrará indicadores de status:
+   ✓  (um check) = mensagem enviada
+   ✓✓ (dois checks) = mensagem entregue/lida
+   (Disponível para WhatsApp. Pode variar conforme o canal.)
+
+
+P: O que é subsetor e pra que serve?
+R: Subsetor é uma subdivisão do setor principal. Serve para organizar
+   filas específicas. Ex: Setor "Suporte" com subsetores "Técnico"
+   e "Financeiro". Assim cada atendente atende apenas sua especialidade.
+
+
+P: Posso editar uma mensagem que já enviei?
+R: Não. Mensagens já enviadas não podem ser editadas ou deletadas.
+   Escreva uma nova mensagem com a correção.
+
+
+P: O sistema funciona no celular?
+R: Sim. O Workdesk tem layout responsivo e funciona em dispositivos móveis
+   pelo navegador. No mobile, a lista de tickets e a conversa alternam
+   por uma gaveta deslizante.
+
+
+P: Como ativar/desativar o modo escuro?
+R: Clique no ícone de sol/lua no canto superior direito da tela.
+   A preferência é salva automaticamente para seu próximo acesso.
+
+
+P: Qual a diferença entre Workdesk e Dashboard?
+R: WORKDESK: tela de trabalho dos atendentes. Aqui você responde
+   clientes, gerencia seus tickets e controla sua disponibilidade.
+
+   DASHBOARD: painel administrativo para gestores. Aqui se configura
+   setores, gerencia atendentes, vê relatórios e monitora tudo
+   em tempo real. Atendentes comuns não têm acesso ao Dashboard.
+
+
+P: Como faço para ver quantos tickets cada atendente atendeu?
+R: Acesse Dashboard → Métricas (ou [Setor] → Relatórios).
+   Filtre pelo período desejado e veja o ranking de atendentes
+   com a quantidade de tickets resolvidos por cada um.
+
+
+P: O que fazer quando a página trava ou não atualiza?
+R: Tente:
+   1. Pressionar F5 para recarregar a página
+   2. Verificar sua conexão com a internet
+   3. Limpar o cache do navegador (Ctrl+Shift+Delete)
+   4. Se persistir, contate o suporte técnico
+
+
+================================================================================
+GLOSSÁRIO — TERMOS DO SISTEMA
+================================================================================
+
+TICKET          Registro de atendimento de um cliente. Cada conversa é um ticket.
+SETOR           Área de atendimento (ex: Suporte, Vendas, Financeiro).
+SUBSETOR        Subdivisão de um setor (ex: Suporte > Técnico, Suporte > Financeiro).
+ATENDENTE       Usuário que usa o Workdesk para atender clientes.
+COLABORADOR     Mesmo que Atendente no contexto do sistema.
+TEMPLATE        Mensagem pré-definida para resposta rápida.
+PAUSA           Período de ausência do atendente com motivo registrado.
+FILA            Tickets aguardando atribuição a um atendente.
+DISTRIBUIÇÃO    Processo automático de atribuir tickets a atendentes disponíveis.
+HEARTBEAT       Sinal que o sistema envia a cada 30s para saber se o atendente
+                está ativo (aba do navegador aberta).
+CANAL           Meio de comunicação (WhatsApp, Discord, Evolution API).
+INSTÂNCIA       Conexão específica de WhatsApp via Evolution API.
+DISPARO         Envio automático de mensagem para um ou mais clientes.
+STATUS          Disponibilidade do atendente: Online, Offline ou Em Pausa.
+TRANSFERÊNCIA   Mover um ticket de um atendente/setor para outro.
+ENCERRAR        Fechar um ticket após a resolução do atendimento.
+DASHBOARD       Painel administrativo — acesso apenas para gestores/admins.
+WORKDESK        Interface de atendimento — usada pelos atendentes.
+REALTIME        Atualização em tempo real sem necessidade de recarregar a página.
+PRIORIDADE      Classificação do ticket: Normal ou Urgente.
+UNREAD          Mensagens não lidas (marcadas com contador vermelho).
+VCARD           Contato compartilhado via WhatsApp (formato de cartão de visita).
+
+================================================================================
+FIM DO MANUAL — SoftcomHub
+================================================================================
+
+Para suporte técnico ou dúvidas não contempladas neste manual,
+contate a equipe de TI ou o administrador do sistema.
+
+================================================================================

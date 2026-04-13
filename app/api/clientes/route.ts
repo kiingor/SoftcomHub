@@ -38,77 +38,27 @@ export async function POST(request: Request) {
     // Normalizar telefone (remover caracteres especiais)
     const telefoneNormalizado = telefone.replace(/\D/g, '')
 
-    // Verificar se cliente ja existe
-    const { data: clienteExistente } = await supabase
-      .from('clientes')
-      .select('*')
-      .eq('telefone', telefoneNormalizado)
-      .maybeSingle()
-
-    if (clienteExistente) {
-      // Cliente existe - atualizar dados
-      const updateData: Record<string, unknown> = {}
-
-      if (nome !== undefined) updateData.nome = nome
-      if (email !== undefined) updateData.email = email
-      if (documento !== undefined) updateData.documento = documento
-      if (PDV !== undefined) updateData.PDV = PDV
-      if (CNPJ !== undefined) updateData.CNPJ = CNPJ
-      if (Registro !== undefined) updateData.Registro = Registro
-
-      // So atualiza se houver dados para atualizar
-      if (Object.keys(updateData).length > 0) {
-        const { data: clienteAtualizado, error: updateError } = await supabase
-          .from('clientes')
-          .update(updateData)
-          .eq('id', clienteExistente.id)
-          .select()
-          .single()
-
-        if (updateError) {
-          console.error('Erro ao atualizar cliente:', updateError)
-          return NextResponse.json(
-            { error: 'Erro ao atualizar cliente', details: updateError.message },
-            { status: 500 }
-          )
-        }
-
-        return NextResponse.json({
-          success: true,
-          created: false,
-          message: 'Cliente atualizado com sucesso',
-          cliente: clienteAtualizado,
-        })
-      }
-
-      // Nenhum dado para atualizar, retorna cliente existente
-      return NextResponse.json({
-        success: true,
-        created: false,
-        message: 'Cliente ja cadastrado, nenhuma alteracao necessaria',
-        cliente: clienteExistente,
-      })
+    // Upsert: insere ou atualiza baseado no telefone (constraint unique)
+    const upsertData: Record<string, unknown> = {
+      telefone: telefoneNormalizado,
     }
+    if (nome !== undefined) upsertData.nome = nome
+    if (email !== undefined) upsertData.email = email
+    if (documento !== undefined) upsertData.documento = documento
+    if (PDV !== undefined) upsertData.PDV = PDV
+    if (CNPJ !== undefined) upsertData.CNPJ = CNPJ
+    if (Registro !== undefined) upsertData.Registro = Registro
 
-    // Cliente nao existe - criar novo
-    const { data: novoCliente, error: insertError } = await supabase
+    const { data: cliente, error: upsertError } = await supabase
       .from('clientes')
-      .insert({
-        telefone: telefoneNormalizado,
-        nome: nome || null,
-        email: email || null,
-        documento: documento || null,
-        PDV: PDV || null,
-        CNPJ: CNPJ || null,
-        Registro: Registro || null,
-      })
+      .upsert(upsertData, { onConflict: 'telefone', ignoreDuplicates: false })
       .select()
       .single()
 
-    if (insertError) {
-      console.error('Erro ao criar cliente:', insertError)
+    if (upsertError) {
+      console.error('Erro ao upsert cliente:', upsertError)
       return NextResponse.json(
-        { error: 'Erro ao criar cliente', details: insertError.message },
+        { error: 'Erro ao cadastrar/atualizar cliente', details: upsertError.message },
         { status: 500 }
       )
     }
@@ -116,8 +66,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       created: true,
-      message: 'Cliente cadastrado com sucesso',
-      cliente: novoCliente,
+      message: 'Cliente processado com sucesso',
+      cliente,
     }, { status: 201 })
 
   } catch (error) {

@@ -42,7 +42,7 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useColaborador, useSetores } from '@/lib/hooks/use-data'
+import { useDashboardData } from '@/lib/hooks/use-data'
 import {
   Dialog,
   DialogContent,
@@ -158,7 +158,6 @@ export default function DashboardPage() {
     tag_id: '' as string,
   })
   const [saving, setSaving] = useState(false)
-  const supabase = createClient()
 
   // Tags state
   const [tags, setTags] = useState<TagItem[]>([])
@@ -169,6 +168,7 @@ export default function DashboardPage() {
   const [savingTag, setSavingTag] = useState(false)
   const [deletingTagId, setDeletingTagId] = useState<string | null>(null)
 
+  const supabase = createClient()
   const fetchTags = useCallback(async () => {
     setLoadingTags(true)
     const { data } = await supabase.from('tags').select('*').order('ordem').order('nome')
@@ -190,11 +190,9 @@ export default function DashboardPage() {
     [router]
   )
 
-  const { data: colaborador, isLoading: loadingColab } = useColaborador()
-  const { data: setores = [], isLoading: loadingSetores, mutate } = useSetores(
-    colaborador?.id,
-    colaborador?.is_master
-  )
+  const { data: dashboardData, isLoading: isLoading, mutate } = useDashboardData()
+  const colaborador = dashboardData?.colaborador ?? null
+  const setores = dashboardData?.setores ?? []
 
   const filteredSetores = useMemo(() => {
     const all = setores as Setor[]
@@ -322,7 +320,6 @@ export default function DashboardPage() {
     }
   }
 
-  const isLoading = loadingColab || (colaborador && loadingSetores)
   const PreviewIcon = getIconComponent(newSetor.icon_url)
 
   // ─── Sector Card ───
