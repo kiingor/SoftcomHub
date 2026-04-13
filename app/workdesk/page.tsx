@@ -5162,18 +5162,16 @@ function TicketList({
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {/* Ticket link */}
-                        {colaborador?.email && (
-                          <a
-                            href={`https://ticket.softcom.solutions/?email=${encodeURIComponent(colaborador.email)}&open_ticket=${ticket.numero}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="p-0.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                            title="Abrir ticket"
-                          >
-                            <Ticket className="h-3.5 w-3.5" />
-                          </a>
-                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onOpenTicketIframe(ticket)
+                          }}
+                          className="p-0.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                          title="Abrir ticket"
+                        >
+                          <Ticket className="h-3.5 w-3.5" />
+                        </button>
                         {/* Unread badge */}
                         {unreadCount > 0 && (
                           <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground">
