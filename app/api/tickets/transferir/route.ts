@@ -39,18 +39,13 @@ export async function POST(request: Request) {
 
     const targetSetorId = setor_id || ticket.setor_id
 
-    const updateData: Record<string, unknown> = {}
     let queued = false
     let toColabNome = 'Aguardando atendente'
+    let finalColaboradorId: string | null = null
 
-    if (setor_id) {
-      updateData.setor_id = setor_id
-      // Limpar subsetor ao transferir entre setores — o subsetor antigo não existe no novo setor
-      updateData.subsetor_id = null
-    }
-
+    // Validar atendente destino antes de liberar o ticket
+    let colabDestino: { id: string; nome: string } | null = null
     if (colaborador_id) {
-      // 2. Verificar se o atendente está online com heartbeat fresco
       const { data: colab } = await supabase
         .from('colaboradores')
         .select('id, nome, is_online, pausa_atual_id, last_heartbeat')
@@ -75,7 +70,37 @@ export async function POST(request: Request) {
       // O operador que transfere vê o atendente online no dashboard — isso já é suficiente.
       // A verificação de heartbeat é reservada para distribuição automática (ticket-queue-processor).
 
-      // 3. Buscar limite max_tickets_per_agent do setor destino
+      colabDestino = { id: colab.id, nome: colab.nome }
+    }
+
+    // Etapa 1: liberar o ticket (colaborador_id = null, status = aberto) e, se houver,
+    // trocar setor/subsetor. Isso deixa o ticket em estado "disponível" para a RPC
+    // atômica atribuí-lo a seguir. Se não houver atendente destino, o ticket já fica
+    // pronto na fila.
+    const releaseData: Record<string, unknown> = {
+      colaborador_id: null,
+      status: 'aberto',
+    }
+    if (setor_id) {
+      releaseData.setor_id = setor_id
+      // Limpar subsetor ao transferir entre setores — o subsetor antigo não existe no novo setor
+      releaseData.subsetor_id = null
+    }
+
+    const { error: releaseError } = await supabase
+      .from('tickets')
+      .update(releaseData)
+      .eq('id', ticket_id)
+
+    if (releaseError) {
+      console.error('[Transferir] Erro ao atualizar ticket:', releaseError)
+      return NextResponse.json({ error: 'Erro ao transferir ticket' }, { status: 500 })
+    }
+
+    // Etapa 2: se houver atendente destino, tentar atribuição atômica via RPC.
+    // Se o atendente estiver no limite, a RPC retorna assigned=false e o ticket
+    // permanece na fila (colaborador_id=null, status=aberto).
+    if (colabDestino) {
       const { data: config } = await supabase
         .from('ticket_distribution_config')
         .select('max_tickets_per_agent')
@@ -84,53 +109,29 @@ export async function POST(request: Request) {
 
       const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
 
-      // 4. Contar tickets ativos do atendente destino
-      const { count: activeTickets } = await supabase
-        .from('tickets')
-        .select('id', { count: 'exact', head: true })
-        .eq('colaborador_id', colaborador_id)
-        .in('status', ['aberto', 'em_atendimento'])
-        .neq('id', ticket_id) // excluir o próprio ticket sendo transferido
+      const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
+        p_ticket_id: ticket_id,
+        p_colaborador_id: colabDestino.id,
+        p_max_tickets: maxTicketsPerAgent,
+      })
 
-      const ticketCount = activeTickets ?? 0
-
-      if (ticketCount >= maxTicketsPerAgent) {
-        // Atendente no limite → vai para a fila
+      if (rpcError) {
+        console.error('[Transferir] RPC try_atomic_assign_ticket falhou:', rpcError)
         queued = true
-        updateData.colaborador_id = null
-        updateData.status = 'aberto'
         toColabNome = 'Fila de espera'
-
-        console.log(
-          `[Transferir] Atendente ${colab.nome} atingiu limite (${ticketCount}/${maxTicketsPerAgent}) — ticket ${ticket_id} vai para fila`
-        )
+      } else if ((result as any)?.assigned === true) {
+        finalColaboradorId = colabDestino.id
+        toColabNome = colabDestino.nome
       } else {
-        updateData.colaborador_id = colaborador_id
-        updateData.status = 'em_atendimento'
-        toColabNome = colab.nome
-
-        // Atualizar last_ticket_received_at para round-robin correto
-        await supabase
-          .from('colaboradores')
-          .update({ last_ticket_received_at: new Date().toISOString() })
-          .eq('id', colaborador_id)
+        // Atendente no limite ou conflito → fica em fila
+        queued = true
+        toColabNome = 'Fila de espera'
+        console.log(
+          `[Transferir] Atendente ${colabDestino.nome} recusado (${(result as any)?.reason}, count=${(result as any)?.current_count}/${maxTicketsPerAgent}) — ticket ${ticket_id} vai para fila`
+        )
       }
     } else {
-      // Transferir para fila (sem atendente específico)
-      updateData.colaborador_id = null
-      updateData.status = 'aberto'
       queued = true
-    }
-
-    // 5. Atualizar o ticket
-    const { error: updateError } = await supabase
-      .from('tickets')
-      .update(updateData)
-      .eq('id', ticket_id)
-
-    if (updateError) {
-      console.error('[Transferir] Erro ao atualizar ticket:', updateError)
-      return NextResponse.json({ error: 'Erro ao transferir ticket' }, { status: 500 })
     }
 
     // 6. Buscar nome do setor destino para a mensagem
@@ -175,7 +176,7 @@ export async function POST(request: Request) {
       message: queued
         ? 'Ticket transferido para a fila — atendente no limite de tickets'
         : 'Ticket transferido com sucesso',
-      colaborador_id: updateData.colaborador_id ?? null,
+      colaborador_id: finalColaboradorId,
       setor_id: targetSetorId,
     })
   } catch (error) {

@@ -155,37 +155,45 @@ export async function criarEDistribuirTicket(
 
         console.log(`[Distribution] Ranking: ${sorted.map(c => `${c.nome}(${c.count}t, lastRcv=${c.lastReceivedAt.slice(0,19)})`).join(', ')}`)
 
-        const bestColaborador = sorted.length > 0 ? sorted[0] : null
+        // Tentar atribuir via RPC atômica percorrendo `sorted`. Se o primeiro candidato
+        // já saturou (race), tenta o próximo. Garante que max_tickets_per_agent é
+        // respeitado mesmo sob distribuições concorrentes.
+        for (const candidate of sorted) {
+          const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
+            p_ticket_id: ticket.id,
+            p_colaborador_id: candidate.id,
+            p_max_tickets: maxTicketsPerAgent,
+          })
 
-        if (bestColaborador) {
-          // Assign the ticket to this collaborator
-          const { error: updateError } = await supabase
-            .from('tickets')
-            .update({
-              colaborador_id: bestColaborador.id,
-              status: 'em_atendimento',
-            })
-            .eq('id', ticket.id)
+          if (rpcError) {
+            console.error(`[Distribution] RPC try_atomic_assign_ticket falhou para ${candidate.nome}:`, rpcError)
+            continue
+          }
 
-          if (!updateError) {
-            assignedColaboradorId = bestColaborador.id
+          const assigned = (result as any)?.assigned === true
 
-            // Atualizar last_ticket_received_at para round-robin correto
-            await supabase
-              .from('colaboradores')
-              .update({ last_ticket_received_at: new Date().toISOString() })
-              .eq('id', bestColaborador.id)
+          if (assigned) {
+            assignedColaboradorId = candidate.id
 
-            // Log the assignment (tabela opcional)
             try {
               await supabase.from('ticket_assignment_logs').insert({
                 ticket_id: ticket.id,
-                colaborador_id: bestColaborador.id,
+                colaborador_id: candidate.id,
                 setor_id: setorId,
                 action: 'auto_assigned',
-                assignment_reason: `Round-robin: ${bestColaborador.count} tickets, último recebido em ${bestColaborador.lastReceivedAt.slice(0,19)}`,
+                assignment_reason: `Round-robin: ${candidate.count} tickets, último recebido em ${candidate.lastReceivedAt.slice(0,19)}`,
               })
             } catch { /* tabela pode não existir */ }
+
+            break
+          }
+
+          const reason = (result as any)?.reason || 'unknown'
+          console.log(`[Distribution] ${candidate.nome} recusado (${reason}, count=${(result as any)?.current_count}) — tentando próximo`)
+
+          // Se o ticket já foi atribuído por outro processo, não adianta continuar
+          if (reason === 'ticket_already_assigned') {
+            break
           }
         }
       }
@@ -325,37 +333,47 @@ async function _tentarDistribuirNoSetor(
       return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
     })
 
-  const bestColaborador = sorted.length > 0 ? sorted[0] : null
+  if (sorted.length === 0) return null
 
-  if (!bestColaborador) return null
-
-  const { error } = await supabase
-    .from('tickets')
-    .update({
-      colaborador_id: bestColaborador.id,
-      status: 'em_atendimento',
+  // Tentar atribuir via RPC atômica percorrendo candidatos. Se o primeiro saturou
+  // por concorrência, tenta o próximo.
+  for (const candidate of sorted) {
+    const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
+      p_ticket_id: ticketId,
+      p_colaborador_id: candidate.id,
+      p_max_tickets: maxTicketsPerAgent,
     })
-    .eq('id', ticketId)
 
-  if (error) return null
+    if (rpcError) {
+      console.error(`[_tentarDistribuirNoSetor] RPC falhou para ${candidate.id}:`, rpcError)
+      continue
+    }
 
-  // Atualizar last_ticket_received_at para round-robin correto
-  await supabase
-    .from('colaboradores')
-    .update({ last_ticket_received_at: new Date().toISOString() })
-    .eq('id', bestColaborador.id)
+    const assigned = (result as any)?.assigned === true
 
-  try {
-    await supabase.from('ticket_assignment_logs').insert({
-      ticket_id: ticketId,
-      colaborador_id: bestColaborador.id,
-      setor_id: setorId,
-      action: 'auto_assigned',
-      assignment_reason: `Auto-assigned no setor receptor (${bestColaborador.count} tickets)`,
-    })
-  } catch { /* tabela pode não existir */ }
+    if (assigned) {
+      try {
+        await supabase.from('ticket_assignment_logs').insert({
+          ticket_id: ticketId,
+          colaborador_id: candidate.id,
+          setor_id: setorId,
+          action: 'auto_assigned',
+          assignment_reason: `Auto-assigned no setor receptor (${candidate.count} tickets)`,
+        })
+      } catch { /* tabela pode não existir */ }
 
-  return bestColaborador.id
+      return candidate.id
+    }
+
+    const reason = (result as any)?.reason || 'unknown'
+    console.log(`[_tentarDistribuirNoSetor] ${candidate.id} recusado (${reason}, count=${(result as any)?.current_count}) — tentando próximo`)
+
+    if (reason === 'ticket_already_assigned') {
+      return null
+    }
+  }
+
+  return null
 }
 
 /**
@@ -522,43 +540,54 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
           return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
         })
 
-      const bestColaborador = sorted.length > 0 ? sorted[0] : null
+      // Tentar atribuir via RPC atômica percorrendo candidatos
+      for (const candidate of sorted) {
+        const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
+          p_ticket_id: ticket.id,
+          p_colaborador_id: candidate.id,
+          p_max_tickets: maxTicketsPerAgent,
+        })
 
-      if (bestColaborador) {
-        const { error } = await supabase
-          .from('tickets')
-          .update({
-            colaborador_id: bestColaborador.id,
-            status: 'em_atendimento',
-          })
-          .eq('id', ticket.id)
+        if (rpcError) {
+          console.error(`[redistribuirTicketsPendentes] RPC falhou para ${candidate.id}:`, rpcError)
+          continue
+        }
 
-        if (!error) {
-          // Update count map e lastReceivedMap para próximas iterações
-          countMap[bestColaborador.id] = (countMap[bestColaborador.id] || 0) + 1
-          const nowIso = new Date().toISOString()
-          lastReceivedMap[bestColaborador.id] = nowIso
+        const assigned = (result as any)?.assigned === true
+
+        if (assigned) {
+          // Update count map e lastReceivedMap para próximas iterações (ordenação do próximo ticket)
+          countMap[candidate.id] = (countMap[candidate.id] || 0) + 1
+          lastReceivedMap[candidate.id] = new Date().toISOString()
           assignedCount++
 
-          // Atualizar last_ticket_received_at no banco para round-robin correto
-          await supabase
-            .from('colaboradores')
-            .update({ last_ticket_received_at: nowIso })
-            .eq('id', bestColaborador.id)
-
           const reason = ticket.subsetor_id
-            ? `Round-robin redistribuição (subsetor: ${ticket.subsetor_id}, ${bestColaborador.count} tickets)`
-            : `Round-robin redistribuição (${bestColaborador.count} tickets)`
+            ? `Round-robin redistribuição (subsetor: ${ticket.subsetor_id}, ${candidate.count} tickets)`
+            : `Round-robin redistribuição (${candidate.count} tickets)`
 
           try {
             await supabase.from('ticket_assignment_logs').insert({
               ticket_id: ticket.id,
-              colaborador_id: bestColaborador.id,
+              colaborador_id: candidate.id,
               setor_id: setorId,
               action: 'redistributed',
               assignment_reason: reason,
             })
           } catch { /* tabela pode não existir */ }
+
+          break
+        }
+
+        const failReason = (result as any)?.reason || 'unknown'
+        console.log(`[redistribuirTicketsPendentes] ${candidate.id} recusado (${failReason}, count=${(result as any)?.current_count}) — tentando próximo`)
+
+        // Se a RPC indicou saturação, atualizar countMap local para refletir (evita re-tentar o mesmo no próximo ticket)
+        if (failReason === 'max_tickets_reached') {
+          countMap[candidate.id] = (result as any)?.current_count ?? maxTicketsPerAgent
+        }
+
+        if (failReason === 'ticket_already_assigned') {
+          break
         }
       }
     }

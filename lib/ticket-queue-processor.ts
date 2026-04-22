@@ -239,55 +239,65 @@ async function tryAssignTicket(
     return { ticketId, colaboradorId: null, success: false, reason }
   }
 
-  // Select the colaborador with least tickets (first in sorted array)
-  const selectedColaborador = eligibleColaboradores[0]
-
-  // Attempt atomic update with condition check (optimistic locking)
-  const { data: updatedTicket, error } = await supabase
-    .from('tickets')
-    .update({
-      colaborador_id: selectedColaborador.id,
-      status: 'em_atendimento',
+  // Tentar atribuir via RPC atômica percorrendo candidatos em ordem. Se o primeiro
+  // saturou (race), tenta o próximo. A RPC garante serialização por atendente e
+  // que o count é conferido dentro do lock.
+  for (const candidate of eligibleColaboradores) {
+    const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
+      p_ticket_id: ticketId,
+      p_colaborador_id: candidate.id,
+      p_max_tickets: maxTicketsPerAgent,
     })
-    .eq('id', ticketId)
-    .is('colaborador_id', null) // Only update if still unassigned
-    .in('status', ['aberto', 'em_atendimento'])
-    .select()
-    .single()
 
-  if (error || !updatedTicket) {
-    return {
-      ticketId,
-      colaboradorId: null,
-      success: false,
-      reason: 'Concurrent assignment detected - ticket may have been assigned by another process'
+    if (rpcError) {
+      console.error(`[TicketQueue] RPC try_atomic_assign_ticket falhou para ${candidate.nome}:`, rpcError)
+      continue
+    }
+
+    const assigned = (result as any)?.assigned === true
+
+    if (assigned) {
+      logAssignment(
+        ticketId,
+        candidate.id,
+        null,
+        'auto_queue',
+        `Auto-assigned from queue to ${candidate.nome} (${(result as any).current_count}/${maxTicketsPerAgent} tickets)`,
+        {
+          colaborador_ticket_count: (result as any).current_count,
+          max_tickets_per_agent: maxTicketsPerAgent,
+          available_colaboradores: eligibleColaboradores.length,
+        }
+      )
+
+      return {
+        ticketId,
+        colaboradorId: candidate.id,
+        success: true,
+        reason: `Assigned to ${candidate.nome}`,
+      }
+    }
+
+    const failReason = (result as any)?.reason || 'unknown'
+    console.log(`[TicketQueue] ${candidate.nome} recusado (${failReason}, count=${(result as any)?.current_count}) — tentando próximo`)
+
+    // Se o ticket já foi atribuído por outro processo, não adianta continuar
+    if (failReason === 'ticket_already_assigned') {
+      return {
+        ticketId,
+        colaboradorId: null,
+        success: false,
+        reason: 'Concurrent assignment detected - ticket may have been assigned by another process'
+      }
     }
   }
 
-  // Atualizar last_ticket_received_at para round-robin correto
-  await supabase
-    .from('colaboradores')
-    .update({ last_ticket_received_at: new Date().toISOString() })
-    .eq('id', selectedColaborador.id)
-
-  logAssignment(
-    ticketId,
-    selectedColaborador.id,
-    null,
-    'auto_queue',
-    `Auto-assigned from queue to ${selectedColaborador.nome} (${selectedColaborador.ticketCount}/${maxTicketsPerAgent} tickets)`,
-    {
-      colaborador_ticket_count: selectedColaborador.ticketCount,
-      max_tickets_per_agent: maxTicketsPerAgent,
-      available_colaboradores: eligibleColaboradores.length,
-    }
-  )
-
+  // Todos os candidatos elegíveis estavam saturados quando a RPC foi chamada
   return {
     ticketId,
-    colaboradorId: selectedColaborador.id,
-    success: true,
-    reason: `Assigned to ${selectedColaborador.nome}`,
+    colaboradorId: null,
+    success: false,
+    reason: `All ${eligibleColaboradores.length} colaboradores saturated at max_tickets_per_agent limit`,
   }
 }
 
