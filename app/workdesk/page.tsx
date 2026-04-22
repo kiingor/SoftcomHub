@@ -57,6 +57,7 @@ import {
   Sparkles,
   Star,
   Info,
+  RefreshCw,
 } from 'lucide-react'
 import {
   Dialog,
@@ -153,7 +154,8 @@ interface Mensagem {
   conteudo: string
   tipo: 'texto' | 'imagem' | 'audio' | 'video' | 'documento'
   enviado_em: string
-  phone_number_id?: string
+  phone_number_id?: string | null
+  canal_envio?: string | null
   whatsapp_message_id?: string
   discord_user_id?: string | null
   url_imagem?: string | null
@@ -165,6 +167,76 @@ interface Mensagem {
     criado_em: string
     encerrado_em: string | null
   }
+}
+
+// Converte payload de erro dos endpoints /api/evolution/send e /api/whatsapp/send
+// em mensagem amigável ao usuário. Cobre Evolution (vcard response) e WhatsApp
+// Cloud API (OAuthException + códigos Meta).
+function parseSendErrorMessage(result: unknown): string {
+  const r = result as Record<string, any> | null | undefined
+  if (!r) return 'Erro ao enviar mensagem'
+
+  // Evolution: número não existe no WhatsApp
+  // { details: { response: { message: [{ exists: false, number: "..." }] } } }
+  const responseMsg = r?.details?.response?.message
+  if (Array.isArray(responseMsg) && responseMsg.length > 0) {
+    const item = responseMsg[0]
+    if (item?.exists === false && item?.number) {
+      return `O número ${item.number} não está cadastrado no WhatsApp`
+    }
+    if (typeof item === 'string') return item
+    if (item?.message && typeof item.message === 'string') return item.message
+  }
+
+  // Dispositivo desconectado (já tratado em outra branch, mas mantém aqui para retry)
+  if (r?.deviceOffline) {
+    return 'Dispositivo desconectado — verifique a conexão do WhatsApp'
+  }
+
+  // WhatsApp Cloud API (Meta): { details: { error: { code, type, message } } }
+  // Códigos: https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes
+  const metaError = r?.details?.error
+  if (metaError && typeof metaError === 'object') {
+    const code = metaError.code
+    const metaMsg: string | undefined = typeof metaError.message === 'string' ? metaError.message : undefined
+
+    switch (code) {
+      case 190:
+        return 'Token do WhatsApp expirado ou inválido — renove nas configurações do setor'
+      case 131026:
+      case 133010:
+        return 'O número informado não está cadastrado no WhatsApp'
+      case 131047:
+        return 'Janela de 24h expirada — é necessário enviar um template aprovado para reabrir o atendimento'
+      case 131051:
+        return 'Tipo de mensagem não suportado neste canal'
+      case 131045:
+      case 131008:
+        return 'Formato de telefone inválido'
+      case 131056:
+        return 'Limite de envios atingido para este número — aguarde alguns minutos'
+      case 131031:
+        return 'Conta do WhatsApp com restrições temporárias da Meta'
+      case 368:
+        return 'Conta do WhatsApp bloqueada temporariamente pela Meta'
+      case 100:
+        return metaMsg ? `Parâmetro inválido: ${metaMsg}` : 'Parâmetro inválido na requisição ao WhatsApp'
+    }
+
+    // Código não mapeado — usa a mensagem original da Meta
+    if (metaMsg) return `WhatsApp: ${metaMsg}${code ? ` (código ${code})` : ''}`
+  }
+
+  // Formatos comuns de mensagem de erro (strings)
+  if (typeof r?.details?.message === 'string') return r.details.message
+  if (typeof r?.error === 'string' && r.error !== 'Bad Request') return r.error
+  if (typeof r?.details?.error === 'string' && r.details.error !== 'Bad Request') return r.details.error
+
+  // Fallback com status HTTP se disponível
+  const status = r?.status || r?.details?.status
+  if (status) return `Erro ao enviar mensagem (HTTP ${status})`
+
+  return 'Erro ao enviar mensagem'
 }
 
 // Helper to check if message is from the support side (colaborador or bot)
@@ -219,6 +291,14 @@ const formatCNPJ = (cnpj: string) => {
 // Suporta 2 formatos:
 //   1) API oficial (array): [{"name":{"formatted_name":"X"},"phones":[{"phone":"+55..."}]}]
 //   2) Evolution (vcard):   {"displayName":"X","vcard":"BEGIN:VCARD\n...END:VCARD"}
+
+// Heurística: detecta conteúdo de vCard quando o integrador não setou media_type.
+// Cobre mensagens antigas já salvas sem a flag correta.
+function isContactMessage(m: { media_type?: string | null; conteudo?: string | null }): boolean {
+  if (m.media_type === 'contact') return true
+  const c = m.conteudo
+  return typeof c === 'string' && c.includes('BEGIN:VCARD')
+}
 
 // Extrai nome e telefone de um vCard string
 function parseVCard(vcard: string): { name: string; phone: string } {
@@ -747,6 +827,8 @@ export default function WorkdeskPage() {
   }, [nexusLoading, selectedTicket, mensagens])
 
   const [pendingMessages, setPendingMessages] = useState<Map<string, 'sending' | 'sent' | 'error'>>(new Map())
+  // Mensagens que falharam ao enviar — mapeia messageId → texto amigável do erro
+  const [messageErrors, setMessageErrors] = useState<Map<string, string>>(new Map())
   
   // File upload (images and PDFs)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -865,26 +947,39 @@ export default function WorkdeskPage() {
 
 // Fetch tickets - colaborador only sees tickets assigned to them
   const fetchTickets = useCallback(async (colab: Colaborador) => {
-    let query = supabase
+    const runQuery = () => supabase
       .from('tickets')
       .select('*, numero, clientes(*), setores(id, nome, cor, canal, tempo_espera_minutos), subsetores(id, nome)')
       .in('status', ['aberto', 'em_atendimento'])
       .order('criado_em', { ascending: false })
+      // ALWAYS filter by colaborador_id - each atendente only sees their own tickets
+      .eq('colaborador_id', colab.id)
 
-    // ALWAYS filter by colaborador_id - each atendente only sees their own tickets
-    // Even users with can_see_all_tickets should use the dashboard for viewing all
-    query = query.eq('colaborador_id', colab.id)
+    let { data, error } = await runQuery()
 
-    const { data, error } = await query
+    // Retry único em erro de rede transitória (Failed to fetch, NetworkError, etc.)
+    const isTransientNetworkError = (msg?: string) =>
+      !!msg && (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed'))
+
+    if (error && isTransientNetworkError(error.message)) {
+      await new Promise(r => setTimeout(r, 500))
+      const retry = await runQuery()
+      data = retry.data
+      error = retry.error
+    }
 
     if (error) {
       console.warn('[WorkDesk] fetchTickets error:', error.message, error.code)
-      logError({
-        tela: 'WorkDesk',
-        error: `fetchTickets: ${error.message}`,
-        componente: 'fetchTickets',
-        metadata: { type: 'supabase_error', code: error.code, colaboradorId: colab.id, ticketId: selectedTicketIdRef.current },
-      })
+      // Ruído de rede transitória não vai para error_logs (já filtrado em logError,
+      // mas evitamos até a chamada para economizar).
+      if (!isTransientNetworkError(error.message)) {
+        logError({
+          tela: 'WorkDesk',
+          error: `fetchTickets: ${error.message}`,
+          componente: 'fetchTickets',
+          metadata: { type: 'supabase_error', code: error.code, colaboradorId: colab.id, ticketId: selectedTicketIdRef.current },
+        })
+      }
       // If auth error, try to refresh session
       if (error.code === 'PGRST301' || error.message?.includes('JWT') || error.code === '401') {
         console.warn('[WorkDesk] Auth error detected, refreshing session...')
@@ -2690,6 +2785,7 @@ const insertEmoji = (emoji: string) => {
     const capturedTicket = selectedTicket
     
 const tempId = `temp-${Date.now()}`
+    let currentMsgId = tempId // atualizado para o ID real após o save; usado em todos os setPendingMessages/setMessageErrors
     const rawMessage = messageInput.trim()
     // Aplicar assinatura se ativa no setor e houver texto
     const messageContent = (setorAssinaturaAtiva && rawMessage && colaborador?.nome)
@@ -2873,16 +2969,28 @@ const tempId = `temp-${Date.now()}`
       if (dbError || !savedMsg) {
         console.error('[v0] Error saving message to database:', dbError)
         setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
+        setMessageErrors(prev => new Map(prev).set(tempId, 'Erro ao salvar mensagem no banco'))
         return
       }
-      // Update optimistic message with real ID
-      setMensagens(prev => prev.map(m => 
-        m.id === tempId ? { ...m, id: savedMsg.id } : m
+      // Update optimistic message with real ID + canal_envio (para retry)
+      setMensagens(prev => prev.map(m =>
+        m.id === tempId
+          ? { ...m, id: savedMsg.id, canal_envio: canalEnvioValue, phone_number_id: phoneNumberId || undefined }
+          : m
       ))
+      // Migrar chave de pendingMessages do tempId para o ID real — sem isso,
+      // o estado de envio/erro não é encontrado pelo render (msg.id é o real agora)
+      setPendingMessages(prev => {
+        const n = new Map(prev)
+        const v = n.get(tempId)
+        if (v !== undefined) { n.set(savedMsg.id, v); n.delete(tempId) }
+        return n
+      })
+      currentMsgId = savedMsg.id
 
       // Send via the appropriate channel API
+      let sendUrl = '/api/whatsapp/send'
       try {
-        let sendUrl = '/api/whatsapp/send'
         let sendBody: Record<string, any> = {}
 
         if (setorCanal === 'discord') {
@@ -2940,16 +3048,17 @@ const tempId = `temp-${Date.now()}`
           })
 
           // Aviso especial para dispositivo offline (Evolution API)
+          let userMsg: string
           if (result?.deviceOffline) {
-            toast.error('📱 Dispositivo desconectado! A mensagem não foi enviada porque o WhatsApp do dispositivo está offline. Verifique a conexão.', {
-              duration: 8000,
-            })
+            userMsg = '📱 Dispositivo desconectado! A mensagem não foi enviada porque o WhatsApp do dispositivo está offline.'
+            toast.error(userMsg, { duration: 8000 })
           } else {
-            const errorMsg = result?.details?.message || result?.error || 'Erro ao enviar mensagem'
-            toast.error(errorMsg)
+            userMsg = parseSendErrorMessage(result)
+            toast.error(userMsg, { duration: 6000 })
           }
 
-          setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
+          setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
+          setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
           return
         }
       } catch (sendError) {
@@ -2960,13 +3069,15 @@ const tempId = `temp-${Date.now()}`
           componente: 'sendMessage',
           metadata: { type: 'send_network_error', sendUrl, ticketId: selectedTicketIdRef.current },
         })
-        toast.error('Erro de conexao ao enviar mensagem')
-        setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
+        const userMsg = 'Erro de conexão ao enviar mensagem'
+        toast.error(userMsg)
+        setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
+        setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
         return
       }
-      
+
 // Mark as sent
-  setPendingMessages(prev => new Map(prev).set(tempId, 'sent'))
+  setPendingMessages(prev => new Map(prev).set(currentMsgId, 'sent'))
   
   // Update ticket's last message and move to top (like WhatsApp)
   const now = new Date().toISOString()
@@ -3026,18 +3137,95 @@ const tempId = `temp-${Date.now()}`
         if (selectedTicketIdRef.current === capturedTicketId) {
           fetchMensagens(capturedTicketId, capturedTicket.cliente_id, { silent: true })
         }
+        // Limpa marcações de sending/sent — NÃO toca em 'error' (usuário precisa ver e poder retry)
         setPendingMessages(prev => {
           const newMap = new Map(prev)
-          newMap.delete(tempId)
+          if (newMap.get(tempId) !== 'error') newMap.delete(tempId)
+          if (newMap.get(currentMsgId) !== 'error') newMap.delete(currentMsgId)
           return newMap
         })
       }, 2000)
-      
+
     } catch (error: any) {
-      setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
+      setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
+      setMessageErrors(prev => new Map(prev).set(currentMsgId, 'Erro inesperado ao enviar mensagem'))
     }
   }
   
+  // Reenvia uma mensagem que falhou. A mensagem já está persistida em `mensagens`
+  // (o insert ocorre antes do send), então só reemitimos para o canal correto.
+  const retrySendMessage = useCallback(async (msg: Mensagem) => {
+    if (!selectedTicket) return
+    const ticketPhone = selectedTicket.clientes?.telefone
+    const canal = msg.canal_envio || 'whatsapp'
+    const phoneNumberId = msg.phone_number_id || null
+
+    setPendingMessages(prev => new Map(prev).set(msg.id, 'sending'))
+    setMessageErrors(prev => { const n = new Map(prev); n.delete(msg.id); return n })
+
+    let sendUrl = '/api/whatsapp/send'
+    let sendBody: Record<string, any> = {}
+    if (canal === 'discord') {
+      sendUrl = '/api/discord/send'
+      sendBody = {
+        ticketId: msg.ticket_id,
+        message: msg.conteudo,
+        messageId: msg.id,
+        fileUrl: msg.url_imagem || null,
+        fileType: msg.media_type || null,
+        fileName: null,
+      }
+    } else if (canal === 'evolutionapi' || canal === 'evolution_api') {
+      sendUrl = '/api/evolution/send'
+      sendBody = {
+        ticketId: msg.ticket_id,
+        message: msg.conteudo,
+        messageId: msg.id,
+        instanceName: phoneNumberId,
+        fileUrl: msg.url_imagem || null,
+        fileType: msg.media_type || null,
+        fileName: null,
+      }
+    } else {
+      sendBody = {
+        recipientPhone: ticketPhone,
+        message: msg.conteudo,
+        ticketId: msg.ticket_id,
+        phoneNumberId,
+        fileUrl: msg.url_imagem || null,
+        fileType: msg.media_type || null,
+        messageId: msg.id,
+      }
+    }
+
+    try {
+      const response = await fetch(sendUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sendBody),
+      })
+      const result = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        const userMsg = result?.deviceOffline
+          ? '📱 Dispositivo desconectado! Verifique a conexão do WhatsApp.'
+          : parseSendErrorMessage(result)
+        toast.error(userMsg, { duration: 6000 })
+        setPendingMessages(prev => new Map(prev).set(msg.id, 'error'))
+        setMessageErrors(prev => new Map(prev).set(msg.id, userMsg))
+        return
+      }
+
+      setPendingMessages(prev => new Map(prev).set(msg.id, 'sent'))
+      toast.success('Mensagem reenviada')
+    } catch (err) {
+      const userMsg = 'Erro de conexão ao reenviar mensagem'
+      toast.error(userMsg)
+      setPendingMessages(prev => new Map(prev).set(msg.id, 'error'))
+      setMessageErrors(prev => new Map(prev).set(msg.id, userMsg))
+    }
+  }, [selectedTicket])
+
   // Handle Enter key to send message
   const handleKeyPress = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -3372,9 +3560,15 @@ const tempId = `temp-${Date.now()}`
                                       isOutgoingMessage(msg.remetente)
                                         ? 'bg-primary text-primary-foreground rounded-br-md'
                                         : 'bg-secondary text-secondary-foreground rounded-bl-md',
-                                      msgStatus === 'error' && 'bg-red-500 text-white'
+                                      msgStatus === 'error' && 'bg-orange-500 text-white border-2 border-orange-300'
                                     )}
                                   >
+                        {msgStatus === 'error' && (
+                          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                            Falha no envio
+                          </div>
+                        )}
                         {msg.url_imagem && (
                           <MessageMedia
                             url={msg.url_imagem}
@@ -3390,15 +3584,30 @@ const tempId = `temp-${Date.now()}`
                             }}
                           />
                         )}
-                        {msg.tipo !== 'texto' && !msg.url_imagem && msg.media_type !== 'contact' && (
+                        {msg.tipo !== 'texto' && !msg.url_imagem && !isContactMessage(msg) && (
                           <div className="mb-1 flex items-center gap-1 text-xs opacity-70">
                             {getMessageIcon(msg.tipo)}
                             <span className="capitalize">{msg.tipo}</span>
                           </div>
                         )}
-                        {msg.media_type === 'contact' && msg.conteudo ? (
+                        {isContactMessage(msg) && msg.conteudo ? (
                           <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
                         ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>}
+                        {msgStatus === 'error' && (
+                          <div className="mt-2 space-y-1.5">
+                            {messageErrors.get(msg.id) && (
+                              <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id)}</p>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => retrySendMessage(msg)}
+                              className="inline-flex items-center gap-1.5 rounded-md bg-white/25 hover:bg-white/35 px-2.5 py-1 text-xs font-medium transition-colors"
+                            >
+                              <RefreshCw className="h-3 w-3" />
+                              Tentar novamente
+                            </button>
+                          </div>
+                        )}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
@@ -4102,9 +4311,15 @@ onClick={() => {
                     isOutgoingMessage(msg.remetente)
                       ? 'bg-primary text-primary-foreground rounded-br-md'
                       : 'bg-secondary text-secondary-foreground rounded-bl-md',
-                    msgStatus === 'error' && 'bg-red-500 text-white'
+                    msgStatus === 'error' && 'bg-orange-500 text-white border-2 border-orange-300'
                                     )}
                                   >
+                  {msgStatus === 'error' && (
+                    <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      Falha no envio
+                    </div>
+                  )}
                   {msg.url_imagem && (
                     <MessageMedia
                       url={msg.url_imagem}
@@ -4120,9 +4335,24 @@ onClick={() => {
                       }}
                     />
                   )}
-                  {msg.media_type === 'contact' && msg.conteudo ? (
+                  {isContactMessage(msg) && msg.conteudo ? (
                     <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
                   ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
+                  {msgStatus === 'error' && (
+                    <div className="mt-2 space-y-1.5">
+                      {messageErrors.get(msg.id) && (
+                        <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id)}</p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => retrySendMessage(msg)}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-white/25 hover:bg-white/35 px-2.5 py-1 text-xs font-medium transition-colors"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        Tentar novamente
+                      </button>
+                    </div>
+                  )}
                                     <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
                                       <span>
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {

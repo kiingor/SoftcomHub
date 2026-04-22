@@ -52,6 +52,20 @@ interface LogErrorParams {
   metadata?: Record<string, unknown>
 }
 
+// Padrões de mensagem a ignorar em logError() — erros transitórios de rede.
+// Acontecem quando fetch() falha antes de receber resposta HTTP: conexão caiu,
+// tab em background, HTTP/2 reset, etc. Não são bugs da aplicação e o próximo
+// polling/realtime event reidrata o estado. Logar isso só polui error_logs.
+const LOG_ERROR_IGNORE = [
+  'Failed to fetch',          // Chrome/Edge
+  'NetworkError',             // Firefox
+  'Load failed',              // Safari
+  'ERR_NETWORK',
+  'ERR_INTERNET_DISCONNECTED',
+  'The operation was aborted',
+  'AbortError',
+]
+
 /**
  * Envia um erro para a API de logs.
  * Fire-and-forget — nunca lança exceção.
@@ -71,6 +85,9 @@ export function logError({ tela, error, componente, metadata }: LogErrorParams):
     } else {
       logMessage = JSON.stringify(error, null, 2)
     }
+
+    // Filtrar ruído de rede transitória antes do debounce
+    if (LOG_ERROR_IGNORE.some(pattern => logMessage.includes(pattern))) return
 
     // Debounce para evitar flood
     const dedupeKey = `${resolvedTela}:${logMessage.slice(0, 100)}`

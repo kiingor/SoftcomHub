@@ -123,7 +123,13 @@ export async function POST(request: NextRequest) {
     if (instancia) mensagemData.instancia = instancia
     if (phone_number_id) mensagemData.phone_number_id = phone_number_id
     if (url_imagem) mensagemData.url_imagem = url_imagem
-    if (media_type) mensagemData.media_type = media_type
+
+    // Autodetecta vCard (Evolution/WhatsApp enviam contato como JSON com BEGIN:VCARD)
+    // para que o workdesk renderize o ContactCard mesmo quando o integrador não setou media_type.
+    const effectiveMediaType =
+      media_type || (typeof conteudo === 'string' && conteudo.includes('BEGIN:VCARD') ? 'contact' : null)
+    if (effectiveMediaType) mensagemData.media_type = effectiveMediaType
+
     if (whatsapp_message_id) mensagemData.whatsapp_message_id = whatsapp_message_id
 
     // Salvar mensagem
