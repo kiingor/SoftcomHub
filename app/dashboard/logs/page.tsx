@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { createBrowserClient } from '@supabase/ssr'
 import { format, formatDistanceToNow } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
@@ -9,6 +9,8 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   Filter,
   RefreshCw,
   Trash2,
@@ -22,9 +24,11 @@ import {
   ExternalLink,
   Code2,
   Info,
+  Calendar,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Card, CardContent } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -43,6 +47,8 @@ interface ErrorLog {
   criado_em: string
 }
 
+const PAGE_SIZE = 50
+
 function parseBrowser(ua: string | null): string {
   if (!ua) return ''
   const b = ua.toLowerCase()
@@ -53,6 +59,36 @@ function parseBrowser(ua: string | null): string {
   return 'Navegador'
 }
 
+// Atalhos de período para o filtro de data
+type Preset = 'all' | 'today' | '24h' | '7d' | '30d' | 'custom'
+
+function presetToRange(preset: Preset): { from: string; to: string } {
+  if (preset === 'all' || preset === 'custom') return { from: '', to: '' }
+  const now = new Date()
+  const toIso = (d: Date) => {
+    // datetime-local format: YYYY-MM-DDTHH:mm
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+  if (preset === 'today') {
+    const start = new Date(now); start.setHours(0, 0, 0, 0)
+    return { from: toIso(start), to: toIso(now) }
+  }
+  if (preset === '24h') {
+    const start = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+    return { from: toIso(start), to: toIso(now) }
+  }
+  if (preset === '7d') {
+    const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    return { from: toIso(start), to: toIso(now) }
+  }
+  if (preset === '30d') {
+    const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    return { from: toIso(start), to: toIso(now) }
+  }
+  return { from: '', to: '' }
+}
+
 export default function LogsPage() {
   const [logs, setLogs] = useState<ErrorLog[]>([])
   const [loading, setLoading] = useState(true)
@@ -60,31 +96,119 @@ export default function LogsPage() {
   const [filterTela, setFilterTela] = useState<string>('all')
   const [filterStatus, setFilterStatus] = useState<string>('pendente')
   const [searchTerm, setSearchTerm] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  // Filtro de data e hora
+  const [datePreset, setDatePreset] = useState<Preset>('all')
+  const [dateFrom, setDateFrom] = useState<string>('') // formato datetime-local
+  const [dateTo, setDateTo] = useState<string>('')
+
+  // Paginação
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
+
+  // Contadores globais (independentes dos filtros)
+  const [globalCounts, setGlobalCounts] = useState<{ pending: number; resolved: number }>({ pending: 0, resolved: 0 })
+  const [availableTelas, setAvailableTelas] = useState<string[]>([])
+
+  const supabase = useMemo(
+    () => createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    ),
+    []
   )
+
+  // Debounce do search (400ms) para evitar queries a cada tecla
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchTerm), 400)
+    return () => clearTimeout(t)
+  }, [searchTerm])
+
+  // Quando troca o preset, atualiza dateFrom/dateTo (exceto 'custom')
+  useEffect(() => {
+    if (datePreset === 'custom') return
+    const { from, to } = presetToRange(datePreset)
+    setDateFrom(from)
+    setDateTo(to)
+    setPage(1)
+  }, [datePreset])
+
+  // Ao mudar filtros, volta para a 1ª página
+  useEffect(() => { setPage(1) }, [filterTela, filterStatus, debouncedSearch, dateFrom, dateTo])
+
+  const applyFilters = useCallback((q: any) => {
+    if (filterTela !== 'all') q = q.eq('tela', filterTela)
+    if (filterStatus === 'resolvido') q = q.eq('resolvido', true)
+    else if (filterStatus === 'pendente') q = q.eq('resolvido', false)
+
+    if (dateFrom) {
+      const fromIso = new Date(dateFrom).toISOString()
+      q = q.gte('criado_em', fromIso)
+    }
+    if (dateTo) {
+      const toIso = new Date(dateTo).toISOString()
+      q = q.lte('criado_em', toIso)
+    }
+
+    if (debouncedSearch.trim()) {
+      const term = debouncedSearch.trim().replace(/[%,]/g, ' ')
+      // Busca em múltiplas colunas (log, tela, rota, componente, usuario_nome)
+      q = q.or(`log.ilike.%${term}%,tela.ilike.%${term}%,rota.ilike.%${term}%,componente.ilike.%${term}%,usuario_nome.ilike.%${term}%`)
+    }
+
+    return q
+  }, [filterTela, filterStatus, dateFrom, dateTo, debouncedSearch])
 
   const fetchLogs = useCallback(async () => {
     setLoading(true)
-    let query = supabase
+    const from = (page - 1) * PAGE_SIZE
+    const to = from + PAGE_SIZE - 1
+
+    let q = supabase
       .from('error_logs')
-      .select('*')
+      .select('*', { count: 'exact' })
       .order('criado_em', { ascending: false })
-      .limit(200)
+      .range(from, to)
 
-    if (filterTela !== 'all') query = query.eq('tela', filterTela)
-    if (filterStatus === 'resolvido') query = query.eq('resolvido', true)
-    else if (filterStatus === 'pendente') query = query.eq('resolvido', false)
+    q = applyFilters(q)
 
-    const { data } = await query
-    setLogs(data || [])
+    const { data, count, error } = await q
+    if (!error) {
+      setLogs(data || [])
+      setTotalCount(count || 0)
+    }
     setLoading(false)
-  }, [supabase, filterTela, filterStatus])
+  }, [supabase, page, applyFilters])
+
+  // Contadores globais — não mudam com filtros de tela/data/busca (só refletem resolvido/pendente)
+  const fetchGlobalCounts = useCallback(async () => {
+    const [pending, resolved] = await Promise.all([
+      supabase.from('error_logs').select('id', { count: 'exact', head: true }).eq('resolvido', false),
+      supabase.from('error_logs').select('id', { count: 'exact', head: true }).eq('resolvido', true),
+    ])
+    setGlobalCounts({
+      pending: pending.count || 0,
+      resolved: resolved.count || 0,
+    })
+  }, [supabase])
+
+  // Lista de telas disponíveis para o filtro — carrega uma vez
+  const fetchAvailableTelas = useCallback(async () => {
+    const { data } = await supabase
+      .from('error_logs')
+      .select('tela')
+      .limit(5000)
+    const telas = [...new Set((data || []).map(l => l.tela))].sort()
+    setAvailableTelas(telas)
+  }, [supabase])
 
   useEffect(() => { fetchLogs() }, [fetchLogs])
+  useEffect(() => {
+    fetchGlobalCounts()
+    fetchAvailableTelas()
+  }, [fetchGlobalCounts, fetchAvailableTelas])
 
   const toggleResolvido = async (id: string, currentValue: boolean) => {
     const res = await fetch('/api/logs/error', {
@@ -94,6 +218,10 @@ export default function LogsPage() {
     })
     if (res.ok) {
       setLogs(prev => prev.map(l => l.id === id ? { ...l, resolvido: !currentValue } : l))
+      setGlobalCounts(prev => ({
+        pending: prev.pending + (currentValue ? 1 : -1),
+        resolved: prev.resolved + (currentValue ? -1 : 1),
+      }))
       toast.success(!currentValue ? 'Marcado como resolvido' : 'Reaberto')
     }
   }
@@ -102,7 +230,15 @@ export default function LogsPage() {
     setDeletingId(id)
     const res = await fetch(`/api/logs/error?id=${id}`, { method: 'DELETE' })
     if (res.ok) {
+      const deletedLog = logs.find(l => l.id === id)
       setLogs(prev => prev.filter(l => l.id !== id))
+      setTotalCount(c => Math.max(0, c - 1))
+      if (deletedLog) {
+        setGlobalCounts(prev => ({
+          pending: prev.pending + (deletedLog.resolvido ? 0 : -1),
+          resolved: prev.resolved + (deletedLog.resolvido ? -1 : 0),
+        }))
+      }
       toast.success('Log removido')
     }
     setDeletingId(null)
@@ -111,26 +247,26 @@ export default function LogsPage() {
   const clearResolved = async () => {
     const res = await fetch('/api/logs/error?clearResolved=true', { method: 'DELETE' })
     if (res.ok) {
-      setLogs(prev => prev.filter(l => !l.resolvido))
+      fetchLogs()
+      fetchGlobalCounts()
       toast.success('Logs resolvidos removidos')
     }
   }
 
-  const filteredLogs = logs.filter(l => {
-    if (!searchTerm) return true
-    const term = searchTerm.toLowerCase()
-    return (
-      l.log.toLowerCase().includes(term) ||
-      l.tela.toLowerCase().includes(term) ||
-      l.rota.toLowerCase().includes(term) ||
-      l.componente?.toLowerCase().includes(term) ||
-      l.usuario_nome?.toLowerCase().includes(term)
-    )
-  })
+  const clearAllFilters = () => {
+    setFilterTela('all')
+    setFilterStatus('pendente')
+    setSearchTerm('')
+    setDatePreset('all')
+    setDateFrom('')
+    setDateTo('')
+    setPage(1)
+  }
 
-  const uniqueTelas = [...new Set(logs.map(l => l.tela))].sort()
-  const pendingCount = logs.filter(l => !l.resolvido).length
-  const resolvedCount = logs.filter(l => l.resolvido).length
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+  const showingFrom = totalCount === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
+  const showingTo = Math.min(page * PAGE_SIZE, totalCount)
+  const hasActiveDate = !!dateFrom || !!dateTo
 
   const getTicketId = (log: ErrorLog): string | null =>
     (log.metadata?.ticketId as string) || null
@@ -139,84 +275,138 @@ export default function LogsPage() {
     text.split('\n')[0].replace(/^\w+Error:\s*/, '').slice(0, 110)
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
+      {/* Header — padrão do dashboard */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-xl bg-destructive/10 flex items-center justify-center shrink-0">
             <Bug className="h-5 w-5 text-destructive" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Log de Erros</h1>
-            <p className="text-sm text-muted-foreground">Erros capturados automaticamente da plataforma</p>
+            <h1 className="text-2xl font-bold text-foreground">Log de Erros</h1>
+            <p className="text-muted-foreground">Erros capturados automaticamente da plataforma</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-destructive/10 border border-destructive/20">
             <div className="h-2 w-2 rounded-full bg-destructive animate-pulse" />
-            <span className="text-xs font-semibold text-destructive">{pendingCount} pendentes</span>
+            <span className="text-xs font-semibold text-destructive">{globalCounts.pending} pendentes</span>
           </div>
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/10 border border-green-500/20">
             <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
-            <span className="text-xs font-semibold text-green-700 dark:text-green-400">{resolvedCount} resolvidos</span>
+            <span className="text-xs font-semibold text-green-700 dark:text-green-400">{globalCounts.resolved} resolvidos</span>
           </div>
         </div>
       </div>
 
-      {/* Filters bar */}
-      <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl border bg-muted/30">
-        <Filter className="h-4 w-4 text-muted-foreground shrink-0" />
+      {/* Filters */}
+      <Card className="glass-card-elevated rounded-2xl border-0">
+        <CardContent className="pt-6 space-y-3">
+          {/* Linha 1: tela / status / período preset / busca */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Filter className="h-4 w-4 text-muted-foreground shrink-0" />
 
-        <Select value={filterTela} onValueChange={setFilterTela}>
-          <SelectTrigger className="w-[165px] h-8 text-xs bg-background">
-            <SelectValue placeholder="Todas as telas" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todas as telas</SelectItem>
-            {uniqueTelas.map(t => (
-              <SelectItem key={t} value={t}>{t}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+            <Select value={filterTela} onValueChange={setFilterTela}>
+              <SelectTrigger className="w-[180px] h-9 text-sm bg-background">
+                <SelectValue placeholder="Todas as telas" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas as telas</SelectItem>
+                {availableTelas.map(t => (
+                  <SelectItem key={t} value={t}>{t}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-        <Select value={filterStatus} onValueChange={setFilterStatus}>
-          <SelectTrigger className="w-[130px] h-8 text-xs bg-background">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos</SelectItem>
-            <SelectItem value="pendente">Pendentes</SelectItem>
-            <SelectItem value="resolvido">Resolvidos</SelectItem>
-          </SelectContent>
-        </Select>
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger className="w-[140px] h-9 text-sm bg-background">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos</SelectItem>
+                <SelectItem value="pendente">Pendentes</SelectItem>
+                <SelectItem value="resolvido">Resolvidos</SelectItem>
+              </SelectContent>
+            </Select>
 
-        <div className="relative flex-1 min-w-[180px]">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-          <Input
-            placeholder="Buscar erro, tela, usuário..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-8 h-8 text-xs bg-background"
-          />
-        </div>
+            <Select value={datePreset} onValueChange={(v) => setDatePreset(v as Preset)}>
+              <SelectTrigger className="w-[160px] h-9 text-sm bg-background">
+                <Calendar className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Qualquer período</SelectItem>
+                <SelectItem value="today">Hoje</SelectItem>
+                <SelectItem value="24h">Últimas 24h</SelectItem>
+                <SelectItem value="7d">Últimos 7 dias</SelectItem>
+                <SelectItem value="30d">Últimos 30 dias</SelectItem>
+                <SelectItem value="custom">Personalizado</SelectItem>
+              </SelectContent>
+            </Select>
 
-        <div className="flex items-center gap-1.5 ml-auto">
-          <Button variant="outline" size="sm" onClick={fetchLogs} disabled={loading} className="h-8 text-xs gap-1.5">
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-            Atualizar
-          </Button>
-          {resolvedCount > 0 && (
-            <Button
-              variant="outline" size="sm" onClick={clearResolved}
-              className="h-8 text-xs gap-1.5 text-destructive hover:text-destructive border-destructive/30"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Limpar resolvidos
-            </Button>
-          )}
-        </div>
-      </div>
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+              <Input
+                placeholder="Buscar por erro, tela, rota, componente ou usuário..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 h-9 text-sm bg-background"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5 ml-auto">
+              <Button variant="outline" size="sm" onClick={() => { fetchLogs(); fetchGlobalCounts() }} disabled={loading} className="h-9 text-xs gap-1.5">
+                <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+                Atualizar
+              </Button>
+              {globalCounts.resolved > 0 && (
+                <Button
+                  variant="outline" size="sm" onClick={clearResolved}
+                  className="h-9 text-xs gap-1.5 text-destructive hover:text-destructive border-destructive/30"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Limpar resolvidos
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Linha 2: range de data/hora (sempre visível — edição direta liga o preset 'custom') */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground pl-6">De</span>
+            <Input
+              type="datetime-local"
+              value={dateFrom}
+              onChange={(e) => { setDateFrom(e.target.value); setDatePreset('custom') }}
+              className="w-[215px] h-9 text-sm bg-background"
+            />
+            <span className="text-xs font-medium text-muted-foreground">até</span>
+            <Input
+              type="datetime-local"
+              value={dateTo}
+              onChange={(e) => { setDateTo(e.target.value); setDatePreset('custom') }}
+              className="w-[215px] h-9 text-sm bg-background"
+            />
+
+            {(hasActiveDate || searchTerm || filterTela !== 'all' || filterStatus !== 'pendente') && (
+              <Button
+                variant="ghost" size="sm" onClick={clearAllFilters}
+                className="h-9 text-xs gap-1.5 text-muted-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+                Limpar filtros
+              </Button>
+            )}
+
+            <span className="text-xs text-muted-foreground ml-auto tabular-nums">
+              {totalCount > 0
+                ? <>Mostrando <strong className="text-foreground">{showingFrom}–{showingTo}</strong> de <strong className="text-foreground">{totalCount}</strong></>
+                : <>Nenhum resultado</>}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* List */}
       <div className="space-y-1.5">
@@ -225,18 +415,18 @@ export default function LogsPage() {
             <RefreshCw className="h-7 w-7 animate-spin opacity-40" />
             <p className="text-sm">Carregando...</p>
           </div>
-        ) : filteredLogs.length === 0 ? (
+        ) : logs.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 gap-3">
             <div className="h-16 w-16 rounded-2xl bg-muted/50 flex items-center justify-center">
               <Bug className="h-8 w-8 text-muted-foreground/25" />
             </div>
             <div className="text-center">
               <p className="font-medium text-muted-foreground">Nenhum log encontrado</p>
-              <p className="text-xs text-muted-foreground/60 mt-1">Os erros aparecem aqui automaticamente</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Ajuste os filtros ou aguarde novos erros</p>
             </div>
           </div>
         ) : (
-          filteredLogs.map((log) => {
+          logs.map((log) => {
             const isExpanded = expandedId === log.id
             const ticketId = getTicketId(log)
             const isDeleting = deletingId === log.id
@@ -436,6 +626,51 @@ export default function LogsPage() {
           })
         )}
       </div>
+
+      {/* Paginação */}
+      {totalCount > PAGE_SIZE && (
+        <div className="flex items-center justify-between pt-2">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            Página <strong className="text-foreground">{page}</strong> de <strong className="text-foreground">{totalPages}</strong>
+          </span>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setPage(1)}
+              disabled={page <= 1 || loading}
+              className="h-8 text-xs gap-1.5 hidden sm:flex"
+            >
+              Primeira
+            </Button>
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page <= 1 || loading}
+              className="h-8 text-xs gap-1.5"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              Anterior
+            </Button>
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages || loading}
+              className="h-8 text-xs gap-1.5"
+            >
+              Próxima
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setPage(totalPages)}
+              disabled={page >= totalPages || loading}
+              className="h-8 text-xs gap-1.5 hidden sm:flex"
+            >
+              Última
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
