@@ -25,8 +25,14 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`font-sans antialiased`} suppressHydrationWarning>
+    // translate="no" + meta notranslate previnem o Chrome Translate de envolver
+    // text nodes em <font> tags, o que quebrava o reconcile do React com
+    // "NotFoundError: Failed to execute 'insertBefore'". App é pt-BR only.
+    <html lang="pt-BR" translate="no" suppressHydrationWarning>
+      <head>
+        <meta name="google" content="notranslate" />
+      </head>
+      <body className={`font-sans antialiased notranslate`} suppressHydrationWarning>
         <ErrorBoundary tela="Global">
           {children}
         </ErrorBoundary>
