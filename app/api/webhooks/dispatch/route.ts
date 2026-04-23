@@ -114,9 +114,46 @@ export async function POST(request: Request) {
     // Fetch all messages for this ticket (conversation history)
     const { data: mensagens } = await supabase
       .from('mensagens')
-      .select('id, remetente, conteudo, tipo, url_imagem, media_type, enviado_em, canal_envio')
+      .select('id, remetente, conteudo, tipo, url_imagem, media_type, enviado_em, canal_envio, phone_number_id')
       .eq('ticket_id', ticketId)
       .order('enviado_em', { ascending: true })
+
+    // ─── Resolver phone_number_id e canal_envio reais do ticket ───────────────
+    // A coluna legado `setores.phone_number_id` frequentemente está stale (emails
+    // antigos, null, etc). As fontes corretas, em ordem de prioridade:
+    //   1) Última mensagem não-sistema do ticket — reflete o canal que de fato
+    //      atendeu a conversa.
+    //   2) `setor_canais` ativo do setor — tabela autoritativa dos canais.
+    //   3) `setores.phone_number_id` — último recurso (legado).
+    let resolvedPhoneNumberId: string | null = null
+    let resolvedCanalEnvio: string | null = null
+    for (let i = (mensagens || []).length - 1; i >= 0; i--) {
+      const m: any = (mensagens as any[])[i]
+      if (m.remetente === 'sistema') continue
+      if (m.phone_number_id && !resolvedPhoneNumberId) resolvedPhoneNumberId = m.phone_number_id
+      if (m.canal_envio && !resolvedCanalEnvio) resolvedCanalEnvio = m.canal_envio
+      if (resolvedPhoneNumberId && resolvedCanalEnvio) break
+    }
+    if (!resolvedPhoneNumberId) {
+      const { data: canalAtivo } = await supabase
+        .from('setor_canais')
+        .select('tipo, instancia, phone_number_id')
+        .eq('setor_id', ticket.setor_id)
+        .eq('ativo', true)
+        .order('criado_em', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      if (canalAtivo) {
+        resolvedPhoneNumberId = canalAtivo.tipo === 'evolution_api'
+          ? (canalAtivo.instancia || null)
+          : (canalAtivo.phone_number_id || null)
+        if (!resolvedCanalEnvio) {
+          resolvedCanalEnvio = canalAtivo.tipo === 'evolution_api' ? 'evolutionapi' : canalAtivo.tipo
+        }
+      }
+    }
+    if (!resolvedPhoneNumberId) resolvedPhoneNumberId = setor.phone_number_id || null
+    if (!resolvedCanalEnvio) resolvedCanalEnvio = setor.canal || null
 
     // ─── Build metrics ────────────────────────────────────────────────────────
     const criadoEm   = ticket.criado_em   ? new Date(ticket.criado_em).getTime()   : null
@@ -169,8 +206,9 @@ export async function POST(request: Request) {
         numero:     ticket.numero,
         status:     ticket.status,
         prioridade: ticket.prioridade,
-        canal:      ticket.canal || setor.canal,
-        phone_number_id: setor.phone_number_id || null,
+        canal:      ticket.canal || resolvedCanalEnvio || setor.canal,
+        canal_envio: resolvedCanalEnvio,
+        phone_number_id: resolvedPhoneNumberId,
 
         setor: {
           id:   setor.id,
