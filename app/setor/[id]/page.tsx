@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { FloatingSaveBar } from '@/components/dashboard/floating-save-bar'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
@@ -442,6 +443,11 @@ export default function SetorPage() {
   const [customRange, setCustomRange] = useState<DateRange | undefined>()
   const [saving, setSaving] = useState(false)
   const [hasUnsavedConfig, setHasUnsavedConfig] = useState(false)
+  // Dirty tracking das outras seções da página Configurações — alimenta a
+  // FloatingSaveBar para unificar os múltiplos saves em um único CTA.
+  const [hasUnsavedTipos, setHasUnsavedTipos] = useState(false)
+  const [hasUnsavedDistribution, setHasUnsavedDistribution] = useState(false)
+  const [hasUnsavedDestino, setHasUnsavedDestino] = useState(false)
 
   const handleBackClick = () => {
     setIsNavigatingBack(true)
@@ -995,6 +1001,7 @@ export default function SetorPage() {
           auto_assign_enabled: distributionConfig.auto_assign_enabled,
         }, { onConflict: 'setor_id' })
       if (error) throw error
+      setHasUnsavedDistribution(false)
       toast.success('Configurações de distribuição salvas!')
     } catch {
       toast.error('Erro ao salvar configurações de distribuição')
@@ -1051,6 +1058,7 @@ export default function SetorPage() {
             }))
           )
       }
+      setHasUnsavedDestino(false)
       toast.success('Destinos de transferência salvos!')
     } catch {
       toast.error('Erro ao salvar destinos de transferência')
@@ -1066,6 +1074,18 @@ export default function SetorPage() {
         ? prev.filter((id) => id !== setorDestinoId)
         : [...prev, setorDestinoId]
     )
+    setHasUnsavedDestino(true)
+  }
+
+  // Salva todas as seções dirty da página Configurações em paralelo.
+  // Cada save já cuida do próprio toast e do reset do dirty flag.
+  const saveAllDirty = async () => {
+    const tasks: Promise<unknown>[] = []
+    if (hasUnsavedConfig) tasks.push(saveConfig())
+    if (hasUnsavedTipos) tasks.push(saveTiposAtendimento())
+    if (hasUnsavedDistribution) tasks.push(saveDistributionConfig())
+    if (hasUnsavedDestino) tasks.push(saveSetoresDestino())
+    await Promise.all(tasks)
   }
 
   // Cleanup evolution polling on unmount
@@ -1513,6 +1533,7 @@ const saveConfig = async () => {
         if (error) throw error
       }
 
+      setHasUnsavedTipos(false)
       toast.success('Roteamento de atendimento salvo com sucesso!')
     } catch (error) {
       console.error('Error saving tipos atendimento:', error)
@@ -3997,29 +4018,11 @@ const saveConfig = async () => {
     {/* Configurações Section */}
     {activeSection === 'configuracoes' && (
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold">Configurações do Setor</h1>
-            <p className="text-muted-foreground">
-              Personalize as informações e aparência do setor
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {hasUnsavedConfig && !saving && (
-              <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
-                Alterações não salvas
-              </span>
-            )}
-            <Button onClick={saveConfig} disabled={saving} className={cn(hasUnsavedConfig && !saving && "ring-2 ring-amber-500/40")}>
-              {saving ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Salvando...
-                </>
-              ) : 'Salvar Configurações'}
-            </Button>
-          </div>
+        <div>
+          <h1 className="text-xl font-bold">Configurações do Setor</h1>
+          <p className="text-muted-foreground">
+            Personalize as informações e aparência do setor
+          </p>
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">
@@ -4200,7 +4203,10 @@ const saveConfig = async () => {
                   </div>
                   <Select
                     value={tiposAtendimentoSetor[tipo.key] || 'none'}
-                    onValueChange={(value) => setTiposAtendimentoSetor((prev) => ({ ...prev, [tipo.key]: value === 'none' ? null : value }))}
+                    onValueChange={(value) => {
+                      setTiposAtendimentoSetor((prev) => ({ ...prev, [tipo.key]: value === 'none' ? null : value }))
+                      setHasUnsavedTipos(true)
+                    }}
                   >
                     <SelectTrigger className="w-[180px]">
                       <SelectValue placeholder="Selecionar setor" />
@@ -4217,18 +4223,6 @@ const saveConfig = async () => {
                 </div>
               )
             })}
-            <div className="flex justify-end pt-2">
-              <Button onClick={saveTiposAtendimento} disabled={savingTiposAtendimento}>
-                {savingTiposAtendimento ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Salvando...
-                  </>
-                ) : (
-                  'Salvar Configuracoes'
-                )}
-              </Button>
-            </div>
           </CardContent>
         </Card>
 
@@ -4336,24 +4330,14 @@ const saveConfig = async () => {
         <div className="grid gap-6 md:grid-cols-2">
           {/* Distribuição de Tickets */}
           <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
-            <CardHeader className="flex flex-row items-start justify-between space-y-0 shrink-0">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <UserCheck className="h-5 w-5" />
-                  Distribuição de Tickets
-                </CardTitle>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Configure como os tickets são distribuídos automaticamente entre os atendentes.
-                </p>
-              </div>
-              <Button size="sm" onClick={saveDistributionConfig} disabled={savingDistribution}>
-                {savingDistribution ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Salvando...
-                  </>
-                ) : 'Salvar'}
-              </Button>
+            <CardHeader className="shrink-0">
+              <CardTitle className="flex items-center gap-2">
+                <UserCheck className="h-5 w-5" />
+                Distribuição de Tickets
+              </CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                Configure como os tickets são distribuídos automaticamente entre os atendentes.
+              </p>
             </CardHeader>
             <CardContent className="space-y-5 overflow-y-auto">
               <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
@@ -4365,9 +4349,10 @@ const saveConfig = async () => {
                 </div>
                 <Switch
                   checked={distributionConfig.auto_assign_enabled}
-                  onCheckedChange={(checked) =>
+                  onCheckedChange={(checked) => {
                     setDistributionConfig((prev) => ({ ...prev, auto_assign_enabled: checked }))
-                  }
+                    setHasUnsavedDistribution(true)
+                  }}
                 />
               </div>
               <div className="space-y-2 max-w-xs">
@@ -4378,12 +4363,13 @@ const saveConfig = async () => {
                   min={1}
                   max={100}
                   value={distributionConfig.max_tickets_per_agent}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setDistributionConfig((prev) => ({
                       ...prev,
                       max_tickets_per_agent: parseInt(e.target.value) || 10,
                     }))
-                  }
+                    setHasUnsavedDistribution(true)
+                  }}
                 />
                 <p className="text-xs text-muted-foreground">
                   Máximo de tickets ativos simultâneos por atendente. Atendentes que atingirem esse limite não receberão novos tickets automaticamente.
@@ -4831,24 +4817,14 @@ const saveConfig = async () => {
 
         {/* Setores para Transferência */}
         <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[420px]">
-          <CardHeader className="flex flex-row items-start justify-between space-y-0 shrink-0">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <ArrowRightLeft className="h-5 w-5" />
-                Setores para Transferência
-              </CardTitle>
-              <p className="text-sm text-muted-foreground mt-1">
-                Selecione quais setores estarão disponíveis como destino ao transferir um ticket deste setor no WorkDesk.
-              </p>
-            </div>
-            <Button size="sm" onClick={saveSetoresDestino} disabled={savingSetoresDestino}>
-              {savingSetoresDestino ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Salvando...
-                </>
-              ) : 'Salvar'}
-            </Button>
+          <CardHeader className="shrink-0">
+            <CardTitle className="flex items-center gap-2">
+              <ArrowRightLeft className="h-5 w-5" />
+              Setores para Transferência
+            </CardTitle>
+            <p className="text-sm text-muted-foreground mt-1">
+              Selecione quais setores estarão disponíveis como destino ao transferir um ticket deste setor no WorkDesk.
+            </p>
           </CardHeader>
           <CardContent className="flex-1 overflow-hidden flex flex-col gap-3 pb-4">
             {/* Busca */}
@@ -5114,6 +5090,19 @@ const saveConfig = async () => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Barra de save flutuante — unifica os saves da página Configurações */}
+        <FloatingSaveBar
+          show={hasUnsavedConfig || hasUnsavedTipos || hasUnsavedDistribution || hasUnsavedDestino}
+          saving={saving || savingTiposAtendimento || savingDistribution || savingSetoresDestino}
+          onSave={saveAllDirty}
+          dirtyLabels={[
+            ...(hasUnsavedConfig ? ['Informações e aparência'] : []),
+            ...(hasUnsavedTipos ? ['Roteamento'] : []),
+            ...(hasUnsavedDistribution ? ['Distribuição'] : []),
+            ...(hasUnsavedDestino ? ['Transferência'] : []),
+          ]}
+        />
       </div>
     )}
 
