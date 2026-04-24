@@ -130,6 +130,7 @@ import { toast } from 'sonner'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Send, Hash, Check, Tag, Radio, Inbox } from 'lucide-react'
 import { DisparoLogsSection } from '@/components/disparo-logs-section'
+import { DisparosSection } from '@/components/setor/disparos-section'
 
 const supabase = createClient()
 
@@ -193,6 +194,7 @@ const sidebarItems = [
     { id: 'horarios', name: 'Horários de atendimento', icon: Clock, description: 'Defina dias e horários disponíveis' },
     { id: 'pausas', name: 'Pausas', icon: Coffee, description: 'Gerencie os tipos de pausas dos atendentes' },
     { id: 'configuracoes', name: 'Configurações', icon: Settings, description: 'Configurações do setor' },
+    { id: 'disparos', name: 'Disparos', icon: Send, description: 'Crie e acompanhe disparos em massa', whatsappOnly: true },
     { id: 'disparo_logs', name: 'Log de Disparos', icon: Megaphone, description: 'Historico de disparos realizados', whatsappOnly: true },
   ]
 
@@ -557,6 +559,8 @@ export default function SetorPage() {
   openai_ativo: false,
   nexus_ativo: false,
   assinatura_ativa: false,
+  encerramento_auto_ativo: false,
+  encerramento_auto_minutos: 30,
   })
 
 // Templates state
@@ -947,6 +951,8 @@ export default function SetorPage() {
         openai_ativo: setor.openai_ativo || false,
         nexus_ativo: setor.nexus_ativo || false,
         assinatura_ativa: setor.assinatura_ativa || false,
+        encerramento_auto_ativo: setor.encerramento_auto_ativo || false,
+        encerramento_auto_minutos: setor.encerramento_auto_minutos ?? 30,
       })
       fetchTemplates()
       fetchCanais()
@@ -1327,6 +1333,8 @@ const saveConfig = async () => {
   openai_ativo: configForm.openai_ativo || false,
   nexus_ativo: configForm.nexus_ativo || false,
   assinatura_ativa: configForm.assinatura_ativa || false,
+  encerramento_auto_ativo: configForm.encerramento_auto_ativo,
+  encerramento_auto_minutos: configForm.encerramento_auto_minutos,
   })
         .eq('id', setorId)
 
@@ -4326,6 +4334,61 @@ const saveConfig = async () => {
           </Card>
         </div>
 
+        {/* Encerramento Automático por Inatividade */}
+        <Card className="glass-card-elevated rounded-2xl border-0">
+          <CardHeader>
+            <CardTitle>Encerramento Automático por Inatividade</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Fecha automaticamente tickets sem interação (sem mensagens do cliente ou do atendente) há X minutos. Tickets de disparo são ignorados.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">Ativar encerramento automático</p>
+                <p className="text-xs text-muted-foreground">
+                  Quando ativado, tickets inativos são encerrados a cada ciclo do sistema (a cada 2 minutos).
+                </p>
+              </div>
+              <Switch
+                checked={configForm.encerramento_auto_ativo}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, encerramento_auto_ativo: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
+
+            {configForm.encerramento_auto_ativo && (
+              <div className="flex items-center gap-4 pl-2">
+                <div className="space-y-2 flex-1 max-w-xs">
+                  <Label htmlFor="encerramento_auto_minutos">Tempo de inatividade (minutos)</Label>
+                  <Input
+                    id="encerramento_auto_minutos"
+                    type="number"
+                    min={15}
+                    max={1440}
+                    value={configForm.encerramento_auto_minutos}
+                    onChange={(e) => {
+                      const parsed = parseInt(e.target.value, 10)
+                      const v = Number.isNaN(parsed) ? 15 : Math.max(15, parsed)
+                      setConfigForm((prev) => ({ ...prev, encerramento_auto_minutos: v }))
+                      setHasUnsavedConfig(true)
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">Mínimo 15 minutos.</p>
+                </div>
+                <div className="flex items-center gap-2 mt-6">
+                  <div className="h-4 w-4 rounded-full bg-red-500" />
+                  <span className="text-sm text-muted-foreground">
+                    Fechamento após {configForm.encerramento_auto_minutos} min sem interação
+                  </span>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Row 2: Distribuição de Tickets + Mensagem de Finalização */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Distribuição de Tickets */}
@@ -5104,6 +5167,20 @@ const saveConfig = async () => {
           ]}
         />
       </div>
+    )}
+
+    {activeSection === 'disparos' && setor && (
+      <DisparosSection
+        setor={{
+          id: setor.id,
+          nome: setor.nome,
+          evolution_base_url: setor.evolution_base_url,
+          evolution_api_key: setor.evolution_api_key,
+          openai_ativo: setor.openai_ativo,
+          openai_api_key: setor.openai_api_key,
+          max_disparos_dia: setor.max_disparos_dia,
+        }}
+      />
     )}
 
     {activeSection === 'disparo_logs' && (
