@@ -107,13 +107,15 @@ export function DisparosWizard({
         .order('nome')
       setSubsetores((subs as Subsetor[]) || [])
 
-      const { data: cols } = await supabase
-        .from('colaboradores')
-        .select('id, nome, is_online')
+      const { data: cs } = await supabase
+        .from('colaboradores_setores')
+        .select('colaboradores(id, nome, is_online, ativo)')
         .eq('setor_id', setor.id)
-        .eq('ativo', true)
-        .order('nome')
-      setAtendentes((cols as Colaborador[]) || [])
+      const cols = (cs || [])
+        .map((r: { colaboradores: unknown }) => r.colaboradores as Colaborador & { ativo?: boolean } | null)
+        .filter((c): c is Colaborador & { ativo?: boolean } => !!c && c.ativo !== false)
+        .sort((a, b) => (a.nome || '').localeCompare(b.nome || ''))
+      setAtendentes(cols)
     }
     load()
   }, [setor.id, supabase])
@@ -185,7 +187,7 @@ export function DisparosWizard({
 
   return (
     <Dialog open onOpenChange={(o) => !o && !submitting && onClose()}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[95vw] max-w-6xl max-h-[90vh] overflow-hidden flex flex-col sm:max-w-6xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Send className="h-5 w-5" />
@@ -557,11 +559,18 @@ function ClientesHubPicker({
         </Button>
       </div>
 
-      <div className="rounded-lg border max-h-[320px] overflow-y-auto">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border max-h-[420px] overflow-y-auto">
+        <table className="w-full text-sm table-fixed">
+          <colgroup>
+            <col className="w-10" />
+            <col />
+            <col className="w-40" />
+            <col className="w-28" />
+            <col className="w-36" />
+          </colgroup>
           <thead className="bg-muted sticky top-0">
             <tr>
-              <th className="p-2 w-8"></th>
+              <th className="p-2"></th>
               <th className="p-2 text-left">Nome</th>
               <th className="p-2 text-left">CNPJ</th>
               <th className="p-2 text-left">Registro</th>
@@ -596,11 +605,11 @@ function ClientesHubPicker({
                       onClick={(e) => e.stopPropagation()}
                     />
                   </td>
-                  <td className="p-2">{c.nome || '—'}</td>
-                  <td className="p-2 font-mono text-xs">{c.CNPJ || '—'}</td>
-                  <td className="p-2 font-mono text-xs">{c.Registro || '—'}</td>
-                  <td className="p-2 font-mono text-xs">
-                    {c.telefone || <span className="text-red-500">sem telefone</span>}
+                  <td className="p-2 truncate" title={c.nome || ''}>{c.nome || '—'}</td>
+                  <td className="p-2 font-mono text-xs truncate" title={c.CNPJ || ''}>{c.CNPJ || '—'}</td>
+                  <td className="p-2 font-mono text-xs truncate" title={c.Registro || ''}>{c.Registro || '—'}</td>
+                  <td className="p-2 font-mono text-xs truncate" title={c.telefone || ''}>
+                    {c.telefone || <span className="text-red-500">sem</span>}
                   </td>
                 </tr>
               ))

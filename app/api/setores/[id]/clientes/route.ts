@@ -22,6 +22,10 @@ export async function GET(
   let query = supabase
     .from('clientes')
     .select('id, nome, telefone, CNPJ, Registro', { count: 'exact' })
+    .not('CNPJ', 'is', null)
+    .neq('CNPJ', '')
+    .not('Registro', 'is', null)
+    .neq('Registro', '')
     .order('nome', { ascending: true, nullsFirst: false })
     .range(from, to)
 
