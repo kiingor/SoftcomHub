@@ -131,6 +131,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { Send, Hash, Check, Tag, Radio, Inbox } from 'lucide-react'
 import { DisparoLogsSection } from '@/components/disparo-logs-section'
 import { DisparosSection } from '@/components/setor/disparos-section'
+import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 
 const supabase = createClient()
 
@@ -3573,6 +3574,8 @@ const saveConfig = async () => {
                 )}
               </CardContent>
           </Card>
+
+          <HistoricoClienteSection setorId={setorId} />
         </div>
       )}
 
