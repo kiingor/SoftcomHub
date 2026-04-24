@@ -69,15 +69,29 @@ export function DisparosSection({ setor }: { setor: Setor }) {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [wizardOpen, setWizardOpen] = useState(false)
-
-  const evolutionOk = Boolean(
-    (setor.evolution_base_url || '').trim() && (setor.evolution_api_key || '').trim(),
-  )
+  const [evolutionOk, setEvolutionOk] = useState<boolean | null>(null)
 
   const supabase = createClient()
 
+  useEffect(() => {
+    let cancelled = false
+    const check = async () => {
+      const { count } = await supabase
+        .from('setor_canais')
+        .select('id', { count: 'exact', head: true })
+        .eq('setor_id', setor.id)
+        .eq('tipo', 'evolution_api')
+        .eq('ativo', true)
+      if (!cancelled) setEvolutionOk((count || 0) > 0)
+    }
+    check()
+    return () => {
+      cancelled = true
+    }
+  }, [setor.id, supabase])
+
   const fetchLotes = useCallback(async () => {
-    if (!evolutionOk) {
+    if (evolutionOk !== true) {
       setLoading(false)
       return
     }
@@ -105,7 +119,23 @@ export function DisparosSection({ setor }: { setor: Setor }) {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
-  if (!evolutionOk) {
+  if (evolutionOk === null) {
+    return (
+      <Card className="glass-card-elevated rounded-2xl border-0">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Megaphone className="h-5 w-5" />
+            Disparos
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-sm text-muted-foreground">Carregando...</div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (evolutionOk === false) {
     return (
       <Card className="glass-card-elevated rounded-2xl border-0">
         <CardHeader>
@@ -122,8 +152,9 @@ export function DisparosSection({ setor }: { setor: Setor }) {
                 Evolution API não configurada neste setor
               </p>
               <p className="text-sm text-amber-800 dark:text-amber-200 mt-1">
-                Os disparos em massa só funcionam em setores com Evolution configurada. Vá em{' '}
-                <strong>Configurações</strong> do setor, preencha os campos de Evolution e salve.
+                Os disparos em massa só funcionam em setores com uma Evolution ativa em{' '}
+                <strong>Canais de Atendimento</strong>. Adicione um canal do tipo EvolutionAPI e
+                deixe-o ativo.
               </p>
             </div>
           </div>
