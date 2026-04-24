@@ -157,25 +157,30 @@ export default function MetricasPage() {
 
     setLoading(true)
     try {
-      // ─── 2 parallel queries instead of 7 sequential ───
-      // Query 1: KPI counts via Supabase aggregate (no pagination needed)
-      // Query 2: All ticket data for charts in ONE paginated fetch
+      // Helper pra aplicar filtros de setor/data de forma consistente
+      const applyFilters = (q: any, includeRange = true) => {
+        let r = q.in('setor_id', filterSetorIds)
+        if (includeRange && filterDate) r = r.gte('criado_em', filterDate)
+        if (includeRange && filterDateTo) r = r.lte('criado_em', filterDateTo)
+        return r
+      }
 
-      // KPI queries (head count, fast)
-      const [totalResult, closedResult] = await Promise.all([
-        buildRangeQuery(supabase, 'tickets', '*', filterSetorIds, filterDate, filterDateTo)
-          .select('*', { count: 'exact', head: true }),
-        buildRangeQuery(supabase, 'tickets', '*', filterSetorIds, filterDate, filterDateTo)
-          .eq('status', 'encerrado')
-          .select('*', { count: 'exact', head: true }),
+      // KPIs com queries dedicadas (sem encadear .select() duas vezes, que quebra o count no supabase-js v2)
+      const [totalResult, closedResult, allTicketData] = await Promise.all([
+        applyFilters(
+          supabase.from('tickets').select('*', { count: 'exact', head: true }),
+        ),
+        applyFilters(
+          supabase
+            .from('tickets')
+            .select('*', { count: 'exact', head: true })
+            .eq('status', 'encerrado'),
+        ),
+        fetchAllTicketData(supabase, filterSetorIds, filterDate, filterDateTo),
       ])
 
       const totalTickets = totalResult.count || 0
       const closedTickets = closedResult.count || 0
-
-      // For time averages, fetch ONLY the 2 date columns needed (not full rows)
-      // and use a larger page size to reduce round trips
-      const allTicketData = await fetchAllTicketData(supabase, filterSetorIds, filterDate, filterDateTo)
 
       // Compute KPIs from aggregated data
       let avgFirstResponse = 0
@@ -288,62 +293,58 @@ export default function MetricasPage() {
     }
   }, [dateFilter, customRange, setorFilter, setorIdsAcessiveis])
 
-  // Optimized: single paginated fetch with minimal columns
+  // Paginação paralela: 1ª página traz o count, demais são disparadas em paralelo.
   async function fetchAllTicketData(supabase: any, setorIds: string[], fromDate: string | null, toDate: string | null) {
     const PAGE_SIZE = 1000
-    let all: Array<{
+    const SELECT_COLS =
+      'criado_em, primeira_resposta_em, encerrado_em, status, colaboradores:colaborador_id(nome), setores:setor_id(nome), clientes:cliente_id(nome, PDV)'
+
+    type Row = {
       criado_em: string | null
       primeira_resposta_em: string | null
       encerrado_em: string | null
       status: string | null
-      colaborador_nome: string | null
-      setor_nome: string | null
-      pdv: string | null
-      cliente_nome: string | null
-    }> = []
-    let offset = 0
-    let hasMore = true
-
-    while (hasMore) {
-      let query = supabase
-        .from('tickets')
-        .select('criado_em, primeira_resposta_em, encerrado_em, status, colaboradores:colaborador_id(nome), setores:setor_id(nome), clientes:cliente_id(nome, PDV)')
-        .in('setor_id', setorIds)
-        .order('criado_em', { ascending: true })
-        .range(offset, offset + PAGE_SIZE - 1)
-
-      if (fromDate) query = query.gte('criado_em', fromDate)
-      if (toDate) query = query.lte('criado_em', toDate)
-
-      const { data } = await query
-
-      if (data && data.length > 0) {
-        for (const row of data) {
-          all.push({
-            criado_em: row.criado_em,
-            primeira_resposta_em: row.primeira_resposta_em,
-            encerrado_em: row.encerrado_em,
-            status: row.status,
-            colaborador_nome: row.colaboradores?.nome ?? null,
-            setor_nome: row.setores?.nome ?? null,
-            pdv: row.clientes?.PDV ?? null,
-            cliente_nome: row.clientes?.nome ?? null,
-          })
-        }
-        offset += PAGE_SIZE
-        hasMore = data.length === PAGE_SIZE
-      } else {
-        hasMore = false
-      }
+      colaboradores: { nome: string | null } | null
+      setores: { nome: string | null } | null
+      clientes: { nome: string | null; PDV: string | null } | null
     }
-    return all
-  }
 
-  function buildRangeQuery(supabase: any, table: string, columns: string, setorIds: string[], fromDate: string | null, toDate: string | null) {
-    let q = supabase.from(table).select(columns).in('setor_id', setorIds)
-    if (fromDate) q = q.gte('criado_em', fromDate)
-    if (toDate) q = q.lte('criado_em', toDate)
-    return q
+    const buildPage = (from: number, to: number, withCount: boolean) => {
+      let q = withCount
+        ? supabase.from('tickets').select(SELECT_COLS, { count: 'exact' })
+        : supabase.from('tickets').select(SELECT_COLS)
+      q = q.in('setor_id', setorIds).order('criado_em', { ascending: true }).range(from, to)
+      if (fromDate) q = q.gte('criado_em', fromDate)
+      if (toDate) q = q.lte('criado_em', toDate)
+      return q
+    }
+
+    const first = await buildPage(0, PAGE_SIZE - 1, true)
+    const firstRows: Row[] = first.data || []
+    const totalCount: number = first.count ?? firstRows.length
+
+    const pagesRestantes = Math.max(0, Math.ceil(totalCount / PAGE_SIZE) - 1)
+    let remainingRows: Row[] = []
+    if (pagesRestantes > 0) {
+      const results = await Promise.all(
+        Array.from({ length: pagesRestantes }, (_, i) => {
+          const offset = (i + 1) * PAGE_SIZE
+          return buildPage(offset, offset + PAGE_SIZE - 1, false)
+        }),
+      )
+      remainingRows = results.flatMap((r) => (r.data as Row[]) || [])
+    }
+
+    return [...firstRows, ...remainingRows].map((row) => ({
+      criado_em: row.criado_em,
+      primeira_resposta_em: row.primeira_resposta_em,
+      encerrado_em: row.encerrado_em,
+      status: row.status,
+      colaborador_nome: row.colaboradores?.nome ?? null,
+      setor_nome: row.setores?.nome ?? null,
+      pdv: row.clientes?.PDV ?? null,
+      cliente_nome: row.clientes?.nome ?? null,
+    }))
   }
 
   useEffect(() => {
