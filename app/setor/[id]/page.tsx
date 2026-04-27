@@ -132,6 +132,7 @@ import { Send, Hash, Check, Tag, Radio, Inbox } from 'lucide-react'
 import { DisparoLogsSection } from '@/components/disparo-logs-section'
 import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
+import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 
 const supabase = createClient()
 
@@ -242,12 +243,11 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
   const ticketsNaFila = ticketsAtivos.filter((t: any) => t.status === 'aberto')
   const ticketsEmAtendimento = ticketsAtivos.filter((t: any) => t.status === 'em_atendimento')
   const ticketsFinalizadosHoje = ticketsHoje.filter((t: any) => t.status === 'encerrado')
-  const HEARTBEAT_STALE_MS = 2 * 60 * 1000
-  const atendentesOnline = atendentes.filter((c: any) =>
-    c.is_online && c.ativo && !c.pausa_atual_id &&
-    c.last_heartbeat && (Date.now() - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
-  )
-    const atendentesEmPausa = atendentes.filter((c: any) => c.pausa_atual_id && c.ativo)
+  // Critério único de "online" — extraído pra atendentes-status-modal pra
+  // evitar divergência entre telas (antes a aba Atendentes mostrava só is_online,
+  // ignorando heartbeat e pausa, dando contagens diferentes).
+  const atendentesOnline = atendentes.filter((c: any) => isAtendenteOnline(c))
+  const atendentesEmPausa = atendentes.filter((c: any) => c.pausa_atual_id && c.ativo)
 
   // Calculate max time in queue
   const now = Date.now()
@@ -446,6 +446,7 @@ export default function SetorPage() {
   const [customRange, setCustomRange] = useState<DateRange | undefined>()
   const [saving, setSaving] = useState(false)
   const [hasUnsavedConfig, setHasUnsavedConfig] = useState(false)
+  const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
   // Dirty tracking das outras seções da página Configurações — alimenta a
   // FloatingSaveBar para unificar os múltiplos saves em um único CTA.
   const [hasUnsavedTipos, setHasUnsavedTipos] = useState(false)
@@ -2709,10 +2710,18 @@ const saveConfig = async () => {
 
                 {/* Status dos atendentes */}
                 <Card className="glass-card-elevated rounded-2xl border-0">
-                  <CardHeader className="pb-2">
+                  <CardHeader className="pb-2 flex flex-row items-center justify-between">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
                       Status dos atendentes
                     </CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setStatusAtendentesModalOpen(true)}
+                    >
+                      Ver detalhes
+                    </Button>
                   </CardHeader>
                   <CardContent>
                     <div className="flex justify-around text-center gap-2">
@@ -3734,18 +3743,26 @@ const saveConfig = async () => {
                         <div className="hidden lg:flex items-center gap-2">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <div className={cn(
-                                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium cursor-pointer transition-opacity hover:opacity-80 select-none",
-                                atendente.is_online 
-                                  ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" 
-                                  : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
-                              )}>
-                                {alterandoStatusId === atendente.id
-                                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                                  : <span className={cn("h-1.5 w-1.5 rounded-full", atendente.is_online ? "bg-green-500" : "bg-gray-400")} />
-                                }
-                                {atendente.is_online ? 'Online' : 'Offline'}
-                              </div>
+                              {(() => {
+                                // Mesmo critério estrito do monitoramento: heartbeat fresco + sem pausa
+                                const reallyOnline = isAtendenteOnline(atendente)
+                                return (
+                                  <div className={cn(
+                                    "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium cursor-pointer transition-opacity hover:opacity-80 select-none",
+                                    reallyOnline
+                                      ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                      : atendente.pausa_atual_id
+                                        ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                                        : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                                  )}>
+                                    {alterandoStatusId === atendente.id
+                                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                                      : <span className={cn("h-1.5 w-1.5 rounded-full", reallyOnline ? "bg-green-500" : atendente.pausa_atual_id ? "bg-amber-500" : "bg-gray-400")} />
+                                    }
+                                    {reallyOnline ? 'Online' : atendente.pausa_atual_id ? 'Pausa' : 'Offline'}
+                                  </div>
+                                )
+                              })()}
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-44">
                               <DropdownMenuItem
@@ -5193,6 +5210,12 @@ const saveConfig = async () => {
 </div>
 
       {/* Delete Atendente Confirmation Dialog */}
+      <AtendentesStatusModal
+        open={statusAtendentesModalOpen}
+        onOpenChange={setStatusAtendentesModalOpen}
+        atendentes={atendentes}
+      />
+
       <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
