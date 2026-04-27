@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { Toaster } from '@/components/ui/toaster'
+import { Toaster as SonnerToaster } from 'sonner'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { GlobalErrorHandler } from '@/components/global-error-handler'
 import './globals.css'
@@ -38,6 +39,7 @@ export default function RootLayout({
         </ErrorBoundary>
         <GlobalErrorHandler />
         <Toaster />
+        <SonnerToaster richColors position="top-right" />
         <Analytics />
       </body>
     </html>
