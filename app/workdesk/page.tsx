@@ -2448,7 +2448,10 @@ const handleEncerrarTicket = async () => {
 
   // Disparo - Send template
   const handleEnviarDisparo = async () => {
-    if (!disparoCliente || !disparoTelefone || !colaborador) return
+    if (!disparoCliente || !disparoTelefone || !colaborador) {
+      toast.error('Sessão sem dados completos. Recarregue a página.')
+      return
+    }
     
     // Get setor_id from colaborador
     const setorId = colaborador.setor_id || colaborador.setores_vinculados?.[0]?.setor_id
@@ -2509,22 +2512,27 @@ const handleEncerrarTicket = async () => {
 
   // Determine next step after phone number is confirmed
   const handleDisparoConfirmPhone = () => {
-    const temWhatsapp = setorCanaisAtivos.includes('whatsapp') || setorCanalConfig === 'whatsapp'
+    // Fonte autoritativa: setor_canais (canais ativos no setor).
+    // Antes havia um fallback legado pra setorCanalConfig === 'whatsapp' que
+    // mandava setores Evolution-only pro seletor de canal incorretamente.
+    const temWhatsapp = setorCanaisAtivos.includes('whatsapp')
     const temEvolution = setorCanaisAtivos.includes('evolution_api')
 
     if (temWhatsapp && temEvolution) {
-      // Both configured — let user choose
+      // Ambos ativos — usuário escolhe
       setDisparoStep('canal')
     } else if (temEvolution) {
-      // Only Evolution — skip channel selection
+      // Só Evolution — pula seleção de canal e vai pra mensagem
       setDisparoCanalChoice('evolution_api')
-      // Pre-load first template as default message
       const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
       setDisparoMensagemEvolution(defaultMsg)
       setDisparoStep('mensagem_evolution')
-    } else {
-      // Only WhatsApp (or fallback) — existing send flow
+    } else if (temWhatsapp) {
+      // Só WhatsApp Cloud — fluxo de template existente
       handleEnviarDisparo()
+    } else {
+      // Nenhum canal ativo no setor_canais — provavelmente setor sem canal configurado
+      toast.error('Nenhum canal ativo neste setor. Configure WhatsApp ou Evolution em Canais de Atendimento.')
     }
   }
 
@@ -2543,7 +2551,10 @@ const handleEncerrarTicket = async () => {
 
   // Disparo via Evolution API
   const handleEnviarDisparoEvolution = async () => {
-    if (!disparoCliente || !disparoTelefone || !colaborador || !disparoMensagemEvolution.trim()) return
+    if (!disparoCliente || !disparoTelefone || !colaborador || !disparoMensagemEvolution.trim()) {
+      toast.error('Sessão sem dados completos ou mensagem vazia.')
+      return
+    }
 
     const setorId = colaborador.setor_id || colaborador.setores_vinculados?.[0]?.setor_id
     if (!setorId) {
