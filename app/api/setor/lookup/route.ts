@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
         phone_number_id, whatsapp_token, template_id, template_language,
         evolution_base_url, evolution_api_key,
         discord_bot_token, discord_guild_id,
-        setores(id, nome)
+        setores(id, nome, assistente_ia)
       `)
       .or(`evolution_api_key.eq.${identifier},instancia.eq.${identifier},phone_number_id.eq.${identifier}`)
 
@@ -109,6 +109,7 @@ export async function GET(request: NextRequest) {
             source: 'setor_canais',
             setor_id: canalMatch.setor_id,
             setor_nome: setor?.nome || null,
+            assistente_ia: setor?.assistente_ia || false,
             canal: {
               ...canalBase,
               ...canalEspecifico,
@@ -125,7 +126,7 @@ export async function GET(request: NextRequest) {
     // Priority 2: Fallback to setores table — return ALL matches
     const { data: setorMatches } = await supabase
       .from('setores')
-      .select('id, nome, canal')
+      .select('id, nome, canal, assistente_ia')
       .or(`evolution_api_key.eq.${identifier},phone_number_id.eq.${identifier}`)
 
     if (setorMatches && setorMatches.length > 0) {
@@ -134,6 +135,7 @@ export async function GET(request: NextRequest) {
           source: 'setores',
           setor_id: s.id,
           setor_nome: s.nome,
+          assistente_ia: s.assistente_ia || false,
           canal: null,
         })),
       )
