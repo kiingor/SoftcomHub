@@ -560,6 +560,7 @@ export default function SetorPage() {
   openai_api_key: '',
   openai_ativo: false,
   nexus_ativo: false,
+  assistente_ia: false,
   assinatura_ativa: false,
   encerramento_auto_ativo: false,
   encerramento_auto_minutos: 30,
@@ -713,11 +714,15 @@ export default function SetorPage() {
     email: '',
     senha: '',
     confirmarSenha: '',
+    novaSenha: '',
+    confirmarNovaSenha: '',
     suporte_id: '',
   })
   const [savingAtendente, setSavingAtendente] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false)
   const [existingColaborador, setExistingColaborador] = useState<any>(null)
   const [checkingEmail, setCheckingEmail] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
@@ -952,6 +957,7 @@ export default function SetorPage() {
         openai_api_key: setor.openai_api_key || '',
         openai_ativo: setor.openai_ativo || false,
         nexus_ativo: setor.nexus_ativo || false,
+        assistente_ia: setor.assistente_ia || false,
         assinatura_ativa: setor.assinatura_ativa || false,
         encerramento_auto_ativo: setor.encerramento_auto_ativo || false,
         encerramento_auto_minutos: setor.encerramento_auto_minutos ?? 30,
@@ -1334,6 +1340,7 @@ const saveConfig = async () => {
   openai_api_key: configForm.openai_api_key || null,
   openai_ativo: configForm.openai_ativo || false,
   nexus_ativo: configForm.nexus_ativo || false,
+  assistente_ia: configForm.assistente_ia || false,
   assinatura_ativa: configForm.assinatura_ativa || false,
   encerramento_auto_ativo: configForm.encerramento_auto_ativo,
   encerramento_auto_minutos: configForm.encerramento_auto_minutos,
@@ -2095,7 +2102,7 @@ const saveConfig = async () => {
   const openCreateAtendenteModal = () => {
     setEditingAtendente(null)
     setAtendenteSubsetorIds([])
-    setAtendenteForm({ nome: '', email: '', senha: '', confirmarSenha: '', suporte_id: '' })
+    setAtendenteForm({ nome: '', email: '', senha: '', confirmarSenha: '', novaSenha: '', confirmarNovaSenha: '', suporte_id: '' })
     setShowPassword(false)
     setShowConfirmPassword(false)
     setExistingColaborador(null)
@@ -2165,8 +2172,12 @@ const saveConfig = async () => {
       email: atendente.email || '',
       senha: '',
       confirmarSenha: '',
+      novaSenha: '',
+      confirmarNovaSenha: '',
       suporte_id: atendente.suporte_id || '',
     })
+    setShowNewPassword(false)
+    setShowConfirmNewPassword(false)
     setExistingColaborador(null)
     setIsAtendenteModalOpen(true)
   }
@@ -2234,6 +2245,17 @@ const saveConfig = async () => {
       return
     }
 
+    if (editingAtendente && atendenteForm.novaSenha) {
+      if (atendenteForm.novaSenha.length < 6) {
+        toast.error('A senha deve ter no mínimo 6 caracteres')
+        return
+      }
+      if (atendenteForm.novaSenha !== atendenteForm.confirmarNovaSenha) {
+        toast.error('As senhas não coincidem')
+        return
+      }
+    }
+
     setSavingAtendente(true)
     try {
       if (editingAtendente) {
@@ -2244,6 +2266,21 @@ const saveConfig = async () => {
           .eq('id', editingAtendente.id)
 
         if (error) throw error
+
+        if (atendenteForm.novaSenha) {
+          const passwordResponse = await fetch('/api/admin/update-user-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: editingAtendente.email,
+              newPassword: atendenteForm.novaSenha,
+            }),
+          })
+          const passwordResult = await passwordResponse.json()
+          if (!passwordResponse.ok) {
+            throw new Error(passwordResult.error || 'Erro ao atualizar senha')
+          }
+        }
 
         // Salvar subsetores na nova tabela N:N
         await saveSubsetores(editingAtendente.id)
@@ -4742,6 +4779,19 @@ const saveConfig = async () => {
                 }}
               />
             </div>
+            <div className="flex items-center justify-between pt-2 border-t border-border">
+              <div>
+                <p className="text-sm font-medium">Assistente IA de Atendimento</p>
+                <p className="text-xs text-muted-foreground">Habilitando, todos os atendimentos deste setor passarão por uma IA de atendimento antes de chegar ao atendente</p>
+              </div>
+              <Switch
+                checked={configForm.assistente_ia}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, assistente_ia: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -5825,6 +5875,64 @@ const saveConfig = async () => {
                   {editingAtendente && (
                     <p className="text-xs text-muted-foreground">O email nao pode ser alterado</p>
                   )}
+                </div>
+
+            {editingAtendente && (
+              <div className="space-y-3 rounded-lg border border-border p-3">
+                <div>
+                  <p className="text-sm font-medium">Trocar Senha</p>
+                  <p className="text-xs text-muted-foreground">Deixe em branco para manter a senha atual</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="atendente-nova-senha">Nova Senha</Label>
+                  <div className="relative">
+                    <Input
+                      id="atendente-nova-senha"
+                      type={showNewPassword ? 'text' : 'password'}
+                      value={atendenteForm.novaSenha}
+                      onChange={(e) =>
+                        setAtendenteForm((prev) => ({ ...prev, novaSenha: e.target.value }))
+                      }
+                      placeholder="Nova senha (mínimo 6 caracteres)"
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="atendente-confirmar-nova-senha">Confirmar Nova Senha</Label>
+                  <div className="relative">
+                    <Input
+                      id="atendente-confirmar-nova-senha"
+                      type={showConfirmNewPassword ? 'text' : 'password'}
+                      value={atendenteForm.confirmarNovaSenha}
+                      onChange={(e) =>
+                        setAtendenteForm((prev) => ({ ...prev, confirmarNovaSenha: e.target.value }))
+                      }
+                      placeholder="Repita a nova senha"
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {showConfirmNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                  {atendenteForm.confirmarNovaSenha && atendenteForm.novaSenha !== atendenteForm.confirmarNovaSenha && (
+                    <p className="text-xs text-destructive">As senhas nao coincidem</p>
+                  )}
+                </div>
+              </div>
+            )}
+
                   {!editingAtendente && existingColaborador && !existingColaborador.alreadyInThisSetor && (
                     <div className="rounded-lg bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 p-3 mt-2">
                       <p className="text-sm text-blue-700 dark:text-blue-300 font-medium">
@@ -5846,7 +5954,6 @@ const saveConfig = async () => {
                       </p>
                     </div>
                   )}
-                </div>
 
 {!editingAtendente && !existingColaborador && (
               <>
