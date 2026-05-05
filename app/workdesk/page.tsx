@@ -297,7 +297,20 @@ const formatCNPJ = (cnpj: string) => {
 function isContactMessage(m: { media_type?: string | null; conteudo?: string | null }): boolean {
   if (m.media_type === 'contact') return true
   const c = m.conteudo
-  return typeof c === 'string' && c.includes('BEGIN:VCARD')
+  if (typeof c !== 'string') return false
+  if (c.includes('BEGIN:VCARD')) return true
+  // Formato API oficial: array JSON com objetos contendo "name" + "phones"
+  const trimmed = c.trim()
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return false
+  try {
+    const parsed = JSON.parse(trimmed)
+    const items = Array.isArray(parsed) ? parsed : [parsed]
+    return items.length > 0 && items.every((it: any) =>
+      it && typeof it === 'object' && (it.name || it.vcard) && (it.phones || it.vcard)
+    )
+  } catch {
+    return false
+  }
 }
 
 // Extrai nome e telefone de um vCard string
