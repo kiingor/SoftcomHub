@@ -4396,7 +4396,7 @@ const saveConfig = async () => {
           <CardHeader>
             <CardTitle>Encerramento Automático por Inatividade</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Fecha automaticamente tickets sem interação (sem mensagens do cliente ou do atendente) há X minutos. Tickets de disparo são ignorados.
+              Fecha automaticamente tickets em que o atendente foi quem respondeu por último e o cliente não retornou há X minutos. Tickets aguardando resposta do atendente nunca são fechados automaticamente. Tickets de disparo são ignorados.
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -4419,7 +4419,7 @@ const saveConfig = async () => {
             {configForm.encerramento_auto_ativo && (
               <div className="flex items-center gap-4 pl-2">
                 <div className="space-y-2 flex-1 max-w-xs">
-                  <Label htmlFor="encerramento_auto_minutos">Tempo de inatividade (minutos)</Label>
+                  <Label htmlFor="encerramento_auto_minutos">Tempo sem retorno do cliente (minutos)</Label>
                   <Input
                     id="encerramento_auto_minutos"
                     type="number"
@@ -4438,7 +4438,7 @@ const saveConfig = async () => {
                 <div className="flex items-center gap-2 mt-6">
                   <div className="h-4 w-4 rounded-full bg-red-500" />
                   <span className="text-sm text-muted-foreground">
-                    Fechamento após {configForm.encerramento_auto_minutos} min sem interação
+                    Fechamento após {configForm.encerramento_auto_minutos} min sem retorno do cliente
                   </span>
                 </div>
               </div>
