@@ -212,6 +212,10 @@ export async function criarEDistribuirTicket(
 
         console.log(`[Distribuição] Setor ${setorId}: transmissao_ativa=${setorData?.transmissao_ativa}, setor_receptor_id=${setorData?.setor_receptor_id}`)
 
+        if (setorData?.transmissao_ativa && !setorData?.setor_receptor_id) {
+          console.warn(`[Distribuição] ⚠️ Setor ${setorId} tem transmissao_ativa=true mas setor_receptor_id está vazio — transbordo NÃO funciona. Configure o setor receptor.`)
+        }
+
         if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
           const receptorId = setorData.setor_receptor_id
           console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)

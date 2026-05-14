@@ -162,7 +162,7 @@ export async function POST(request: NextRequest) {
     // 3. Find open ticket for this cliente IN THIS SPECIFIC SETOR - 1 ticket per setor per client
     let { data: ticket } = await supabase
       .from('tickets')
-      .select('id, setor_id')
+      .select('id, setor_id, colaborador_id')
       .eq('cliente_id', cliente.id)
       .eq('setor_id', targetSetorId)
       .in('status', ['aberto', 'em_atendimento'])
@@ -182,7 +182,7 @@ export async function POST(request: NextRequest) {
 
         const { data: existingTicket } = await supabase
           .from('tickets')
-          .select('id, setor_id, cliente_id')
+          .select('id, setor_id, cliente_id, colaborador_id')
           .in('cliente_id', clienteIds)
           .eq('setor_id', targetSetorId)
           .in('status', ['aberto', 'em_atendimento'])
@@ -198,6 +198,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Se encontrou ticket existente sem atendente, dispara reprocessamento async.
+    // Isso permite que o transbordo seja acionado quando o cliente reativa um ticket
+    // parado na fila (todos os atendentes ficaram offline depois da criação).
+    if (ticket && !ticket.colaborador_id) {
+      console.log(`[webhook] Ticket existente ${ticket.id} sem atendente — disparando reprocessamento async`)
+      import('@/lib/ticket-queue-processor')
+        .then(({ processTicketQueue }) => {
+          processTicketQueue().catch((err) =>
+            console.error('[webhook] Erro no reprocessamento async:', err)
+          )
+        })
+        .catch((err) =>
+          console.error('[webhook] Erro ao carregar processTicketQueue:', err)
+        )
+    }
+
     if (!ticket) {
       // Create and distribute ticket in the resolved setor
       const result = await criarEDistribuirTicket(cliente.id, targetSetorId, 'whatsapp')
@@ -207,7 +223,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Error creating ticket' }, { status: 500 })
       }
 
-      ticket = { id: result.ticketId, setor_id: targetSetorId }
+      ticket = { id: result.ticketId, setor_id: targetSetorId, colaborador_id: result.colaboradorId }
 
       console.log(
         `[v0] New ticket created: ${result.ticketId} in setor ${targetSetorId}, assigned to: ${result.colaboradorId || 'none'}`
