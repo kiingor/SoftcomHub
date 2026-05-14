@@ -48,6 +48,21 @@ export async function POST(request: NextRequest) {
 
     console.log(`[toggle-status] Colaborador ${colaboradorId} → is_online=${isOnline}, pausa=${pausaAtualId ?? 'null'}`)
 
+    // Quando colaborador fica offline, dispara reprocessamento da fila em fire-and-forget.
+    // Garante que o último atendente saindo já desencadeia transbordo imediato,
+    // sem esperar o cron periódico.
+    if (isOnline === false) {
+      import('@/lib/ticket-queue-processor')
+        .then(({ processTicketQueue }) => {
+          processTicketQueue().catch((err) =>
+            console.error('[toggle-status] Erro no reprocessamento async:', err)
+          )
+        })
+        .catch((err) =>
+          console.error('[toggle-status] Erro ao carregar processTicketQueue:', err)
+        )
+    }
+
     return NextResponse.json({
       success: true,
       colaborador: data,

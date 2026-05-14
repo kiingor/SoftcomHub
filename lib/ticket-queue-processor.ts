@@ -402,6 +402,10 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
         .eq('id', setorId)
         .single()
 
+      if (setorData?.transmissao_ativa && !setorData?.setor_receptor_id) {
+        console.warn(`[TicketQueue] ⚠️ Setor ${setorId} tem transmissao_ativa=true mas setor_receptor_id está vazio — ${ticketIds.length} tickets não serão transmitidos. Configure o setor receptor.`)
+      }
+
       if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
         const receptorId = setorData.setor_receptor_id
         console.log(`[TicketQueue] Transmissão ativa no setor ${setorId} → receptor ${receptorId}. Encaminhando ${ticketIds.length} tickets.`)
