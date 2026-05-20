@@ -325,15 +325,16 @@ export default function WorkdeskLayout({
       </div>
 
       {/* Header */}
-      <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-4 lg:px-6">
-        <div className="flex items-center gap-3">
+      <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-3 sm:px-4 lg:px-6">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary shadow-md">
             <MessageCircle className="h-5 w-5 text-primary-foreground" />
           </div>
-          <h1 className="text-base font-bold text-foreground tracking-tight">WorkDesk</h1>
+          {/* Title escondido em mobile (375px) pra economizar espaço com o lado direito */}
+          <h1 className="hidden sm:block text-base font-bold text-foreground tracking-tight">WorkDesk</h1>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {/* Status Panel */}
           <DisponibilidadePanel
             colaboradorId={colaborador.id}

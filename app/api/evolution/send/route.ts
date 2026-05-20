@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { resolveMime } from '@/lib/whatsapp-media'
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,12 +13,37 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { ticketId, message, messageId, instanceName, fileUrl, fileType, fileName } = body
+    const { ticketId, message, messageId, instanceName, fileUrl, fileType, fileName, replyToMessageId } = body
     if (!ticketId || (!message && !fileUrl)) {
       return NextResponse.json(
         { error: 'Missing required fields: ticketId, message or fileUrl' },
         { status: 400 },
       )
+    }
+
+    // Look up the parent mensagem so we can build Evolution's `quoted` object.
+    // Evolution needs the wamid, the original sender's direction, and the
+    // original text to render the quoted preview correctly.
+    let quotedPayload: Record<string, unknown> | null = null
+    if (replyToMessageId) {
+      const { data: parent } = await supabase
+        .from('mensagens')
+        .select('whatsapp_message_id, remetente, conteudo')
+        .eq('id', replyToMessageId)
+        .maybeSingle()
+      if (parent?.whatsapp_message_id) {
+        quotedPayload = {
+          key: {
+            id: parent.whatsapp_message_id,
+            fromMe: parent.remetente === 'colaborador',
+          },
+          message: {
+            conversation: parent.conteudo || '',
+          },
+        }
+      } else {
+        console.warn('[EvolutionAPI Send] replyToMessageId provided but parent has no whatsapp_message_id', { replyToMessageId })
+      }
     }
 
     // Get ticket to find setor and client phone
@@ -135,30 +161,38 @@ export async function POST(request: NextRequest) {
     let evolutionBody: Record<string, any>
 
     if (isMedia) {
-      // Resolve mediatype from fileType/fileName
-      let mediatype = 'document'
-      let mimetype = fileType || 'application/octet-stream'
+      // Resolve canonical MIME — browsers leave `file.type` empty for many
+      // extensions (.cer, .p12, .key, .xml, .json, …) which Evolution then
+      // refuses if we forward "application/octet-stream". Inferring from the
+      // filename fixes the cert path on Evolution.
+      const mimetype = resolveMime(fileType, fileName)
+      const mtLower = mimetype.toLowerCase()
+      let mediatype: 'image' | 'video' | 'audio' | 'document' = 'document'
 
-      if (fileType?.startsWith('image/')) {
-        mediatype = 'image'
-      } else if (fileType?.startsWith('video/')) {
-        mediatype = 'video'
-      } else if (fileType?.startsWith('audio/')) {
-        mediatype = 'audio'
-      } else if (fileType === 'application/pdf' || fileName?.toLowerCase().endsWith('.pdf')) {
-        mediatype = 'document'
-        mimetype = 'application/pdf'
-      }
+      if (mtLower.startsWith('image/')) mediatype = 'image'
+      else if (mtLower.startsWith('video/')) mediatype = 'video'
+      else if (mtLower.startsWith('audio/')) mediatype = 'audio'
 
-      evolutionUrl = `${baseUrl}/message/sendMedia/${resolvedInstance}`
-      evolutionBody = {
-        number: formattedPhone,
-        mediatype,
-        mimetype,
-        media: fileUrl,
-        fileName: fileName || 'arquivo',
-        caption: message || '',
-        delay: 1000,
+      if (mediatype === 'audio') {
+        // Voice note (PTT) endpoint — appears with play bubble in WhatsApp
+        evolutionUrl = `${baseUrl}/message/sendWhatsAppAudio/${resolvedInstance}`
+        evolutionBody = {
+          number: formattedPhone,
+          audio: fileUrl,
+          delay: 1000,
+          encoding: true,
+        }
+      } else {
+        evolutionUrl = `${baseUrl}/message/sendMedia/${resolvedInstance}`
+        evolutionBody = {
+          number: formattedPhone,
+          mediatype,
+          mimetype,
+          media: fileUrl,
+          fileName: fileName || 'arquivo',
+          caption: message || '',
+          delay: 1000,
+        }
       }
     } else {
       evolutionUrl = `${baseUrl}/message/sendText/${resolvedInstance}`
@@ -167,6 +201,12 @@ export async function POST(request: NextRequest) {
         text: message,
         delay: 1000,
       }
+    }
+
+    // Attach quoted-reply context to whichever endpoint we ended up with.
+    // Evolution's sendText/sendMedia/sendWhatsAppAudio all accept `quoted`.
+    if (quotedPayload) {
+      evolutionBody.quoted = quotedPayload
     }
 
     // Log curl equivalent for debugging
@@ -249,13 +289,24 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // If messageId provided, update existing message with instance info
+    // Persist Evolution's returned message key. Without this, replies to our
+    // own Evolution-sent messages can't be quoted natively (the workdesk has
+    // no wamid to put into the next `quoted` payload).
+    const evolutionMsgId: string | null =
+      evolutionData?.key?.id ||
+      evolutionData?.message?.key?.id ||
+      null
+
     if (messageId) {
+      const updatePayload: Record<string, unknown> = {
+        phone_number_id: resolvedInstance,
+      }
+      if (evolutionMsgId) {
+        updatePayload.whatsapp_message_id = evolutionMsgId
+      }
       await supabase
         .from('mensagens')
-        .update({
-          phone_number_id: resolvedInstance,
-        })
+        .update(updatePayload)
         .eq('id', messageId)
     }
 

@@ -132,6 +132,17 @@ export async function POST(request: NextRequest) {
 
     if (whatsapp_message_id) mensagemData.whatsapp_message_id = whatsapp_message_id
 
+    // Warn when n8n (or any integrator) posts a media-type message without a URL —
+    // this is the most common cause of empty "Imagem"/"Documento" bubbles in WorkDesk.
+    if (tipo && tipo !== 'texto' && !url_imagem) {
+      console.warn(
+        `[Mensagens Save] ⚠️  Mensagem com tipo="${tipo}" recebida SEM url_imagem. ` +
+        `Cliente=${resolvedClienteId}, ticket=${ticket_id || 'none'}, telefone=${telefone || 'n/a'}, ` +
+        `whatsapp_id=${whatsapp_message_id || 'n/a'}. ` +
+        `Verifique o fluxo n8n: a mídia provavelmente não está sendo baixada/rehospedada antes de chamar este endpoint.`
+      )
+    }
+
     // Salvar mensagem
     const { data: mensagem, error: msgError } = await supabase
       .from('mensagens')

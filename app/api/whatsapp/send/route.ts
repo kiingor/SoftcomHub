@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { checkMetaCompatibility, extFromUrl, resolveMime } from '@/lib/whatsapp-media'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
-    
+
     // Get current user
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
@@ -14,11 +15,47 @@ export async function POST(request: NextRequest) {
     }
 
 const body = await request.json()
-    const { ticketId, message, recipientPhone, phoneNumberId, imageUrl, fileUrl, fileType, messageId } = body
+    const { ticketId, message, recipientPhone, phoneNumberId, imageUrl, fileUrl, fileType, fileName, messageId, replyToMessageId } = body
 
-    // Support both imageUrl (legacy) and fileUrl (new)
+    // Resolve the WhatsApp message ID of the parent message we're replying to.
+    // We store the internal mensagem UUID in `replyToMessageId`; the actual
+    // Meta context needs the `wamid` (whatsapp_message_id).
+    let replyContextWamid: string | null = null
+    if (replyToMessageId) {
+      const { data: parent } = await supabase
+        .from('mensagens')
+        .select('whatsapp_message_id')
+        .eq('id', replyToMessageId)
+        .maybeSingle()
+      replyContextWamid = parent?.whatsapp_message_id || null
+      if (!replyContextWamid) {
+        console.warn('[WhatsApp Send] replyToMessageId provided but parent has no whatsapp_message_id; sending without context', { replyToMessageId })
+      }
+    }
+
+    // Support both imageUrl (legacy) and fileUrl (new). Resolve MIME from the
+    // explicit type, the filename, or the URL extension — handles certs and
+    // other files browsers leave with empty file.type.
     const mediaUrl = fileUrl || imageUrl
-    const mediaType = fileType || (imageUrl ? 'image/jpeg' : null)
+    const resolvedMime = resolveMime(fileType, fileName) ||
+      resolveMime(fileType, mediaUrl ? `f.${extFromUrl(mediaUrl)}` : '') ||
+      (imageUrl ? 'image/jpeg' : '')
+    const mediaType = resolvedMime || fileType || (imageUrl ? 'image/jpeg' : null)
+
+    // Log when sending a non-whitelist MIME so we can correlate with Meta's
+    // actual response. The Meta whitelist is documented but anecdotal reports
+    // suggest some types may go through — we let the API decide instead of
+    // hard-blocking. Look for [WhatsApp Send] error responses below to confirm
+    // if Meta really rejected/silently dropped the delivery.
+    if (mediaUrl) {
+      const compat = checkMetaCompatibility(mediaType || '', fileName)
+      if (!compat.accepted) {
+        console.warn(
+          '[WhatsApp Send] Sending non-whitelist MIME to Meta (delivery not guaranteed):',
+          { mediaType, fileName, reason: compat.reason },
+        )
+      }
+    }
 
     if (!ticketId || (!message && !mediaUrl) || !recipientPhone) {
       return NextResponse.json(
@@ -93,7 +130,14 @@ const body = await request.json()
 
     if (mediaUrl) {
       const isImage = mediaType?.startsWith('image/')
-      const isPdf = mediaType === 'application/pdf'
+      const isAudio = mediaType?.startsWith('audio/')
+      const isVideo = mediaType?.startsWith('video/')
+
+      // Default document filename: explicit fileName > URL basename > generic.
+      const documentFilename =
+        fileName ||
+        (mediaUrl ? mediaUrl.split('/').pop()?.split('?')[0] : null) ||
+        'arquivo'
 
       if (isImage) {
         // Send image message
@@ -107,21 +151,30 @@ const body = await request.json()
             caption: message || undefined,
           },
         }
-      } else if (isPdf) {
-        // Send document message (PDF)
+      } else if (isAudio) {
+        // Send audio message (renders as voice note when ogg/opus or aac)
         messagePayload = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
           to: formattedPhone,
-          type: 'document',
-          document: {
+          type: 'audio',
+          audio: { link: mediaUrl },
+        }
+      } else if (isVideo) {
+        // Send video message (mp4 with H.264 + AAC only — checked by whitelist above)
+        messagePayload = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: formattedPhone,
+          type: 'video',
+          video: {
             link: mediaUrl,
             caption: message || undefined,
-            filename: message || 'documento.pdf',
           },
         }
       } else {
-        // Unknown media type - try as document
+        // Document branch — covers PDF, Word, Excel, PowerPoint, TXT.
+        // Anything outside that list was already rejected by the whitelist above.
         messagePayload = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
@@ -130,6 +183,7 @@ const body = await request.json()
           document: {
             link: mediaUrl,
             caption: message || undefined,
+            filename: documentFilename,
           },
         }
       }
@@ -145,6 +199,12 @@ const body = await request.json()
           body: message,
         },
       }
+    }
+
+    // Attach quoted-reply context. Meta renders the original message above ours
+    // for both sides of the conversation when context.message_id is supplied.
+    if (replyContextWamid) {
+      messagePayload.context = { message_id: replyContextWamid }
     }
 
     const whatsappUrl = `${WHATSAPP_API_URL}/${senderPhoneNumberId}/messages`
@@ -209,7 +269,12 @@ const body = await request.json()
     } else {
       // Save new message to database (fallback for old behavior)
       console.log('[WhatsApp Send] Creating new message in database')
-      const messageType = mediaType?.startsWith('image/') ? 'imagem' : mediaType === 'application/pdf' ? 'documento' : 'texto'
+      const mtLower = (mediaType || '').toLowerCase()
+      const messageType = mtLower.startsWith('image/') ? 'imagem'
+        : mtLower.startsWith('audio/') ? 'audio'
+        : mtLower.startsWith('video/') ? 'video'
+        : mediaUrl ? 'documento'
+        : 'texto'
       const { data, error: dbError } = await supabase
         .from('mensagens')
         .insert({
@@ -221,6 +286,7 @@ const body = await request.json()
           whatsapp_message_id: whatsappData.messages?.[0]?.id,
           url_imagem: mediaUrl || null,
           media_type: mediaType || null,
+          reply_to_message_id: replyToMessageId || null,
         })
         .select()
         .single()

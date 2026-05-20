@@ -27,6 +27,7 @@ import {
   Check,
   CheckCheck,
   ArrowRightLeft,
+  ArrowLeft,
   XCircle,
   Smile,
   Phone,
@@ -58,6 +59,7 @@ import {
   Star,
   Info,
   RefreshCw,
+  CornerUpLeft,
 } from 'lucide-react'
 import {
   Dialog,
@@ -140,6 +142,7 @@ interface Ticket {
   ultima_mensagem?: string
   ultima_mensagem_em?: string
   ultima_mensagem_remetente?: 'cliente' | 'colaborador' | 'bot'
+  ultima_mensagem_tipo?: string | null
   mensagens_nao_lidas?: number
   is_disparo?: boolean
   disparo_em?: string | null
@@ -160,6 +163,10 @@ interface Mensagem {
   discord_user_id?: string | null
   url_imagem?: string | null
   media_type?: string | null
+  // Reply: internal UUID of the parent mensagem this one quotes (nullable).
+  // `reply_parent` is hydrated client-side when rendering to avoid a join.
+  reply_to_message_id?: string | null
+  reply_parent?: { id: string; conteudo: string; remetente: string; tipo: string } | null
   // For history display
   tickets?: {
     id: string
@@ -550,13 +557,42 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, 
   const urlLower = url.toLowerCase().split('?')[0]
   const ext = urlLower.split('.').pop() || ''
 
-  // Determina o tipo real pela ordem: media_type MIME > tipo do banco > extensão da URL
-  const isImage = mediaType?.startsWith('image/') || (tipo === 'imagem' && !mediaType)
-    || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)
-  const isVideo = mediaType?.startsWith('video/') || tipo === 'video'
-    || ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)
-  const isAudio = mediaType?.startsWith('audio/') || tipo === 'audio'
-    || ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus'].includes(ext)
+  // Determina o tipo real. Precedência:
+  //   1. MIME explícito (mais confiável, vem do upload normalizado ou Vercel Blob)
+  //   2. Extensão da URL (real, presa ao arquivo)
+  //   3. tipo do banco (frequentemente errado quando o integrador n8n
+  //      classifica tudo como 'imagem' sem inspecionar o conteúdo).
+  const mimeIsImage = mediaType?.startsWith('image/')
+  const mimeIsVideo = mediaType?.startsWith('video/')
+  const mimeIsAudio = mediaType?.startsWith('audio/')
+  const anyMime = !!(mimeIsImage || mimeIsVideo || mimeIsAudio)
+
+  const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp']
+  const AUDIO_EXTS = ['mp3', 'ogg', 'wav', 'aac', 'm4a', 'opus', 'amr']
+  // .webm fica fora da lista de vídeo: é ambígua (áudio OU vídeo) e nossa
+  // gravação produz .ogg agora, então quem grava .webm é vídeo só raramente.
+  const VIDEO_EXTS = ['mp4', '3gp', 'mov', 'avi', 'mkv']
+  // Extensões de documento/arquivo — explicitamente NÃO-mídia. Quando a URL
+  // termina em uma delas, ignoramos o `tipo` do banco (n8n marca tudo como
+  // 'imagem') e cai no card de download.
+  const DOC_EXTS = [
+    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt',
+    'csv', 'xml', 'json', 'zip', 'rar', '7z', 'tar', 'gz',
+    'cer', 'crt', 'pem', 'p12', 'pfx', 'key',
+  ]
+  const extIsKnown =
+    IMAGE_EXTS.includes(ext) || AUDIO_EXTS.includes(ext) ||
+    VIDEO_EXTS.includes(ext) || DOC_EXTS.includes(ext)
+
+  const isImage = mimeIsImage
+    || (!anyMime && IMAGE_EXTS.includes(ext))
+    || (!anyMime && !extIsKnown && tipo === 'imagem')
+  const isAudio = mimeIsAudio
+    || (!anyMime && AUDIO_EXTS.includes(ext))
+    || (!anyMime && !extIsKnown && tipo === 'audio')
+  const isVideo = mimeIsVideo
+    || (!anyMime && VIDEO_EXTS.includes(ext))
+    || (!anyMime && !extIsKnown && tipo === 'video')
 
   const fileName = conteudo || url.split('/').pop()?.split('?')[0] || 'arquivo'
 
@@ -733,7 +769,12 @@ export default function WorkdeskPage() {
   const [encerrarDialogOpen, setEncerrarDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
-  const [showClientInfo, setShowClientInfo] = useState(true)
+  // Em desktop o painel de info já vem aberto; em mobile/tablet começa fechado
+  // pra que o chat ocupe a tela inteira ao abrir um ticket.
+  const [showClientInfo, setShowClientInfo] = useState(() => {
+    if (typeof window === 'undefined') return true
+    return window.innerWidth >= 1024
+  })
   
   // Transfer data
   const [setores, setSetores] = useState<any[]>([])
@@ -851,6 +892,31 @@ export default function WorkdeskPage() {
   const messageTextareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
+  // Voice recording (PTT) state — uses opus-recorder to produce ogg/opus directly
+  // (Chrome's native MediaRecorder only emits webm/opus, which Meta Cloud API silently rejects).
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingDuration, setRecordingDuration] = useState(0)
+  const opusRecorderRef = useRef<any>(null)
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Ref to handleSendMessage so the recorder's onstop closure always calls
+  // the latest version (avoids stale state if user typed/switched ticket).
+  const handleSendMessageRef = useRef<((overrideFile?: File | null) => Promise<void>) | null>(null)
+  // Reply target — when set, the next outgoing message becomes a quoted reply
+  // to this mensagem. UI shows a preview bar above the textarea.
+  const [replyingTo, setReplyingTo] = useState<Mensagem | null>(null)
+
+  // Recorded audio awaiting preview/confirmation before send.
+  const [recordedAudio, setRecordedAudio] = useState<File | null>(null)
+  const recordedAudioUrl = useMemo(
+    () => (recordedAudio ? URL.createObjectURL(recordedAudio) : null),
+    [recordedAudio],
+  )
+  useEffect(() => {
+    return () => {
+      if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl)
+    }
+  }, [recordedAudioUrl])
+
   // Auto-resize textarea quando messageInput muda (colar, limpar, IA)
   useEffect(() => {
     const t = messageTextareaRef.current
@@ -882,7 +948,58 @@ export default function WorkdeskPage() {
   const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
   
   // Unread messages tracking
+  // Histórico de atendimentos anteriores do cliente — exibido no sidebar direito.
+  // Recarrega quando troca de ticket. Inclui todos os tickets do cliente (e dos
+  // clientes com mesmo telefone — caso de registros duplicados) exceto o atual.
+  type TicketHistoryEntry = {
+    id: string
+    numero: number | null
+    criado_em: string
+    encerrado_em: string | null
+    status: string
+    colaborador_nome: string | null
+  }
+  const [ticketHistory, setTicketHistory] = useState<TicketHistoryEntry[]>([])
+  const [loadingHistory, setLoadingHistory] = useState(false)
+
+  // Aba ativa da sidebar direita. Sempre inicia em "Informações" ao carregar
+  // a página — não persiste entre sessões (escolha consciente do usuário).
+  type InfoTab = 'info' | 'historico'
+  const [infoTab, setInfoTab] = useState<InfoTab>('info')
+
+  // Seções da sidebar direita são colapsáveis e o estado persiste em localStorage.
+  // Default: 'historico' começa fechada (lista longa, não-essencial); as demais abertas.
+  const SIDEBAR_COLLAPSED_KEY = 'workdesk-sidebar-collapsed-v1'
+  type SidebarSection = 'cliente' | 'ticket' | 'historico'
+  const [collapsedSections, setCollapsedSections] = useState<Record<SidebarSection, boolean>>(() => {
+    const defaults: Record<SidebarSection, boolean> = { cliente: false, ticket: false, historico: true }
+    if (typeof window === 'undefined') return defaults
+    try {
+      const raw = localStorage.getItem(SIDEBAR_COLLAPSED_KEY)
+      if (!raw) return defaults
+      return { ...defaults, ...JSON.parse(raw) }
+    } catch {
+      return defaults
+    }
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, JSON.stringify(collapsedSections))
+    } catch {
+      // Ignore quota
+    }
+  }, [collapsedSections])
+  const toggleSection = (key: SidebarSection) => {
+    setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map())
+  // Timestamp da PRIMEIRA mensagem do cliente AINDA SEM RESPOSTA do colaborador.
+  // Define o âncora do timer de urgência no card. Persiste mesmo após o
+  // atendente abrir o ticket — só zera quando o colaborador efetivamente
+  // envia uma resposta (handleSendMessage limpa o entry).
+  const [firstUnreadAt, setFirstUnreadAt] = useState<Map<string, string>>(new Map())
 
   // Ticket iframe popup
   const [ticketIframeTicket, setTicketIframeTicket] = useState<Ticket | null>(null)
@@ -1006,11 +1123,15 @@ export default function WorkdeskPage() {
       const filteredData = data.filter((t) => !transferringTicketIdsRef.current.has(t.id))
       // Fetch last message for all tickets in a single batch query (evita N+1)
       const ticketIds = filteredData.map((t) => t.id)
-      let lastMsgMap = new Map<string, { conteudo: string; enviado_em: string; remetente: string }>()
+      let lastMsgMap = new Map<string, { conteudo: string; enviado_em: string; remetente: string; tipo: string | null }>()
+      // Para cada ticket onde a última msg foi do cliente, achar a MAIS ANTIGA
+      // mensagem do cliente na "rajada" final (sem colaborador depois). Esse
+      // timestamp é o ponto de partida do tempo de espera mostrado no card.
+      const firstUnreadSeed = new Map<string, string>()
       if (ticketIds.length > 0) {
         const { data: allLastMsgs } = await supabase
           .from('mensagens')
-          .select('ticket_id, conteudo, enviado_em, remetente')
+          .select('ticket_id, conteudo, enviado_em, remetente, tipo')
           .in('ticket_id', ticketIds)
           .order('enviado_em', { ascending: false })
         if (allLastMsgs) {
@@ -1020,8 +1141,36 @@ export default function WorkdeskPage() {
               lastMsgMap.set(msg.ticket_id, msg)
             }
           }
+          // Walk DESC. A rajada termina quando bate em msg do colaborador/bot/sistema.
+          // O âncora final fica na MAIS ANTIGA msg do cliente da rajada — i.e.
+          // a primeira msg sem resposta.
+          const burstEnded = new Set<string>()
+          for (const msg of allLastMsgs) {
+            if (burstEnded.has(msg.ticket_id)) continue
+            if (msg.remetente === 'cliente') {
+              firstUnreadSeed.set(msg.ticket_id, msg.enviado_em)
+            } else {
+              burstEnded.add(msg.ticket_id)
+            }
+          }
         }
       }
+      // Sincroniza com o seed: adiciona ticks que o realtime ainda não pegou,
+      // mas TAMBÉM remove tickets onde o colab já respondeu (rajada vazia no
+      // seed → cliente não está mais aguardando). Sem essa limpeza, entradas
+      // ficariam grudadas após uma resposta feita por outra origem (API direta,
+      // outro atendente, retry).
+      setFirstUnreadAt((prev) => {
+        const next = new Map(prev)
+        for (const tid of ticketIds) {
+          if (firstUnreadSeed.has(tid)) {
+            if (!next.has(tid)) next.set(tid, firstUnreadSeed.get(tid)!)
+          } else {
+            next.delete(tid)
+          }
+        }
+        return next
+      })
       const ticketsWithMessages = filteredData.map((ticket) => {
         const lastMsg = lastMsgMap.get(ticket.id)
         return {
@@ -1029,6 +1178,7 @@ export default function WorkdeskPage() {
           ultima_mensagem: lastMsg?.conteudo || 'Sem mensagens',
           ultima_mensagem_em: lastMsg?.enviado_em || ticket.criado_em,
           ultima_mensagem_remetente: lastMsg?.remetente || null,
+          ultima_mensagem_tipo: lastMsg?.tipo || null,
         }
       })
       // Sort by ultima_mensagem_em descending (most recent first, like WhatsApp)
@@ -1169,7 +1319,25 @@ export default function WorkdeskPage() {
       const data = merged.length > 0 ? merged : null
 
       if (data) {
-        setMensagens(data)
+        // Hydrate reply_parent — find each reply's quoted parent inside the
+        // already-loaded set. Most parents are in the same conversation so
+        // no extra query is needed. Falls back to null for parents not loaded.
+        const byId = new Map(data.map((m) => [m.id, m] as const))
+        const hydrated = data.map((m) => {
+          if (!m.reply_to_message_id) return m
+          const parent = byId.get(m.reply_to_message_id)
+          if (!parent) return m
+          return {
+            ...m,
+            reply_parent: {
+              id: parent.id,
+              conteudo: parent.conteudo || '',
+              remetente: parent.remetente,
+              tipo: parent.tipo,
+            },
+          }
+        })
+        setMensagens(hydrated)
 
         // Check 24h window - only applies to WhatsApp channel
         // Discord has no 24h window limitation
@@ -1288,6 +1456,63 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTicketId])
+
+  // Carrega histórico de atendimentos anteriores do cliente quando o ticket muda.
+  // Inclui tickets de todos os clientes que têm o mesmo telefone (lida com
+  // registros duplicados criados via webhook ao longo do tempo).
+  useEffect(() => {
+    if (!selectedTicketId || !selectedClienteId) {
+      setTicketHistory([])
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      setLoadingHistory(true)
+      try {
+        // Resolve cliente_ids com o mesmo telefone (mesmo padrão usado em fetchMensagens)
+        let allClienteIds = [selectedClienteId]
+        const { data: clienteData } = await supabase
+          .from('clientes')
+          .select('telefone')
+          .eq('id', selectedClienteId)
+          .single()
+        if (clienteData?.telefone) {
+          const { data: allClientes } = await supabase
+            .from('clientes')
+            .select('id')
+            .eq('telefone', clienteData.telefone)
+          if (allClientes && allClientes.length > 0) {
+            allClienteIds = [...new Set(allClientes.map((c) => c.id))]
+          }
+        }
+        // Tickets anteriores: qualquer ticket dos clientes resolvidos, exceto o atual.
+        const { data: pastTickets } = await supabase
+          .from('tickets')
+          .select('id, numero, criado_em, encerrado_em, status, colaboradores(nome)')
+          .in('cliente_id', allClienteIds)
+          .neq('id', selectedTicketId)
+          .order('criado_em', { ascending: false })
+          .limit(30)
+        if (cancelled) return
+        const mapped: TicketHistoryEntry[] = (pastTickets || []).map((t: any) => ({
+          id: t.id,
+          numero: t.numero,
+          criado_em: t.criado_em,
+          encerrado_em: t.encerrado_em,
+          status: t.status,
+          colaborador_nome: t.colaboradores?.nome ?? null,
+        }))
+        setTicketHistory(mapped)
+      } catch (err) {
+        console.warn('[workdesk] erro carregando histórico do cliente:', err)
+        if (!cancelled) setTicketHistory([])
+      } finally {
+        if (!cancelled) setLoadingHistory(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTicketId, selectedClienteId])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -1793,7 +2018,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
           const isViewingThisTicket = selectedTicketIdRef.current === newMessage.ticket_id
 
-          // Increment unread count only if NOT viewing this ticket
+          // Badge vermelho de não-lidas: só conta quando NÃO está olhando o ticket.
           if (!isViewingThisTicket) {
             setUnreadCounts((prev) => {
               const newMap = new Map(prev)
@@ -1802,6 +2027,16 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
               return newMap
             })
           }
+          // Timer de urgência: sempre marca a PRIMEIRA msg sem resposta, mesmo
+          // se o atendente já está no ticket. Subsequentes da mesma rajada
+          // mantêm o âncora mais antigo (não sobrescreve). Só zera quando o
+          // colaborador efetivamente responde (handleSendMessage limpa).
+          setFirstUnreadAt((prev) => {
+            if (prev.has(newMessage.ticket_id)) return prev
+            const newMap = new Map(prev)
+            newMap.set(newMessage.ticket_id, newMessage.enviado_em)
+            return newMap
+          })
 
           // Always play audio alert for client messages
           playAlert('new_message')
@@ -1820,7 +2055,13 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             setTickets((prev) => {
               const updated = prev.map((t) =>
                 t.id === newMessage.ticket_id
-                  ? { ...t, ultima_mensagem: newMessage.conteudo, ultima_mensagem_em: newMessage.enviado_em, ultima_mensagem_remetente: newMessage.remetente }
+                  ? {
+                      ...t,
+                      ultima_mensagem: newMessage.conteudo,
+                      ultima_mensagem_em: newMessage.enviado_em,
+                      ultima_mensagem_remetente: newMessage.remetente,
+                      ultima_mensagem_tipo: newMessage.tipo || t.ultima_mensagem_tipo,
+                    }
                   : t
               )
               return updated.sort((a, b) =>
@@ -1893,7 +2134,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           setSetorAssinaturaAtiva(data?.assinatura_ativa || false)
         })
     }
-    // Clear unread count for this ticket
+    // Clear unread count for this ticket — o badge vermelho de não-lidas some
+    // ao abrir. O timer (firstUnreadAt) NÃO é tocado aqui: ele só zera quando
+    // o colaborador efetivamente responde (semântica "tempo da primeira msg
+    // não respondida", não "não visualizada").
     setUnreadCounts((prev) => {
       const newMap = new Map(prev)
       newMap.delete(ticket.id)
@@ -2770,6 +3014,119 @@ const insertEmoji = (emoji: string) => {
     }
   }
 
+  // Voice recording (PTT) via opus-recorder. Records directly to ogg/opus
+  // (the only format Meta Cloud API renders as a voice note, and Evolution
+  // accepts as-is with encoding:true).
+  const startRecording = async () => {
+    if (selectedFile) {
+      toast.error('Remova o arquivo selecionado antes de gravar áudio.')
+      return
+    }
+    try {
+      // Dynamic import — opus-recorder touches window/Worker on load.
+      const mod: any = await import('opus-recorder')
+      const Recorder: any = mod?.default ?? mod
+      if (typeof Recorder !== 'function' || !Recorder.isRecordingSupported?.()) {
+        toast.error('Seu navegador não suporta gravação de áudio Opus.')
+        return
+      }
+      const rec = new Recorder({
+        encoderPath: '/encoderWorker.min.js',
+        encoderApplication: 2049, // VOIP — optimized for voice
+        encoderFrameSize: 20,
+        encoderSampleRate: 48000,
+        numberOfChannels: 1,
+        streamPages: false,
+        rawOpus: false,
+      })
+
+      const chunks: Uint8Array[] = []
+      rec.ondataavailable = (typedArray: Uint8Array) => {
+        chunks.push(typedArray)
+      }
+      rec.onstop = () => {
+        const total = chunks.reduce((s, c) => s + c.byteLength, 0)
+        if (total < 200) {
+          // Empty/aborted recording — discard silently.
+          opusRecorderRef.current = null
+          return
+        }
+        const merged = new Uint8Array(total)
+        let offset = 0
+        for (const c of chunks) {
+          merged.set(c, offset)
+          offset += c.byteLength
+        }
+        const blob = new Blob([merged], { type: 'audio/ogg' })
+        const file = new File([blob], `gravacao-${Date.now()}.ogg`, { type: 'audio/ogg' })
+        opusRecorderRef.current = null
+        // Surface a preview so the attendant can listen back before committing
+        // to send. Confirm sends via sendRecordedAudio(); discard via discardRecordedAudio().
+        setRecordedAudio(file)
+      }
+      rec.onerror = (err: unknown) => {
+        console.error('[workdesk] opus-recorder error:', err)
+        toast.error('Erro durante a gravação.')
+      }
+
+      await rec.start()
+      opusRecorderRef.current = rec
+      setIsRecording(true)
+      setRecordingDuration(0)
+      const start = Date.now()
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(Math.floor((Date.now() - start) / 1000))
+      }, 250)
+    } catch (err) {
+      console.error('[workdesk] microphone error:', err)
+      toast.error('Não foi possível acessar o microfone. Verifique as permissões.')
+    }
+  }
+
+  const stopRecording = async () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+    const r = opusRecorderRef.current
+    if (r) {
+      try { await r.stop() } catch (e) { console.warn('stop error:', e) }
+    }
+    setIsRecording(false)
+  }
+
+  const cancelRecording = async () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+    const r = opusRecorderRef.current
+    if (r) {
+      r.onstop = () => {}
+      try { await r.stop() } catch {}
+    }
+    opusRecorderRef.current = null
+    setIsRecording(false)
+    setRecordingDuration(0)
+  }
+
+  const discardRecordedAudio = () => {
+    setRecordedAudio(null)
+  }
+
+  const sendRecordedAudio = async () => {
+    const file = recordedAudio
+    if (!file) return
+    setRecordedAudio(null)
+    await handleSendMessageRef.current?.(file)
+  }
+
+  const formatDuration = (s: number) => {
+    const m = Math.floor(s / 60)
+    const r = s % 60
+    return `${m}:${r.toString().padStart(2, '0')}`
+  }
+
 
 
 // Upload file to Vercel Blob (images and PDFs)
@@ -2797,9 +3154,15 @@ const insertEmoji = (emoji: string) => {
     }
   }
 
-  // Send message via WhatsApp API (optimistic update like WhatsApp)
-  const handleSendMessage = async () => {
-    if ((!messageInput.trim() && !selectedFile) || !selectedTicket || !colaborador) return
+  // Send message via WhatsApp API (optimistic update like WhatsApp).
+  // `overrideFile` (e.g. from voice-note auto-send) bypasses the selectedFile state
+  // so the recording fires immediately without an extra Send click, and the
+  // textarea content is preserved (audio bypasses any typed text).
+  const handleSendMessage = async (overrideFile?: File | null) => {
+    const isAutoFile = !!overrideFile
+    const fileToUpload = overrideFile ?? selectedFile
+    const rawMessage = isAutoFile ? '' : messageInput.trim()
+    if ((!rawMessage && !fileToUpload) || !selectedTicket || !colaborador) return
 
     // Capture ticket context at call-time (before any awaits).
     // This snapshot is used throughout the async flow so that if the user
@@ -2807,23 +3170,28 @@ const insertEmoji = (emoji: string) => {
     // corrupt the newly-selected ticket's state.
     const capturedTicketId = selectedTicket.id
     const capturedTicket = selectedTicket
-    
+    // Snapshot the reply target now, clear the UI bar. If the send fails,
+    // the attendant can re-pick from the bubble — simpler than rolling back.
+    const capturedReplyTo = replyingTo
+    setReplyingTo(null)
+
 const tempId = `temp-${Date.now()}`
     let currentMsgId = tempId // atualizado para o ID real após o save; usado em todos os setPendingMessages/setMessageErrors
-    const rawMessage = messageInput.trim()
     // Aplicar assinatura se ativa no setor e houver texto
     const messageContent = (setorAssinaturaAtiva && rawMessage && colaborador?.nome)
       ? `*${colaborador.nome}:*\n\n${rawMessage}`
       : rawMessage
-    const fileToUpload = selectedFile
     const hasFile = !!fileToUpload
   const isImage = fileToUpload?.type.startsWith('image/')
   const isVideo = fileToUpload?.type.startsWith('video/')
   const isAudio = fileToUpload?.type.startsWith('audio/')
 
-    // Clear input immediately (optimistic)
-    setMessageInput('')
-    clearSelectedFile()
+    // Clear input immediately (optimistic). Skip on auto-send — there's nothing
+    // to clear (selectedFile wasn't set) and we want to preserve typed text.
+    if (!isAutoFile) {
+      setMessageInput('')
+      clearSelectedFile()
+    }
     
     // Send in background
     try {
@@ -2966,6 +3334,10 @@ const tempId = `temp-${Date.now()}`
   enviado_em: new Date().toISOString(),
   url_imagem: fileUrl,
   media_type: fileToUpload?.type || null,
+  reply_to_message_id: capturedReplyTo?.id || null,
+  reply_parent: capturedReplyTo
+    ? { id: capturedReplyTo.id, conteudo: capturedReplyTo.conteudo, remetente: capturedReplyTo.remetente, tipo: capturedReplyTo.tipo }
+    : null,
   }
   // Only update UI if user is still viewing this ticket
   if (selectedTicketIdRef.current === capturedTicketId) {
@@ -2986,6 +3358,7 @@ const tempId = `temp-${Date.now()}`
           media_type: fileToUpload?.type || null,
           phone_number_id: phoneNumberId,
           canal_envio: canalEnvioValue,
+          reply_to_message_id: capturedReplyTo?.id || null,
         })
         .select()
         .single()
@@ -3012,6 +3385,15 @@ const tempId = `temp-${Date.now()}`
       })
       currentMsgId = savedMsg.id
 
+      // Resposta enviada — zera o timer de urgência desse ticket.
+      // O cliente agora "foi respondido"; nova rajada (se vier) começará do zero.
+      setFirstUnreadAt((prev) => {
+        if (!prev.has(capturedTicketId)) return prev
+        const next = new Map(prev)
+        next.delete(capturedTicketId)
+        return next
+      })
+
       // Send via the appropriate channel API
       let sendUrl = '/api/whatsapp/send'
       try {
@@ -3037,6 +3419,7 @@ const tempId = `temp-${Date.now()}`
             fileUrl: fileUrl,
             fileType: fileToUpload?.type || null,
             fileName: fileToUpload?.name || null,
+            replyToMessageId: capturedReplyTo?.id || null,
           }
         } else {
           sendBody = {
@@ -3046,7 +3429,9 @@ const tempId = `temp-${Date.now()}`
             phoneNumberId: phoneNumberId,
             fileUrl: fileUrl,
             fileType: fileToUpload?.type || null,
+            fileName: fileToUpload?.name || null,
             messageId: savedMsg.id,
+            replyToMessageId: capturedReplyTo?.id || null,
           }
         }
 
@@ -3175,7 +3560,10 @@ const tempId = `temp-${Date.now()}`
       setMessageErrors(prev => new Map(prev).set(currentMsgId, 'Erro inesperado ao enviar mensagem'))
     }
   }
-  
+  // Keep the ref pointing at the latest handleSendMessage so the voice-note
+  // recorder's onstop closure always invokes the up-to-date function.
+  handleSendMessageRef.current = handleSendMessage
+
   // Reenvia uma mensagem que falhou. A mensagem já está persistida em `mensagens`
   // (o insert ocorre antes do send), então só reemitimos para o canal correto.
   const retrySendMessage = useCallback(async (msg: Mensagem) => {
@@ -3290,7 +3678,13 @@ const tempId = `temp-${Date.now()}`
     <div className="flex h-[calc(100svh-4rem)] flex-col overflow-hidden">
       <div className="flex flex-1 overflow-hidden w-full max-w-full">
         {/* Ticket List Column - responsive width */}
-        <aside className="w-52 shrink-0 border-r border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl lg:w-60 xl:w-72 h-full overflow-hidden flex flex-col">
+        <aside className={cn(
+          "shrink-0 border-r border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl h-full overflow-hidden flex-col",
+          // Mobile: full width quando nenhum ticket; esconde quando o chat está aberto
+          // Tablet/desktop: largura fixa, sempre lado a lado com o chat
+          selectedTicket ? "hidden md:flex" : "flex w-full",
+          "md:w-52 md:flex lg:w-60 xl:w-72"
+        )}>
           {/* Disparo Button - for WhatsApp and/or EvolutionAPI */}
           {(setorCanaisAtivos.includes('whatsapp') || setorCanaisAtivos.includes('evolution_api') ||
             (setorCanalConfig !== 'discord' && setorCanalConfig !== 'evolution_api')) && (
@@ -3392,6 +3786,7 @@ const tempId = `temp-${Date.now()}`
               searchTerm={searchTerm}
               setSearchTerm={setSearchTerm}
               unreadCounts={unreadCounts}
+              firstUnreadAt={firstUnreadAt}
               setorCanal={setorCanalConfig}
               colaboradorEmail={colaborador?.email || ''}
               onOpenTicketIframe={(ticket) => setTicketIframeTicket(ticket)}
@@ -3400,43 +3795,58 @@ const tempId = `temp-${Date.now()}`
         </aside>
 
         {/* Chat Area */}
-        <main className="hidden flex-1 flex-col overflow-hidden md:flex">
+        <main className={cn(
+          "flex-1 flex-col overflow-hidden",
+          // Mobile: aparece quando há ticket selecionado (full width); senão, esconde
+          // Desktop (md+): sempre visível ao lado da sidebar
+          selectedTicket ? "flex w-full" : "hidden md:flex"
+        )}>
           {selectedTicket ? (
             <>
               {/* Chat Header */}
               <div className="flex items-center justify-between border-b border-white/30 dark:border-white/8 bg-white/70 dark:bg-white/5 backdrop-blur-xl px-3 py-2 gap-2">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
+                  {/* Back button — mobile only (volta pra lista de tickets) */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="md:hidden h-8 w-8 shrink-0"
+                    onClick={() => { selectedTicketIdRef.current = null; setSelectedTicket(null) }}
+                    title="Voltar para lista"
+                  >
+                    <ArrowLeft className="h-5 w-5" />
+                  </Button>
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary/20 to-primary/10">
                     <User className="h-4 w-4 text-primary" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <span className="text-sm font-semibold truncate">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</span>
-                    <span className="text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
+                    <span className="hidden md:inline text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {/* Transfer Button */}
-                  <Button 
-                    variant="outline" 
+                  {/* Transfer Button — texto escondido em mobile (só ícone) */}
+                  <Button
+                    variant="outline"
                     size="sm"
                     onClick={openTransferDialog}
-                    className="gap-1.5 bg-transparent"
+                    className="gap-1.5 bg-transparent px-2 md:px-3"
                   >
                     <ArrowRightLeft className="h-4 w-4" />
-                    Transferir
+                    <span className="hidden md:inline">Transferir</span>
                   </Button>
-                  
-  {/* Encerrar Button */}
+
+  {/* Encerrar Button — texto escondido em mobile (só ícone) */}
   <Button
   variant="destructive"
   size="sm"
   onClick={() => setEncerrarDialogOpen(true)}
   disabled={selectedTicket?.is_disparo && !isDisparoEncerrarEnabled(selectedTicket)}
-  className="gap-1.5"
+  className="gap-1.5 px-2 md:px-3"
   >
   <XCircle className="h-4 w-4" />
-  Encerrar
+  <span className="hidden md:inline">Encerrar</span>
   </Button>
 
                   {/* Toggle Client Info Panel */}
@@ -3453,6 +3863,7 @@ const tempId = `temp-${Date.now()}`
                     )}
                   </Button>
                   
+                  {/* Close — redundante em mobile (back arrow já volta pra lista) */}
                   <Button
                     variant="ghost"
                     size="icon"
@@ -3460,6 +3871,7 @@ const tempId = `temp-${Date.now()}`
                       setSelectedTicket(null)
                       selectedTicketIdRef.current = null
                     }}
+                    className="hidden md:inline-flex"
                   >
                     <X className="h-5 w-5" />
                   </Button>
@@ -3573,12 +3985,25 @@ const tempId = `temp-${Date.now()}`
                                   initial={{ opacity: 0, y: 10 }}
                                   animate={{ opacity: 1, y: 0 }}
                                   className={cn(
-                                    'flex',
+                                    'flex items-center gap-1.5 group/msg',
                                     isOutgoingMessage(msg.remetente) ? 'justify-end' : 'justify-start',
                                     !isCurrentTicket && 'opacity-60'
                                   )}
                                 >
+                                  {/* Reply button: shown LEFT of outgoing bubbles, RIGHT of incoming.
+                                      Hidden until hover so it doesn't clutter the chat. */}
+                                  {isOutgoingMessage(msg.remetente) && isCurrentTicket && !msg.id.startsWith('temp-') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setReplyingTo(msg)}
+                                      className="opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-foreground"
+                                      title="Responder"
+                                    >
+                                      <CornerUpLeft className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
                                   <div
+                                    data-msg-id={msg.id}
                                     className={cn(
                                       'max-w-[85%] lg:max-w-[75%] rounded-2xl px-3 py-2 lg:px-4 lg:py-2.5 break-words overflow-hidden',
                                       isOutgoingMessage(msg.remetente)
@@ -3587,6 +4012,38 @@ const tempId = `temp-${Date.now()}`
                                       msgStatus === 'error' && 'bg-orange-500 text-white border-2 border-orange-300'
                                     )}
                                   >
+                        {/* Quoted reply block — preview of the parent message above this one */}
+                        {msg.reply_parent && (
+                          <div
+                            className={cn(
+                              'mb-2 pl-2 pr-2 py-1.5 rounded border-l-4 cursor-pointer',
+                              isOutgoingMessage(msg.remetente)
+                                ? 'bg-white/15 border-white/70'
+                                : 'bg-foreground/5 border-violet-500',
+                            )}
+                            onClick={() => {
+                              const el = document.querySelector(`[data-msg-id="${msg.reply_parent!.id}"]`)
+                              el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                            }}
+                            title="Ir para mensagem original"
+                          >
+                            <p className="text-[11px] font-semibold opacity-90">
+                              {msg.reply_parent.remetente === 'colaborador'
+                                ? 'Você'
+                                : (selectedTicket?.clientes?.nome || 'Cliente')}
+                            </p>
+                            <p className="text-xs opacity-80 line-clamp-2">
+                              {msg.reply_parent.tipo !== 'texto' && !msg.reply_parent.conteudo
+                                ? ({
+                                    imagem: '📷 Imagem',
+                                    audio: '🎤 Áudio',
+                                    video: '📹 Vídeo',
+                                    documento: '📎 Documento',
+                                  } as Record<string, string>)[msg.reply_parent.tipo] || 'Mídia'
+                                : (msg.reply_parent.conteudo || '').replace(/^\*[^*\n]+:\*\s*\n*/, '').trim() || 'Mídia'}
+                            </p>
+                          </div>
+                        )}
                         {msgStatus === 'error' && (
                           <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
                             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -3609,9 +4066,14 @@ const tempId = `temp-${Date.now()}`
                           />
                         )}
                         {msg.tipo !== 'texto' && !msg.url_imagem && !isContactMessage(msg) && (
-                          <div className="mb-1 flex items-center gap-1 text-xs opacity-70">
-                            {getMessageIcon(msg.tipo)}
-                            <span className="capitalize">{msg.tipo}</span>
+                          <div className="mb-1 flex items-start gap-2 px-2.5 py-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs">
+                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />
+                            <div className="flex flex-col gap-0.5">
+                              <span className="font-medium">{`${msg.tipo[0].toUpperCase()}${msg.tipo.slice(1)} não recebida`}</span>
+                              <span className="opacity-70">
+                                O arquivo não foi anexado a esta mensagem (URL ausente no banco). Verifique o fluxo n8n.
+                              </span>
+                            </div>
                           </div>
                         )}
                         {isContactMessage(msg) && msg.conteudo ? (
@@ -3649,6 +4111,17 @@ const tempId = `temp-${Date.now()}`
                                       )}
                                     </div>
                                   </div>
+                                  {/* Right-side reply button for cliente messages */}
+                                  {!isOutgoingMessage(msg.remetente) && isCurrentTicket && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setReplyingTo(msg)}
+                                      className="opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-foreground"
+                                      title="Responder"
+                                    >
+                                      <CornerUpLeft className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
                                 </motion.div>
                                 )}
                               </React.Fragment>
@@ -3770,12 +4243,69 @@ const tempId = `temp-${Date.now()}`
                       </div>
                     )}
 
+                    {/* Recorded audio preview — listen before sending */}
+                    {recordedAudio && recordedAudioUrl && (
+                      <div className="mb-2 p-2 bg-violet-50 dark:bg-violet-950/20 rounded-lg border border-violet-200 dark:border-violet-800/50 flex items-center gap-2">
+                        <Mic className="h-5 w-5 text-violet-600 shrink-0" />
+                        <audio src={recordedAudioUrl} controls className="flex-1 h-9" />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          onClick={discardRecordedAudio}
+                          title="Descartar gravação"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          onClick={sendRecordedAudio}
+                          disabled={uploadingFile}
+                          title="Enviar áudio"
+                        >
+                          {uploadingFile ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Reply preview — shown when attendant picked a message to quote */}
+                    {replyingTo && (
+                      <div className="mb-2 p-2 rounded-lg border-l-4 border-violet-500 bg-violet-50/60 dark:bg-violet-950/20 flex items-start gap-2">
+                        <CornerUpLeft className="h-4 w-4 text-violet-600 shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+                            {replyingTo.remetente === 'colaborador' ? 'Você' : (selectedTicket?.clientes?.nome || 'Cliente')}
+                          </p>
+                          <p className="text-xs text-muted-foreground line-clamp-2">
+                            {replyingTo.tipo !== 'texto' && !replyingTo.conteudo
+                              ? ({
+                                  imagem: '📷 Imagem',
+                                  audio: '🎤 Áudio',
+                                  video: '📹 Vídeo',
+                                  documento: '📎 Documento',
+                                } as Record<string, string>)[replyingTo.tipo] || 'Mídia'
+                              : (replyingTo.conteudo || '').replace(/^\*[^*\n]+:\*\s*\n*/, '').trim() || 'Mídia'}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 shrink-0"
+                          onClick={() => setReplyingTo(null)}
+                          title="Cancelar resposta"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    )}
+
                   <div className="flex items-center gap-2">
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                        className="shrink-0"
+                        className="shrink-0 hidden md:inline-flex"
                       >
                         <Smile className="h-5 w-5 text-muted-foreground" />
                       </Button>
@@ -3784,10 +4314,47 @@ const tempId = `temp-${Date.now()}`
                         size="icon"
   onClick={() => fileInputRef.current?.click()}
   className="shrink-0"
-  disabled={isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+  disabled={isWindowExpired || isRecording || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                       >
                         <ImageIcon className="h-5 w-5 text-muted-foreground" />
                       </Button>
+                      {isRecording ? (
+                        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800">
+                          <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+                          <span className="text-sm font-mono text-red-700 dark:text-red-300 tabular-nums min-w-[2.5rem]">
+                            {formatDuration(recordingDuration)}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={cancelRecording}
+                            className="h-6 w-6"
+                            title="Descartar gravação"
+                          >
+                            <X className="h-3.5 w-3.5 text-red-600" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={stopRecording}
+                            className="h-6 w-6"
+                            title="Parar e anexar"
+                          >
+                            <Check className="h-3.5 w-3.5 text-green-600" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={startRecording}
+                          className="shrink-0"
+                          disabled={isWindowExpired || !!selectedFile || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                          title="Gravar áudio"
+                        >
+                          <Mic className="h-5 w-5 text-muted-foreground" />
+                        </Button>
+                      )}
                       {setorIAAtivo && (
                         <Button
                           variant="ghost"
@@ -3828,7 +4395,7 @@ const tempId = `temp-${Date.now()}`
                       </div>
                       <Button
                         size="icon"
-                        onClick={handleSendMessage}
+                        onClick={() => handleSendMessage()}
                         disabled={(!messageInput.trim() && !selectedFile) || isWindowExpired || uploadingFile || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                         className="shrink-0"
                       >
@@ -3850,14 +4417,67 @@ const tempId = `temp-${Date.now()}`
           )}
         </main>
 
-{/* Client Info Sidebar */}
+{/* Client Info Sidebar — mobile: full-screen overlay; desktop: coluna lateral */}
         {selectedTicket && (
           <aside className={cn(
-            "w-56 shrink-0 border-l border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl overflow-y-auto transition-all duration-200 lg:w-64 xl:w-72",
-            showClientInfo ? "hidden lg:block" : "hidden"
+            "shrink-0 border-l border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl overflow-y-auto transition-all duration-200",
+            // Largura desktop
+            "lg:w-64 xl:w-72",
+            // Mobile: overlay full-screen começando ABAIXO do header global (h-16 = 64px).
+            // z-30 fica embaixo do header sticky (z-40) sem cobri-lo.
+            "max-md:fixed max-md:top-16 max-md:inset-x-0 max-md:bottom-0 max-md:z-30 max-md:w-full",
+            showClientInfo ? "block lg:block" : "hidden"
           )}>
+            {/* Header fechar (mobile only) */}
+            <div className="md:hidden sticky top-0 z-20 flex items-center justify-between border-b border-border bg-white/95 dark:bg-black/95 backdrop-blur-xl px-3 py-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setShowClientInfo(false)}
+                title="Fechar"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+              <span className="text-sm font-semibold">Informações</span>
+              <span className="w-8" />
+            </div>
+            {/* Tabs Informações / Histórico — sticky no topo da sidebar */}
+            <div className="sticky top-0 z-10 bg-white/80 dark:bg-white/5 backdrop-blur-xl border-b border-border">
+              <div className="flex">
+                <button
+                  type="button"
+                  onClick={() => setInfoTab('info')}
+                  className={cn(
+                    'flex-1 text-xs font-medium py-2 px-3 transition-colors border-b-2',
+                    infoTab === 'info'
+                      ? 'text-primary border-primary'
+                      : 'text-muted-foreground border-transparent hover:text-foreground'
+                  )}
+                >
+                  Informações
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInfoTab('historico')}
+                  className={cn(
+                    'flex-1 text-xs font-medium py-2 px-3 transition-colors border-b-2 flex items-center justify-center gap-1.5',
+                    infoTab === 'historico'
+                      ? 'text-primary border-primary'
+                      : 'text-muted-foreground border-transparent hover:text-foreground'
+                  )}
+                >
+                  Histórico
+                  {ticketHistory.length > 0 && (
+                    <span className="text-[9px] bg-muted px-1.5 py-0 rounded-full font-normal">
+                      {ticketHistory.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+            </div>
             <div className="p-4">
-              {setorCanalConfig === 'discord' ? (
+              {infoTab === 'info' && (setorCanalConfig === 'discord' ? (
               <>
               {/* Header Dados do Colaborador */}
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1.5 mb-2">
@@ -3921,10 +4541,15 @@ const tempId = `temp-${Date.now()}`
               <>
               {/* Header Dados do Cliente */}
               <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => toggleSection('cliente')}
+                  className="text-xs font-semibold text-foreground flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                >
                   <User className="h-3.5 w-3.5" />
                   Dados do Cliente
-                </h3>
+                  <ChevronDown className={cn('h-3 w-3 transition-transform', collapsedSections.cliente && '-rotate-90')} />
+                </button>
                 <div className="flex items-center gap-1">
                   <Button
                     variant="outline"
@@ -3952,6 +4577,7 @@ const tempId = `temp-${Date.now()}`
               </div>
 
               {/* Campo linha: label + valor + copy */}
+              {!collapsedSections.cliente && (
               <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-xs">
                 {/* Nome */}
                 <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
@@ -4039,16 +4665,24 @@ const tempId = `temp-${Date.now()}`
                   </div>
                 )}
               </div>
-              </>
               )}
+              </>
+              ))}
 
               {/* Ticket Info Section */}
+              {infoTab === 'info' && (
               <div className="mt-4 pt-4 border-t border-border">
-                <h3 className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => toggleSection('ticket')}
+                  className="w-full text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                >
                   <MessageCircle className="h-3.5 w-3.5" />
                   Info do Ticket
-                </h3>
+                  <ChevronDown className={cn('h-3 w-3 ml-auto transition-transform', collapsedSections.ticket && '-rotate-90')} />
+                </button>
 
+                {!collapsedSections.ticket && (
                 <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-xs">
                   {/* Número */}
                   <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
@@ -4115,10 +4749,93 @@ const tempId = `temp-${Date.now()}`
                     </div>
                   )}
                 </div>
+                )}
+
+                {/* Botão: Abrir ticket no sistema Softcom — sempre visível,
+                    mesmo quando a seção "Info do Ticket" está colapsada. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full mt-3 h-8 text-xs gap-2 border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={() => setTicketIframeTicket(selectedTicket)}
+                >
+                  <Ticket className="h-3.5 w-3.5" />
+                  Abrir ticket
+                </Button>
               </div>
+              )}
+
+              {/* Histórico de Atendimentos — aba inteira */}
+              {infoTab === 'historico' && (
+              <div>
+                <h3 className="text-xs font-semibold text-foreground mb-3 flex items-center gap-1.5">
+                  <History className="h-3.5 w-3.5" />
+                  Histórico de Atendimentos
+                  {ticketHistory.length > 0 && (
+                    <span className="text-[10px] font-normal text-muted-foreground">
+                      ({ticketHistory.length})
+                    </span>
+                  )}
+                </h3>
+
+                {loadingHistory ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground px-2.5 py-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Carregando…
+                  </div>
+                ) : ticketHistory.length === 0 ? (
+                  <div className="text-xs text-muted-foreground px-2.5 py-2 rounded-md border border-dashed border-border">
+                    Nenhum atendimento anterior
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-xs max-h-72 overflow-y-auto">
+                    {ticketHistory.map((h) => {
+                      const refDate = h.encerrado_em || h.criado_em
+                      const isEncerrado = h.status === 'encerrado'
+                      return (
+                        <div
+                          key={h.id}
+                          className="px-2.5 py-2 flex flex-col gap-0.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-foreground">#{h.numero ?? '?'}</span>
+                            <span
+                              className={cn(
+                                'text-[9px] uppercase px-1.5 py-0 rounded',
+                                isEncerrado
+                                  ? 'bg-muted text-muted-foreground'
+                                  : h.status === 'em_atendimento'
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : 'bg-blue-100 text-blue-700',
+                              )}
+                            >
+                              {isEncerrado ? 'Encerrado' : h.status === 'em_atendimento' ? 'Atendendo' : 'Aberto'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground truncate">
+                              {h.colaborador_nome || 'Sem atendente'}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              {new Date(refDate).toLocaleDateString('pt-BR', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                year: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              )}
 
               {/* Nexus AI Section */}
-              {setorNexusAtivo && (
+              {infoTab === 'info' && setorNexusAtivo && (
               <div className="mt-4 pt-4 border-t border-border">
                 <div className="flex items-center gap-2 mb-3">
                   <svg width="87" height="16" viewBox="0 0 87 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-4 w-auto">
@@ -4227,7 +4944,7 @@ const tempId = `temp-${Date.now()}`
                   </div>
                   <div className="min-w-0">
                     <span className="text-sm font-semibold truncate">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</span>
-                    <span className="text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
+                    <span className="hidden md:inline text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
                   </div>
                 </div>
                 <Button
@@ -4454,7 +5171,7 @@ onClick={() => {
                         variant="ghost"
                         size="icon"
                         onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                        className="shrink-0"
+                        className="shrink-0 hidden md:inline-flex"
                       >
                         <Smile className="h-5 w-5 text-muted-foreground" />
                       </Button>
@@ -4486,7 +5203,7 @@ onClick={() => {
                   />
                       <Button
                         size="icon"
-                        onClick={handleSendMessage}
+                        onClick={() => handleSendMessage()}
                         disabled={(!messageInput.trim() && !selectedFile) || uploadingFile}
                         className="shrink-0"
                       >
@@ -5239,6 +5956,7 @@ function TicketList({
   searchTerm,
   setSearchTerm,
   unreadCounts,
+  firstUnreadAt,
   setorCanal,
   colaboradorEmail,
   onOpenTicketIframe,
@@ -5256,6 +5974,7 @@ function TicketList({
   searchTerm: string
   setSearchTerm: (v: string) => void
   unreadCounts: Map<string, number>
+  firstUnreadAt: Map<string, string>
   setorCanal: 'whatsapp' | 'discord' | 'evolution_api'
   colaboradorEmail: string
   onOpenTicketIframe: (ticket: Ticket) => void
@@ -5380,23 +6099,20 @@ function TicketList({
                   )}
                 >
                   <div className="flex flex-col gap-1">
-                    {/* Row 1: #numero - Status Tags - Unread Badge - Ticket Icon */}
+                    {/* Row 1: Status / Indicador de Resposta - Unread Badge - Ticket Icon */}
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <span className={cn(
-                          "text-xs font-semibold shrink-0",
-                          isSelected ? "text-primary" : "text-foreground"
-                        )}>
-                          #{ticket.numero}
-                        </span>
                         {ticket.prioridade === 'urgente' && (
                           <AlertTriangle className="h-3 w-3 text-red-500 shrink-0" />
                         )}
-                        <span className="text-muted-foreground">-</span>
                         {/* Status badges */}
                         {isExpiredWait ? (
                           <Badge className="text-[9px] px-1.5 py-0 h-4 bg-amber-500 text-white border-0 animate-pulse">
                             Sem resposta
+                          </Badge>
+                        ) : ticket.ultima_mensagem_remetente === 'cliente' ? (
+                          <Badge className="text-[9px] px-1.5 py-0 h-4 bg-emerald-500 text-white border-0 animate-pulse">
+                            Cliente respondeu
                           </Badge>
                         ) : isWaitingResponse && unreadCount === 0 ? (
                           <Badge className="text-[9px] px-1.5 py-0 h-4 bg-amber-100 text-amber-700 border-0">
@@ -5415,17 +6131,6 @@ function TicketList({
                         )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
-                        {/* Ticket link */}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onOpenTicketIframe(ticket)
-                          }}
-                          className="p-0.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-                          title="Abrir ticket"
-                        >
-                          <Ticket className="h-3.5 w-3.5" />
-                        </button>
                         {/* Unread badge */}
                         {unreadCount > 0 && (
                           <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground">
@@ -5435,7 +6140,9 @@ function TicketList({
                       </div>
                     </div>
 
-                    {/* Row 2: Nome do Cliente + Tempo */}
+                    {/* Row 2: Nome do Cliente + Tempo. Se há unread, o tempo
+                        é o da PRIMEIRA não-lida (mostra urgência real). Senão,
+                        usa o da última mensagem. Esconde antes de 1 min. */}
                     <div className="flex items-center justify-between gap-2">
                       <p className={cn(
                         "text-sm font-medium line-clamp-1 min-w-0",
@@ -5443,13 +6150,73 @@ function TicketList({
                       )}>
                         {setorCanal === 'discord' ? (ticket.user_name_discord || ticket.clientes.nome) : ticket.clientes.nome}
                       </p>
-                      <span className="text-[10px] text-muted-foreground shrink-0">
-                        {formatDistanceToNow(new Date(ticket.ultima_mensagem_em || ticket.criado_em), {
-                          locale: ptBR,
-                          addSuffix: true,
-                        })}
-                      </span>
+                      {(() => {
+                        const firstUnread = firstUnreadAt.get(ticket.id)
+                        const isClientWaiting = ticket.ultima_mensagem_remetente === 'cliente'
+                        // Timer emerald (urgência): cliente foi o último a falar
+                        // E temos o âncora da primeira msg sem resposta. Conta o
+                        // tempo TOTAL aguardando — não zera quando o atendente
+                        // só abre o ticket; só zera quando ele responde.
+                        if (firstUnread && isClientWaiting) {
+                          const elapsedMs = Date.now() - new Date(firstUnread).getTime()
+                          const label = elapsedMs < 60_000
+                            ? 'agora'
+                            : formatDistanceToNow(new Date(firstUnread), { locale: ptBR, addSuffix: true })
+                          return (
+                            <span className="text-[10px] shrink-0 text-emerald-600 dark:text-emerald-400 font-medium">
+                              {label}
+                            </span>
+                          )
+                        }
+                        // Sem urgência (colab já respondeu) — só mostra o
+                        // tempo da última msg após 1 min, em cinza neutro.
+                        const ref = ticket.ultima_mensagem_em || ticket.criado_em
+                        const elapsedMs = Date.now() - new Date(ref).getTime()
+                        if (elapsedMs < 60_000) return null
+                        return (
+                          <span className="text-[10px] shrink-0 text-muted-foreground">
+                            {formatDistanceToNow(new Date(ref), { locale: ptBR, addSuffix: true })}
+                          </span>
+                        )
+                      })()}
                     </div>
+
+                    {/* Row 3: Prévia da última mensagem (WhatsApp-like) */}
+                    {ticket.ultima_mensagem && ticket.ultima_mensagem !== 'Sem mensagens' && (() => {
+                      const tipo = ticket.ultima_mensagem_tipo
+                      const raw = ticket.ultima_mensagem || ''
+                      // Strip signature prefix like *Joellyton - PEV:*\n\n
+                      const cleaned = raw.replace(/^\*[^*\n]+:\*\s*\n*/, '').trim()
+                      // For media, prefer a friendly label unless there's a real caption.
+                      // Audio recordings store the filename as conteudo — show "Áudio" instead.
+                      const looksLikeFilename = /\.[a-z0-9]{2,5}$/i.test(cleaned)
+                      const mediaLabel: Record<string, { icon: string; label: string }> = {
+                        audio: { icon: '🎤', label: 'Áudio' },
+                        imagem: { icon: '📷', label: 'Imagem' },
+                        video: { icon: '📹', label: 'Vídeo' },
+                        documento: { icon: '📎', label: 'Documento' },
+                      }
+                      const isMedia = tipo && tipo !== 'texto' && mediaLabel[tipo]
+                      let preview = cleaned
+                      let prefix = ''
+                      if (isMedia) {
+                        const m = mediaLabel[tipo!]
+                        prefix = `${m.icon} `
+                        // Show the caption when it exists and isn't just a filename
+                        preview = cleaned && !looksLikeFilename ? cleaned : m.label
+                      }
+                      return (
+                        <p className={cn(
+                          "text-xs line-clamp-1 min-w-0",
+                          unreadCount > 0 ? "text-foreground/90 font-medium" : "text-muted-foreground"
+                        )}>
+                          {ticket.ultima_mensagem_remetente === 'colaborador' && (
+                            <span className="opacity-70">Você: </span>
+                          )}
+                          {prefix}{preview}
+                        </p>
+                      )
+                    })()}
                   </div>
                 </motion.div>
               )

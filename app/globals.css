@@ -2,6 +2,24 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Neutralize browser extensions that inject elements positioned absolutely
+   outside the viewport. The "Video Speed Controller" extension is the most
+   common offender: it adds <vsc-controller> for every <audio>/<video> on the
+   page (we have many in the WorkDesk chat), which extends the document scroll
+   by hundreds of pixels horizontally and thousands vertically. We don't need
+   speed controls here — the audio messages have native controls already. */
+vsc-controller {
+  display: none !important;
+}
+
+/* Defensive cap: any element trying to render absolutely positioned content
+   outside the viewport gets clipped at the document root level instead of
+   forcing the browser to grow scrollbars. Doesn't affect intentional scroll
+   containers (they have their own overflow set). */
+html, body {
+  overflow-x: clip;
+}
+
 :root {
   --background: oklch(0.96 0.005 240);
   --foreground: oklch(0.15 0 0);
