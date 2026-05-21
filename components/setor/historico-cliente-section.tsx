@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -78,6 +78,24 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
   const [tickets, setTickets] = useState<TicketLite[]>([])
   const [mensagens, setMensagens] = useState<Mensagem[]>([])
   const [loading, setLoading] = useState(false)
+  const messagesScrollRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll histórico para a última mensagem ao carregar
+  useEffect(() => {
+    if (loading || mensagens.length === 0 || !messagesScrollRef.current) return
+    const el = messagesScrollRef.current
+    const scrollToEnd = () => {
+      el.scrollTop = el.scrollHeight
+    }
+    scrollToEnd()
+    const observer = new ResizeObserver(scrollToEnd)
+    if (el.firstElementChild) observer.observe(el.firstElementChild)
+    const stop = setTimeout(() => observer.disconnect(), 1500)
+    return () => {
+      observer.disconnect()
+      clearTimeout(stop)
+    }
+  }, [loading, mensagens])
 
   useEffect(() => {
     const h = setTimeout(() => setQDebounced(q), 400)
@@ -286,7 +304,7 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
               </div>
             ) : (
               <>
-                <div className="rounded-lg border bg-background/40 max-h-[640px] overflow-y-auto p-4 space-y-6">
+                <div ref={messagesScrollRef} className="rounded-lg border bg-background/40 max-h-[640px] overflow-y-auto p-4 space-y-6">
                   {tickets.map((t) => {
                     const msgs = msgsByTicket.get(t.id) || []
                     return (

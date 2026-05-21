@@ -18,7 +18,7 @@ export async function POST(request: Request) {
 
     const { data: setor, error: setorError } = await supabase
       .from('setores')
-      .select('openai_api_key, openai_ativo')
+      .select('openai_api_key, openai_ativo, openai_url_personalizada, openai_base_url')
       .eq('id', setor_id)
       .single()
 
@@ -47,8 +47,12 @@ export async function POST(request: Request) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10000)
 
+    const baseUrl = setor.openai_url_personalizada && setor.openai_base_url
+      ? setor.openai_base_url.replace(/\/+$/, '')
+      : 'https://api.openai.com/v1'
+
     try {
-      const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      const openaiResponse = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

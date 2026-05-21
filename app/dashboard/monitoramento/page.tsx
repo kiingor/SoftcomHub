@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
@@ -143,6 +143,7 @@ export default function MonitoramentoPage() {
 
   // Conversation panel state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
+  const conversationScrollRef = useRef<HTMLDivElement>(null)
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [ticketHistory, setTicketHistory] = useState<any[]>([])
   const [historyMessages, setHistoryMessages] = useState<Record<string, any[]>>({})
@@ -165,6 +166,33 @@ export default function MonitoramentoPage() {
     const interval = setInterval(() => setTick((t) => t + 1), 1000)
     return () => clearInterval(interval)
   }, [])
+
+  // Auto-scroll conversation to bottom when messages load.
+  // Uses ResizeObserver to keep scrolling as images/audios load and resize the content.
+  useEffect(() => {
+    if (
+      conversationTab !== 'conversa' ||
+      loadingMessages ||
+      conversationMessages.length === 0 ||
+      !conversationScrollRef.current
+    ) {
+      return
+    }
+    const el = conversationScrollRef.current
+    const scrollToEnd = () => {
+      el.scrollTop = el.scrollHeight
+    }
+    // Initial scroll
+    scrollToEnd()
+    // Re-scroll on any size change for ~1.5s (covers async image/audio decode)
+    const observer = new ResizeObserver(scrollToEnd)
+    if (el.firstElementChild) observer.observe(el.firstElementChild)
+    const stop = setTimeout(() => observer.disconnect(), 1500)
+    return () => {
+      observer.disconnect()
+      clearTimeout(stop)
+    }
+  }, [conversationTab, loadingMessages, conversationMessages])
 
   // Fetch subsetores when setor filter changes
   useEffect(() => {
@@ -1549,7 +1577,7 @@ export default function MonitoramentoPage() {
             )}
 
             {/* Tab Content */}
-            <div className="flex-1 overflow-y-auto">
+            <div ref={conversationScrollRef} className="flex-1 overflow-y-auto">
               {/* Conversa Tab */}
               {conversationTab === 'conversa' && (
                 <div className="p-4 space-y-3">

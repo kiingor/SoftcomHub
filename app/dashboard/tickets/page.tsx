@@ -2,7 +2,7 @@
 
 import React from "react"
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -216,6 +216,27 @@ export default function TicketsPage() {
   const [ticketLogs, setTicketLogs] = useState<TicketLog[]>([])
   const [ticketMessages, setTicketMessages] = useState<Mensagem[]>([])
   const [loadingDetails, setLoadingDetails] = useState(false)
+  const ticketMessagesScrollRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll mensagens do ticket para a última mensagem ao carregar
+  useEffect(() => {
+    if (loadingDetails || ticketMessages.length === 0) return
+    const viewport = ticketMessagesScrollRef.current?.querySelector(
+      '[data-radix-scroll-area-viewport]',
+    ) as HTMLElement | null
+    if (!viewport) return
+    const scrollToEnd = () => {
+      viewport.scrollTop = viewport.scrollHeight
+    }
+    scrollToEnd()
+    const observer = new ResizeObserver(scrollToEnd)
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
+    const stop = setTimeout(() => observer.disconnect(), 1500)
+    return () => {
+      observer.disconnect()
+      clearTimeout(stop)
+    }
+  }, [loadingDetails, ticketMessages])
 
   // Transfer modal
   const [transferModalOpen, setTransferModalOpen] = useState(false)
@@ -993,7 +1014,7 @@ export default function TicketsPage() {
                           Nenhuma mensagem neste ticket
                         </p>
                       ) : (
-                        <ScrollArea className="h-[200px]">
+                        <ScrollArea ref={ticketMessagesScrollRef} className="h-[200px]">
                           <div className="space-y-3">
 {ticketMessages.map((msg) => (
                           <div

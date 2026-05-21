@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     // Fetch OpenAI config from setor
     const { data: setor, error: setorError } = await supabase
       .from('setores')
-      .select('openai_api_key, openai_ativo')
+      .select('openai_api_key, openai_ativo, openai_url_personalizada, openai_base_url')
       .eq('id', setor_id)
       .single()
 
@@ -77,8 +77,12 @@ export async function POST(request: Request) {
     const whisperController = new AbortController()
     const whisperTimeout = setTimeout(() => whisperController.abort(), 30000)
 
+    const baseUrl = setor.openai_url_personalizada && setor.openai_base_url
+      ? setor.openai_base_url.replace(/\/+$/, '')
+      : 'https://api.openai.com/v1'
+
     try {
-      const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      const whisperRes = await fetch(`${baseUrl}/audio/transcriptions`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${setor.openai_api_key}`,

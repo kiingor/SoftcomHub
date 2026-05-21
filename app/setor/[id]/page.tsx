@@ -559,6 +559,8 @@ export default function SetorPage() {
   setor_receptor_id: '' as string,
   openai_api_key: '',
   openai_ativo: false,
+  openai_url_personalizada: false,
+  openai_base_url: '',
   nexus_ativo: false,
   assistente_ia: false,
   assinatura_ativa: false,
@@ -754,9 +756,35 @@ export default function SetorPage() {
 
   // Conversation slide-out state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
+  const conversationScrollRef = useRef<HTMLDivElement>(null)
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [conversationTab, setConversationTab] = useState<'atendimento' | 'transferir' | 'info'>('atendimento')
+
+  // Auto-scroll conversation to bottom when messages load.
+  // Uses ResizeObserver to keep scrolling as images/audios load and resize the content.
+  useEffect(() => {
+    if (
+      conversationTab !== 'atendimento' ||
+      loadingMessages ||
+      conversationMessages.length === 0 ||
+      !conversationScrollRef.current
+    ) {
+      return
+    }
+    const el = conversationScrollRef.current
+    const scrollToEnd = () => {
+      el.scrollTop = el.scrollHeight
+    }
+    scrollToEnd()
+    const observer = new ResizeObserver(scrollToEnd)
+    if (el.firstElementChild) observer.observe(el.firstElementChild)
+    const stop = setTimeout(() => observer.disconnect(), 1500)
+    return () => {
+      observer.disconnect()
+      clearTimeout(stop)
+    }
+  }, [conversationTab, loadingMessages, conversationMessages])
   const [transferringTo, setTransferringTo] = useState<string>('')
   const [transferSetorDestino, setTransferSetorDestino] = useState<string>('')
   const [transferAtendentesDestino, setTransferAtendentesDestino] = useState<any[]>([])
@@ -956,6 +984,8 @@ export default function SetorPage() {
         setor_receptor_id: setor.setor_receptor_id || '',
         openai_api_key: setor.openai_api_key || '',
         openai_ativo: setor.openai_ativo || false,
+        openai_url_personalizada: setor.openai_url_personalizada || false,
+        openai_base_url: setor.openai_base_url || '',
         nexus_ativo: setor.nexus_ativo || false,
         assistente_ia: setor.assistente_ia || false,
         assinatura_ativa: setor.assinatura_ativa || false,
@@ -1339,6 +1369,8 @@ const saveConfig = async () => {
   setor_receptor_id: configForm.setor_receptor_id || null,
   openai_api_key: configForm.openai_api_key || null,
   openai_ativo: configForm.openai_ativo || false,
+  openai_url_personalizada: configForm.openai_url_personalizada || false,
+  openai_base_url: configForm.openai_url_personalizada ? (configForm.openai_base_url || null) : null,
   nexus_ativo: configForm.nexus_ativo || false,
   assistente_ia: configForm.assistente_ia || false,
   assinatura_ativa: configForm.assinatura_ativa || false,
@@ -4766,6 +4798,43 @@ const saveConfig = async () => {
                 <p className="text-xs text-muted-foreground">A chave será usada para chamar a OpenAI ao melhorar mensagens. Modelo utilizado: GPT-4o mini.</p>
               </div>
             )}
+            {configForm.openai_ativo && (
+              <div className="space-y-2 pt-2 border-t border-border">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Personalizar URL da IA</p>
+                    <p className="text-xs text-muted-foreground">
+                      Por padrão usa <span className="font-mono">https://api.openai.com/v1</span>. Ative para usar um endpoint compatível (ex.: proxy ou modelo self-hosted).
+                    </p>
+                  </div>
+                  <Switch
+                    checked={configForm.openai_url_personalizada}
+                    onCheckedChange={(checked) => {
+                      setConfigForm((prev) => ({ ...prev, openai_url_personalizada: checked }))
+                      setHasUnsavedConfig(true)
+                    }}
+                  />
+                </div>
+                {configForm.openai_url_personalizada && (
+                  <div className="space-y-2">
+                    <Label htmlFor="openai_base_url">URL personalizada da IA</Label>
+                    <Input
+                      id="openai_base_url"
+                      type="url"
+                      placeholder="https://meu-endpoint.com/v1"
+                      value={configForm.openai_base_url}
+                      onChange={(e) => {
+                        setConfigForm((prev) => ({ ...prev, openai_base_url: e.target.value }))
+                        setHasUnsavedConfig(true)
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Informe a URL base (sem barra final). Os endpoints <span className="font-mono">/chat/completions</span> e <span className="font-mono">/audio/transcriptions</span> serão anexados automaticamente.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex items-center justify-between pt-2 border-t border-border">
               <div>
                 <p className="text-sm font-medium">Ativar Nexus (Assistente IA)</p>
@@ -6162,7 +6231,7 @@ const saveConfig = async () => {
               {/* Atendimento Tab - Messages */}
               {conversationTab === 'atendimento' && (
                 <div className="flex h-full flex-col">
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <div ref={conversationScrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
                     {loadingMessages ? (
                       <div className="flex items-center justify-center py-8">
                         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
