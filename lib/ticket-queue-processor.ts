@@ -393,6 +393,12 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
     }
   }
 
+  // Limite de hops de transbordo. Cada vez que um ticket é movido pra um
+  // setor receptor sem ser atribuído, conta como 1 hop. Após MAX_TRANSBORDO_HOPS
+  // o ticket fica "parado" pra revisão manual — proteção contra ciclos
+  // (A→B→A→B...) e contra fila eternamente vazia.
+  const MAX_TRANSBORDO_HOPS = 3
+
   // Transmissão automática: encaminhar tickets sem atendente para setor receptor
   for (const [setorId, ticketIds] of Object.entries(failedBySetor)) {
     try {
@@ -410,25 +416,51 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
         const receptorId = setorData.setor_receptor_id
         console.log(`[TicketQueue] Transmissão ativa no setor ${setorId} → receptor ${receptorId}. Encaminhando ${ticketIds.length} tickets.`)
 
+        // Busca os hops atuais dos tickets envolvidos pra decidir quem ainda
+        // pode ser transbordado e quem já estourou o limite.
+        const { data: ticketHops } = await supabase
+          .from('tickets')
+          .select('id, transbordo_hops')
+          .in('id', ticketIds)
+        const hopsById = new Map<string, number>(
+          (ticketHops || []).map((t: any) => [t.id, t.transbordo_hops ?? 0]),
+        )
+
         for (const ticketId of ticketIds) {
-          // Mover ticket para o setor receptor
+          const currentHops = hopsById.get(ticketId) ?? 0
+
+          // Proteção contra loop: se o ticket já bateu no teto, NÃO move.
+          // Ele fica parado no setor atual pra ser revisado manualmente.
+          if (currentHops >= MAX_TRANSBORDO_HOPS) {
+            console.warn(`[TicketQueue] 🛑 Ticket ${ticketId} já fez ${currentHops} hops de transbordo (limite=${MAX_TRANSBORDO_HOPS}). Parado pra revisão manual.`)
+            const { error: limitLogError } = await supabase.from('ticket_logs').insert({
+              ticket_id: ticketId,
+              tipo: 'transbordo_limite_atingido',
+              descricao: `Ticket atingiu ${currentHops} hops sem ser atendido. Loop ou cobertura insuficiente — requer revisão manual.`,
+            })
+            if (limitLogError) console.warn('[TicketQueue] Falha ao gravar log transbordo_limite_atingido:', limitLogError.message)
+            continue
+          }
+
+          // Mover ticket para o setor receptor + incrementar hops
           const { error: moveError } = await supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
               subsetor_id: null,
+              transbordo_hops: currentHops + 1,
             })
             .eq('id', ticketId)
             .is('colaborador_id', null)
             .eq('status', 'aberto')
 
           if (!moveError) {
-            // Log da transferência
-            await supabase.from('ticket_logs').insert({
+            const { error: logError } = await supabase.from('ticket_logs').insert({
               ticket_id: ticketId,
               tipo: 'transferencia_automatica',
-              descricao: `Ticket transferido automaticamente para setor receptor (fila sem atendentes disponíveis)`,
+              descricao: `Ticket transferido automaticamente para setor receptor (hop ${currentHops + 1}/${MAX_TRANSBORDO_HOPS}, fila sem atendentes disponíveis)`,
             })
+            if (logError) console.warn('[TicketQueue] Falha ao gravar log transferencia_automatica:', logError.message)
 
             // Tentar atribuir no setor receptor
             const receptorResult = await tryAssignTicket(ticketId, receptorId)
@@ -438,10 +470,10 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
             }
             stats.assignments.push({
               ...receptorResult,
-              reason: `Transmitido para receptor: ${receptorResult.reason}`,
+              reason: `Transmitido para receptor (hop ${currentHops + 1}): ${receptorResult.reason}`,
             })
 
-            console.log(`[TicketQueue] Ticket ${ticketId} transmitido para receptor ${receptorId}: ${receptorResult.success ? 'atribuído' : 'aguardando'}`)
+            console.log(`[TicketQueue] Ticket ${ticketId} transmitido para receptor ${receptorId} (hop ${currentHops + 1}): ${receptorResult.success ? 'atribuído' : 'aguardando'}`)
           }
         }
       }
