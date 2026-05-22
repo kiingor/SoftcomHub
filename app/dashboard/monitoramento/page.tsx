@@ -62,6 +62,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -1629,10 +1630,13 @@ export default function MonitoramentoPage() {
                                 : "bg-primary text-primary-foreground"
                             )}
                           >
-                            {msg.url_imagem && (msg.tipo === 'imagem' || msg.media_type?.startsWith('image/')) && (
-                              <img src={msg.url_imagem} alt="" className="max-w-full rounded mb-1" />
-                            )}
-                            <p className="break-words">{msg.conteudo}</p>
+                            <MessageMediaPreview
+                              url={msg.url_imagem}
+                              mediaType={msg.media_type}
+                              tipo={msg.tipo}
+                              conteudo={msg.conteudo}
+                            />
+                            {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
                             <p className={cn(
                               "text-[10px] mt-1",
                               msg.remetente === 'cliente' ? "text-muted-foreground" : "opacity-70"

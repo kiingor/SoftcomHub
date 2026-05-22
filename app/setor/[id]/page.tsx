@@ -133,6 +133,7 @@ import { DisparoLogsSection } from '@/components/disparo-logs-section'
 import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
+import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 
 const supabase = createClient()
 
@@ -6306,14 +6307,20 @@ const saveConfig = async () => {
                                 : "bg-primary text-primary-foreground"
                             )}
                           >
-                            <p>{msg.conteudo}</p>
+                            <MessageMediaPreview
+                              url={msg.url_imagem}
+                              mediaType={msg.media_type}
+                              tipo={msg.tipo}
+                              conteudo={msg.conteudo}
+                            />
+                            {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
                             <p className={cn(
                               "text-[10px] mt-1",
                               msg.remetente === 'cliente' ? "text-muted-foreground" : "opacity-70"
                             )}>
-                              {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { 
-                                hour: '2-digit', 
-                                minute: '2-digit' 
+                              {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
+                                hour: '2-digit',
+                                minute: '2-digit'
                               })}
                             </p>
                           </div>

@@ -34,6 +34,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import {
   Ticket,
   Plus,
@@ -1025,16 +1026,12 @@ export default function TicketsPage() {
                                 : 'bg-primary/10 ml-8 mr-0'
                             }`}
                           >
-                            {msg.url_imagem && (msg.tipo === 'imagem' || msg.media_type?.startsWith('image/')) && (
-                              <div className="mb-2">
-                                <img
-                                  src={msg.url_imagem || "/placeholder.svg"}
-                                  alt="Imagem anexada"
-                                  className="max-w-full rounded-lg max-h-48 object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                                  onClick={() => window.open(msg.url_imagem!, '_blank')}
-                                />
-                              </div>
-                            )}
+                            <MessageMediaPreview
+                              url={msg.url_imagem}
+                              mediaType={msg.media_type}
+                              tipo={msg.tipo}
+                              conteudo={msg.conteudo}
+                            />
                             {msg.conteudo && <p className="text-sm">{msg.conteudo}</p>}
                             <p className="mt-1 text-xs text-muted-foreground">
                               {format(new Date(msg.created_at), 'dd/MM HH:mm', { locale: ptBR })}
