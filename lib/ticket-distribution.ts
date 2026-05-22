@@ -229,13 +229,12 @@ export async function criarEDistribuirTicket(
             .eq('id', ticket.id)
 
           if (!moveError) {
-            try {
-              await supabase.from('ticket_logs').insert({
-                ticket_id: ticket.id,
-                tipo: 'transferencia_automatica',
-                descricao: `Ticket transferido automaticamente para setor receptor (sem atendentes disponíveis no setor original)`,
-              })
-            } catch { /* tabela pode não existir */ }
+            const { error: logError } = await supabase.from('ticket_logs').insert({
+              ticket_id: ticket.id,
+              tipo: 'transferencia_automatica',
+              descricao: `Ticket transferido automaticamente para setor receptor (sem atendentes disponíveis no setor original)`,
+            })
+            if (logError) console.warn('[Distribuição] Falha ao gravar log transferencia_automatica:', logError.message)
 
             const receptorResult = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
             if (receptorResult) {
@@ -248,16 +247,15 @@ export async function criarEDistribuirTicket(
       }
     }
 
-    // Log ticket creation (tabela opcional)
-    try {
-      await supabase.from('ticket_logs').insert({
-        ticket_id: ticket.id,
-        tipo: 'criacao',
-        descricao: assignedColaboradorId
-          ? `Ticket criado e atribuído automaticamente`
-          : `Ticket criado e aguardando atribuição`,
-      })
-    } catch { /* tabela pode não existir */ }
+    // Log ticket creation
+    const { error: criacaoLogError } = await supabase.from('ticket_logs').insert({
+      ticket_id: ticket.id,
+      tipo: 'criacao',
+      descricao: assignedColaboradorId
+        ? `Ticket criado e atribuído automaticamente`
+        : `Ticket criado e aguardando atribuição`,
+    })
+    if (criacaoLogError) console.warn('[Distribuição] Falha ao gravar log criacao:', criacaoLogError.message)
 
     return {
       ticketId: ticket.id,
@@ -460,13 +458,12 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             .eq('id', ticket.id)
 
           if (!moveError) {
-            try {
-              await supabase.from('ticket_logs').insert({
-                ticket_id: ticket.id,
-                tipo: 'transferencia_automatica',
-                descricao: `Ticket transferido automaticamente para setor receptor (nenhum atendente online no setor original)`,
-              })
-            } catch { /* tabela pode não existir */ }
+            const { error: logError } = await supabase.from('ticket_logs').insert({
+              ticket_id: ticket.id,
+              tipo: 'transferencia_automatica',
+              descricao: `Ticket transferido automaticamente para setor receptor (nenhum atendente online no setor original)`,
+            })
+            if (logError) console.warn('[Distribuição] Falha ao gravar log transferencia_automatica:', logError.message)
 
             const result = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
             if (result) {
@@ -626,13 +623,12 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             .eq('id', ticket.id)
 
           if (!moveError) {
-            try {
-              await supabase.from('ticket_logs').insert({
-                ticket_id: ticket.id,
-                tipo: 'transferencia_automatica',
-                descricao: `Ticket transferido automaticamente para setor receptor (redistribuição sem atendentes disponíveis)`,
-              })
-            } catch { /* tabela pode não existir */ }
+            const { error: logError } = await supabase.from('ticket_logs').insert({
+              ticket_id: ticket.id,
+              tipo: 'transferencia_automatica',
+              descricao: `Ticket transferido automaticamente para setor receptor (redistribuição sem atendentes disponíveis)`,
+            })
+            if (logError) console.warn('[Distribuição] Falha ao gravar log transferencia_automatica (redistribuição):', logError.message)
 
             // Tentar distribuir no receptor (sem retransmitir)
             const result = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
