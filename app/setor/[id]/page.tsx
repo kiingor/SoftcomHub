@@ -2408,6 +2408,17 @@ const saveConfig = async () => {
 
     setDeleting(true)
     try {
+      // Limpar vínculos de subsetor ANTES de remover do setor.
+      // Sem isso, sobram linhas órfãs em colaboradores_subsetores que ainda
+      // fazem o distribuidor escalar o atendente (a query de subsetor não
+      // depende de colaboradores_setores).
+      const { error: subError } = await supabase
+        .from('colaboradores_subsetores')
+        .delete()
+        .eq('colaborador_id', atendenteToDelete.id)
+        .eq('setor_id', setorId)
+      if (subError) throw subError
+
       const { error } = await supabase
         .from('colaboradores_setores')
         .delete()
