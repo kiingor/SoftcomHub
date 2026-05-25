@@ -2777,12 +2777,21 @@ const handleEncerrarTicket = async () => {
     setDisparoSetoresEvolution([])
   }
 
-  // Quando o canal Evolution é escolhido: se o atendente está em 2+ setores
-  // com Evolution ativo, abre step de seleção de setor (e busca o status real
-  // de cada instância). Senão, vai direto pra step de mensagem.
+  // Quando o canal Evolution é escolhido: sempre busca os setores do colab que
+  // têm canal Evolution ativo.
+  //   - 2+ → abre step de seleção de setor (com status real de cada instância)
+  //   - 1  → auto-seleciona esse setor (sem mostrar step) e vai pra mensagem
+  //   - 0  → vai pra mensagem com setorId vazio (dispatch vai falhar claro)
+  // Sem o auto-select, o caminho de 1-setor caia no fallback `[0]` do array,
+  // que pode ser um setor SEM Evolution e quebrar o disparo.
   const handleProceedEvolution = async () => {
-    if (colaborador && (colaborador.setores_vinculados?.length || 0) > 1) {
-      const setorIds = colaborador.setores_vinculados!.map(s => s.setor_id)
+    const setorIds: string[] = (colaborador?.setores_vinculados || []).map(s => s.setor_id)
+    if (colaborador?.setor_id && !setorIds.includes(colaborador.setor_id)) {
+      setorIds.push(colaborador.setor_id)
+    }
+
+    let canaisDedup: Array<{ setor_id: string; instancia: string; setores?: { nome?: string } | null }> = []
+    if (setorIds.length > 0) {
       const { data: canais } = await supabase
         .from('setor_canais')
         .select('setor_id, instancia, setores(nome)')
@@ -2790,41 +2799,48 @@ const handleEncerrarTicket = async () => {
         .eq('tipo', 'evolution_api')
         .eq('ativo', true)
         .not('instancia', 'is', null)
-      // Deduplica por setor_id (um setor pode ter múltiplas instâncias Evolution
-      // ativas; o backend pega a mais antiga, então mostramos apenas uma opção
-      // por setor pra evitar dois cards "iguais" no seletor).
       const seenSetores = new Set<string>()
-      const canaisDedup = (canais || []).filter((c: any) => {
+      canaisDedup = (canais || []).filter((c: any) => {
         if (seenSetores.has(c.setor_id)) return false
         seenSetores.add(c.setor_id)
         return true
+      }) as any
+    }
+
+    if (canaisDedup.length > 1) {
+      const lista = canaisDedup.map((c: any) => ({
+        id: c.setor_id as string,
+        nome: c.setores?.nome || 'Setor',
+        instancia: c.instancia as string,
+        online: 'loading' as const,
+      }))
+      setDisparoSetoresEvolution(lista)
+      setDisparoSetorEvolutionId('')
+      setDisparoStep('setor_evolution')
+      lista.forEach(async (item) => {
+        try {
+          const r = await fetch(`/api/evolution/instance/${encodeURIComponent(item.instancia)}/status`)
+          const j = await r.json()
+          const state = j?.instance?.state
+          const status: 'online' | 'offline' | 'unknown' =
+            (state === 'open' || state === 'connected') ? 'online'
+              : (state === 'unknown' || state === 'not_found') ? 'unknown'
+              : 'offline'
+          setDisparoSetoresEvolution(prev => prev.map(s => s.id === item.id ? { ...s, online: status } : s))
+        } catch {
+          setDisparoSetoresEvolution(prev => prev.map(s => s.id === item.id ? { ...s, online: 'unknown' } : s))
+        }
       })
-      if (canaisDedup.length > 1) {
-        const lista = canaisDedup.map((c: any) => ({
-          id: c.setor_id as string,
-          nome: c.setores?.nome || 'Setor',
-          instancia: c.instancia as string,
-          online: 'loading' as const,
-        }))
-        setDisparoSetoresEvolution(lista)
-        setDisparoSetorEvolutionId('')
-        setDisparoStep('setor_evolution')
-        lista.forEach(async (item) => {
-          try {
-            const r = await fetch(`/api/evolution/instance/${encodeURIComponent(item.instancia)}/status`)
-            const j = await r.json()
-            const state = j?.instance?.state
-            const status: 'online' | 'offline' | 'unknown' =
-              (state === 'open' || state === 'connected') ? 'online'
-                : (state === 'unknown' || state === 'not_found') ? 'unknown'
-                : 'offline'
-            setDisparoSetoresEvolution(prev => prev.map(s => s.id === item.id ? { ...s, online: status } : s))
-          } catch {
-            setDisparoSetoresEvolution(prev => prev.map(s => s.id === item.id ? { ...s, online: 'unknown' } : s))
-          }
-        })
-        return
-      }
+      return
+    }
+
+    // 1 setor Evolution → auto-seleciona (evita fallback pro [0] que pode ser
+    // um setor sem Evolution). 0 setores → segue com setorId vazio, dispatch
+    // vai retornar erro claro de "nenhuma instância configurada".
+    if (canaisDedup.length === 1) {
+      setDisparoSetorEvolutionId(canaisDedup[0].setor_id)
+    } else {
+      setDisparoSetorEvolutionId('')
     }
     const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
     setDisparoMensagemEvolution(defaultMsg)
