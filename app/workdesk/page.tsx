@@ -2848,19 +2848,25 @@ const handleEncerrarTicket = async () => {
   }
 
   // Determine next step after phone number is confirmed.
-  // Sempre passa pelo step 'canal' quando há qualquer canal ativo — mesmo se
-  // só houver um. Antes pulávamos direto quando só Evolution estava ativo, mas
-  // isso escondia do atendente o canal pelo qual a mensagem ia sair. Agora ele
-  // sempre vê (e clica) o canal disponível antes de avançar.
-  const handleDisparoConfirmPhone = () => {
+  //   - 2 canais (whatsapp + evolution) → step 'canal' pra atendente escolher
+  //   - só Evolution → pula direto (handleProceedEvolution decide se mostra
+  //     seletor de setor ou vai pra mensagem)
+  //   - só WhatsApp Cloud → dispara o template direto
+  //   - nada → toast de erro
+  const handleDisparoConfirmPhone = async () => {
     const temWhatsapp = setorCanaisAtivos.includes('whatsapp')
     const temEvolution = setorCanaisAtivos.includes('evolution_api')
 
-    if (!temWhatsapp && !temEvolution) {
+    if (temWhatsapp && temEvolution) {
+      setDisparoStep('canal')
+    } else if (temEvolution) {
+      setDisparoCanalChoice('evolution_api')
+      await handleProceedEvolution()
+    } else if (temWhatsapp) {
+      handleEnviarDisparo()
+    } else {
       toast.error('Nenhum canal ativo neste setor. Configure WhatsApp ou Evolution em Canais de Atendimento.')
-      return
     }
-    setDisparoStep('canal')
   }
 
   // Handle canal choice and advance step
@@ -5627,8 +5633,9 @@ onClick={() => {
                   </div>
                 )}
 
-                {/* Advance button — sempre "Próximo" porque o step 'canal' agora
-                    aparece mesmo quando há só 1 canal disponível */}
+                {/* Advance button — "Próximo" quando vai pro step canal,
+                    "Enviar Disparo" quando vai disparar direto (caso só
+                    WhatsApp Cloud esteja ativo no setor) */}
                 {disparoStep === 'telefone' && (
                   <Button
                     onClick={handleDisparoConfirmPhone}
@@ -5639,6 +5646,11 @@ onClick={() => {
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
                         Enviando...
+                      </>
+                    ) : setorCanaisAtivos.includes('whatsapp') && !setorCanaisAtivos.includes('evolution_api') ? (
+                      <>
+                        <Send className="h-4 w-4" />
+                        Enviar Disparo
                       </>
                     ) : (
                       <>
