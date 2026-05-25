@@ -41,7 +41,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2 } from 'lucide-react'
+import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '@/hooks/use-toast'
 
@@ -89,6 +89,7 @@ export default function ColaboradoresPage() {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [searchTerm, setSearchTerm] = useState('')
 
   // Modal de "Configurar setores ativos" — admin escolhe de quais setores
   // o atendente recebe tickets (subset dos vinculados).
@@ -428,13 +429,25 @@ export default function ColaboradoresPage() {
             Gerencie atendentes e configure de quais setores cada um recebe tickets
           </p>
         </div>
-        <Button
-          onClick={openCreateModal}
-          className="mt-4 bg-primary text-primary-foreground hover:bg-primary/90 sm:mt-0"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Novo Atendente
-        </Button>
+        <div className="flex flex-col gap-3 mt-4 sm:flex-row sm:items-center sm:mt-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              placeholder="Buscar por nome ou e-mail"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-9 w-full sm:w-64"
+            />
+          </div>
+          <Button
+            onClick={openCreateModal}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Novo Atendente
+          </Button>
+        </div>
       </div>
 
       <Card className="glass-card-elevated rounded-2xl border-0">
@@ -477,7 +490,16 @@ export default function ColaboradoresPage() {
                 </TableHeader>
                 <TableBody>
                   <AnimatePresence>
-                    {colaboradores.map((colaborador, index) => (
+                    {colaboradores
+                      .filter((c) => {
+                        const q = searchTerm.trim().toLowerCase()
+                        if (!q) return true
+                        return (
+                          c.nome.toLowerCase().includes(q) ||
+                          c.email.toLowerCase().includes(q)
+                        )
+                      })
+                      .map((colaborador, index) => (
                       <motion.tr
                         key={colaborador.id}
                         initial={{ opacity: 0, y: 10 }}
