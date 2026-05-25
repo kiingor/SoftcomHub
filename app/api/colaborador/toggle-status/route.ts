@@ -14,11 +14,10 @@ export async function POST(request: NextRequest) {
     const supabase = createServiceClient()
     const body = await request.json()
 
-    const { colaboradorId, isOnline, pausaAtualId, setoresAtivos } = body as {
+    const { colaboradorId, isOnline, pausaAtualId } = body as {
       colaboradorId?: string
       isOnline?: boolean
       pausaAtualId?: string | null
-      setoresAtivos?: string[]
     }
 
     if (!colaboradorId) {
@@ -29,42 +28,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'isOnline (boolean) required' }, { status: 400 })
     }
 
+    // setores_ativos_sessao NÃO é tocado por este endpoint — a configuração é
+    // permanente e controlada pelo admin via dashboard. Toggle de online/offline
+    // só muda is_online + pausa.
     const updateData: Record<string, unknown> = {
       is_online: isOnline,
       pausa_atual_id: pausaAtualId ?? null,
       last_heartbeat: new Date().toISOString(),
     }
-
-    // setores_ativos_sessao:
-    //   - isOnline=true → valida e usa o array enviado (deve ter ≥ 1)
-    //   - isOnline=false + pausa → NÃO toca (preserva escolha pra quando voltar)
-    //   - isOnline=false + sem pausa → limpa (offline puro reseta a sessão)
-    if (isOnline) {
-      if (!Array.isArray(setoresAtivos) || setoresAtivos.length === 0) {
-        return NextResponse.json(
-          { error: 'setoresAtivos (string[] não vazio) é obrigatório quando isOnline=true' },
-          { status: 400 },
-        )
-      }
-      // Valida que os setores enviados realmente pertencem ao colaborador
-      const { data: vinculos } = await supabase
-        .from('colaboradores_setores')
-        .select('setor_id')
-        .eq('colaborador_id', colaboradorId)
-      const setoresPermitidos = new Set((vinculos || []).map((v: any) => v.setor_id))
-      const setoresAtivosArr = setoresAtivos.filter(s => setoresPermitidos.has(s))
-      if (setoresAtivosArr.length === 0) {
-        return NextResponse.json(
-          { error: 'Nenhum dos setores enviados está vinculado ao colaborador' },
-          { status: 400 },
-        )
-      }
-      updateData.setores_ativos_sessao = setoresAtivosArr
-    } else if (pausaAtualId == null) {
-      // Offline puro (sem pausa) → reseta sessão
-      updateData.setores_ativos_sessao = []
-    }
-    // else: indo pra pausa — preserva a escolha
 
     const { data, error } = await supabase
       .from('colaboradores')

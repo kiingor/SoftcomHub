@@ -138,12 +138,13 @@ async function getAvailableColaboradores(
     console.log(`[TicketQueue] ${filtradoPorSetorAtivo} atendente(s) online mas com setor ${setorId} fora dos setores_ativos_sessao — ignorados`)
   }
 
-  // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min)
+  // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min).
+  // NÃO toca em setores_ativos_sessao — é configuração permanente do admin.
   if (veryStaleIds.length > 0) {
     console.log(`[TicketQueue] Cleanup: marcando ${veryStaleIds.length} atendentes offline (heartbeat > 5 min)`)
     await supabase
       .from('colaboradores')
-      .update({ is_online: false, setores_ativos_sessao: [] })
+      .update({ is_online: false })
       .in('id', veryStaleIds)
   }
 

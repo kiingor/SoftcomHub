@@ -45,7 +45,7 @@ function SidebarContent({
   const handleLogout = async () => {
     await supabase
       .from('colaboradores')
-      .update({ is_online: false, setores_ativos_sessao: [] })
+      .update({ is_online: false })
       .eq('id', colaboradorId)
     await supabase.auth.signOut()
     router.push('/workdesk/login')

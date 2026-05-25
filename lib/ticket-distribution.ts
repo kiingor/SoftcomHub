@@ -111,7 +111,8 @@ export async function criarEDistribuirTicket(
         .filter((c: any) => isHBFresh(c.last_heartbeat))
         .map((c: any) => ({ id: c.id, nome: c.nome, last_ticket_received_at: c.last_ticket_received_at || null }))
 
-      // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min)
+      // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min).
+      // NÃO toca em setores_ativos_sessao — é configuração permanente do admin.
       const veryStale = allOnline.filter((c: any) =>
         !c.last_heartbeat || (now - new Date(c.last_heartbeat).getTime()) > STALE_CLEANUP_MS
       )
@@ -120,7 +121,7 @@ export async function criarEDistribuirTicket(
         console.log(`[Distribution] Cleanup: marcando ${staleIds.length} atendentes offline (heartbeat > 5 min)`)
         await supabase
           .from('colaboradores')
-          .update({ is_online: false, setores_ativos_sessao: [] })
+          .update({ is_online: false })
           .in('id', staleIds)
       }
 
