@@ -2847,29 +2847,20 @@ const handleEncerrarTicket = async () => {
     setDisparoStep('mensagem_evolution')
   }
 
-  // Determine next step after phone number is confirmed
-  const handleDisparoConfirmPhone = async () => {
-    // Fonte autoritativa: setor_canais (canais ativos no setor).
-    // Antes havia um fallback legado pra setorCanalConfig === 'whatsapp' que
-    // mandava setores Evolution-only pro seletor de canal incorretamente.
+  // Determine next step after phone number is confirmed.
+  // Sempre passa pelo step 'canal' quando há qualquer canal ativo — mesmo se
+  // só houver um. Antes pulávamos direto quando só Evolution estava ativo, mas
+  // isso escondia do atendente o canal pelo qual a mensagem ia sair. Agora ele
+  // sempre vê (e clica) o canal disponível antes de avançar.
+  const handleDisparoConfirmPhone = () => {
     const temWhatsapp = setorCanaisAtivos.includes('whatsapp')
     const temEvolution = setorCanaisAtivos.includes('evolution_api')
 
-    if (temWhatsapp && temEvolution) {
-      // Ambos ativos — usuário escolhe
-      setDisparoStep('canal')
-    } else if (temEvolution) {
-      // Só Evolution — pode precisar escolher setor (se colab tem 2+) ou vai
-      // direto pra mensagem.
-      setDisparoCanalChoice('evolution_api')
-      await handleProceedEvolution()
-    } else if (temWhatsapp) {
-      // Só WhatsApp Cloud — fluxo de template existente
-      handleEnviarDisparo()
-    } else {
-      // Nenhum canal ativo no setor_canais — provavelmente setor sem canal configurado
+    if (!temWhatsapp && !temEvolution) {
       toast.error('Nenhum canal ativo neste setor. Configure WhatsApp ou Evolution em Canais de Atendimento.')
+      return
     }
+    setDisparoStep('canal')
   }
 
   // Handle canal choice and advance step
@@ -5636,7 +5627,8 @@ onClick={() => {
                   </div>
                 )}
 
-                {/* Advance button */}
+                {/* Advance button — sempre "Próximo" porque o step 'canal' agora
+                    aparece mesmo quando há só 1 canal disponível */}
                 {disparoStep === 'telefone' && (
                   <Button
                     onClick={handleDisparoConfirmPhone}
@@ -5648,15 +5640,10 @@ onClick={() => {
                         <Loader2 className="h-4 w-4 animate-spin" />
                         Enviando...
                       </>
-                    ) : (setorCanaisAtivos.includes('whatsapp') && setorCanaisAtivos.includes('evolution_api')) ? (
+                    ) : (
                       <>
                         Próximo
                         <ChevronRight className="h-4 w-4" />
-                      </>
-                    ) : (
-                      <>
-                        <Send className="h-4 w-4" />
-                        Enviar Disparo
                       </>
                     )}
                   </Button>
@@ -5675,36 +5662,45 @@ onClick={() => {
 
                 <Label className="text-sm font-medium">Escolha o canal de envio</Label>
 
-                <div className="grid grid-cols-2 gap-3">
-                  {/* WhatsApp Oficial */}
-                  <button
-                    onClick={() => handleDisparoSelectCanal('whatsapp')}
-                    disabled={disparoSending}
-                    className="flex flex-col items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 dark:bg-green-950/30 dark:border-green-800 p-4 hover:border-green-400 hover:bg-green-100 dark:hover:bg-green-900/40 transition-all"
-                  >
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-500 text-white text-lg font-bold">
-                      W
-                    </div>
-                    <div className="text-center">
-                      <p className="text-sm font-semibold text-green-700 dark:text-green-400">WhatsApp</p>
-                      <p className="text-[10px] text-muted-foreground">Oficial (template)</p>
-                    </div>
-                  </button>
+                <div className={cn(
+                  'grid gap-3',
+                  setorCanaisAtivos.includes('whatsapp') && setorCanaisAtivos.includes('evolution_api')
+                    ? 'grid-cols-2'
+                    : 'grid-cols-1',
+                )}>
+                  {/* WhatsApp Oficial — só se setor tem WhatsApp Cloud ativo */}
+                  {setorCanaisAtivos.includes('whatsapp') && (
+                    <button
+                      onClick={() => handleDisparoSelectCanal('whatsapp')}
+                      disabled={disparoSending}
+                      className="flex flex-col items-center gap-2 rounded-xl border-2 border-green-200 bg-green-50 dark:bg-green-950/30 dark:border-green-800 p-4 hover:border-green-400 hover:bg-green-100 dark:hover:bg-green-900/40 transition-all"
+                    >
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-500 text-white text-lg font-bold">
+                        W
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm font-semibold text-green-700 dark:text-green-400">WhatsApp</p>
+                        <p className="text-[10px] text-muted-foreground">Oficial (template)</p>
+                      </div>
+                    </button>
+                  )}
 
-                  {/* Evolution (WhatsApp não oficial) */}
-                  <button
-                    onClick={() => handleDisparoSelectCanal('evolution_api')}
-                    disabled={disparoSending}
-                    className="flex flex-col items-center gap-2 rounded-xl border-2 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 p-4 hover:border-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all"
-                  >
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 text-white">
-                      <Zap className="h-5 w-5" />
-                    </div>
-                    <div className="text-center">
-                      <p className="text-sm font-semibold text-blue-700 dark:text-blue-400">Não Oficial</p>
-                      <p className="text-[10px] text-muted-foreground">Evolution API</p>
-                    </div>
-                  </button>
+                  {/* Evolution (WhatsApp não oficial) — só se setor tem Evolution ativo */}
+                  {setorCanaisAtivos.includes('evolution_api') && (
+                    <button
+                      onClick={() => handleDisparoSelectCanal('evolution_api')}
+                      disabled={disparoSending}
+                      className="flex flex-col items-center gap-2 rounded-xl border-2 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 p-4 hover:border-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all"
+                    >
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 text-white">
+                        <Zap className="h-5 w-5" />
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm font-semibold text-blue-700 dark:text-blue-400">Não Oficial</p>
+                        <p className="text-[10px] text-muted-foreground">Evolution API</p>
+                      </div>
+                    </button>
+                  )}
                 </div>
 
                 <Button
