@@ -81,7 +81,8 @@ const supabase = createClient()
 
 async function fetchUsuariosData() {
   const [colabsRes, setoresRes, permissoesRes, colabSetoresRes] = await Promise.all([
-    supabase.from('colaboradores').select('*, permissoes:permissao_id(*)').order('nome'),
+    // Filtra somente supervisores — atendentes (is_master=false) ficam na tela /dashboard/colaboradores
+    supabase.from('colaboradores').select('*, permissoes:permissao_id(*)').eq('is_master', true).order('nome'),
     supabase.from('setores').select('*').order('nome'),
     supabase.from('permissoes').select('*').order('nome'),
     supabase.from('colaborador_setores').select('*'),
@@ -106,7 +107,7 @@ export default function UsuariosPage() {
     nome: '',
     email: '',
     senha: '',
-    is_master: false,
+    is_master: true,
     permissao_id: '',
     setores_selecionados: [] as string[],
   })
@@ -141,7 +142,8 @@ export default function UsuariosPage() {
       nome: '',
       email: '',
       senha: '',
-      is_master: false,
+      // Nesta tela só criamos supervisores — is_master sempre true
+      is_master: true,
       permissao_id: '',
       setores_selecionados: [],
     })
@@ -277,9 +279,9 @@ export default function UsuariosPage() {
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Usuários Master</h1>
+          <h1 className="text-2xl font-bold text-foreground">Supervisores</h1>
           <p className="text-muted-foreground">
-            Gerencie usuários e defina quais setores cada um pode acessar
+            Gerencie supervisores com acesso ao dashboard. Atendentes são gerenciados em &quot;Atendentes&quot;.
           </p>
         </div>
 
@@ -540,17 +542,13 @@ export default function UsuariosPage() {
                   </Select>
                 </div>
 
-                <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 h-fit mt-auto">
-                  <Switch
-                    id="is_master"
-                    checked={formData.is_master}
-                    onCheckedChange={(checked) =>
-                      setFormData((prev) => ({ ...prev, is_master: checked }))
-                    }
-                  />
-                  <Label htmlFor="is_master" className="cursor-pointer text-sm leading-tight">
-                    Admin — acesso a todos os setores
-                  </Label>
+                {/* Nesta tela só gerenciamos supervisores — is_master fica fixo.
+                    Pra criar atendente, use a tela "Atendentes". */}
+                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 h-fit mt-auto">
+                  <UserCog className="h-4 w-4 text-primary shrink-0" />
+                  <span className="text-sm text-foreground">
+                    Supervisor — acesso ao dashboard
+                  </span>
                 </div>
               </div>
 
