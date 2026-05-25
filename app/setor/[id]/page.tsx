@@ -217,7 +217,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     // Tickets de hoje (para estatisticas)
     supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
-    supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat, setores_ativos_sessao)').eq('setor_id', setorId),
+    supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
     supabase.from('permissoes').select('*'),
     supabase.from('pausas').select('*').eq('setor_id', setorId).order('nome'),
@@ -752,35 +752,6 @@ export default function SetorPage() {
       toast.error(err.message || 'Erro ao alterar status')
     } finally {
       setAlterandoStatusId(null)
-    }
-  }
-
-  // Liga/desliga o setor atual no array `setores_ativos_sessao` do atendente.
-  // Quando desligado, o atendente NÃO recebe novos tickets deste setor (mesmo
-  // estando online e vinculado). Tickets em andamento continuam com ele.
-  const [alterandoAtivoSetorId, setAlterandoAtivoSetorId] = useState<string | null>(null)
-  const handleToggleSetorAtivoNoSetor = async (atendente: any, novoEstado: boolean) => {
-    setAlterandoAtivoSetorId(atendente.id)
-    try {
-      const atual: string[] = Array.isArray(atendente.setores_ativos_sessao) ? atendente.setores_ativos_sessao : []
-      const novo = novoEstado
-        ? Array.from(new Set([...atual, setorId]))
-        : atual.filter((s: string) => s !== setorId)
-      const { error } = await supabase
-        .from('colaboradores')
-        .update({ setores_ativos_sessao: novo })
-        .eq('id', atendente.id)
-      if (error) throw error
-      toast.success(
-        novoEstado
-          ? `${atendente.nome} agora recebe tickets deste setor`
-          : `${atendente.nome} não recebe mais novos tickets deste setor`,
-      )
-      mutate()
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao atualizar')
-    } finally {
-      setAlterandoAtivoSetorId(null)
     }
   }
 
@@ -3255,7 +3226,6 @@ const saveConfig = async () => {
                           <TableRow className="hover:bg-transparent">
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-center">Recebe tickets</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-center">Em atendimento</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-center">Finalizados hoje</TableHead>
                             <TableHead className="text-xs w-[60px]"></TableHead>
@@ -3267,7 +3237,6 @@ const saveConfig = async () => {
                               <TableRow key={i}>
                                 <TableCell><Skeleton className="h-4 w-32" /></TableCell>
                                 <TableCell><Skeleton className="h-5 w-16" /></TableCell>
-                                <TableCell><Skeleton className="h-5 w-10 mx-auto" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-8 mx-auto" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-8 mx-auto" /></TableCell>
                                 <TableCell></TableCell>
@@ -3275,7 +3244,7 @@ const saveConfig = async () => {
                             ))
                           ) : atendentes.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={6} className="h-32 text-center">
+                              <TableCell colSpan={5} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <Users className="mb-2 h-8 w-8" />
                                   <p>Nenhum atendente cadastrado neste setor</p>
@@ -3295,10 +3264,6 @@ const saveConfig = async () => {
                                   ? { color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Online' }
                                   : { color: 'bg-gray-400', textColor: 'text-muted-foreground', label: 'Offline' }
                               const isChanging = alterandoStatusId === atendente.id
-                              const ativoNoSetor = Array.isArray(atendente.setores_ativos_sessao)
-                                ? atendente.setores_ativos_sessao.includes(setorId)
-                                : false
-                              const isAlterandoAtivo = alterandoAtivoSetorId === atendente.id
                               return (
                                 <TableRow key={atendente.id}>
                                   <TableCell className="text-sm font-medium text-foreground">{atendente.nome}</TableCell>
@@ -3306,16 +3271,6 @@ const saveConfig = async () => {
                                     <div className="flex items-center gap-2">
                                       <span className={cn('h-2 w-2 rounded-full shrink-0', statusDisplay.color)} />
                                       <span className={cn('text-sm', statusDisplay.textColor)}>{statusDisplay.label}</span>
-                                    </div>
-                                  </TableCell>
-                                  <TableCell className="text-center">
-                                    <div className="flex items-center justify-center gap-2">
-                                      <Switch
-                                        checked={ativoNoSetor}
-                                        disabled={isAlterandoAtivo}
-                                        onCheckedChange={(v) => handleToggleSetorAtivoNoSetor(atendente, v)}
-                                      />
-                                      {isAlterandoAtivo && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
                                     </div>
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-center font-medium">{ticketsDoAtendente}</TableCell>
