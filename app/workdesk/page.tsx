@@ -3685,9 +3685,14 @@ const tempId = `temp-${Date.now()}`
           selectedTicket ? "hidden md:flex" : "flex w-full",
           "md:w-52 md:flex lg:w-60 xl:w-72"
         )}>
-          {/* Disparo Button - for WhatsApp and/or EvolutionAPI */}
-          {(setorCanaisAtivos.includes('whatsapp') || setorCanaisAtivos.includes('evolution_api') ||
-            (setorCanalConfig !== 'discord' && setorCanalConfig !== 'evolution_api')) && (
+          {/* Disparo Button - for WhatsApp and/or EvolutionAPI
+              Enquanto setorCanaisAtivos não populou (carregando), confia no
+              setorCanalConfig legado pra evitar "piscar" do botão (race
+              entre setSetorCanalConfig e setSetorCanaisAtivos). */}
+          {(setorCanaisAtivos.length > 0
+              ? (setorCanaisAtivos.includes('whatsapp') || setorCanaisAtivos.includes('evolution_api'))
+              : setorCanalConfig !== 'discord'
+            ) && (
           <div className="p-2 border-b border-white/30 dark:border-white/8 shrink-0">
   <Button
   onClick={async () => {
