@@ -939,11 +939,13 @@ export default function WorkdeskPage() {
   const [disparoCliente, setDisparoCliente] = useState<any>(null)
   const [disparoLoading, setDisparoLoading] = useState(false)
   const [disparoSending, setDisparoSending] = useState(false)
-  const [disparoStep, setDisparoStep] = useState<'cnpj' | 'telefone' | 'canal' | 'mensagem_evolution'>('cnpj')
+  const [disparoStep, setDisparoStep] = useState<'cnpj' | 'telefone' | 'canal' | 'setor_evolution' | 'mensagem_evolution'>('cnpj')
   const [disparoLimitBlocked, setDisparoLimitBlocked] = useState(false)
   const [disparoLimitInfo, setDisparoLimitInfo] = useState('')
   const [disparoCanalChoice, setDisparoCanalChoice] = useState<'whatsapp' | 'evolution_api'>('whatsapp')
   const [disparoMensagemEvolution, setDisparoMensagemEvolution] = useState('')
+  const [disparoSetorEvolutionId, setDisparoSetorEvolutionId] = useState<string>('')
+  const [disparoSetoresEvolution, setDisparoSetoresEvolution] = useState<Array<{ id: string; nome: string; instancia: string; online: 'online' | 'offline' | 'loading' | 'unknown' }>>([])
   const [setorCanalConfig, setSetorCanalConfig] = useState<'whatsapp' | 'discord' | 'evolution_api'>('whatsapp')
   const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
   
@@ -1049,19 +1051,25 @@ export default function WorkdeskPage() {
   setColaborador(colab)
   // Salvar info do colaborador para o error logger
   try { localStorage.setItem('colaborador_info', JSON.stringify({ id: colab.id, nome: colab.nome })) } catch {}
-  // Fetch setor canal config
+  // Fetch setor canal config (do primeiro setor — mantém legacy pra outros usos)
   const sId = colab.setor_id || colab.setores_vinculados?.[0]?.setor_id
   if (sId) {
     const { data: setorInfo } = await supabase.from('setores').select('canal').eq('id', sId).single()
     if (setorInfo?.canal) setSetorCanalConfig(setorInfo.canal)
-    // Fetch active channels for this setor (for disparo multi-canal)
+  }
+  // Canais ATIVOS considerando TODOS os setores do colab (não só o [0]).
+  // Antes só lia do setor[0], então um colab em [SDM-só-whatsapp, Cuiabá-só-evolution]
+  // tinha setorCanaisAtivos=['whatsapp'] e nem via a opção "Não Oficial" no disparo.
+  const allSetorIds = (colab.setores_vinculados || []).map((s: any) => s.setor_id)
+  if (colab.setor_id && !allSetorIds.includes(colab.setor_id)) allSetorIds.push(colab.setor_id)
+  if (allSetorIds.length > 0) {
     const { data: canaisAtivos } = await supabase
       .from('setor_canais')
       .select('tipo')
-      .eq('setor_id', sId)
+      .in('setor_id', allSetorIds)
       .eq('ativo', true)
     if (canaisAtivos && canaisAtivos.length > 0) {
-      setSetorCanaisAtivos(canaisAtivos.map((c: any) => c.tipo))
+      setSetorCanaisAtivos(Array.from(new Set(canaisAtivos.map((c: any) => c.tipo))))
     }
   }
   return colab
@@ -2765,10 +2773,66 @@ const handleEncerrarTicket = async () => {
     setDisparoStep('cnpj')
     setDisparoCanalChoice('whatsapp')
     setDisparoMensagemEvolution('')
+    setDisparoSetorEvolutionId('')
+    setDisparoSetoresEvolution([])
+  }
+
+  // Quando o canal Evolution é escolhido: se o atendente está em 2+ setores
+  // com Evolution ativo, abre step de seleção de setor (e busca o status real
+  // de cada instância). Senão, vai direto pra step de mensagem.
+  const handleProceedEvolution = async () => {
+    if (colaborador && (colaborador.setores_vinculados?.length || 0) > 1) {
+      const setorIds = colaborador.setores_vinculados!.map(s => s.setor_id)
+      const { data: canais } = await supabase
+        .from('setor_canais')
+        .select('setor_id, instancia, setores(nome)')
+        .in('setor_id', setorIds)
+        .eq('tipo', 'evolution_api')
+        .eq('ativo', true)
+        .not('instancia', 'is', null)
+      // Deduplica por setor_id (um setor pode ter múltiplas instâncias Evolution
+      // ativas; o backend pega a mais antiga, então mostramos apenas uma opção
+      // por setor pra evitar dois cards "iguais" no seletor).
+      const seenSetores = new Set<string>()
+      const canaisDedup = (canais || []).filter((c: any) => {
+        if (seenSetores.has(c.setor_id)) return false
+        seenSetores.add(c.setor_id)
+        return true
+      })
+      if (canaisDedup.length > 1) {
+        const lista = canaisDedup.map((c: any) => ({
+          id: c.setor_id as string,
+          nome: c.setores?.nome || 'Setor',
+          instancia: c.instancia as string,
+          online: 'loading' as const,
+        }))
+        setDisparoSetoresEvolution(lista)
+        setDisparoSetorEvolutionId('')
+        setDisparoStep('setor_evolution')
+        lista.forEach(async (item) => {
+          try {
+            const r = await fetch(`/api/evolution/instance/${encodeURIComponent(item.instancia)}/status`)
+            const j = await r.json()
+            const state = j?.instance?.state
+            const status: 'online' | 'offline' | 'unknown' =
+              (state === 'open' || state === 'connected') ? 'online'
+                : (state === 'unknown' || state === 'not_found') ? 'unknown'
+                : 'offline'
+            setDisparoSetoresEvolution(prev => prev.map(s => s.id === item.id ? { ...s, online: status } : s))
+          } catch {
+            setDisparoSetoresEvolution(prev => prev.map(s => s.id === item.id ? { ...s, online: 'unknown' } : s))
+          }
+        })
+        return
+      }
+    }
+    const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
+    setDisparoMensagemEvolution(defaultMsg)
+    setDisparoStep('mensagem_evolution')
   }
 
   // Determine next step after phone number is confirmed
-  const handleDisparoConfirmPhone = () => {
+  const handleDisparoConfirmPhone = async () => {
     // Fonte autoritativa: setor_canais (canais ativos no setor).
     // Antes havia um fallback legado pra setorCanalConfig === 'whatsapp' que
     // mandava setores Evolution-only pro seletor de canal incorretamente.
@@ -2779,11 +2843,10 @@ const handleEncerrarTicket = async () => {
       // Ambos ativos — usuário escolhe
       setDisparoStep('canal')
     } else if (temEvolution) {
-      // Só Evolution — pula seleção de canal e vai pra mensagem
+      // Só Evolution — pode precisar escolher setor (se colab tem 2+) ou vai
+      // direto pra mensagem.
       setDisparoCanalChoice('evolution_api')
-      const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
-      setDisparoMensagemEvolution(defaultMsg)
-      setDisparoStep('mensagem_evolution')
+      await handleProceedEvolution()
     } else if (temWhatsapp) {
       // Só WhatsApp Cloud — fluxo de template existente
       handleEnviarDisparo()
@@ -2794,12 +2857,10 @@ const handleEncerrarTicket = async () => {
   }
 
   // Handle canal choice and advance step
-  const handleDisparoSelectCanal = (canal: 'whatsapp' | 'evolution_api') => {
+  const handleDisparoSelectCanal = async (canal: 'whatsapp' | 'evolution_api') => {
     setDisparoCanalChoice(canal)
     if (canal === 'evolution_api') {
-      const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
-      setDisparoMensagemEvolution(defaultMsg)
-      setDisparoStep('mensagem_evolution')
+      await handleProceedEvolution()
     } else {
       // WhatsApp oficial — existing flow
       handleEnviarDisparo()
@@ -2813,7 +2874,8 @@ const handleEncerrarTicket = async () => {
       return
     }
 
-    const setorId = colaborador.setor_id || colaborador.setores_vinculados?.[0]?.setor_id
+    // Prioridade: setor escolhido manualmente > setor_id legado > primeiro vinculado
+    const setorId = disparoSetorEvolutionId || colaborador.setor_id || colaborador.setores_vinculados?.[0]?.setor_id
     if (!setorId) {
       toast.error('Colaborador sem setor vinculado')
       return
@@ -5484,6 +5546,8 @@ onClick={() => {
             <DialogDescription>
               {disparoStep === 'canal'
                 ? 'Escolha por qual canal deseja enviar o disparo.'
+                : disparoStep === 'setor_evolution'
+                ? 'Escolha de qual setor a mensagem será enviada.'
                 : disparoStep === 'mensagem_evolution'
                 ? 'Escreva a mensagem de abertura para o atendimento via WhatsApp não oficial.'
                 : 'Informe o CNPJ do cliente para iniciar um atendimento.'}
@@ -5638,6 +5702,85 @@ onClick={() => {
               </div>
             )}
 
+            {/* Step 3.5: Seleção de setor (apenas quando colab atende 2+ setores Evolution) */}
+            {disparoStep === 'setor_evolution' && (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5">
+                  <p className="text-sm font-medium">{disparoCliente?.nome}</p>
+                  <p className="text-xs text-muted-foreground">{formatPhone(disparoTelefone)}</p>
+                </div>
+
+                <Label className="text-sm font-medium">De qual setor enviar?</Label>
+
+                <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+                  {disparoSetoresEvolution.map(s => {
+                    const isSelected = disparoSetorEvolutionId === s.id
+                    const badge =
+                      s.online === 'loading'
+                        ? { label: 'verificando…', cls: 'bg-muted text-muted-foreground' }
+                        : s.online === 'online'
+                        ? { label: 'conectado', cls: 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400' }
+                        : s.online === 'offline'
+                        ? { label: 'offline', cls: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400' }
+                        : { label: 'desconhecido', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400' }
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setDisparoSetorEvolutionId(s.id)}
+                        disabled={s.online === 'offline'}
+                        className={cn(
+                          'w-full flex items-center justify-between gap-3 rounded-lg border-2 p-3 text-left transition-all',
+                          isSelected
+                            ? 'border-primary bg-primary/5'
+                            : 'border-border bg-background hover:bg-muted/50',
+                          s.online === 'offline' && 'opacity-50 cursor-not-allowed',
+                        )}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium truncate">{s.nome}</p>
+                          <p className="text-[11px] text-muted-foreground truncate">{s.instancia}</p>
+                        </div>
+                        <span className={cn('shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', badge.cls)}>
+                          {s.online === 'loading' && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+                          {badge.label}
+                        </span>
+                      </button>
+                    )
+                  })}
+                  {disparoSetoresEvolution.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-4">
+                      Nenhum setor com Evolution ativo.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setDisparoStep(setorCanaisAtivos.includes('whatsapp') ? 'canal' : 'telefone')}
+                  >
+                    ← Voltar
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="flex-1 gap-2"
+                    disabled={!disparoSetorEvolutionId}
+                    onClick={() => {
+                      const defaultMsg = templates[0]?.conteudo || `Olá ${disparoCliente?.nome || ''}, como posso ajudar?`
+                      setDisparoMensagemEvolution(defaultMsg)
+                      setDisparoStep('mensagem_evolution')
+                    }}
+                  >
+                    Próximo
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {/* Step 4: Evolution message editor */}
             {disparoStep === 'mensagem_evolution' && (
               <div className="space-y-3">
@@ -5645,10 +5788,20 @@ onClick={() => {
                 <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5">
                   <p className="text-sm font-medium">{disparoCliente?.nome}</p>
                   <p className="text-xs text-muted-foreground">{formatPhone(disparoTelefone)}</p>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 dark:bg-blue-900/40 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-400">
-                    <Zap className="h-2.5 w-2.5" />
-                    Evolution API
-                  </span>
+                  <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 dark:bg-blue-900/40 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-400">
+                      <Zap className="h-2.5 w-2.5" />
+                      Evolution API
+                    </span>
+                    {disparoSetorEvolutionId && (() => {
+                      const s = disparoSetoresEvolution.find(x => x.id === disparoSetorEvolutionId)
+                      return s ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                          {s.nome}
+                        </span>
+                      ) : null
+                    })()}
+                  </div>
                 </div>
 
                 <div className="space-y-1.5">
@@ -5669,7 +5822,13 @@ onClick={() => {
                     variant="outline"
                     size="sm"
                     className="flex-1"
-                    onClick={() => setDisparoStep(setorCanaisAtivos.includes('whatsapp') ? 'canal' : 'telefone')}
+                    onClick={() => {
+                      if (disparoSetoresEvolution.length > 1) {
+                        setDisparoStep('setor_evolution')
+                      } else {
+                        setDisparoStep(setorCanaisAtivos.includes('whatsapp') ? 'canal' : 'telefone')
+                      }
+                    }}
                   >
                     ← Voltar
                   </Button>
