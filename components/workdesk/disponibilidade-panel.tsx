@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { format, formatDistanceToNow } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { cn } from '@/lib/utils'
-import { Circle, Power, History, ChevronDown, ChevronUp, Coffee, Play } from 'lucide-react'
+import { Circle, Power, History, ChevronDown, ChevronUp, Coffee, Play, Check, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Popover,
@@ -43,11 +43,18 @@ interface PausaColaborador {
   pausas: Pausa
 }
 
+interface SetorVinculado {
+  id: string
+  nome: string
+}
+
 interface DisponibilidadePanelProps {
   colaboradorId: string
   isOnline: boolean
   onStatusChange: (newStatus: boolean) => void
   setorIds?: string[]
+  setoresVinculados?: SetorVinculado[]
+  setoresAtivosAtuais?: string[]
 }
 
 export function DisponibilidadePanel({
@@ -55,6 +62,8 @@ export function DisponibilidadePanel({
   isOnline,
   onStatusChange,
   setorIds = [],
+  setoresVinculados = [],
+  setoresAtivosAtuais = [],
 }: DisponibilidadePanelProps) {
   const supabase = createClient()
   const [loading, setLoading] = useState(false)
@@ -64,6 +73,11 @@ export function DisponibilidadePanel({
   const [pausaAtual, setPausaAtual] = useState<PausaColaborador | null>(null)
   const [selectedPausa, setSelectedPausa] = useState<string>('')
   const [, setTick] = useState(0) // For timer updates
+
+  // Seletor de setores: aparece quando colab com 2+ setores vai ficar online
+  // ou quando ele quer trocar os setores ativos durante a sessão.
+  const [showSetorPicker, setShowSetorPicker] = useState(false)
+  const [selectedSetores, setSelectedSetores] = useState<Set<string>>(new Set())
 
   const fetchLogs = useCallback(async () => {
     const { data } = await supabase
@@ -141,9 +155,10 @@ export function DisponibilidadePanel({
     }
   }, [pausaAtual])
 
-  const toggleStatus = async () => {
+  // Núcleo do toggle: chama a API com a lista de setores ativos quando vai
+  // pra online. Quando vai pra offline, manda array vazio (backend limpa).
+  const doToggle = async (newStatus: boolean, setoresAtivos: string[]) => {
     setLoading(true)
-    const newStatus = !isOnline
 
     // If going online, first end any active pause
     if (newStatus && pausaAtual) {
@@ -155,18 +170,23 @@ export function DisponibilidadePanel({
       const res = await fetch('/api/colaborador/toggle-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colaboradorId, isOnline: newStatus, pausaAtualId: null }),
+        body: JSON.stringify({
+          colaboradorId,
+          isOnline: newStatus,
+          pausaAtualId: null,
+          setoresAtivos: newStatus ? setoresAtivos : [],
+        }),
       })
       const result = await res.json()
       if (!res.ok) {
         console.error('Error updating status:', result.error)
         setLoading(false)
-        return
+        return false
       }
     } catch (err) {
       console.error('Error updating status:', err)
       setLoading(false)
-      return
+      return false
     }
 
     // Create log entry
@@ -193,6 +213,56 @@ export function DisponibilidadePanel({
     }
 
     setLoading(false)
+    return true
+  }
+
+  const toggleStatus = async () => {
+    const newStatus = !isOnline
+
+    // Indo pra ONLINE
+    if (newStatus) {
+      // 1 setor só → fica online direto, sem perguntar
+      if (setoresVinculados.length <= 1) {
+        const setor = setoresVinculados[0]
+        if (!setor) {
+          console.error('Colab sem setor vinculado')
+          return
+        }
+        await doToggle(true, [setor.id])
+        return
+      }
+      // 2+ setores → abre o seletor (nenhum pré-marcado)
+      setSelectedSetores(new Set())
+      setShowSetorPicker(true)
+      return
+    }
+
+    // Indo pra OFFLINE → direto
+    await doToggle(false, [])
+  }
+
+  // Confirma a seleção feita no picker e fica online
+  const confirmSetoresAndGoOnline = async () => {
+    if (selectedSetores.size === 0) return
+    const ok = await doToggle(true, Array.from(selectedSetores))
+    if (ok) {
+      setShowSetorPicker(false)
+    }
+  }
+
+  // Abre o picker pra trocar setores durante a sessão online
+  const openSwitchSetores = () => {
+    setSelectedSetores(new Set(setoresAtivosAtuais))
+    setShowSetorPicker(true)
+  }
+
+  const toggleSetorCheckbox = (setorId: string) => {
+    setSelectedSetores(prev => {
+      const next = new Set(prev)
+      if (next.has(setorId)) next.delete(setorId)
+      else next.add(setorId)
+      return next
+    })
   }
 
   const startPausa = async (pausaId: string) => {
@@ -260,12 +330,23 @@ export function DisponibilidadePanel({
     // End the pause
     await supabase.from('pausas_colaboradores').update({ fim: new Date().toISOString() }).eq('id', pausaAtual.id)
 
-    // Update colaborador via API (bypassa RLS) - go online and clear pausa
+    // Volta pra online preservando os setores ativos que o colab tinha antes
+    // de entrar em pausa. Se por algum motivo a sessão perdeu os setores,
+    // cai num fallback de todos os vinculados (raro — backend preserva durante pausa).
+    const setoresPraEnviar = setoresAtivosAtuais.length > 0
+      ? setoresAtivosAtuais
+      : setoresVinculados.map(s => s.id)
+
     try {
       await fetch('/api/colaborador/toggle-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colaboradorId, isOnline: true, pausaAtualId: null }),
+        body: JSON.stringify({
+          colaboradorId,
+          isOnline: true,
+          pausaAtualId: null,
+          setoresAtivos: setoresPraEnviar,
+        }),
       })
     } catch (err) {
       console.error('Error updating colaborador:', err)
@@ -413,8 +494,66 @@ export function DisponibilidadePanel({
             </div>
           </div>
 
-          {/* If in pause, show return button and offline button */}
-          {pausaAtual ? (
+          {/* Seletor de setores: aparece quando o colab com 2+ setores vai
+              ficar online, ou quando ele quer trocar a seleção durante a sessão.
+              Tem prioridade sobre qualquer outra UI. */}
+          {showSetorPicker ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm font-medium text-foreground">
+                Em quais setores você vai atender?
+              </p>
+              <p className="text-xs text-muted-foreground -mt-1">
+                Você só recebe tickets dos setores marcados.
+              </p>
+              <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1 my-1">
+                {setoresVinculados.map((s) => {
+                  const checked = selectedSetores.has(s.id)
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => toggleSetorCheckbox(s.id)}
+                      className={cn(
+                        'w-full flex items-center gap-3 rounded-lg border p-2.5 text-left transition-all',
+                        checked
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border bg-background hover:bg-muted/50',
+                      )}
+                    >
+                      <div className={cn(
+                        'flex h-5 w-5 shrink-0 items-center justify-center rounded border-2',
+                        checked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/30',
+                      )}>
+                        {checked && <Check className="h-3 w-3" />}
+                      </div>
+                      <span className="text-sm font-medium truncate">{s.nome}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 gap-1.5"
+                  onClick={() => setShowSetorPicker(false)}
+                  disabled={loading}
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Voltar
+                </Button>
+                <Button
+                  size="sm"
+                  className="flex-1 gap-1.5 bg-green-600 hover:bg-green-700 text-white"
+                  onClick={confirmSetoresAndGoOnline}
+                  disabled={selectedSetores.size === 0 || loading}
+                >
+                  <Power className="h-3.5 w-3.5" />
+                  {loading ? 'Aplicando...' : isOnline ? 'Atualizar' : 'Ficar Online'}
+                </Button>
+              </div>
+            </div>
+          ) : pausaAtual ? (
             <div className="flex flex-col gap-2">
               <Button onClick={endPausa} disabled={loading} className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white">
                 <Play className="h-4 w-4" />
@@ -431,6 +570,28 @@ export function DisponibilidadePanel({
             </div>
           ) : (
             <>
+              {/* Setores ativos: mostra quando online e tem 2+ setores vinculados.
+                  Clique abre o seletor de novo pra trocar a seleção. */}
+              {isOnline && setoresVinculados.length > 1 && (
+                <button
+                  onClick={openSwitchSetores}
+                  className="mb-3 w-full flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/30 hover:bg-muted/50 p-2.5 text-left transition-all"
+                >
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Setores ativos</p>
+                    <p className="text-sm font-medium text-foreground truncate">
+                      {setoresAtivosAtuais.length > 0
+                        ? setoresVinculados
+                            .filter(s => setoresAtivosAtuais.includes(s.id))
+                            .map(s => s.nome)
+                            .join(', ')
+                        : '(nenhum)'}
+                    </p>
+                  </div>
+                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </button>
+              )}
+
               {/* Toggle Button */}
               <Button
                 onClick={toggleStatus}

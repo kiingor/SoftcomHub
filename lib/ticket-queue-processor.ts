@@ -92,7 +92,7 @@ async function getAvailableColaboradores(
   if (subsetorId) {
     const { data, error } = await supabase
       .from('colaboradores_subsetores')
-      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
       .eq('setor_id', setorId)
       .eq('subsetor_id', subsetorId)
     rawLinks = data || []
@@ -100,7 +100,7 @@ async function getAvailableColaboradores(
   } else {
     const { data, error } = await supabase
       .from('colaboradores_setores')
-      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
+      .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
       .eq('setor_id', setorId)
     rawLinks = data || []
     console.log(`[TicketQueue] colaboradores_setores: ${rawLinks.length} registros, error: ${error?.message || 'none'}`)
@@ -108,11 +108,20 @@ async function getAvailableColaboradores(
 
   const STALE_CLEANUP_MS = 5 * 60 * 1000 // 5 min — marcar offline automaticamente
   const veryStaleIds: string[] = []
+  let filtradoPorSetorAtivo = 0
 
   rawLinks.forEach((link: any) => {
     const c = link.colaboradores
     if (!c || !c.ativo || !c.is_online || c.pausa_atual_id) return
-    // Está online e ativo sem pausa → candidato
+    // Filtro de "setores ativos na sessão": o atendente escolhe um subconjunto
+    // dos seus setores ao ficar online. Se este setor não está na lista, ele
+    // NÃO recebe tickets (mesmo estando online e vinculado).
+    const setoresAtivos: string[] = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
+    if (!setoresAtivos.includes(setorId)) {
+      filtradoPorSetorAtivo++
+      return
+    }
+    // Está online e ativo sem pausa, com setor selecionado → candidato
     allOnlineMap.set(c.id, { id: c.id, nome: c.nome })
     if (isHeartbeatFresh(c.last_heartbeat)) {
       freshMap.set(c.id, { id: c.id, nome: c.nome, lastReceivedAt: c.last_ticket_received_at || '1970-01-01' })
@@ -125,12 +134,16 @@ async function getAvailableColaboradores(
     }
   })
 
+  if (filtradoPorSetorAtivo > 0) {
+    console.log(`[TicketQueue] ${filtradoPorSetorAtivo} atendente(s) online mas com setor ${setorId} fora dos setores_ativos_sessao — ignorados`)
+  }
+
   // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min)
   if (veryStaleIds.length > 0) {
     console.log(`[TicketQueue] Cleanup: marcando ${veryStaleIds.length} atendentes offline (heartbeat > 5 min)`)
     await supabase
       .from('colaboradores')
-      .update({ is_online: false })
+      .update({ is_online: false, setores_ativos_sessao: [] })
       .in('id', veryStaleIds)
   }
 

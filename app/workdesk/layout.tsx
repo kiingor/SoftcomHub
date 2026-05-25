@@ -30,6 +30,8 @@ import { useAudioAlert, type TicketSoundType } from '@/hooks/use-audio-alert'
 
 interface ColaboradorSetor {
   setor_id: string
+  // Supabase retorna o relacionamento como array ou objeto dependendo do join — aceitamos qualquer formato
+  setores?: any
 }
 
 interface Colaborador {
@@ -37,6 +39,8 @@ interface Colaborador {
   nome: string
   email: string
   is_online: boolean
+  pausa_atual_id?: string | null
+  setores_ativos_sessao?: string[]
   setores_vinculados?: ColaboradorSetor[]
 }
 
@@ -97,7 +101,7 @@ export default function WorkdeskLayout({
       // First get colaborador
       const { data: colaboradorData } = await supabase
         .from('colaboradores')
-        .select('id, nome, email, is_online, pausa_atual_id')
+        .select('id, nome, email, is_online, pausa_atual_id, setores_ativos_sessao')
         .eq('email', user.email)
         .single()
 
@@ -106,10 +110,10 @@ export default function WorkdeskLayout({
         return
       }
 
-      // Then get their setores
+      // Then get their setores (com nomes pra mostrar no seletor)
       const { data: setoresData } = await supabase
         .from('colaboradores_setores')
-        .select('setor_id')
+        .select('setor_id, setores(id, nome, cor)')
         .eq('colaborador_id', colaboradorData.id)
 
       const data = {
@@ -341,6 +345,15 @@ export default function WorkdeskLayout({
             isOnline={colaborador.is_online}
             onStatusChange={handleStatusChange}
             setorIds={colaborador.setores_vinculados?.map((s) => s.setor_id) || []}
+            setoresVinculados={(colaborador.setores_vinculados || []).map((s: any) => {
+              // Supabase retorna `setores` como array em alguns casos; normaliza
+              const setor = Array.isArray(s.setores) ? s.setores[0] : s.setores
+              return {
+                id: s.setor_id,
+                nome: setor?.nome || 'Setor',
+              }
+            })}
+            setoresAtivosAtuais={colaborador.setores_ativos_sessao || []}
           />
 
           {/* Notifications */}

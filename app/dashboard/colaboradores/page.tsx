@@ -345,7 +345,7 @@ export default function ColaboradoresPage() {
 
     const { error } = await supabase
       .from('colaboradores')
-      .update({ ativo: newStatus, is_online: false })
+      .update({ ativo: newStatus, is_online: false, setores_ativos_sessao: [] })
       .eq('id', colaboradorToDeactivate.id)
 
     if (!error) {
