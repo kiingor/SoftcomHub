@@ -125,6 +125,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import { cn } from '@/lib/utils'
 import { calcularOrigem, badgeClassesPorTipo, type OrigemTicket } from '@/lib/ticket-origem'
 import { toast } from 'sonner'
@@ -2665,7 +2666,7 @@ const saveConfig = async () => {
   const IconComponent = getIconComponent(configForm.icon_url)
   const SetorIcon = getIconComponent(setor?.icon_url)
 
-  // Badge clicável da origem do ticket — abre popover com timeline dos eventos.
+  // Badge de origem do ticket — abre HoverCard com timeline ao passar o mouse.
   // Usado nas tabelas de Monitoramento e Relatório.
   const OrigemBadge = ({ ticketId }: { ticketId: string }) => {
     const origem = origensMap.get(ticketId)
@@ -2675,23 +2676,21 @@ const saveConfig = async () => {
       catch { return iso }
     }
     return (
-      <Popover>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
+      <HoverCard openDelay={200} closeDelay={100}>
+        <HoverCardTrigger asChild>
+          <span
             className={cn(
-              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-opacity hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-primary/40',
+              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium cursor-default',
               badgeClassesPorTipo(origem.tipo),
             )}
-            aria-label={`Ver histórico de origem do ticket`}
           >
             {origem.label}
             {origem.hops > 0 && origem.tipo === 'transbordo' && (
               <span className="opacity-70">·{origem.hops}x</span>
             )}
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-80 p-0 glass-dropdown rounded-2xl border-0" align="start">
+          </span>
+        </HoverCardTrigger>
+        <HoverCardContent className="w-80 p-0 glass-dropdown rounded-2xl border-0" align="start">
           <div className="p-4 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold text-foreground">Histórico do ticket</p>
@@ -2720,8 +2719,8 @@ const saveConfig = async () => {
               </div>
             )}
           </div>
-        </PopoverContent>
-      </Popover>
+        </HoverCardContent>
+      </HoverCard>
     )
   }
 
