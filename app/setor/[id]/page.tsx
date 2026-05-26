@@ -212,7 +212,7 @@ async function fetchSetorData(setorId: string) {
   const ninetyDaysAgo = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
 // Queries de monitoramento (dados ao vivo — atualizados pelo Realtime)
-const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes] = await Promise.all([
+const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes, todosSetoresRes] = await Promise.all([
     supabase.from('setores').select('*').eq('id', setorId).single(),
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
@@ -225,6 +225,8 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     supabase.from('pausas').select('*').eq('setor_id', setorId).order('nome'),
     // Múltiplos subsetores por colaborador
     supabase.from('colaboradores_subsetores').select('colaborador_id, subsetor_id, subsetores(id, nome)').eq('setor_id', setorId),
+    // Lookup global de setores — usado pra inferir origem de transbordos antigos
+    supabase.from('setores').select('id, nome, setor_receptor_id'),
   ])
 
   const ticketsAtivos = ticketsAtivosRes.data || []
@@ -303,6 +305,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     setor: setorRes.data,
     tickets: ticketsAtivos,
     atendentes,
+    todosSetores: todosSetoresRes.data || [],
     permissoes: permissoesRes.data || [],
     horarios: horariosRes.data || [],
     stats: {
@@ -1010,14 +1013,26 @@ export default function SetorPage() {
   const tickets = data?.tickets || []
   const ticketsRelatorioRaw = relatorioData || []
 
+  // Lookup global de setores — usado pra reescrever descrições antigas de
+  // transbordo em tempo de exibição (sem mexer no banco). Permite mostrar
+  // "Transbordo: X → Y" mesmo em logs antigos que só tinham texto genérico.
+  const todosSetores = (data?.todosSetores || []) as Array<{ id: string; nome: string; setor_receptor_id: string | null }>
+  const setoresLookup = useMemo(() => {
+    const m = new Map<string, { nome: string; setor_receptor_id?: string | null }>()
+    for (const s of todosSetores) {
+      m.set(s.id, { nome: s.nome, setor_receptor_id: s.setor_receptor_id })
+    }
+    return m
+  }, [todosSetores])
+
   // Mapa de "origem" pra todos os tickets (ativos + relatório).
   // Construído uma vez quando tickets mudam — usado nas tabelas pra renderizar
   // o badge de origem sem recalcular por linha.
   const origensMap = useMemo(() => {
     const allTickets = [...tickets, ...ticketsRelatorioRaw]
     const allLogs = allTickets.flatMap((t: any) => t._logs || [])
-    return calcularOrigem(allTickets, allLogs)
-  }, [tickets, ticketsRelatorioRaw])
+    return calcularOrigem(allTickets, allLogs, setoresLookup)
+  }, [tickets, ticketsRelatorioRaw, setoresLookup])
 
   // Busca por cliente (telefone/CNPJ/nome) — filtro client-side
   const [searchCliente, setSearchCliente] = useState('')

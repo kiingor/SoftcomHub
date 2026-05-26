@@ -45,9 +45,16 @@ export interface TicketLogLike {
 
 export interface TicketLike {
   id: string
+  setor_id?: string | null
   is_disparo?: boolean | null
   transbordo_hops?: number | null
   criado_em?: string | null
+}
+
+/** Lookup de setores pra inferir nomes/origem em logs antigos */
+export interface SetorLookupEntry {
+  nome: string
+  setor_receptor_id?: string | null
 }
 
 const LABELS: Record<OrigemTipo, string> = {
@@ -60,10 +67,15 @@ const LABELS: Record<OrigemTipo, string> = {
 /**
  * Mapeia um array de tickets + array de logs (em batch) pra origem.
  * Retorna Map keyed por ticket_id.
+ *
+ * `setoresLookup` (opcional) habilita "reescrita ao vivo" de logs antigos
+ * que não têm origem/destino na descrição. Usa setor_receptor_id pra inferir
+ * de onde veio o transbordo e formata como "Transbordo: X → Y (retroativo)".
  */
 export function calcularOrigem(
   tickets: TicketLike[],
   logs: TicketLogLike[],
+  setoresLookup?: Map<string, SetorLookupEntry>,
 ): Map<string, OrigemTicket> {
   // Agrupa logs por ticket_id
   const porTicket = new Map<string, TicketLogLike[]>()
@@ -79,12 +91,61 @@ export function calcularOrigem(
   const resultado = new Map<string, OrigemTicket>()
   for (const t of tickets) {
     const logsTicket = porTicket.get(t.id) || []
-    resultado.set(t.id, derivaOrigemUm(t, logsTicket))
+    resultado.set(t.id, derivaOrigemUm(t, logsTicket, setoresLookup))
   }
   return resultado
 }
 
-function derivaOrigemUm(ticket: TicketLike, logs: TicketLogLike[]): OrigemTicket {
+/**
+ * Pra logs antigos de transbordo (sem o prefixo "Transbordo: X → Y"),
+ * infere origem/destino usando o lookup de setores e o setor atual do ticket.
+ * Retorna a descrição reescrita (mesmo formato dos logs novos).
+ */
+function reescreveDescricaoAntiga(
+  log: TicketLogLike,
+  ticket: TicketLike,
+  lookup: Map<string, SetorLookupEntry>,
+): string {
+  const destinoId = ticket.setor_id
+  if (!destinoId) return log.descricao || ''
+  const destinoNome = lookup.get(destinoId)?.nome || 'desconhecido'
+
+  // Origem provável: setores cujo setor_receptor_id aponta pro destino atual
+  const possiveis: string[] = []
+  for (const [id, entry] of lookup) {
+    if (entry.setor_receptor_id === destinoId && id !== destinoId) {
+      possiveis.push(entry.nome)
+    }
+  }
+  const origemNome = possiveis.length === 1
+    ? possiveis[0]
+    : possiveis.length > 1
+      ? possiveis.join(' ou ')
+      : '?'
+
+  // Preserva contexto entre parênteses do log original (hop, redistribuição, etc)
+  const ctx = log.descricao?.match(/\(([^)]+)\)/)?.[0] || ''
+  return `Transbordo: ${origemNome} → ${destinoNome} ${ctx} (retroativo)`.trim()
+}
+
+function derivaOrigemUm(
+  ticket: TicketLike,
+  logs: TicketLogLike[],
+  setoresLookup?: Map<string, SetorLookupEntry>,
+): OrigemTicket {
+  // Aplica reescrita de logs antigos (mantém logs originais imutáveis).
+  // logsReescritos tem mesma estrutura mas com descricao formatada/enriquecida.
+  const logsReescritos: TicketLogLike[] = logs.map((l) => {
+    if (
+      setoresLookup
+      && l.tipo === 'transferencia_automatica'
+      && !(l.descricao || '').startsWith('Transbordo:')
+    ) {
+      return { ...l, descricao: reescreveDescricaoAntiga(l, ticket, setoresLookup) }
+    }
+    return l
+  })
+
   // Eventos = entrada sintética de criação + logs filtrados (transbordos,
   // transferências, etc), todos em ordem cronológica.
   const eventos: Array<{ quando: string; descricao: string }> = []
@@ -94,19 +155,16 @@ function derivaOrigemUm(ticket: TicketLike, logs: TicketLogLike[]): OrigemTicket
       descricao: 'Ticket criado',
     })
   }
-  for (const l of logs) {
+  for (const l of logsReescritos) {
     if (l.tipo === 'encerramento' || l.tipo === 'reabertura') continue
     // Evita duplicar a criação se já houver log explícito
     if (l.tipo === 'criacao' && eventos.some(e => e.descricao === 'Ticket criado')) continue
-    eventos.push({
-      quando: l.criado_em,
-      descricao: descricaoCurta(l),
-    })
+    eventos.push({ quando: l.criado_em, descricao: descricaoCurta(l) })
   }
   eventos.sort((a, b) => a.quando.localeCompare(b.quando))
 
-  const teveTransbordo = logs.some((l) => l.tipo === 'transferencia_automatica')
-  const teveTransferenciaManual = logs.some((l) => l.tipo === 'transferencia')
+  const teveTransbordo = logsReescritos.some((l) => l.tipo === 'transferencia_automatica')
+  const teveTransferenciaManual = logsReescritos.some((l) => l.tipo === 'transferencia')
 
   let tipo: OrigemTipo
   if (ticket.is_disparo) {
@@ -125,13 +183,13 @@ function derivaOrigemUm(ticket: TicketLike, logs: TicketLogLike[]): OrigemTicket
   let transferidoPor: string | undefined
 
   if (tipo === 'transbordo') {
-    const primeiroLog = logs.find((l) => l.tipo === 'transferencia_automatica')
+    const primeiroLog = logsReescritos.find((l) => l.tipo === 'transferencia_automatica')
     if (primeiroLog?.descricao) {
       const match = primeiroLog.descricao.match(TRANSBORDO_DESCRICAO_REGEX)
       if (match?.[1]) setorOrigem = match[1].trim()
     }
   } else if (tipo === 'transferencia') {
-    const primeiroLog = logs.find((l) => l.tipo === 'transferencia')
+    const primeiroLog = logsReescritos.find((l) => l.tipo === 'transferencia')
     if (primeiroLog?.descricao) {
       const match = primeiroLog.descricao.match(TRANSFERENCIA_DESCRICAO_REGEX)
       if (match) {
