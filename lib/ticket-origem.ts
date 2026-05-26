@@ -18,6 +18,8 @@ export interface OrigemTicket {
   label: string
   /** Setor de origem (se transbordo/transferência), extraído da descrição do PRIMEIRO transbordo */
   setorOrigem?: string
+  /** Quem fez a transferência manual (se aplicável) */
+  transferidoPor?: string
   /** Eventos ordenados cronologicamente pra tooltip */
   eventos: Array<{
     quando: string
@@ -29,7 +31,10 @@ export interface OrigemTicket {
 
 // Regex pra extrair "X → Y" das descrições novas de transbordo
 // Ex: "Transbordo: Juazeiro do Norte PEV → ServiceDesk Matriz (hop 1/3, ...)"
-const TRANSBORDO_DESCRICAO_REGEX = /Transbordo:\s*([^→]+?)\s*→/
+const TRANSBORDO_DESCRICAO_REGEX = /Transbordo:\s*([^→]+?)\s*→\s*([^(]+?)(?:\s*\(|$)/
+
+// Regex pra extrair "Transferido por NOME: ORIGEM → DESTINO"
+const TRANSFERENCIA_DESCRICAO_REGEX = /Transferido por\s+(.+?):\s*([^→]+?)\s*→\s*([^(]+?)(?:\s*\(|$)/
 
 export interface TicketLogLike {
   ticket_id: string
@@ -101,16 +106,25 @@ function derivaOrigemUm(ticket: TicketLike, logs: TicketLogLike[]): OrigemTicket
     tipo = 'direto'
   }
 
-  // Extrai o setor de origem do PRIMEIRO transbordo (cronológico) — só
-  // funciona pros logs novos que gravam "Transbordo: X → Y" na descrição.
+  // Extrai setor de origem e/ou quem transferiu do PRIMEIRO log (cronológico).
+  // Funciona apenas pros logs novos com a descrição padronizada.
   let setorOrigem: string | undefined
-  if (tipo === 'transbordo' || tipo === 'transferencia') {
-    const primeiroLog = logs.find((l) =>
-      l.tipo === 'transferencia_automatica' || l.tipo === 'transferencia',
-    )
+  let transferidoPor: string | undefined
+
+  if (tipo === 'transbordo') {
+    const primeiroLog = logs.find((l) => l.tipo === 'transferencia_automatica')
     if (primeiroLog?.descricao) {
       const match = primeiroLog.descricao.match(TRANSBORDO_DESCRICAO_REGEX)
       if (match?.[1]) setorOrigem = match[1].trim()
+    }
+  } else if (tipo === 'transferencia') {
+    const primeiroLog = logs.find((l) => l.tipo === 'transferencia')
+    if (primeiroLog?.descricao) {
+      const match = primeiroLog.descricao.match(TRANSFERENCIA_DESCRICAO_REGEX)
+      if (match) {
+        transferidoPor = match[1]?.trim()
+        setorOrigem = match[2]?.trim()
+      }
     }
   }
 
@@ -118,6 +132,7 @@ function derivaOrigemUm(ticket: TicketLike, logs: TicketLogLike[]): OrigemTicket
     tipo,
     label: LABELS[tipo],
     setorOrigem,
+    transferidoPor,
     eventos,
     hops: ticket.transbordo_hops ?? 0,
   }

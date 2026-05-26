@@ -465,13 +465,14 @@ const OrigemBadge = React.memo(function OrigemBadge({ origem }: { origem: Origem
       <HoverCardTrigger asChild>
         <span
           className={cn(
-            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium cursor-default max-w-[220px]',
+            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium cursor-default max-w-[260px]',
             badgeClassesPorTipo(origem.tipo),
           )}
         >
           <span className="truncate">
             {origem.label}
-            {origem.setorOrigem && <span className="opacity-80"> · {origem.setorOrigem}</span>}
+            {origem.transferidoPor && <span className="opacity-80"> · {origem.transferidoPor}</span>}
+            {!origem.transferidoPor && origem.setorOrigem && <span className="opacity-80"> · {origem.setorOrigem}</span>}
           </span>
           {origem.hops > 1 && origem.tipo === 'transbordo' && (
             <span className="shrink-0 opacity-70">{origem.hops}x</span>
