@@ -265,6 +265,7 @@ interface Colaborador {
   setor_id: string | null
   permissao_id: string | null
   is_online: boolean
+  setores_ativos_sessao?: string[] | null
   permissoes?: {
     can_see_all_tickets: boolean
   }
@@ -1227,11 +1228,16 @@ export default function WorkdeskPage() {
     }
   }, [supabase])
 
-  // Fetch contagem de clientes em fila nos setores do colaborador.
-  // "Em fila" = ticket aberto, sem colaborador atribuído, em um setor que o atendente atende.
+  // Fetch contagem de clientes em fila nos setores ATIVOS do colaborador.
+  // "Em fila" = ticket aberto, sem colaborador atribuído, em um setor que o
+  // atendente está vinculado E ativo (setores_ativos_sessao). Setor desativado
+  // pelo admin não conta na fila (mesmo se o atendente está vinculado a ele).
   const fetchFilaCount = useCallback(async (colab: Colaborador) => {
-    const setorIds = (colab.setores_vinculados || []).map((s) => s.setor_id)
-    if (colab.setor_id && !setorIds.includes(colab.setor_id)) setorIds.push(colab.setor_id)
+    const vinculados = (colab.setores_vinculados || []).map((s) => s.setor_id)
+    if (colab.setor_id && !vinculados.includes(colab.setor_id)) vinculados.push(colab.setor_id)
+    const ativos = Array.isArray(colab.setores_ativos_sessao) ? colab.setores_ativos_sessao : []
+    // Interseção: só conta fila dos setores que estão ativos pra esse atendente
+    const setorIds = vinculados.filter((s) => ativos.includes(s))
     if (setorIds.length === 0) {
       setFilaCount(0)
       return
