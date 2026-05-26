@@ -451,6 +451,64 @@ function getIconComponent(iconName: string | null) {
   return found ? found.icon : MessageCircle
 }
 
+// Badge de origem do ticket — definido fora do componente principal e memoizado
+// para NÃO ser desmontado a cada setTick (re-render de 1s/segundo da tela de
+// monitoramento). Sem isso, o HoverCard fecha sozinho a cada tick.
+const OrigemBadge = React.memo(function OrigemBadge({ origem }: { origem: OrigemTicket | undefined }) {
+  if (!origem) return <span className="text-xs text-muted-foreground">—</span>
+  const fmt = (iso: string) => {
+    try { return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) }
+    catch { return iso }
+  }
+  return (
+    <HoverCard openDelay={150} closeDelay={400}>
+      <HoverCardTrigger asChild>
+        <span
+          className={cn(
+            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium cursor-default',
+            badgeClassesPorTipo(origem.tipo),
+          )}
+        >
+          {origem.label}
+          {origem.hops > 0 && origem.tipo === 'transbordo' && (
+            <span className="opacity-70">·{origem.hops}x</span>
+          )}
+        </span>
+      </HoverCardTrigger>
+      <HoverCardContent className="w-80 p-0 glass-dropdown rounded-2xl border-0" align="start">
+        <div className="p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-foreground">Histórico do ticket</p>
+            <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', badgeClassesPorTipo(origem.tipo))}>
+              {origem.label}
+            </span>
+          </div>
+          {origem.eventos.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">
+              Sem eventos registrados — ticket criado diretamente pelo cliente.
+            </p>
+          ) : (
+            <ol className="relative space-y-2 border-l border-border pl-4">
+              {origem.eventos.map((e, i) => (
+                <li key={i} className="relative">
+                  <span className="absolute -left-[18px] top-1 flex h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
+                  <p className="text-[11px] text-muted-foreground tabular-nums">{fmt(e.quando)}</p>
+                  <p className="text-xs text-foreground leading-snug mt-0.5">{e.descricao}</p>
+                </li>
+              ))}
+            </ol>
+          )}
+          {origem.hops > 0 && (
+            <div className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] text-muted-foreground">
+              Total de transbordos: <strong className="text-foreground">{origem.hops}</strong>
+            </div>
+          )}
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  )
+})
+
 export default function SetorPage() {
   const params = useParams()
   const router = useRouter()
@@ -2666,64 +2724,6 @@ const saveConfig = async () => {
   const IconComponent = getIconComponent(configForm.icon_url)
   const SetorIcon = getIconComponent(setor?.icon_url)
 
-  // Badge de origem do ticket — abre HoverCard com timeline ao passar o mouse.
-  // Usado nas tabelas de Monitoramento e Relatório.
-  const OrigemBadge = ({ ticketId }: { ticketId: string }) => {
-    const origem = origensMap.get(ticketId)
-    if (!origem) return <span className="text-xs text-muted-foreground">—</span>
-    const fmt = (iso: string) => {
-      try { return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) }
-      catch { return iso }
-    }
-    return (
-      <HoverCard openDelay={150} closeDelay={400}>
-        <HoverCardTrigger asChild>
-          <span
-            className={cn(
-              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium cursor-default',
-              badgeClassesPorTipo(origem.tipo),
-            )}
-          >
-            {origem.label}
-            {origem.hops > 0 && origem.tipo === 'transbordo' && (
-              <span className="opacity-70">·{origem.hops}x</span>
-            )}
-          </span>
-        </HoverCardTrigger>
-        <HoverCardContent className="w-80 p-0 glass-dropdown rounded-2xl border-0" align="start">
-          <div className="p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-foreground">Histórico do ticket</p>
-              <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', badgeClassesPorTipo(origem.tipo))}>
-                {origem.label}
-              </span>
-            </div>
-            {origem.eventos.length === 0 ? (
-              <p className="text-xs text-muted-foreground italic">
-                Sem eventos registrados — ticket criado diretamente pelo cliente.
-              </p>
-            ) : (
-              <ol className="relative space-y-2 border-l border-border pl-4">
-                {origem.eventos.map((e, i) => (
-                  <li key={i} className="relative">
-                    <span className="absolute -left-[18px] top-1 flex h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
-                    <p className="text-[11px] text-muted-foreground tabular-nums">{fmt(e.quando)}</p>
-                    <p className="text-xs text-foreground leading-snug mt-0.5">{e.descricao}</p>
-                  </li>
-                ))}
-              </ol>
-            )}
-            {origem.hops > 0 && (
-              <div className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] text-muted-foreground">
-                Total de transbordos: <strong className="text-foreground">{origem.hops}</strong>
-              </div>
-            )}
-          </div>
-        </HoverCardContent>
-      </HoverCard>
-    )
-  }
-
   return (
     <div className="flex h-screen flex-col bg-background">
       {/* Top Header - Simplified without tabs */}
@@ -3222,7 +3222,7 @@ const saveConfig = async () => {
                                       {ticket.contato}
                                     </div>
                                   </TableCell>
-                                  <TableCell><OrigemBadge ticketId={ticket.id} /></TableCell>
+                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} /></TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.fila || setor?.nome}</TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
@@ -3300,7 +3300,7 @@ const saveConfig = async () => {
                                     {ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}
                                   </div>
                                 </TableCell>
-                                <TableCell><OrigemBadge ticketId={ticket.id} /></TableCell>
+                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} /></TableCell>
                                 <TableCell className="text-sm text-foreground">{setor?.nome}</TableCell>
                                 <TableCell>
                                   <Badge variant={
@@ -3727,7 +3727,7 @@ const saveConfig = async () => {
                               </div>
                             </TableCell>
                             <TableCell className="text-sm">{ticket.colaboradores?.nome || '-'}</TableCell>
-                            <TableCell><OrigemBadge ticketId={ticket.id} /></TableCell>
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} /></TableCell>
                             <TableCell>
                               <Badge
                                 variant="outline"
