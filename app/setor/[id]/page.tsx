@@ -454,7 +454,7 @@ function getIconComponent(iconName: string | null) {
 // Badge de origem do ticket — definido fora do componente principal e memoizado
 // para NÃO ser desmontado a cada setTick (re-render de 1s/segundo da tela de
 // monitoramento). Sem isso, o HoverCard fecha sozinho a cada tick.
-const OrigemBadge = React.memo(function OrigemBadge({ origem }: { origem: OrigemTicket | undefined }) {
+const OrigemBadge = React.memo(function OrigemBadge({ origem, setorAtualNome }: { origem: OrigemTicket | undefined; setorAtualNome?: string }) {
   if (!origem) return <span className="text-xs text-muted-foreground">—</span>
   const fmt = (iso: string) => {
     try { return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) }
@@ -487,6 +487,11 @@ const OrigemBadge = React.memo(function OrigemBadge({ origem }: { origem: Origem
               {origem.label}
             </span>
           </div>
+          {setorAtualNome && (
+            <p className="text-[11px] text-muted-foreground">
+              Setor atual: <strong className="text-foreground">{setorAtualNome}</strong>
+            </p>
+          )}
           {origem.eventos.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">
               Sem eventos registrados — ticket criado diretamente pelo cliente.
@@ -3226,7 +3231,7 @@ const saveConfig = async () => {
                                       {ticket.contato}
                                     </div>
                                   </TableCell>
-                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} /></TableCell>
+                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.fila || setor?.nome}</TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
@@ -3304,7 +3309,7 @@ const saveConfig = async () => {
                                     {ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}
                                   </div>
                                 </TableCell>
-                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} /></TableCell>
+                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
                                 <TableCell className="text-sm text-foreground">{setor?.nome}</TableCell>
                                 <TableCell>
                                   <Badge variant={
@@ -3731,7 +3736,7 @@ const saveConfig = async () => {
                               </div>
                             </TableCell>
                             <TableCell className="text-sm">{ticket.colaboradores?.nome || '-'}</TableCell>
-                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} /></TableCell>
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
                             <TableCell>
                               <Badge
                                 variant="outline"

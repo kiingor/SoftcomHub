@@ -85,12 +85,25 @@ export function calcularOrigem(
 }
 
 function derivaOrigemUm(ticket: TicketLike, logs: TicketLogLike[]): OrigemTicket {
-  const eventos = logs
-    .filter((l) => l.tipo !== 'encerramento' && l.tipo !== 'reabertura')
-    .map((l) => ({
+  // Eventos = entrada sintética de criação + logs filtrados (transbordos,
+  // transferências, etc), todos em ordem cronológica.
+  const eventos: Array<{ quando: string; descricao: string }> = []
+  if (ticket.criado_em) {
+    eventos.push({
+      quando: ticket.criado_em,
+      descricao: 'Ticket criado',
+    })
+  }
+  for (const l of logs) {
+    if (l.tipo === 'encerramento' || l.tipo === 'reabertura') continue
+    // Evita duplicar a criação se já houver log explícito
+    if (l.tipo === 'criacao' && eventos.some(e => e.descricao === 'Ticket criado')) continue
+    eventos.push({
       quando: l.criado_em,
       descricao: descricaoCurta(l),
-    }))
+    })
+  }
+  eventos.sort((a, b) => a.quando.localeCompare(b.quando))
 
   const teveTransbordo = logs.some((l) => l.tipo === 'transferencia_automatica')
   const teveTransferenciaManual = logs.some((l) => l.tipo === 'transferencia')
