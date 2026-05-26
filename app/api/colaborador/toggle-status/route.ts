@@ -28,6 +28,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'isOnline (boolean) required' }, { status: 400 })
     }
 
+    // setores_ativos_sessao NÃO é tocado por este endpoint — a configuração é
+    // permanente e controlada pelo admin via dashboard. Toggle de online/offline
+    // só muda is_online + pausa.
     const updateData: Record<string, unknown> = {
       is_online: isOnline,
       pausa_atual_id: pausaAtualId ?? null,

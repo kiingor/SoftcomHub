@@ -41,7 +41,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Users, Plus, Pencil, UserX, Loader2, Circle } from 'lucide-react'
+import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '@/hooks/use-toast'
 
@@ -66,6 +66,7 @@ interface Colaborador {
   created_at: string
   setor?: Setor | null
   permissao?: Permissao | null
+  setores_ativos_sessao?: string[]
 }
 
 export default function ColaboradoresPage() {
@@ -88,6 +89,14 @@ export default function ColaboradoresPage() {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [searchTerm, setSearchTerm] = useState('')
+
+  // Modal de "Configurar setores ativos" — admin escolhe de quais setores
+  // o atendente recebe tickets (subset dos vinculados).
+  const [setoresAtivosModalOpen, setSetoresAtivosModalOpen] = useState(false)
+  const [colaboradorSetoresAtivos, setColaboradorSetoresAtivos] = useState<Colaborador | null>(null)
+  const [setoresAtivosSelecionados, setSetoresAtivosSelecionados] = useState<Set<string>>(new Set())
+  const [savingSetoresAtivos, setSavingSetoresAtivos] = useState(false)
 
   const supabase = createClient()
   const { toast } = useToast()
@@ -104,7 +113,7 @@ export default function ColaboradoresPage() {
   async function fetchData() {
     setLoading(true)
 
-    // Fetch colaboradores with joins
+    // Fetch atendentes (is_master=false). Supervisores ficam em /dashboard/usuarios
     const { data: colaboradoresData, error: colaboradoresError } = await supabase
       .from('colaboradores')
       .select(`
@@ -112,6 +121,7 @@ export default function ColaboradoresPage() {
         setor:setores(id, nome),
         permissao:permissoes(id, nome)
       `)
+      .eq('is_master', false)
       .order('created_at', { ascending: false })
 
     if (!colaboradoresError && colaboradoresData) {
@@ -140,7 +150,7 @@ export default function ColaboradoresPage() {
 
     // Fetch colaborador_setores (join table)
     const { data: colabSetoresData } = await supabase
-      .from('colaborador_setores')
+      .from('colaboradores_setores')
       .select('colaborador_id, setor_id')
 
     if (colabSetoresData) {
@@ -221,6 +231,52 @@ export default function ColaboradoresPage() {
     setDeactivateDialogOpen(true)
   }
 
+  // Abre o modal de configuração de setores ativos pra um atendente
+  function openSetoresAtivosModal(colaborador: Colaborador) {
+    setColaboradorSetoresAtivos(colaborador)
+    setSetoresAtivosSelecionados(
+      new Set(Array.isArray(colaborador.setores_ativos_sessao) ? colaborador.setores_ativos_sessao : []),
+    )
+    setSetoresAtivosModalOpen(true)
+  }
+
+  function toggleSetorAtivoCheckbox(setorId: string) {
+    setSetoresAtivosSelecionados(prev => {
+      const next = new Set(prev)
+      if (next.has(setorId)) next.delete(setorId)
+      else next.add(setorId)
+      return next
+    })
+  }
+
+  async function handleSaveSetoresAtivos() {
+    if (!colaboradorSetoresAtivos) return
+    setSavingSetoresAtivos(true)
+    try {
+      const novosSetores = Array.from(setoresAtivosSelecionados)
+      const { error } = await supabase
+        .from('colaboradores')
+        .update({ setores_ativos_sessao: novosSetores })
+        .eq('id', colaboradorSetoresAtivos.id)
+      if (error) throw error
+      toast({
+        title: 'Configuração salva',
+        description: `${colaboradorSetoresAtivos.nome} agora recebe tickets de ${novosSetores.length} setor(es).`,
+      })
+      setSetoresAtivosModalOpen(false)
+      setColaboradorSetoresAtivos(null)
+      await fetchData()
+    } catch (err: any) {
+      toast({
+        title: 'Erro ao salvar',
+        description: err?.message || 'Tente novamente',
+        variant: 'destructive',
+      })
+    } finally {
+      setSavingSetoresAtivos(false)
+    }
+  }
+
   async function handleSave() {
     if (!formData.nome.trim()) {
       setError('Nome e obrigatorio')
@@ -250,7 +306,7 @@ export default function ColaboradoresPage() {
 
       // Update colaborador_setores join table
       await supabase
-        .from('colaborador_setores')
+        .from('colaboradores_setores')
         .delete()
         .eq('colaborador_id', editingColaborador.id)
 
@@ -259,7 +315,7 @@ export default function ColaboradoresPage() {
           colaborador_id: editingColaborador.id,
           setor_id: setorId,
         }))
-        await supabase.from('colaborador_setores').insert(relations)
+        await supabase.from('colaboradores_setores').insert(relations)
       }
 
       toast({
@@ -324,7 +380,7 @@ export default function ColaboradoresPage() {
           colaborador_id: authData.user!.id,
           setor_id: setorId,
         }))
-        await supabase.from('colaborador_setores').insert(relations)
+        await supabase.from('colaboradores_setores').insert(relations)
       }
 
       toast({
@@ -367,19 +423,31 @@ export default function ColaboradoresPage() {
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-foreground">
-            Colaboradores
+            Atendentes
           </h1>
           <p className="text-muted-foreground">
-            Gerencie usuarios, setores e permissoes
+            Gerencie atendentes e configure de quais setores cada um recebe tickets
           </p>
         </div>
-        <Button
-          onClick={openCreateModal}
-          className="mt-4 bg-primary text-primary-foreground hover:bg-primary/90 sm:mt-0"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Novo Colaborador
-        </Button>
+        <div className="flex flex-col gap-3 mt-4 sm:flex-row sm:items-center sm:mt-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              placeholder="Buscar por nome ou e-mail"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-9 w-full sm:w-64"
+            />
+          </div>
+          <Button
+            onClick={openCreateModal}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Novo Atendente
+          </Button>
+        </div>
       </div>
 
       <Card className="glass-card-elevated rounded-2xl border-0">
@@ -422,7 +490,16 @@ export default function ColaboradoresPage() {
                 </TableHeader>
                 <TableBody>
                   <AnimatePresence>
-                    {colaboradores.map((colaborador, index) => (
+                    {colaboradores
+                      .filter((c) => {
+                        const q = searchTerm.trim().toLowerCase()
+                        if (!q) return true
+                        return (
+                          c.nome.toLowerCase().includes(q) ||
+                          c.email.toLowerCase().includes(q)
+                        )
+                      })
+                      .map((colaborador, index) => (
                       <motion.tr
                         key={colaborador.id}
                         initial={{ opacity: 0, y: 10 }}
@@ -448,16 +525,37 @@ export default function ColaboradoresPage() {
                           {(() => {
                             const setorIds = getSetoresDoColaborador(colaborador.id)
                             if (setorIds.length === 0) return <span className="text-muted-foreground">Nenhum</span>
+                            const ativos = Array.isArray(colaborador.setores_ativos_sessao)
+                              ? new Set(colaborador.setores_ativos_sessao)
+                              : new Set<string>()
+                            const inativos = setorIds.filter(sid => !ativos.has(sid))
                             return (
-                              <div className="flex flex-wrap gap-1">
+                              <div className="flex flex-wrap items-center gap-1">
                                 {setorIds.map((sid) => {
                                   const s = setores.find((st) => st.id === sid)
-                                  return s ? (
-                                    <Badge key={sid} variant="secondary" className="text-xs">
+                                  if (!s) return null
+                                  const isAtivo = ativos.has(sid)
+                                  return (
+                                    <Badge
+                                      key={sid}
+                                      variant={isAtivo ? 'default' : 'outline'}
+                                      className={cn(
+                                        'text-xs',
+                                        isAtivo
+                                          ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 hover:bg-green-100'
+                                          : 'opacity-60 line-through',
+                                      )}
+                                      title={isAtivo ? 'Recebendo tickets' : 'Inativo — não recebe novos tickets'}
+                                    >
                                       {s.nome}
                                     </Badge>
-                                  ) : null
+                                  )
                                 })}
+                                {inativos.length > 0 && setorIds.length === inativos.length && (
+                                  <span className="text-[10px] text-muted-foreground italic">
+                                    nenhum ativo
+                                  </span>
+                                )}
                               </div>
                             )
                           })()}
@@ -500,6 +598,21 @@ export default function ColaboradoresPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => openSetoresAtivosModal(colaborador)}
+                              className="hover:bg-primary/20"
+                              disabled={getSetoresDoColaborador(colaborador.id).length === 0}
+                              title={
+                                getSetoresDoColaborador(colaborador.id).length === 0
+                                  ? 'Vincule pelo menos 1 setor antes de configurar'
+                                  : 'Escolher de quais setores este atendente recebe tickets'
+                              }
+                            >
+                              <Building2 className="mr-1 h-4 w-4" />
+                              Setores
+                            </Button>
                             <Button
                               variant="ghost"
                               size="sm"
@@ -698,6 +811,96 @@ export default function ColaboradoresPage() {
             >
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {editingColaborador ? 'Atualizar' : 'Cadastrar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Configurar Setores Ativos */}
+      <Dialog open={setoresAtivosModalOpen} onOpenChange={setSetoresAtivosModalOpen}>
+        <DialogContent className="glass-card-elevated rounded-3xl border-0 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-foreground">
+              <Building2 className="h-5 w-5 text-primary" />
+              Configurar setores
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <p className="text-sm text-muted-foreground">
+              {colaboradorSetoresAtivos
+                ? <>Escolha de quais setores <strong className="text-foreground">{colaboradorSetoresAtivos.nome}</strong> vai receber novos tickets. Tickets já em andamento permanecem com ele.</>
+                : 'Carregando...'}
+            </p>
+
+            <div className="space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
+              {(() => {
+                if (!colaboradorSetoresAtivos) return null
+                const setorIds = getSetoresDoColaborador(colaboradorSetoresAtivos.id)
+                if (setorIds.length === 0) {
+                  return (
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      Atendente não está vinculado a nenhum setor.
+                    </p>
+                  )
+                }
+                return setorIds.map((sid) => {
+                  const setor = setores.find(s => s.id === sid)
+                  if (!setor) return null
+                  const checked = setoresAtivosSelecionados.has(sid)
+                  return (
+                    <label
+                      key={sid}
+                      className={cn(
+                        'flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-all',
+                        checked
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border bg-background hover:bg-muted/50',
+                      )}
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={() => toggleSetorAtivoCheckbox(sid)}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-foreground">{setor.nome}</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {checked ? 'Recebe tickets' : 'Não recebe novos tickets'}
+                        </p>
+                      </div>
+                    </label>
+                  )
+                })
+              })()}
+            </div>
+
+            <div className="rounded-md bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">
+              <strong className="text-foreground">{setoresAtivosSelecionados.size}</strong> setor(es) selecionado(s).
+              Atendente sem nenhum setor ativo não receberá tickets, mesmo estando online.
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSetoresAtivosModalOpen(false)}
+              disabled={savingSetoresAtivos}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleSaveSetoresAtivos}
+              disabled={savingSetoresAtivos}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {savingSetoresAtivos ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Salvando...
+                </>
+              ) : (
+                'Salvar'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

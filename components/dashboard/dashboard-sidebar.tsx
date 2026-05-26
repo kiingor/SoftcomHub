@@ -12,6 +12,7 @@ import {
   MessageCircle,
   X,
   UserCog,
+  Headphones,
   Loader2,
   Activity,
   HelpCircle,
@@ -30,7 +31,8 @@ const baseNavigation = [
 ]
 
 const masterNavigation = [
-  { name: 'Usuarios Master', href: '/dashboard/usuarios', icon: UserCog },
+  { name: 'Supervisores', href: '/dashboard/usuarios', icon: UserCog },
+  { name: 'Atendentes', href: '/dashboard/colaboradores', icon: Headphones },
   { name: 'Logs de Erros', href: '/dashboard/logs', icon: Bug },
 ]
 

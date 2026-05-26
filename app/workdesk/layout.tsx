@@ -37,6 +37,7 @@ interface Colaborador {
   nome: string
   email: string
   is_online: boolean
+  pausa_atual_id?: string | null
   setores_vinculados?: ColaboradorSetor[]
 }
 

@@ -82,14 +82,14 @@ export async function criarEDistribuirTicket(
       if (subsetorId) {
         const { data } = await supabase
           .from('colaboradores_subsetores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
           .eq('setor_id', setorId)
           .eq('subsetor_id', subsetorId)
         rawColabs = (data || []).map((sl: any) => sl.colaboradores)
       } else {
         const { data } = await supabase
           .from('colaboradores_setores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at)')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
           .eq('setor_id', setorId)
         rawColabs = (data || []).map((cs: any) => cs.colaboradores)
       }
@@ -97,11 +97,22 @@ export async function criarEDistribuirTicket(
       const STALE_CLEANUP_MS = 5 * 60 * 1000 // 5 min — marcar offline automaticamente
       const allOnline = rawColabs
         .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
-      const fresh = allOnline
+      // Filtra por "setores ativos na sessão" — atendente só recebe tickets dos
+      // setores que ele selecionou ao ficar online (mesmo se está vinculado a vários).
+      const allOnlineAtivos = allOnline.filter((c: any) => {
+        const setoresAtivos: string[] = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
+        return setoresAtivos.includes(setorId)
+      })
+      const ignoradosPorSetor = allOnline.length - allOnlineAtivos.length
+      if (ignoradosPorSetor > 0) {
+        console.log(`[Distribution] ${ignoradosPorSetor} atendente(s) online mas com setor ${setorId} fora dos setores_ativos_sessao — ignorados`)
+      }
+      const fresh = allOnlineAtivos
         .filter((c: any) => isHBFresh(c.last_heartbeat))
         .map((c: any) => ({ id: c.id, nome: c.nome, last_ticket_received_at: c.last_ticket_received_at || null }))
 
-      // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min)
+      // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min).
+      // NÃO toca em setores_ativos_sessao — é configuração permanente do admin.
       const veryStale = allOnline.filter((c: any) =>
         !c.last_heartbeat || (now - new Date(c.last_heartbeat).getTime()) > STALE_CLEANUP_MS
       )
@@ -292,7 +303,7 @@ async function _tentarDistribuirNoSetor(
 
   const { data: rawColabs } = await supabase
     .from('colaboradores')
-    .select(`id, last_heartbeat, last_ticket_received_at, colaboradores_setores!inner(setor_id)`)
+    .select(`id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao, colaboradores_setores!inner(setor_id)`)
     .eq('colaboradores_setores.setor_id', setorId)
     .eq('is_online', true)
     .eq('ativo', true)
@@ -300,11 +311,15 @@ async function _tentarDistribuirNoSetor(
 
   if (!rawColabs || rawColabs.length === 0) return null
 
-  // Filtra por heartbeat fresco — NUNCA distribui para quem tem heartbeat stale
-  const colaboradores = rawColabs.filter(c =>
+  // Filtra por setor ativo na sessão E por heartbeat fresco
+  const colabsAtivos = rawColabs.filter((c: any) => {
+    const setoresAtivos: string[] = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
+    return setoresAtivos.includes(setorId)
+  })
+  const colaboradores = colabsAtivos.filter(c =>
     c.last_heartbeat && (now - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
   )
-  console.log(`[_tentarDistribuirNoSetor] setor=${setorId}: ${rawColabs.length} online, ${colaboradores.length} com heartbeat fresco`)
+  console.log(`[_tentarDistribuirNoSetor] setor=${setorId}: ${rawColabs.length} online, ${colabsAtivos.length} com setor ativo, ${colaboradores.length} com heartbeat fresco`)
 
   if (colaboradores.length === 0) return null
 
@@ -423,6 +438,7 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         id,
         last_heartbeat,
         last_ticket_received_at,
+        setores_ativos_sessao,
         colaboradores_setores!inner(setor_id)
       `)
       .eq('colaboradores_setores.setor_id', setorId)
@@ -430,11 +446,15 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       .eq('ativo', true)
       .is('pausa_atual_id', null)
 
-    // Filtra por heartbeat fresco — NUNCA distribui para quem tem heartbeat stale
-    const allColaboradores = (rawColaboradores || []).filter(c =>
+    // Filtra por setor ativo na sessão E por heartbeat fresco
+    const colabsAtivos = (rawColaboradores || []).filter((c: any) => {
+      const setoresAtivos: string[] = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
+      return setoresAtivos.includes(setorId)
+    })
+    const allColaboradores = colabsAtivos.filter(c =>
       c.last_heartbeat && (now - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS
     )
-    console.log(`[redistribuirTicketsPendentes] setor=${setorId}: ${rawColaboradores?.length || 0} online, ${allColaboradores.length} com heartbeat fresco`)
+    console.log(`[redistribuirTicketsPendentes] setor=${setorId}: ${rawColaboradores?.length || 0} online, ${colabsAtivos.length} com setor ativo, ${allColaboradores.length} com heartbeat fresco`)
 
     if (allColaboradores.length === 0) {
       // Nenhum atendente online — verificar se o setor tem transmissão ativa
