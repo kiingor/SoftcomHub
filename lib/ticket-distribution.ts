@@ -231,6 +231,12 @@ export async function criarEDistribuirTicket(
           const receptorId = setorData.setor_receptor_id
           console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
 
+          // Captura nomes dos setores antes do update pra incluir na descrição do log
+          const { data: nomesSetores } = await supabase
+            .from('setores').select('id, nome').in('id', [setorId, receptorId])
+          const nomeOrigem = nomesSetores?.find(s => s.id === setorId)?.nome || setorId
+          const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
+
           const { error: moveError } = await supabase
             .from('tickets')
             .update({
@@ -243,7 +249,7 @@ export async function criarEDistribuirTicket(
             const { error: logError } = await supabase.from('ticket_logs').insert({
               ticket_id: ticket.id,
               tipo: 'transferencia_automatica',
-              descricao: `Ticket transferido automaticamente para setor receptor (sem atendentes disponíveis no setor original)`,
+              descricao: `Transbordo: ${nomeOrigem} → ${nomeDestino} (sem atendentes disponíveis no setor original)`,
             })
             if (logError) console.warn('[Distribuição] Falha ao gravar log transferencia_automatica:', logError.message)
 
@@ -468,6 +474,12 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const receptorId = setorData.setor_receptor_id
         console.log(`[Redistribuição] Sem atendentes em ${setorId} — transmitindo ${pendingTickets.length} tickets para receptor ${receptorId}`)
 
+        // Nomes dos setores pra log (busca 1× antes do loop)
+        const { data: nomesSetores } = await supabase
+          .from('setores').select('id, nome').in('id', [setorId, receptorId])
+        const nomeOrigem = nomesSetores?.find(s => s.id === setorId)?.nome || setorId
+        const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
+
         for (const ticket of pendingTickets) {
           const { error: moveError } = await supabase
             .from('tickets')
@@ -481,7 +493,7 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             const { error: logError } = await supabase.from('ticket_logs').insert({
               ticket_id: ticket.id,
               tipo: 'transferencia_automatica',
-              descricao: `Ticket transferido automaticamente para setor receptor (nenhum atendente online no setor original)`,
+              descricao: `Transbordo: ${nomeOrigem} → ${nomeDestino} (nenhum atendente online no setor original)`,
             })
             if (logError) console.warn('[Distribuição] Falha ao gravar log transferencia_automatica:', logError.message)
 
@@ -632,6 +644,12 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
         const receptorId = setorData.setor_receptor_id
 
+        // Nomes dos setores pra log (busca 1× antes do loop)
+        const { data: nomesSetores } = await supabase
+          .from('setores').select('id, nome').in('id', [setorId, receptorId])
+        const nomeOrigem = nomesSetores?.find(s => s.id === setorId)?.nome || setorId
+        const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
+
         for (const ticket of remainingTickets) {
           // Mover ticket para o setor receptor
           const { error: moveError } = await supabase
@@ -646,7 +664,7 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             const { error: logError } = await supabase.from('ticket_logs').insert({
               ticket_id: ticket.id,
               tipo: 'transferencia_automatica',
-              descricao: `Ticket transferido automaticamente para setor receptor (redistribuição sem atendentes disponíveis)`,
+              descricao: `Transbordo: ${nomeOrigem} → ${nomeDestino} (redistribuição sem atendentes disponíveis)`,
             })
             if (logError) console.warn('[Distribuição] Falha ao gravar log transferencia_automatica (redistribuição):', logError.message)
 

@@ -16,6 +16,8 @@ export type OrigemTipo = 'direto' | 'disparo' | 'transbordo' | 'transferencia'
 export interface OrigemTicket {
   tipo: OrigemTipo
   label: string
+  /** Setor de origem (se transbordo/transferência), extraído da descrição do PRIMEIRO transbordo */
+  setorOrigem?: string
   /** Eventos ordenados cronologicamente pra tooltip */
   eventos: Array<{
     quando: string
@@ -24,6 +26,10 @@ export interface OrigemTicket {
   /** Quantos hops de transbordo o ticket fez (se houve) */
   hops: number
 }
+
+// Regex pra extrair "X → Y" das descrições novas de transbordo
+// Ex: "Transbordo: Juazeiro do Norte PEV → ServiceDesk Matriz (hop 1/3, ...)"
+const TRANSBORDO_DESCRICAO_REGEX = /Transbordo:\s*([^→]+?)\s*→/
 
 export interface TicketLogLike {
   ticket_id: string
@@ -95,9 +101,23 @@ function derivaOrigemUm(ticket: TicketLike, logs: TicketLogLike[]): OrigemTicket
     tipo = 'direto'
   }
 
+  // Extrai o setor de origem do PRIMEIRO transbordo (cronológico) — só
+  // funciona pros logs novos que gravam "Transbordo: X → Y" na descrição.
+  let setorOrigem: string | undefined
+  if (tipo === 'transbordo' || tipo === 'transferencia') {
+    const primeiroLog = logs.find((l) =>
+      l.tipo === 'transferencia_automatica' || l.tipo === 'transferencia',
+    )
+    if (primeiroLog?.descricao) {
+      const match = primeiroLog.descricao.match(TRANSBORDO_DESCRICAO_REGEX)
+      if (match?.[1]) setorOrigem = match[1].trim()
+    }
+  }
+
   return {
     tipo,
     label: LABELS[tipo],
+    setorOrigem,
     eventos,
     hops: ticket.transbordo_hops ?? 0,
   }

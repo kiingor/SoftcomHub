@@ -440,6 +440,12 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
           (ticketHops || []).map((t: any) => [t.id, t.transbordo_hops ?? 0]),
         )
 
+        // Nomes dos setores pra log (busca 1× antes do loop)
+        const { data: nomesSetores } = await supabase
+          .from('setores').select('id, nome').in('id', [setorId, receptorId])
+        const nomeOrigem = nomesSetores?.find((s: any) => s.id === setorId)?.nome || setorId
+        const nomeDestino = nomesSetores?.find((s: any) => s.id === receptorId)?.nome || receptorId
+
         for (const ticketId of ticketIds) {
           const currentHops = hopsById.get(ticketId) ?? 0
 
@@ -472,7 +478,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
             const { error: logError } = await supabase.from('ticket_logs').insert({
               ticket_id: ticketId,
               tipo: 'transferencia_automatica',
-              descricao: `Ticket transferido automaticamente para setor receptor (hop ${currentHops + 1}/${MAX_TRANSBORDO_HOPS}, fila sem atendentes disponíveis)`,
+              descricao: `Transbordo: ${nomeOrigem} → ${nomeDestino} (hop ${currentHops + 1}/${MAX_TRANSBORDO_HOPS}, fila sem atendentes)`,
             })
             if (logError) console.warn('[TicketQueue] Falha ao gravar log transferencia_automatica:', logError.message)
 
