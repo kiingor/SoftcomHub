@@ -113,19 +113,26 @@ export default function ColaboradoresPage() {
   async function fetchData() {
     setLoading(true)
 
-    // Fetch atendentes (is_master=false). Supervisores ficam em /dashboard/usuarios
+    // Fetch atendentes: TODOS que têm vínculo em colaboradores_setores
+    // (incluindo supervisores que também atendem). Supervisor puro (sem
+    // vínculo) só aparece em /dashboard/usuarios.
     const { data: colaboradoresData, error: colaboradoresError } = await supabase
       .from('colaboradores')
       .select(`
         *,
         setor:setores(id, nome),
-        permissao:permissoes(id, nome)
+        permissao:permissoes(id, nome),
+        colaboradores_setores!inner(setor_id)
       `)
-      .eq('is_master', false)
       .order('created_at', { ascending: false })
 
     if (!colaboradoresError && colaboradoresData) {
-      setColaboradores(colaboradoresData)
+      // Deduplica (inner join retorna 1 linha por vínculo)
+      const uniqueMap = new Map<string, any>()
+      for (const c of colaboradoresData) {
+        if (!uniqueMap.has(c.id)) uniqueMap.set(c.id, c)
+      }
+      setColaboradores(Array.from(uniqueMap.values()))
     }
 
     // Fetch setores
