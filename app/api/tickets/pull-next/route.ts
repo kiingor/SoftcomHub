@@ -29,10 +29,10 @@ export async function POST(request: Request) {
 
     const supabase = createServiceClient()
 
-    // 1. Validar colaborador (online, ativo, sem pausa)
+    // 1. Validar colaborador (online, ativo, sem pausa) + buscar setores_ativos_sessao
     const { data: colab, error: colabError } = await supabase
       .from('colaboradores')
-      .select('id, nome, is_online, ativo, pausa_atual_id')
+      .select('id, nome, is_online, ativo, pausa_atual_id, setores_ativos_sessao')
       .eq('id', colaboradorId)
       .single()
 
@@ -58,15 +58,29 @@ export async function POST(request: Request) {
       )
     }
 
-    // 2. Buscar setores do colaborador
+    // 2. Buscar setores do colaborador + filtrar pelos ATIVOS na sessão.
+    //    Atendente que admin desativou pra um setor NÃO deve puxar ticket dele,
+    //    mesmo estando vinculado.
     const { data: vinculos } = await supabase
       .from('colaboradores_setores')
       .select('setor_id')
       .eq('colaborador_id', colaboradorId)
 
-    const setorIds = [...new Set((vinculos || []).map((v) => v.setor_id))]
-    if (setorIds.length === 0) {
+    const setoresVinculados = [...new Set((vinculos || []).map((v) => v.setor_id))]
+    if (setoresVinculados.length === 0) {
       return NextResponse.json({ error: 'Colaborador sem setores vinculados' }, { status: 422 })
+    }
+
+    const setoresAtivos: string[] = Array.isArray(colab.setores_ativos_sessao)
+      ? colab.setores_ativos_sessao
+      : []
+    // Interseção: só setores que estão vinculados E ativos na sessão
+    const setorIds = setoresVinculados.filter((s) => setoresAtivos.includes(s))
+    if (setorIds.length === 0) {
+      return NextResponse.json(
+        { error: 'Nenhum setor ativo. Peça ao admin pra ativar pelo menos um setor pra você em "Atendentes".' },
+        { status: 422 }
+      )
     }
 
     // 3. Buscar tickets em fila (mais antigos primeiro) nos setores do colaborador
