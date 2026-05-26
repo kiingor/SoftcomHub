@@ -2676,7 +2676,7 @@ const saveConfig = async () => {
       catch { return iso }
     }
     return (
-      <HoverCard openDelay={200} closeDelay={100}>
+      <HoverCard openDelay={150} closeDelay={400}>
         <HoverCardTrigger asChild>
           <span
             className={cn(
