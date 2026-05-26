@@ -98,8 +98,10 @@ export function calcularOrigem(
 
 /**
  * Pra logs antigos de transbordo (sem o prefixo "Transbordo: X → Y"),
- * infere origem/destino usando o lookup de setores e o setor atual do ticket.
- * Retorna a descrição reescrita (mesmo formato dos logs novos).
+ * tenta inferir origem ÚNICA usando o lookup de setores. Retorna a descrição
+ * reescrita quando há apenas UM setor candidato (setor_receptor_id apontando
+ * para o destino). Quando é ambíguo (vários candidatos) ou impossível, devolve
+ * a descrição original — melhor não inferir do que mostrar dado ruim.
  */
 function reescreveDescricaoAntiga(
   log: TicketLogLike,
@@ -108,24 +110,27 @@ function reescreveDescricaoAntiga(
 ): string {
   const destinoId = ticket.setor_id
   if (!destinoId) return log.descricao || ''
-  const destinoNome = lookup.get(destinoId)?.nome || 'desconhecido'
+  const destinoNome = lookup.get(destinoId)?.nome
+  if (!destinoNome) return log.descricao || ''
 
-  // Origem provável: setores cujo setor_receptor_id aponta pro destino atual
+  // Origem candidata: setor cujo setor_receptor_id aponta pro destino atual.
+  // Só reescrevemos se houver EXATAMENTE 1 candidato — senão a inferência
+  // vira lista enorme e não ajuda.
   const possiveis: string[] = []
   for (const [id, entry] of lookup) {
     if (entry.setor_receptor_id === destinoId && id !== destinoId) {
       possiveis.push(entry.nome)
+      if (possiveis.length > 1) break // já é ambíguo, não precisa continuar
     }
   }
-  const origemNome = possiveis.length === 1
-    ? possiveis[0]
-    : possiveis.length > 1
-      ? possiveis.join(' ou ')
-      : '?'
+  if (possiveis.length !== 1) {
+    // Ambíguo ou sem origem conhecida — mantém texto original
+    return log.descricao || ''
+  }
 
   // Preserva contexto entre parênteses do log original (hop, redistribuição, etc)
   const ctx = log.descricao?.match(/\(([^)]+)\)/)?.[0] || ''
-  return `Transbordo: ${origemNome} → ${destinoNome} ${ctx} (retroativo)`.trim()
+  return `Transbordo: ${possiveis[0]} → ${destinoNome} ${ctx} (retroativo)`.trim()
 }
 
 function derivaOrigemUm(
