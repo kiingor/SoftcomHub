@@ -2665,8 +2665,8 @@ const saveConfig = async () => {
   const IconComponent = getIconComponent(configForm.icon_url)
   const SetorIcon = getIconComponent(setor?.icon_url)
 
-  // Badge inline da origem do ticket — usado nas tabelas de Monitoramento e Relatório.
-  // Tooltip nativo (title) com os eventos relevantes em ordem cronológica.
+  // Badge clicável da origem do ticket — abre popover com timeline dos eventos.
+  // Usado nas tabelas de Monitoramento e Relatório.
   const OrigemBadge = ({ ticketId }: { ticketId: string }) => {
     const origem = origensMap.get(ticketId)
     if (!origem) return <span className="text-xs text-muted-foreground">—</span>
@@ -2674,19 +2674,54 @@ const saveConfig = async () => {
       try { return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) }
       catch { return iso }
     }
-    const tooltipText = origem.eventos.length > 0
-      ? origem.eventos.map(e => `${fmt(e.quando)} · ${e.descricao}`).join('\n')
-      : 'Criado diretamente pelo cliente'
     return (
-      <span
-        className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', badgeClassesPorTipo(origem.tipo))}
-        title={tooltipText}
-      >
-        {origem.label}
-        {origem.hops > 0 && origem.tipo === 'transbordo' && (
-          <span className="opacity-70">·{origem.hops}x</span>
-        )}
-      </span>
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-opacity hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-primary/40',
+              badgeClassesPorTipo(origem.tipo),
+            )}
+            aria-label={`Ver histórico de origem do ticket`}
+          >
+            {origem.label}
+            {origem.hops > 0 && origem.tipo === 'transbordo' && (
+              <span className="opacity-70">·{origem.hops}x</span>
+            )}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-80 p-0 glass-dropdown rounded-2xl border-0" align="start">
+          <div className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-foreground">Histórico do ticket</p>
+              <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', badgeClassesPorTipo(origem.tipo))}>
+                {origem.label}
+              </span>
+            </div>
+            {origem.eventos.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">
+                Sem eventos registrados — ticket criado diretamente pelo cliente.
+              </p>
+            ) : (
+              <ol className="relative space-y-2 border-l border-border pl-4">
+                {origem.eventos.map((e, i) => (
+                  <li key={i} className="relative">
+                    <span className="absolute -left-[18px] top-1 flex h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{fmt(e.quando)}</p>
+                    <p className="text-xs text-foreground leading-snug mt-0.5">{e.descricao}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {origem.hops > 0 && (
+              <div className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] text-muted-foreground">
+                Total de transbordos: <strong className="text-foreground">{origem.hops}</strong>
+              </div>
+            )}
+          </div>
+        </PopoverContent>
+      </Popover>
     )
   }
 
