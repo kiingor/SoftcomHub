@@ -1016,14 +1016,14 @@ export default function SetorPage() {
   // Lookup global de setores — usado pra reescrever descrições antigas de
   // transbordo em tempo de exibição (sem mexer no banco). Permite mostrar
   // "Transbordo: X → Y" mesmo em logs antigos que só tinham texto genérico.
-  const todosSetores = (data?.todosSetores || []) as Array<{ id: string; nome: string; setor_receptor_id: string | null }>
+  const setoresParaOrigem = (data?.todosSetores || []) as Array<{ id: string; nome: string; setor_receptor_id: string | null }>
   const setoresLookup = useMemo(() => {
     const m = new Map<string, { nome: string; setor_receptor_id?: string | null }>()
-    for (const s of todosSetores) {
+    for (const s of setoresParaOrigem) {
       m.set(s.id, { nome: s.nome, setor_receptor_id: s.setor_receptor_id })
     }
     return m
-  }, [todosSetores])
+  }, [setoresParaOrigem])
 
   // Mapa de "origem" pra todos os tickets (ativos + relatório).
   // Construído uma vez quando tickets mudam — usado nas tabelas pra renderizar
