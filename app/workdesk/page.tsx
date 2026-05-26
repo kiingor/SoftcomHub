@@ -24,6 +24,7 @@ import {
   Video,
   Menu,
   User,
+  Users,
   Check,
   CheckCheck,
   ArrowRightLeft,
@@ -761,6 +762,10 @@ export default function WorkdeskPage() {
   const [subsetorFilter, setSubsetorFilter] = useState<string>('todos')
   const [searchTerm, setSearchTerm] = useState('')
   const [subsetoresDisponiveis, setSubsetoresDisponiveis] = useState<Subsetor[]>([])
+
+  // Contador de clientes em fila (tickets aberto sem colaborador atribuído nos setores do atendente)
+  const [filaCount, setFilaCount] = useState<number>(0)
+  const [puxandoTicket, setPuxandoTicket] = useState(false)
   
   // Mobile
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
@@ -1222,6 +1227,58 @@ export default function WorkdeskPage() {
     }
   }, [supabase])
 
+  // Fetch contagem de clientes em fila nos setores do colaborador.
+  // "Em fila" = ticket aberto, sem colaborador atribuído, em um setor que o atendente atende.
+  const fetchFilaCount = useCallback(async (colab: Colaborador) => {
+    const setorIds = (colab.setores_vinculados || []).map((s) => s.setor_id)
+    if (colab.setor_id && !setorIds.includes(colab.setor_id)) setorIds.push(colab.setor_id)
+    if (setorIds.length === 0) {
+      setFilaCount(0)
+      return
+    }
+    const { count, error } = await supabase
+      .from('tickets')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'aberto')
+      .is('colaborador_id', null)
+      .in('setor_id', setorIds)
+    if (!error) setFilaCount(count ?? 0)
+  }, [supabase])
+
+  // Puxa o próximo ticket da fila ignorando o limite max_tickets_per_agent do setor.
+  // Usado pelo botão "Puxar próximo" — atendente assume o ticket mais antigo da fila
+  // mesmo já estando no teto definido pelo setor.
+  const handlePuxarTicket = useCallback(async () => {
+    if (!colaborador?.id || puxandoTicket) return
+    setPuxandoTicket(true)
+    try {
+      const res = await fetch('/api/tickets/pull-next', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId: colaborador.id }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data?.success) {
+        toast.success('Ticket adicionado ao seu atendimento')
+        // Atualiza tickets e contador na hora — realtime também vai disparar, mas isso
+        // garante feedback imediato.
+        const colab = colaboradorCurrentRef.current
+        if (colab) {
+          fetchTickets(colab)
+          fetchFilaCount(colab)
+        }
+      } else {
+        const msg = data?.error || 'Não foi possível puxar um ticket'
+        toast.error(msg)
+      }
+    } catch (err) {
+      console.error('[handlePuxarTicket] erro:', err)
+      toast.error('Erro de rede ao puxar ticket')
+    } finally {
+      setPuxandoTicket(false)
+    }
+  }, [colaborador?.id, puxandoTicket, fetchTickets, fetchFilaCount])
+
   // Fetch subsetores for the colaborador's setores
   const fetchSubsetoresDisponiveis = useCallback(async (colab: Colaborador) => {
     if (!colab.setores_vinculados || colab.setores_vinculados.length === 0) {
@@ -1397,11 +1454,12 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         await fetchTickets(colab)
         await fetchSubsetoresDisponiveis(colab)
         await fetchMeusSubsetores(colab)
+        await fetchFilaCount(colab)
       }
       setLoading(false)
     }
     init()
-  }, [fetchColaborador, fetchTickets, fetchSubsetoresDisponiveis, fetchMeusSubsetores])
+  }, [fetchColaborador, fetchTickets, fetchSubsetoresDisponiveis, fetchMeusSubsetores, fetchFilaCount])
 
   // Real-time subscription to sync colaborador status across all sessions/browsers
   useEffect(() => {
@@ -1635,6 +1693,65 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // the subscription every time any colaborador field changes
   }, [colaborador?.id, fetchTickets, supabase, playAlert])
 
+  // Realtime: contador de fila reage a tickets sem colaborador_id nos setores do atendente.
+  // Filtro server-side em colaborador_id é unidirecional (não captura tickets sem dono),
+  // então este canal escuta mudanças amplas em tickets e o handler decide se recalcula.
+  // Debounce evita rajadas (várias inserções consecutivas → 1 recálculo).
+  useEffect(() => {
+    if (!colaborador?.id) return
+    const setorIds = (colaborador.setores_vinculados || []).map((s) => s.setor_id)
+    if (colaborador.setor_id && !setorIds.includes(colaborador.setor_id)) setorIds.push(colaborador.setor_id)
+    if (setorIds.length === 0) return
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleRefresh = () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        const colab = colaboradorCurrentRef.current
+        if (colab) fetchFilaCount(colab)
+      }, 500)
+    }
+
+    const affectsQueue = (row: any) =>
+      row && setorIds.includes(row.setor_id)
+
+    const channel = supabase
+      .channel(`fila-count-${colaborador.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'tickets' },
+        (payload) => {
+          if (affectsQueue(payload.new)) scheduleRefresh()
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'tickets' },
+        (payload) => {
+          // Recalcula se a mudança afeta algum setor do atendente
+          if (affectsQueue(payload.new) || affectsQueue(payload.old)) scheduleRefresh()
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'tickets' },
+        (payload) => {
+          if (affectsQueue(payload.old)) scheduleRefresh()
+        }
+      )
+      .subscribe((status, err) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[WorkDesk] Fila count subscription error: ${status}`, err)
+          setTimeout(() => supabase.removeChannel(channel), 5000)
+        }
+      })
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      supabase.removeChannel(channel)
+    }
+  }, [colaborador?.id, colaborador?.setor_id, colaborador?.setores_vinculados, fetchFilaCount, supabase])
+
   // Refresh tickets + heartbeat when tab regains visibility
   // Browsers throttle setInterval in background tabs (Chrome: min 1x/min).
   // This ensures heartbeat is sent immediately on return + tickets are refreshed.
@@ -1734,7 +1851,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           )
           // Refresh tickets right after assignment
           const fresh = colaboradorCurrentRef.current
-          if (fresh) fetchTickets(fresh)
+          if (fresh) {
+            fetchTickets(fresh)
+            fetchFilaCount(fresh)
+          }
         } else {
           const errorText = await res.text().catch(() => 'sem body')
           console.warn(
@@ -1797,7 +1917,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       pollInFlight = true
       try {
         const colab = colaboradorCurrentRef.current
-        if (colab) await fetchTickets(colab)
+        if (colab) {
+          await fetchTickets(colab)
+          await fetchFilaCount(colab)
+        }
       } finally {
         pollInFlight = false
       }
@@ -1843,7 +1966,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       clearInterval(sessionRefreshInterval)
     }
   // Only depend on colaborador.id — status changes go through colaboradorCurrentRef
-  }, [colaborador?.id, fetchTickets, supabase])
+  }, [colaborador?.id, fetchTickets, fetchFilaCount, supabase])
 
 // Real-time subscription for messages of current ticket
   // Stable refs for realtime subscription
@@ -3760,6 +3883,57 @@ const tempId = `temp-${Date.now()}`
           selectedTicket ? "hidden md:flex" : "flex w-full",
           "md:w-52 md:flex lg:w-60 xl:w-72"
         )}>
+          {/* Card de Fila: contador + botão "Puxar próximo".
+              O botão ignora o limite max_tickets_per_agent do setor — usado quando
+              o atendente quer pegar mais um ticket mesmo já estando no teto. */}
+          <div className="p-2 border-b border-white/30 dark:border-white/8 shrink-0 space-y-1.5">
+            <div className="flex items-center justify-between gap-2 rounded-md bg-white/40 dark:bg-white/[0.03] px-2.5 py-1.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className={cn(
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
+                  filaCount > 0
+                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+                    : 'bg-muted text-muted-foreground'
+                )}>
+                  <Users className="h-3 w-3" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[9px] uppercase tracking-wider text-muted-foreground leading-none">
+                    Em fila
+                  </p>
+                  <p className="text-xs font-semibold text-foreground leading-tight mt-0.5">
+                    {filaCount} {filaCount === 1 ? 'aguardando' : 'aguardando'}
+                  </p>
+                </div>
+              </div>
+              {filaCount > 0 && (
+                <motion.span
+                  key={filaCount}
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  className="flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white shadow-sm"
+                >
+                  {filaCount > 99 ? '99+' : filaCount}
+                </motion.span>
+              )}
+            </div>
+            <Button
+              onClick={handlePuxarTicket}
+              disabled={puxandoTicket || filaCount === 0}
+              variant="outline"
+              size="sm"
+              className="w-full gap-2 h-8 text-xs border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20 disabled:opacity-50"
+              title="Puxa o próximo ticket da fila ignorando o limite do setor"
+            >
+              {puxandoTicket ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+              {puxandoTicket ? 'Puxando...' : 'Puxar próximo'}
+            </Button>
+          </div>
+
           {/* Disparo Button - for WhatsApp and/or EvolutionAPI
               Enquanto setorCanaisAtivos não populou (carregando), confia no
               setorCanalConfig legado pra evitar "piscar" do botão (race
