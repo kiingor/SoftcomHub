@@ -272,7 +272,7 @@ export default function TicketsPage() {
         *,
         cliente:clientes(id, nome, telefone, email),
         colaborador:colaboradores(id, nome),
-        setor:setores(id, nome),
+        setor:setores!tickets_setor_id_fkey(id, nome),
         subsetor:subsetores(id, nome)
       `)
       .order('created_at', { ascending: false })

@@ -183,7 +183,9 @@ function derivaOrigemUm(
   }
 
   // Extrai setor de origem e/ou quem transferiu do PRIMEIRO log (cronológico).
-  // Funciona apenas pros logs novos com a descrição padronizada.
+  // Funciona pros logs no formato novo "Transbordo: A → B". Logs antigos sem
+  // esse prefixo já foram reescritos (em memória) por logsReescritos via
+  // reescreveDescricaoAntiga acima, então o regex também pega esses casos.
   let setorOrigem: string | undefined
   let transferidoPor: string | undefined
 
@@ -191,7 +193,7 @@ function derivaOrigemUm(
     const primeiroLog = logsReescritos.find((l) => l.tipo === 'transferencia_automatica')
     if (primeiroLog?.descricao) {
       const match = primeiroLog.descricao.match(TRANSBORDO_DESCRICAO_REGEX)
-      if (match?.[1]) setorOrigem = match[1].trim()
+      if (match?.[1]) setorOrigem = compactarListaSetores(match[1].trim())
     }
   } else if (tipo === 'transferencia') {
     const primeiroLog = logsReescritos.find((l) => l.tipo === 'transferencia')
@@ -199,7 +201,7 @@ function derivaOrigemUm(
       const match = primeiroLog.descricao.match(TRANSFERENCIA_DESCRICAO_REGEX)
       if (match) {
         transferidoPor = match[1]?.trim()
-        setorOrigem = match[2]?.trim()
+        setorOrigem = compactarListaSetores(match[2]?.trim() || '')
       }
     }
   }
@@ -212,6 +214,18 @@ function derivaOrigemUm(
     eventos,
     hops: ticket.transbordo_hops ?? 0,
   }
+}
+
+/**
+ * Compacta uma lista "A ou B ou C ou D" pra "A ou B (+2)" quando há mais
+ * de 2 candidatos. A descrição original (com todos os setores) continua
+ * visível no popover via os eventos do log — aqui só limpa o label da badge.
+ */
+function compactarListaSetores(s: string): string {
+  if (!s.includes(' ou ')) return s
+  const partes = s.split(' ou ').map(p => p.trim()).filter(Boolean)
+  if (partes.length <= 2) return s
+  return `${partes[0]} ou ${partes[1]} (+${partes.length - 2})`
 }
 
 function descricaoCurta(log: TicketLogLike): string {

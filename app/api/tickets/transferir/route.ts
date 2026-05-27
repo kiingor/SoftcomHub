@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     // 1. Buscar ticket atual
     const { data: ticket, error: ticketError } = await supabase
       .from('tickets')
-      .select('id, setor_id, colaborador_id, cliente_id, status, setores(nome)')
+      .select('id, setor_id, colaborador_id, cliente_id, status, setores!tickets_setor_id_fkey(nome)')
       .eq('id', ticket_id)
       .single()
 

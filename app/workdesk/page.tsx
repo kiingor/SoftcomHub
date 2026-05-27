@@ -1093,7 +1093,7 @@ export default function WorkdeskPage() {
   const fetchTickets = useCallback(async (colab: Colaborador) => {
     const runQuery = () => supabase
       .from('tickets')
-      .select('*, numero, clientes(*), setores(id, nome, cor, canal, tempo_espera_minutos), subsetores(id, nome)')
+      .select('*, numero, clientes(*), setores!tickets_setor_id_fkey(id, nome, cor, canal, tempo_espera_minutos), subsetores(id, nome)')
       .in('status', ['aberto', 'em_atendimento'])
       .order('criado_em', { ascending: false })
       // ALWAYS filter by colaborador_id - each atendente only sees their own tickets

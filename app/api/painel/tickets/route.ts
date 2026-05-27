@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
         `
         id, numero, status, setor_id, subsetor_id, colaborador_id, cliente_id,
         canal, prioridade, criado_em, encerrado_em, primeira_resposta_em,
-        setores(id, nome),
+        setores!tickets_setor_id_fkey(id, nome),
         colaboradores(id, nome),
         clientes(id, nome, telefone)
       `,
