@@ -231,7 +231,7 @@ export async function criarEDistribuirTicket(
           const receptorId = setorData.setor_receptor_id
           console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
 
-          // Captura nomes dos setores antes do update pra incluir na descrição do log
+          // Nomes dos setores pra log (origem + destino)
           const { data: nomesSetores } = await supabase
             .from('setores').select('id, nome').in('id', [setorId, receptorId])
           const nomeOrigem = nomesSetores?.find(s => s.id === setorId)?.nome || setorId
