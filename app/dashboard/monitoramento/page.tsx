@@ -65,6 +65,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { calcularOrigem, type SetorLookupEntry } from '@/lib/ticket-origem'
+import { OrigemBadge } from '@/components/origem-badge'
 
 function formatMs(ms: number) {
   const hours = Math.floor(ms / (1000 * 60 * 60))
@@ -228,10 +230,38 @@ export default function MonitoramentoPage() {
       // Fetch active tickets (aberto + em_atendimento) across all accessible setores
       let ticketsQuery = supabase
         .from('tickets')
-        .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, pausa_atual_id), setores(id, nome), subsetores(id, nome)')
+        .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, pausa_atual_id), setores!tickets_setor_id_fkey(id, nome), subsetores(id, nome)')
         .in('setor_id', targetSetorIds)
         .in('status', ['aberto', 'em_atendimento'])
       const { data: ticketsAtivos } = await ticketsQuery
+
+      // Lookup global de setores — usado pra reescrever descrições antigas de
+      // transbordo na hora da exibição. Carrega TODOS os setores (não só os
+      // acessíveis), pra que setor de origem fora do escopo do colaborador
+      // ainda apareça nomeado no badge.
+      const { data: todosSetoresData } = await supabase
+        .from('setores')
+        .select('id, nome, setor_receptor_id')
+
+      // Logs relevantes pra derivar "origem" dos tickets ativos. Carrega em
+      // batch pra evitar N+1 — mesma estratégia da página do setor.
+      const ticketsAtivosIds = (ticketsAtivos || []).map((t: any) => t.id)
+      const logsMap = new Map<string, any[]>()
+      if (ticketsAtivosIds.length > 0) {
+        const { data: logsData } = await supabase
+          .from('ticket_logs')
+          .select('ticket_id, tipo, descricao, criado_em')
+          .in('ticket_id', ticketsAtivosIds)
+          .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual'])
+        for (const l of (logsData || [])) {
+          const arr = logsMap.get(l.ticket_id) || []
+          arr.push(l)
+          logsMap.set(l.ticket_id, arr)
+        }
+      }
+      for (const t of (ticketsAtivos || []) as any[]) {
+        (t as any)._logs = logsMap.get(t.id) || []
+      }
 
       // Fetch today's tickets (for stats)
       const now = new Date()
@@ -327,6 +357,7 @@ export default function MonitoramentoPage() {
       return {
         tickets,
         atendentes,
+        todosSetores: todosSetoresData || [],
         stats: {
           total: tickets.length,
           naFila: ticketsNaFila.length,
@@ -356,6 +387,23 @@ export default function MonitoramentoPage() {
   const temposHoje = data?.temposHoje || { tempoMedioPrimeiraResposta: '00:00:00', tempoMedioResolucao: '00:00:00', totalRecebidos: 0, totalResolvidos: 0 }
   const tickets = data?.tickets || []
   const atendentesRaw: any[] = data?.atendentes || []
+  const todosSetores = (data?.todosSetores || []) as Array<{ id: string; nome: string; setor_receptor_id: string | null }>
+
+  // Lookup de setores pra reescrita ao vivo de logs antigos de transbordo
+  const setoresLookup = useMemo(() => {
+    const m = new Map<string, SetorLookupEntry>()
+    for (const s of todosSetores) {
+      m.set(s.id, { nome: s.nome, setor_receptor_id: s.setor_receptor_id })
+    }
+    return m
+  }, [todosSetores])
+
+  // Mapa de origem por ticket — construído uma vez quando tickets mudam.
+  // Usado pelos badges sem recalcular por linha.
+  const origensMap = useMemo(() => {
+    const allLogs = tickets.flatMap((t: any) => t._logs || [])
+    return calcularOrigem(tickets, allLogs, setoresLookup)
+  }, [tickets, setoresLookup])
 
   // Tickets em andamento
   // Lista de atendentes únicos para o filtro
@@ -503,7 +551,7 @@ export default function MonitoramentoPage() {
     try {
       const { data: history } = await supabase
         .from('tickets')
-        .select('*, colaboradores(nome), setores(nome)')
+        .select('*, colaboradores(nome), setores!tickets_setor_id_fkey(nome)')
         .eq('cliente_id', ticket.cliente_id)
         .neq('id', ticket.id)
         .order('criado_em', { ascending: false })
@@ -1118,6 +1166,7 @@ export default function MonitoramentoPage() {
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
@@ -1132,6 +1181,7 @@ export default function MonitoramentoPage() {
                           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-8" /></TableCell>
@@ -1139,7 +1189,7 @@ export default function MonitoramentoPage() {
                       ))
                     ) : ticketsEmAndamento.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={8} className="h-32 text-center">
+                        <TableCell colSpan={9} className="h-32 text-center">
                           <div className="flex flex-col items-center justify-center text-muted-foreground">
                             <AlertCircle className="mb-2 h-8 w-8" />
                             <p>Nenhum atendimento em andamento</p>
@@ -1179,6 +1229,7 @@ export default function MonitoramentoPage() {
                                 <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                               </div>
                             </TableCell>
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} /></TableCell>
                             <TableCell className="text-sm text-foreground">
                               {ticket.setor}
                               {ticket.subsetor && (
@@ -1285,6 +1336,7 @@ export default function MonitoramentoPage() {
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
                     </TableRow>
@@ -1297,13 +1349,14 @@ export default function MonitoramentoPage() {
                           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-28" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                           <TableCell><Skeleton className="h-4 w-8" /></TableCell>
                         </TableRow>
                       ))
                     ) : ticketsAguardando.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="h-32 text-center">
+                        <TableCell colSpan={7} className="h-32 text-center">
                           <div className="flex flex-col items-center justify-center text-muted-foreground">
                             <AlertCircle className="mb-2 h-8 w-8" />
                             <p>Nenhum ticket aguardando</p>
@@ -1326,6 +1379,7 @@ export default function MonitoramentoPage() {
                               {ticket.contato}
                             </div>
                           </TableCell>
+                          <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} /></TableCell>
                           <TableCell className="text-xs text-foreground">
                             {ticket.setor}
                             {ticket.subsetor && (

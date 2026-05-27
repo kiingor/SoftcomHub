@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     // 1. Buscar ticket atual
     const { data: ticket, error: ticketError } = await supabase
       .from('tickets')
-      .select('id, setor_id, colaborador_id, cliente_id, status, setores(nome)')
+      .select('id, setor_id, colaborador_id, cliente_id, status, setores!tickets_setor_id_fkey(nome)')
       .eq('id', ticket_id)
       .single()
 
@@ -162,6 +162,21 @@ export async function POST(request: Request) {
       tipo: 'texto',
       enviado_em: new Date().toISOString(),
     })
+
+    // 7b. Registrar em ticket_logs pra aparecer no histórico de "origem".
+    // Formato padronizado pro helper lib/ticket-origem.ts parsear:
+    //   "Transferido por <NOME>: <SETOR_ORIGEM> → <SETOR_DESTINO>"
+    const descricaoLog = `Transferido por ${fromNome}: ${fromSetor} → ${toSetorNome}${
+      colabDestino ? ` (para ${colabDestino.nome})` : queued ? ' (fila)' : ''
+    }`
+    const { error: logTransfError } = await supabase.from('ticket_logs').insert({
+      ticket_id,
+      tipo: 'transferencia',
+      descricao: descricaoLog,
+    })
+    if (logTransfError) {
+      console.warn('[Transferir] Falha ao gravar log de transferência:', logTransfError.message)
+    }
 
     // 8. Se o ticket foi para a fila, acionar distribuição automática
     if (queued) {

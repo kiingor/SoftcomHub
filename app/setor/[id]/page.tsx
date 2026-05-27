@@ -126,6 +126,8 @@ import {
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
+import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
+import { OrigemBadge } from '@/components/origem-badge'
 import { toast } from 'sonner'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Send, Hash, Check, Tag, Radio, Inbox } from 'lucide-react'
@@ -210,7 +212,7 @@ async function fetchSetorData(setorId: string) {
   const ninetyDaysAgo = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
 // Queries de monitoramento (dados ao vivo — atualizados pelo Realtime)
-const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes] = await Promise.all([
+const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes, todosSetoresRes] = await Promise.all([
     supabase.from('setores').select('*').eq('id', setorId).single(),
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
@@ -223,11 +225,34 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     supabase.from('pausas').select('*').eq('setor_id', setorId).order('nome'),
     // Múltiplos subsetores por colaborador
     supabase.from('colaboradores_subsetores').select('colaborador_id, subsetor_id, subsetores(id, nome)').eq('setor_id', setorId),
+    // Lookup global de setores — usado pra inferir origem de transbordos antigos
+    supabase.from('setores').select('id, nome, setor_receptor_id'),
   ])
 
   const ticketsAtivos = ticketsAtivosRes.data || []
   const ticketsHoje = ticketsHojeRes.data || []
   const atendentesSetor = colaboradoresRes.data || []
+
+  // Logs relevantes pra derivar "origem" dos tickets ativos
+  // (criacao, transferencias, transbordos). Carrega em batch pra evitar N+1.
+  const ticketsAtivosIds = ticketsAtivos.map((t: any) => t.id)
+  const logsMap = new Map<string, any[]>()
+  if (ticketsAtivosIds.length > 0) {
+    const { data: logsData } = await supabase
+      .from('ticket_logs')
+      .select('ticket_id, tipo, descricao, criado_em')
+      .in('ticket_id', ticketsAtivosIds)
+      .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual'])
+    for (const l of (logsData || [])) {
+      const arr = logsMap.get(l.ticket_id) || []
+      arr.push(l)
+      logsMap.set(l.ticket_id, arr)
+    }
+  }
+  // Anexa _logs em cada ticket ativo (mesma chave usada no relatório)
+  for (const t of ticketsAtivos as any[]) {
+    (t as any)._logs = logsMap.get(t.id) || []
+  }
   // Agrupar subsetores por colaborador
   const colabSubsetoresMap: Record<string, { id: string; nome: string }[]> = {}
   for (const cs of (colabSubsetoresRes.data || [])) {
@@ -280,6 +305,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     setor: setorRes.data,
     tickets: ticketsAtivos,
     atendentes,
+    todosSetores: todosSetoresRes.data || [],
     permissoes: permissoesRes.data || [],
     horarios: horariosRes.data || [],
     stats: {
@@ -814,21 +840,35 @@ export default function SetorPage() {
       // Buscar avaliações separadamente (join direto não funciona via client RLS)
       const ticketIds = (tickets || []).map((t: any) => t.id)
       let avaliacoesMap = new Map<string, number>()
+      let logsMap = new Map<string, any[]>()
       if (ticketIds.length > 0) {
-        const { data: avaliacoes } = await supabase
-          .from('avaliacoes')
-          .select('ticket_id, nota')
-          .in('ticket_id', ticketIds)
-        if (avaliacoes) {
-          for (const a of avaliacoes) {
+        const [avalRes, logsRes] = await Promise.all([
+          supabase.from('avaliacoes').select('ticket_id, nota').in('ticket_id', ticketIds),
+          // Logs relevantes pra derivar "origem" do ticket (criacao, transferencias, transbordos)
+          supabase
+            .from('ticket_logs')
+            .select('ticket_id, tipo, descricao, criado_em')
+            .in('ticket_id', ticketIds)
+            .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+        ])
+        if (avalRes.data) {
+          for (const a of avalRes.data) {
             avaliacoesMap.set(a.ticket_id, a.nota)
           }
         }
+        if (logsRes.data) {
+          for (const l of logsRes.data) {
+            const arr = logsMap.get(l.ticket_id) || []
+            arr.push(l)
+            logsMap.set(l.ticket_id, arr)
+          }
+        }
       }
-      // Merge avaliações nos tickets
+      // Merge avaliações + logs nos tickets
       return (tickets || []).map((t: any) => ({
         ...t,
         avaliacoes: avaliacoesMap.has(t.id) ? [{ nota: avaliacoesMap.get(t.id) }] : [],
+        _logs: logsMap.get(t.id) || [],
       }))
     },
     { revalidateOnFocus: false }
@@ -905,6 +945,27 @@ export default function SetorPage() {
   const temposHoje = data?.temposHoje || { tempoMedioEspera: '00:00:00', tempoMedioResposta: '00:00:00', tempoMedioPrimeiraResposta: '00:00:00', tempoMedioAtendimento: '00:00:00' }
   const tickets = data?.tickets || []
   const ticketsRelatorioRaw = relatorioData || []
+
+  // Lookup global de setores — usado pra reescrever descrições antigas de
+  // transbordo em tempo de exibição (sem mexer no banco). Permite mostrar
+  // "Transbordo: X → Y" mesmo em logs antigos que só tinham texto genérico.
+  const setoresParaOrigem = (data?.todosSetores || []) as Array<{ id: string; nome: string; setor_receptor_id: string | null }>
+  const setoresLookup = useMemo(() => {
+    const m = new Map<string, { nome: string; setor_receptor_id?: string | null }>()
+    for (const s of setoresParaOrigem) {
+      m.set(s.id, { nome: s.nome, setor_receptor_id: s.setor_receptor_id })
+    }
+    return m
+  }, [setoresParaOrigem])
+
+  // Mapa de "origem" pra todos os tickets (ativos + relatório).
+  // Construído uma vez quando tickets mudam — usado nas tabelas pra renderizar
+  // o badge de origem sem recalcular por linha.
+  const origensMap = useMemo(() => {
+    const allTickets = [...tickets, ...ticketsRelatorioRaw]
+    const allLogs = allTickets.flatMap((t: any) => t._logs || [])
+    return calcularOrigem(allTickets, allLogs, setoresLookup)
+  }, [tickets, ticketsRelatorioRaw, setoresLookup])
 
   // Busca por cliente (telefone/CNPJ/nome) — filtro client-side
   const [searchCliente, setSearchCliente] = useState('')
@@ -3057,6 +3118,7 @@ const saveConfig = async () => {
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo atend.</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
                             <TableHead className="text-xs w-[60px]"></TableHead>
@@ -3071,6 +3133,7 @@ const saveConfig = async () => {
                                 <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                                <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-40" /></TableCell>
                                 <TableCell><Skeleton className="h-6 w-6" /></TableCell>
@@ -3078,7 +3141,7 @@ const saveConfig = async () => {
                             ))
                           ) : ticketsEmAndamento.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={8} className="h-32 text-center">
+                              <TableCell colSpan={9} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <AlertCircle className="mb-2 h-8 w-8" />
                                   <p>Nenhum atendimento no momento</p>
@@ -3116,6 +3179,7 @@ const saveConfig = async () => {
                                       {ticket.contato}
                                     </div>
                                   </TableCell>
+                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.fila || setor?.nome}</TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
@@ -3146,6 +3210,7 @@ const saveConfig = async () => {
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo na fila</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
                             <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Prioridade</TableHead>
                             <TableHead className="text-xs w-[60px]"></TableHead>
@@ -3158,6 +3223,7 @@ const saveConfig = async () => {
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                                <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-6 w-6" /></TableCell>
@@ -3165,7 +3231,7 @@ const saveConfig = async () => {
                             ))
                           ) : ticketsAguardando.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={6} className="h-32 text-center">
+                              <TableCell colSpan={7} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <AlertCircle className="mb-2 h-8 w-8" />
                                   <p>Nenhum ticket aguardando atendimento</p>
@@ -3191,6 +3257,7 @@ const saveConfig = async () => {
                                     {ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}
                                   </div>
                                 </TableCell>
+                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
                                 <TableCell className="text-sm text-foreground">{setor?.nome}</TableCell>
                                 <TableCell>
                                   <Badge variant={
@@ -3599,6 +3666,7 @@ const saveConfig = async () => {
                           <TableHead className="text-xs font-medium pl-4">Ticket</TableHead>
                           <TableHead className="text-xs font-medium">Cliente</TableHead>
                           <TableHead className="text-xs font-medium">Atendente</TableHead>
+                          <TableHead className="text-xs font-medium">Origem</TableHead>
                           <TableHead className="text-xs font-medium">Status</TableHead>
                           <TableHead className="text-xs font-medium">NPS</TableHead>
                           <TableHead className="text-xs font-medium">Data</TableHead>
@@ -3616,6 +3684,7 @@ const saveConfig = async () => {
                               </div>
                             </TableCell>
                             <TableCell className="text-sm">{ticket.colaboradores?.nome || '-'}</TableCell>
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
                             <TableCell>
                               <Badge
                                 variant="outline"
