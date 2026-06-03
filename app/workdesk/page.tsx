@@ -790,6 +790,9 @@ export default function WorkdeskPage() {
   const [transferLoading, setTransferLoading] = useState(false)
   const [transferDataLoading, setTransferDataLoading] = useState(false)
   const transferringTicketIdsRef = useRef<Set<string>>(new Set())
+  // Confirmação ao transferir para atendente offline
+  const [offlineConfirmOpen, setOfflineConfirmOpen] = useState(false)
+  const [offlineTransferTarget, setOfflineTransferTarget] = useState<{ id: string; nome: string } | null>(null)
 
   // Helper: verifica se atendente está online (confia no is_online do banco)
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
@@ -2798,6 +2801,26 @@ const handleEncerrarTicket = async () => {
         transferringTicketIdsRef.current.delete(ticketId)
       }, 5000)
     }
+  }
+
+  // Antes de transferir: se o atendente de destino estiver offline, pede confirmação.
+  // Caso contrário (online ou "deixar na fila"), transfere direto.
+  const attemptTransfer = () => {
+    const target =
+      selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all'
+        ? atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)
+        : null
+    if (target && !isAtendenteOnline(target)) {
+      setOfflineTransferTarget({ id: target.id, nome: target.nome })
+      setOfflineConfirmOpen(true)
+      return
+    }
+    handleTransferTicket()
+  }
+
+  const confirmOfflineTransfer = () => {
+    setOfflineConfirmOpen(false)
+    handleTransferTicket()
   }
 
   // Disparo - CNPJ lookup
@@ -5566,7 +5589,6 @@ onClick={() => {
                               <SelectItem
                                 key={atendente.id}
                                 value={atendente.id}
-                                disabled={!online}
                               >
                                 <div className="flex items-center gap-2 w-full">
                                   <span
@@ -5606,20 +5628,19 @@ onClick={() => {
                     </div>
 
   <Button
-  onClick={handleTransferTicket}
+  onClick={attemptTransfer}
   disabled={
   !selectedAtendenteTransfer ||
   selectedAtendenteTransfer === 'all' ||
-  transferLoading ||
-  !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer))
+  transferLoading
   }
   className="w-full"
   >
   {transferLoading ? 'Transferindo...' : 'Transferir para Atendente'}
   </Button>
   {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)) && (
-  <p className="text-sm text-destructive">
-  Este atendente esta offline. Selecione um atendente online.
+  <p className="text-sm text-amber-600">
+  Este atendente esta offline. Ao transferir, o ticket sera atribuido a ele e aparece na lista dele no WorkDesk.
   </p>
   )}
   </TabsContent>
@@ -5675,7 +5696,6 @@ onClick={() => {
                                 <SelectItem
                                   key={atendente.id}
                                   value={atendente.id}
-                                  disabled={!online}
                                 >
                                   <div className="flex items-center gap-2">
                                     <span
@@ -5709,7 +5729,7 @@ onClick={() => {
                       )}
 
                     <Button
-                      onClick={handleTransferTicket}
+                      onClick={attemptTransfer}
                       disabled={
                         !selectedSetorTransfer || selectedSetorTransfer === 'all' || transferLoading
                       }
@@ -5722,6 +5742,26 @@ onClick={() => {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Confirmação: transferir para atendente offline */}
+      <AlertDialog open={offlineConfirmOpen} onOpenChange={setOfflineConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>⚠️ Transferir para atendente offline?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{offlineTransferTarget?.nome}</strong> está offline no momento. O ticket
+              será atribuído a ele(a) e aparecerá na lista dele(a) no WorkDesk. Deseja
+              transferir mesmo assim?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmOfflineTransfer}>
+              Transferir mesmo assim
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Disparo Dialog */}
       <Dialog open={disparoDialogOpen} onOpenChange={(open) => { setDisparoDialogOpen(open); if (!open) resetDisparo() }}>

@@ -43,23 +43,30 @@ export async function POST(request: Request) {
     let toColabNome = 'Aguardando atendente'
     let finalColaboradorId: string | null = null
 
-    // Validar atendente destino antes de liberar o ticket
+    // Validar atendente destino antes de liberar o ticket.
+    // Atendente OFFLINE é permitido: o operador pode transferir deliberadamente
+    // (confirmado na UI). A atribuição é FORÇADA — ignora o limite de tickets — e o
+    // ticket fica na lista (chat) do atendente, que o vê mesmo em status offline.
     let colabDestino: { id: string; nome: string } | null = null
+    let forceOffline = false
     if (colaborador_id) {
       const { data: colab } = await supabase
         .from('colaboradores')
-        .select('id, nome, is_online, pausa_atual_id, last_heartbeat')
+        .select('id, nome, is_online, ativo, pausa_atual_id')
         .eq('id', colaborador_id)
         .single()
 
-      if (!colab?.is_online) {
+      if (!colab || !colab.ativo) {
         return NextResponse.json(
-          { error: 'Este atendente está offline. Selecione um atendente online.' },
+          { error: 'Atendente não encontrado ou inativo.' },
           { status: 422 }
         )
       }
 
-      if (colab.pausa_atual_id) {
+      forceOffline = !colab.is_online
+
+      // Pausa só bloqueia atendente ONLINE. Offline é permitido (atribuição forçada).
+      if (!forceOffline && colab.pausa_atual_id) {
         return NextResponse.json(
           { error: 'Este atendente está em pausa. Selecione outro atendente.' },
           { status: 422 }
@@ -67,8 +74,7 @@ export async function POST(request: Request) {
       }
 
       // Nota: heartbeat NÃO é verificado em transferências manuais.
-      // O operador que transfere vê o atendente online no dashboard — isso já é suficiente.
-      // A verificação de heartbeat é reservada para distribuição automática (ticket-queue-processor).
+      // A verificação de heartbeat é reservada para distribuição automática.
 
       colabDestino = { id: colab.id, nome: colab.nome }
     }
@@ -97,17 +103,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Erro ao transferir ticket' }, { status: 500 })
     }
 
-    // Etapa 2: se houver atendente destino, tentar atribuição atômica via RPC.
-    // Se o atendente estiver no limite, a RPC retorna assigned=false e o ticket
-    // permanece na fila (colaborador_id=null, status=aberto).
+    // Etapa 2: havendo atendente destino, atribuição atômica via RPC.
+    // Transferência direta FORÇA a atribuição (ignora o limite). A RPC só recusa
+    // em caso de corrida (ticket já atribuído por outro processo) → cai na fila.
     if (colabDestino) {
-      const { data: config } = await supabase
-        .from('ticket_distribution_config')
-        .select('max_tickets_per_agent')
-        .eq('setor_id', targetSetorId)
-        .maybeSingle()
-
-      const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
+      // Transferência manual direta: atribuição FORÇADA ao atendente escolhido,
+      // ignorando o limite de tickets — vale tanto para atendente online no limite
+      // quanto para offline. O ticket aguarda na lista (chat) dele.
+      const maxTicketsPerAgent = 1_000_000
 
       const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
         p_ticket_id: ticket_id,
