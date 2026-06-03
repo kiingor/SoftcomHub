@@ -5856,6 +5856,7 @@ const saveConfig = async () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="Suporte">Suporte</SelectItem>
+                  <SelectItem value="Comercial">Comercial</SelectItem>
                   <SelectItem value="Financeiro">Financeiro</SelectItem>
                   <SelectItem value="Ouvidoria">Ouvidoria</SelectItem>
                   <SelectItem value="Jornada Cliente">Jornada Cliente</SelectItem>
