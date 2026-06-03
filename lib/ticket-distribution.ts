@@ -227,7 +227,25 @@ export async function criarEDistribuirTicket(
           console.warn(`[Distribuição] ⚠️ Setor ${setorId} tem transmissao_ativa=true mas setor_receptor_id está vazio — transbordo NÃO funciona. Configure o setor receptor.`)
         }
 
-        if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
+        // Regra de negócio: NÃO transbordar enquanto houver atendente ONLINE
+        // servindo este setor — is_online (botão online), ativo e com este setor
+        // ativo na sessão. SEM janela de inatividade: offline é só pela ação do
+        // atendente (botão de ficar offline no WorkDesk). Cobre "online mas no
+        // limite".
+        const { data: linkRowsTransbordo } = await supabase
+          .from('colaboradores_setores')
+          .select('colaboradores(is_online, ativo, setores_ativos_sessao)')
+          .eq('setor_id', setorId)
+        const setorTemAtendentePresente = (linkRowsTransbordo || []).some((r: any) => {
+          const c = r.colaboradores
+          if (!c || !c.is_online || !c.ativo) return false
+          const sess = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
+          return sess.includes(setorId)
+        })
+
+        if (setorTemAtendentePresente) {
+          console.log(`[Distribuição] Setor ${setorId} tem atendente(s) online servindo o setor — ticket ${ticket.id} fica na fila (sem transbordo).`)
+        } else if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
           const receptorId = setorData.setor_receptor_id
           console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
 
