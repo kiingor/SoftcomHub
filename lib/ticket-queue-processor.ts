@@ -335,7 +335,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
     stats.errors.push('Queue processor is disabled')
     return stats
   }
-  
+
   // Get all unassigned tickets ordered by creation time (oldest first)
   const { data: queuedTickets, error: fetchError } = await supabase
     .from('tickets')
@@ -421,6 +421,27 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
         .select('transmissao_ativa, setor_receptor_id')
         .eq('id', setorId)
         .single()
+
+      // Regra de negócio: NÃO transbordar enquanto houver atendente ONLINE
+      // servindo este setor — is_online (botão online), ativo e com este setor
+      // ativo na sessão (setores_ativos_sessao). SEM janela de inatividade: o
+      // atendente só é considerado offline quando ele mesmo aperta o botão de
+      // ficar offline no WorkDesk. Os tickets ficam na fila aguardando, mesmo
+      // que o atendente esteja ocupado/no limite.
+      const { data: linkRows } = await supabase
+        .from('colaboradores_setores')
+        .select('colaboradores(is_online, ativo, setores_ativos_sessao)')
+        .eq('setor_id', setorId)
+      const temPresente = (linkRows || []).some((r: any) => {
+        const c = r.colaboradores
+        if (!c || !c.is_online || !c.ativo) return false
+        const sess = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
+        return sess.includes(setorId)
+      })
+      if (temPresente) {
+        console.log(`[TicketQueue] Setor ${setorId} tem atendente(s) online servindo o setor — ${ticketIds.length} ticket(s) seguram na fila (sem transbordo).`)
+        continue
+      }
 
       if (setorData?.transmissao_ativa && !setorData?.setor_receptor_id) {
         console.warn(`[TicketQueue] ⚠️ Setor ${setorId} tem transmissao_ativa=true mas setor_receptor_id está vazio — ${ticketIds.length} tickets não serão transmitidos. Configure o setor receptor.`)
