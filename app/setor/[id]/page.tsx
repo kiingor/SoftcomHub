@@ -6409,8 +6409,8 @@ const saveConfig = async () => {
                           </div>
                         ) : msg.remetente === 'supervisor' ? (
                           <div key={msg.id} className="flex justify-start">
-                            <div className="max-w-[85%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
-                              <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+                            <div className="max-w-[85%] rounded-lg border border-dashed border-slate-400/70 bg-slate-100/80 px-3 py-2 dark:border-slate-500/60 dark:bg-slate-800/40">
+                              <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
                                 🔒 Mensagem do supervisor
                               </div>
                               {(() => {
@@ -6420,12 +6420,12 @@ const saveConfig = async () => {
                                 const _corpo = _ass ? _l.slice(0, -1).join('\n').trimEnd() : (msg.conteudo || '')
                                 return (
                                   <>
-                                    <p className="whitespace-pre-wrap text-sm text-amber-900 dark:text-amber-200">{_corpo}</p>
-                                    {_ass && <p className="mt-0.5 text-right text-[10px] italic text-amber-700/70 dark:text-amber-400/70">{_ult}</p>}
+                                    <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{_corpo}</p>
+                                    {_ass && <p className="mt-0.5 text-right text-[10px] italic text-slate-500/70 dark:text-slate-400/70">{_ult}</p>}
                                   </>
                                 )
                               })()}
-                              <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
+                              <p className="mt-1 text-right text-[10px] text-slate-500/70 dark:text-slate-400/70">
                                 {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                               </p>
                             </div>
@@ -6492,7 +6492,7 @@ const saveConfig = async () => {
                           />
                           <Button
                             size="icon"
-                            className="h-9 w-9 shrink-0 bg-amber-500 text-white hover:bg-amber-600"
+                            className="h-9 w-9 shrink-0 bg-slate-600 text-white hover:bg-slate-700"
                             onClick={handleEnviarNotaInterna}
                             disabled={enviandoNota || !notaInterna.trim()}
                             title="Enviar nota interna (só o atendente vê)"
@@ -6500,9 +6500,6 @@ const saveConfig = async () => {
                             {enviandoNota ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                           </Button>
                         </div>
-                        <p className="text-[10px] text-amber-700 dark:text-amber-400">
-                          🔒 Só o atendente vê — não é enviada ao cliente.
-                        </p>
                       </div>
                     )}
                     <Button
