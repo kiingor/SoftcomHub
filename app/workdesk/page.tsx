@@ -4245,7 +4245,18 @@ const tempId = `temp-${Date.now()}`
                                       <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
                                         🔒 Nota interna
                                       </div>
-                                      <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
+                                      {(() => {
+                                        const _l = (msg.conteudo || '').split('\n')
+                                        const _ult = _l[_l.length - 1]
+                                        const _ass = _l.length > 1 && _ult.startsWith('— ')
+                                        const _corpo = _ass ? _l.slice(0, -1).join('\n').trimEnd() : (msg.conteudo || '')
+                                        return (
+                                          <>
+                                            <p className="whitespace-pre-wrap text-sm text-amber-900 dark:text-amber-200">{_corpo}</p>
+                                            {_ass && <p className="mt-0.5 text-right text-[10px] italic text-amber-700/70 dark:text-amber-400/70">{_ult}</p>}
+                                          </>
+                                        )
+                                      })()}
                                       {msg.enviado_em && (
                                         <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
                                           {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
@@ -5324,7 +5335,18 @@ onClick={() => {
                                       <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
                                         🔒 Nota interna
                                       </div>
-                                      <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
+                                      {(() => {
+                                        const _l = (msg.conteudo || '').split('\n')
+                                        const _ult = _l[_l.length - 1]
+                                        const _ass = _l.length > 1 && _ult.startsWith('— ')
+                                        const _corpo = _ass ? _l.slice(0, -1).join('\n').trimEnd() : (msg.conteudo || '')
+                                        return (
+                                          <>
+                                            <p className="whitespace-pre-wrap text-sm text-amber-900 dark:text-amber-200">{_corpo}</p>
+                                            {_ass && <p className="mt-0.5 text-right text-[10px] italic text-amber-700/70 dark:text-amber-400/70">{_ult}</p>}
+                                          </>
+                                        )
+                                      })()}
                                       {msg.enviado_em && (
                                         <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
                                           {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
