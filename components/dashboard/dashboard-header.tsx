@@ -22,10 +22,11 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Menu, LogOut, User as UserIcon, ChevronDown, Bell, KeyRound } from 'lucide-react'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { Menu, LogOut, User as UserIcon, ChevronDown, Bell, KeyRound, Camera } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { useColaborador } from '@/lib/hooks/use-data'
+import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 
 interface DashboardHeaderProps {
   user: User
@@ -34,7 +35,8 @@ interface DashboardHeaderProps {
 
 export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
   const router = useRouter()
-  const { data: colaborador } = useColaborador()
+  const { data: colaborador, mutate: mutateColaborador } = useColaborador()
+  const [fotoDialogOpen, setFotoDialogOpen] = useState(false)
 
   // — Alterar senha
   const [senhaDialogOpen, setSenhaDialogOpen] = useState(false)
@@ -155,6 +157,9 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
               className="flex items-center gap-2.5 pl-2 pr-3 h-10 rounded-2xl hover:bg-black/5 dark:hover:bg-white/10 transition-all"
             >
               <Avatar className="h-8 w-8 glass-avatar-ring">
+                {colaborador?.foto_url && (
+                  <AvatarImage src={colaborador.foto_url} alt={userDisplayName} className="object-cover" />
+                )}
                 <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
                   {userInitials}
                 </AvatarFallback>
@@ -179,6 +184,9 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
             <div className="px-3 py-3">
               <div className="flex items-center gap-3">
                 <Avatar className="h-10 w-10 glass-avatar-ring">
+                  {colaborador?.foto_url && (
+                    <AvatarImage src={colaborador.foto_url} alt={userDisplayName} className="object-cover" />
+                  )}
                   <AvatarFallback className="bg-primary text-primary-foreground text-sm font-bold">
                     {userInitials}
                   </AvatarFallback>
@@ -201,6 +209,16 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
                 <UserIcon className="h-3.5 w-3.5 text-muted-foreground" />
               </div>
               <span className="text-sm">Meu Perfil</span>
+            </DropdownMenuItem>
+
+            <DropdownMenuItem
+              onClick={() => setFotoDialogOpen(true)}
+              className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
+            >
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
+                <Camera className="h-3.5 w-3.5 text-muted-foreground" />
+              </div>
+              <span className="text-sm">Alterar foto</span>
             </DropdownMenuItem>
 
             <DropdownMenuItem
@@ -291,6 +309,15 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Dialog — Foto de perfil */}
+        <ProfilePhotoDialog
+          open={fotoDialogOpen}
+          onOpenChange={setFotoDialogOpen}
+          currentFotoUrl={colaborador?.foto_url}
+          nome={userDisplayName}
+          onUpdated={() => mutateColaborador()}
+        />
       </div>
     </header>
   )
