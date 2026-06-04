@@ -6413,8 +6413,8 @@ const saveConfig = async () => {
                                 🔒 Nota interna
                               </div>
                               <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
-                              <p className="mt-1 text-right text-[10px] italic text-amber-700/80 dark:text-amber-400/80">
-                                — {msg.autor_nome || 'Supervisor'}{msg.enviado_em ? ' · ' + new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                              <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
+                                {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                               </p>
                             </div>
                           </div>

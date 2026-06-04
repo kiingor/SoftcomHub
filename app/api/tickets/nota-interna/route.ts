@@ -11,16 +11,20 @@ import { createServiceClient } from '@/lib/supabase/service'
  * Logo, ela nunca chega ao cliente — só aparece para o atendente/supervisor,
  * renderizada em cor distinta no workdesk e no painel do setor.
  *
+ * A assinatura do supervisor (autor_nome) é embutida no próprio conteúdo, então
+ * NÃO precisa de coluna nova em `mensagens`.
+ *
  * Body:
  * - ticket_id: string (obrigatório)
  * - conteudo: string (obrigatório)
+ * - autor_nome: string (opcional) — nome do supervisor; vira assinatura no fim
  */
 export async function POST(request: Request) {
   try {
     const body = await request.json()
     const ticket_id: string | undefined = body?.ticket_id
     const conteudo: string = (body?.conteudo ?? '').toString().trim()
-    const autor_nome: string | null = (body?.autor_nome ?? '').toString().trim() || null
+    const autor_nome: string = (body?.autor_nome ?? '').toString().trim()
 
     if (!ticket_id || !conteudo) {
       return NextResponse.json(
@@ -42,14 +46,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Ticket não encontrado' }, { status: 404 })
     }
 
+    // Assinatura do supervisor embutida no conteúdo (evita coluna nova).
+    const conteudoFinal = autor_nome ? `${conteudo}\n— ${autor_nome}` : conteudo
+
     const { data: message, error: insertError } = await supabase
       .from('mensagens')
       .insert({
         ticket_id: ticket.id,
         cliente_id: ticket.cliente_id,
         remetente: 'supervisor',
-        autor_nome,
-        conteudo,
+        conteudo: conteudoFinal,
         tipo: 'texto',
         enviado_em: new Date().toISOString(),
       })
