@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo, useDeferredValue } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -42,7 +42,6 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '@/hooks/use-toast'
 
 interface Setor {
@@ -67,6 +66,40 @@ interface Colaborador {
   setor?: Setor | null
   permissao?: Permissao | null
   setores_ativos_sessao?: string[]
+}
+
+// Lê o access_token do usuário direto do cookie do @supabase/ssr (síncrono).
+// Necessário porque o client supabase-js no browser SERIALIZA queries
+// concorrentes pelo seu auth lock interno — um Promise.all de 5 selects roda em
+// cascata (~600ms). Lendo o token aqui, disparamos as 5 leituras via REST cru
+// em paralelo de verdade (~110ms), sem passar pelo lock.
+// Formato do cookie: sb-<ref>-auth-token = "base64-<base64(JSON da sessão)>",
+// possivelmente fatiado em .0/.1/... quando a sessão é grande.
+function getSupabaseAccessToken(): string | null {
+  if (typeof document === 'undefined') return null
+  try {
+    const chunks: { name: string; value: string }[] = []
+    for (const c of document.cookie.split(';')) {
+      const eq = c.indexOf('=')
+      if (eq === -1) continue
+      const name = c.slice(0, eq).trim()
+      if (/-auth-token(\.\d+)?$/.test(name)) {
+        chunks.push({ name, value: decodeURIComponent(c.slice(eq + 1)) })
+      }
+    }
+    if (chunks.length === 0) return null
+    chunks.sort((a, b) => {
+      const ia = parseInt(a.name.split('.').pop() || '0', 10)
+      const ib = parseInt(b.name.split('.').pop() || '0', 10)
+      return (isNaN(ia) ? 0 : ia) - (isNaN(ib) ? 0 : ib)
+    })
+    let raw = chunks.map((c) => c.value).join('')
+    if (raw.startsWith('base64-')) raw = atob(raw.slice(7))
+    const session = JSON.parse(raw)
+    return session?.access_token || session?.currentSession?.access_token || null
+  } catch {
+    return null
+  }
 }
 
 export default function ColaboradoresPage() {
@@ -110,67 +143,89 @@ export default function ColaboradoresPage() {
       .map((cs) => cs.setor_id)
   }
 
+  // Filtro da busca memoizado + deferido: digitar não trava a UI e a lista só
+  // recalcula quando colaboradores/termo mudam (não a cada render do polling).
+  const deferredSearch = useDeferredValue(searchTerm)
+  const colaboradoresFiltrados = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase()
+    if (!q) return colaboradores
+    return colaboradores.filter(
+      (c) => c.nome.toLowerCase().includes(q) || c.email.toLowerCase().includes(q),
+    )
+  }, [colaboradores, deferredSearch])
+
   async function fetchData() {
     setLoading(true)
+    try {
+      // As 5 buscas são independentes. O caminho RÁPIDO dispara tudo em paralelo
+      // via REST cru (o supabase-js no browser serializaria pelo auth lock).
+      // Se o token não estiver acessível, cai no FALLBACK via supabase-js
+      // (correto, porém serializado) — nunca deixa a tela vazia por isso.
+      const token = getSupabaseAccessToken()
 
-    // Fetch atendentes: TODOS que têm vínculo em colaboradores_setores
-    // (incluindo supervisores que também atendem). Supervisor puro (sem
-    // vínculo) só aparece em /dashboard/usuarios.
-    const { data: colaboradoresData, error: colaboradoresError } = await supabase
-      .from('colaboradores')
-      .select(`
-        *,
-        setor:setores(id, nome),
-        permissao:permissoes(id, nome),
-        colaboradores_setores!inner(setor_id)
-      `)
-      .order('created_at', { ascending: false })
+      let colaboradoresData: any[] = []
+      let setoresData: Setor[] = []
+      let permissoesData: Permissao[] = []
+      let colabSetoresData: { colaborador_id: string; setor_id: string }[] = []
+      let avaliacoesData: { colaborador_id: string; nota: number }[] = []
 
-    if (!colaboradoresError && colaboradoresData) {
+      if (token) {
+        const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+        const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+        const rest = (path: string) =>
+          fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+            headers: { apikey: ANON_KEY, Authorization: `Bearer ${token}` },
+          }).then((r) =>
+            r.ok ? r.json() : Promise.reject(new Error(`${r.status} em ${path.split('?')[0]}`)),
+          )
+        // Atendentes: TODOS com vínculo em colaboradores_setores (inclui
+        // supervisores que também atendem). Supervisor puro (sem vínculo) só
+        // aparece em /dashboard/usuarios.
+        const r = await Promise.all([
+          rest(
+            'colaboradores?select=*,setor:setores(id,nome),permissao:permissoes(id,nome),colaboradores_setores!inner(setor_id)&order=created_at.desc',
+          ),
+          rest('setores?select=id,nome&order=nome'),
+          rest('permissoes?select=id,nome&order=nome'),
+          rest('colaboradores_setores?select=colaborador_id,setor_id'),
+          rest('avaliacoes?select=colaborador_id,nota'),
+        ])
+        colaboradoresData = r[0] || []
+        setoresData = r[1] || []
+        permissoesData = r[2] || []
+        colabSetoresData = r[3] || []
+        avaliacoesData = r[4] || []
+      } else {
+        const [colaboradoresRes, setoresRes, permissoesRes, colabSetoresRes, avaliacoesRes] =
+          await Promise.all([
+            supabase
+              .from('colaboradores')
+              .select('*, setor:setores(id, nome), permissao:permissoes(id, nome), colaboradores_setores!inner(setor_id)')
+              .order('created_at', { ascending: false }),
+            supabase.from('setores').select('id, nome').order('nome'),
+            supabase.from('permissoes').select('id, nome').order('nome'),
+            supabase.from('colaboradores_setores').select('colaborador_id, setor_id'),
+            supabase.from('avaliacoes').select('colaborador_id, nota'),
+          ])
+        colaboradoresData = colaboradoresRes.data || []
+        setoresData = (setoresRes.data as Setor[]) || []
+        permissoesData = (permissoesRes.data as Permissao[]) || []
+        colabSetoresData = colabSetoresRes.data || []
+        avaliacoesData = (avaliacoesRes.data as { colaborador_id: string; nota: number }[]) || []
+      }
+
       // Deduplica (inner join retorna 1 linha por vínculo)
       const uniqueMap = new Map<string, any>()
       for (const c of colaboradoresData) {
         if (!uniqueMap.has(c.id)) uniqueMap.set(c.id, c)
       }
       setColaboradores(Array.from(uniqueMap.values()))
-    }
-
-    // Fetch setores
-    const { data: setoresData } = await supabase
-      .from('setores')
-      .select('id, nome')
-      .order('nome')
-
-    if (setoresData) {
       setSetores(setoresData)
-    }
-
-    // Fetch permissoes
-    const { data: permissoesData } = await supabase
-      .from('permissoes')
-      .select('id, nome')
-      .order('nome')
-
-    if (permissoesData) {
       setPermissoes(permissoesData)
-    }
-
-    // Fetch colaborador_setores (join table)
-    const { data: colabSetoresData } = await supabase
-      .from('colaboradores_setores')
-      .select('colaborador_id, setor_id')
-
-    if (colabSetoresData) {
       setColaboradorSetores(colabSetoresData)
-    }
 
-    // Fetch avaliacoes para NPS
-    const { data: avaliacoesData } = await supabase
-      .from('avaliacoes')
-      .select('colaborador_id, nota')
-
-    const npsMap = new Map<string, { media: number; total: number }>()
-    if (avaliacoesData) {
+      // NPS por colaborador (média das notas em avaliacoes)
+      const npsMap = new Map<string, { media: number; total: number }>()
       const grouped = new Map<string, number[]>()
       for (const a of avaliacoesData) {
         if (!grouped.has(a.colaborador_id)) grouped.set(a.colaborador_id, [])
@@ -179,10 +234,12 @@ export default function ColaboradoresPage() {
       for (const [id, notas] of grouped) {
         npsMap.set(id, { media: notas.reduce((s, n) => s + n, 0) / notas.length, total: notas.length })
       }
+      setMediasNPS(npsMap)
+    } catch (err) {
+      console.error('[Atendentes] Erro ao carregar dados:', err)
+    } finally {
+      setLoading(false)
     }
-    setMediasNPS(npsMap)
-
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -496,23 +553,9 @@ export default function ColaboradoresPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  <AnimatePresence>
-                    {colaboradores
-                      .filter((c) => {
-                        const q = searchTerm.trim().toLowerCase()
-                        if (!q) return true
-                        return (
-                          c.nome.toLowerCase().includes(q) ||
-                          c.email.toLowerCase().includes(q)
-                        )
-                      })
-                      .map((colaborador, index) => (
-                      <motion.tr
+                  {colaboradoresFiltrados.map((colaborador) => (
+                      <tr
                         key={colaborador.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        transition={{ delay: index * 0.05 }}
                         className={`border-b transition-colors hover:bg-muted/50 ${
                           !colaborador.ativo ? 'opacity-50' : ''
                         }`}
@@ -644,9 +687,8 @@ export default function ColaboradoresPage() {
                             </Button>
                           </div>
                         </TableCell>
-                      </motion.tr>
+                      </tr>
                     ))}
-                  </AnimatePresence>
                 </TableBody>
               </Table>
             </div>
