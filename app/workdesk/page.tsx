@@ -4243,14 +4243,12 @@ const tempId = `temp-${Date.now()}`
                                   >
                                     <div className="max-w-[85%] rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 dark:border-amber-700 dark:bg-amber-950/30">
                                       <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                                        🔒 Nota interna · {msg.autor_nome || 'Supervisor'}
+                                        🔒 Nota interna
                                       </div>
                                       <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
-                                      {msg.enviado_em && (
-                                        <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
-                                          {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                                        </p>
-                                      )}
+                                      <p className="mt-1 text-right text-[10px] italic text-amber-700/80 dark:text-amber-400/80">
+                                        — {msg.autor_nome || 'Supervisor'}{msg.enviado_em ? ' · ' + new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                                      </p>
                                     </div>
                                   </motion.div>
                                 ) : msg.remetente === 'sistema' ? (
@@ -5322,14 +5320,12 @@ onClick={() => {
                                   <div className="flex justify-start">
                                     <div className="max-w-[85%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
                                       <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                                        🔒 Nota interna · {msg.autor_nome || 'Supervisor'}
+                                        🔒 Nota interna
                                       </div>
                                       <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
-                                      {msg.enviado_em && (
-                                        <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
-                                          {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                                        </p>
-                                      )}
+                                      <p className="mt-1 text-right text-[10px] italic text-amber-700/80 dark:text-amber-400/80">
+                                        — {msg.autor_nome || 'Supervisor'}{msg.enviado_em ? ' · ' + new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                                      </p>
                                     </div>
                                   </div>
                                 ) : msg.remetente === 'sistema' ? (
