@@ -4239,11 +4239,11 @@ const tempId = `temp-${Date.now()}`
                                   <motion.div
                                     initial={{ opacity: 0, y: 5 }}
                                     animate={{ opacity: 1, y: 0 }}
-                                    className="flex justify-center"
+                                    className="flex justify-start"
                                   >
-                                    <div className="max-w-[90%] rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 dark:border-amber-700 dark:bg-amber-950/30">
+                                    <div className="max-w-[85%] rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 dark:border-amber-700 dark:bg-amber-950/30">
                                       <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                                        🔒 Nota interna · Supervisor
+                                        🔒 Nota interna · {msg.autor_nome || 'Supervisor'}
                                       </div>
                                       <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
                                       {msg.enviado_em && (
@@ -5319,10 +5319,10 @@ onClick={() => {
                                   </div>
                                 )}
                                 {msg.remetente === 'supervisor' ? (
-                                  <div className="flex justify-center">
-                                    <div className="max-w-[90%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
+                                  <div className="flex justify-start">
+                                    <div className="max-w-[85%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
                                       <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                                        🔒 Nota interna · Supervisor
+                                        🔒 Nota interna · {msg.autor_nome || 'Supervisor'}
                                       </div>
                                       <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
                                       {msg.enviado_em && (

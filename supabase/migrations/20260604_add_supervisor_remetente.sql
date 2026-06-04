@@ -16,3 +16,7 @@
 ALTER TABLE mensagens DROP CONSTRAINT IF EXISTS mensagens_remetente_check;
 ALTER TABLE mensagens ADD CONSTRAINT mensagens_remetente_check
   CHECK (remetente IN ('cliente', 'colaborador', 'bot', 'sistema', 'supervisor'));
+
+-- Nome do supervisor que escreveu a nota (denormalizado), para exibir
+-- "🔒 Nota interna · <nome>" no workdesk e no painel do setor. Aditivo/nullable.
+ALTER TABLE mensagens ADD COLUMN IF NOT EXISTS autor_nome text;

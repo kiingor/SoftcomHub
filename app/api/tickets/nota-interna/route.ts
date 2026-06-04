@@ -20,6 +20,7 @@ export async function POST(request: Request) {
     const body = await request.json()
     const ticket_id: string | undefined = body?.ticket_id
     const conteudo: string = (body?.conteudo ?? '').toString().trim()
+    const autor_nome: string | null = (body?.autor_nome ?? '').toString().trim() || null
 
     if (!ticket_id || !conteudo) {
       return NextResponse.json(
@@ -47,6 +48,7 @@ export async function POST(request: Request) {
         ticket_id: ticket.id,
         cliente_id: ticket.cliente_id,
         remetente: 'supervisor',
+        autor_nome,
         conteudo,
         tipo: 'texto',
         enviado_em: new Date().toISOString(),

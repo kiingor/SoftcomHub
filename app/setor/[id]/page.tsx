@@ -2580,7 +2580,7 @@ const saveConfig = async () => {
       const res = await fetch('/api/tickets/nota-interna', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket_id: selectedTicket.id, conteudo: texto }),
+        body: JSON.stringify({ ticket_id: selectedTicket.id, conteudo: texto, autor_nome: colaboradorLogado?.nome }),
       })
       const result = await res.json()
       if (!res.ok) {
@@ -6407,10 +6407,10 @@ const saveConfig = async () => {
                             </div>
                           </div>
                         ) : msg.remetente === 'supervisor' ? (
-                          <div key={msg.id} className="flex justify-center">
-                            <div className="max-w-[90%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
+                          <div key={msg.id} className="flex justify-start">
+                            <div className="max-w-[85%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
                               <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                                🔒 Nota interna · Supervisor
+                                🔒 Nota interna · {msg.autor_nome || 'Supervisor'}
                               </div>
                               <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
                               <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
