@@ -6290,8 +6290,9 @@ const saveConfig = async () => {
             onClick={closeConversation}
           />
           
-          {/* Panel */}
-          <div className="relative ml-auto flex h-full w-full max-w-md flex-col bg-background shadow-xl">
+          {/* Panel — largura fixa no viewport (w-screen + max-w-md) para não
+              variar conforme o conteúdo de cada aba (Atendimento/Transferir/Info) */}
+          <div className="relative ml-auto flex h-full w-screen max-w-md flex-col bg-background shadow-xl">
             {/* Header */}
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
