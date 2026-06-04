@@ -787,6 +787,9 @@ export default function SetorPage() {
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [conversationTab, setConversationTab] = useState<'atendimento' | 'transferir' | 'info'>('atendimento')
+  // Nota interna do supervisor (mensagem privada pro atendente — nunca vai pro cliente)
+  const [notaInterna, setNotaInterna] = useState('')
+  const [enviandoNota, setEnviandoNota] = useState(false)
 
   // Auto-scroll conversation to bottom when messages load.
   // Uses ResizeObserver to keep scrolling as images/audios load and resize the content.
@@ -2563,6 +2566,39 @@ const saveConfig = async () => {
   const closeConversation = () => {
     setSelectedTicket(null)
     setConversationMessages([])
+    setNotaInterna('')
+  }
+
+  // Envia uma NOTA INTERNA (mensagem privada do supervisor) para o ticket.
+  // Vai para `mensagens` com remetente='supervisor', sem despacho de canal:
+  // o atendente vê no workdesk (destaque âmbar) e o cliente nunca recebe.
+  const handleEnviarNotaInterna = async () => {
+    const texto = notaInterna.trim()
+    if (!selectedTicket?.id || !texto) return
+    setEnviandoNota(true)
+    try {
+      const res = await fetch('/api/tickets/nota-interna', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_id: selectedTicket.id, conteudo: texto }),
+      })
+      const result = await res.json()
+      if (!res.ok) {
+        toast.error(result?.error || 'Erro ao enviar nota interna')
+        return
+      }
+      setConversationMessages((prev) => [...prev, result.message])
+      setNotaInterna('')
+      // rola pro fim pra mostrar a nota recém-enviada
+      setTimeout(() => {
+        const el = conversationScrollRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      }, 50)
+    } catch {
+      toast.error('Erro ao enviar nota interna')
+    } finally {
+      setEnviandoNota(false)
+    }
   }
 
   // Transfer ticket to another attendant
@@ -6370,6 +6406,18 @@ const saveConfig = async () => {
                               </span>
                             </div>
                           </div>
+                        ) : msg.remetente === 'supervisor' ? (
+                          <div key={msg.id} className="flex justify-center">
+                            <div className="max-w-[90%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
+                              <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+                                🔒 Nota interna · Supervisor
+                              </div>
+                              <p className="whitespace-pre-wrap text-xs text-amber-900 dark:text-amber-200">{msg.conteudo}</p>
+                              <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
+                                {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                              </p>
+                            </div>
+                          </div>
                         ) : (
                         <div
                           key={msg.id}
@@ -6413,8 +6461,40 @@ const saveConfig = async () => {
 
                   {/* Actions */}
                   <div className="border-t p-3 space-y-2">
-                    <Button 
-                      variant="destructive" 
+                    {/* Nota interna do supervisor — só p/ tickets em atendimento (com técnico) */}
+                    {selectedTicket?.colaborador_id && (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={notaInterna}
+                            onChange={(e) => setNotaInterna(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault()
+                                handleEnviarNotaInterna()
+                              }
+                            }}
+                            placeholder="Nota interna para o atendente..."
+                            disabled={enviandoNota}
+                            className="h-9 text-sm"
+                          />
+                          <Button
+                            size="icon"
+                            className="h-9 w-9 shrink-0 bg-amber-500 text-white hover:bg-amber-600"
+                            onClick={handleEnviarNotaInterna}
+                            disabled={enviandoNota || !notaInterna.trim()}
+                            title="Enviar nota interna (só o atendente vê)"
+                          >
+                            {enviandoNota ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                          </Button>
+                        </div>
+                        <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                          🔒 Só o atendente vê — não é enviada ao cliente.
+                        </p>
+                      </div>
+                    )}
+                    <Button
+                      variant="destructive"
                       className="w-full"
                       onClick={finalizeTicket}
                     >
