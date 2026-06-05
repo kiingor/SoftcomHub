@@ -16,7 +16,7 @@ export function useDashboardData() {
       const [colabResult, setoresResult] = await Promise.all([
         supabase
           .from('colaboradores')
-          .select('id, nome, email, is_master, is_online, ativo, permissao_id, setor_id, permissoes:permissao_id(*)')
+          .select('id, nome, email, is_master, is_online, ativo, permissao_id, setor_id, foto_url, permissoes:permissao_id(*)')
           .eq('email', user.email)
           .maybeSingle(),
         supabase
@@ -59,7 +59,7 @@ export function useColaborador() {
 
       const { data } = await supabase
         .from('colaboradores')
-        .select('id, nome, email, is_master, is_online, ativo, permissao_id, setor_id, permissoes:permissao_id(*)')
+        .select('id, nome, email, is_master, is_online, ativo, permissao_id, setor_id, foto_url, permissoes:permissao_id(*)')
         .eq('email', user.email)
         .maybeSingle()
 

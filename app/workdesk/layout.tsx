@@ -5,7 +5,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
-import { User, LogOut, MessageCircle, Volume2, Play, KeyRound, Star, Info } from 'lucide-react'
+import { User, LogOut, MessageCircle, Volume2, Play, KeyRound, Star, Info, Camera } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +24,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { DisponibilidadePanel } from '@/components/workdesk/disponibilidade-panel'
 import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
 import { useAudioAlert, type TicketSoundType } from '@/hooks/use-audio-alert'
@@ -37,6 +39,7 @@ interface Colaborador {
   nome: string
   email: string
   is_online: boolean
+  foto_url?: string | null
   pausa_atual_id?: string | null
   setores_vinculados?: ColaboradorSetor[]
 }
@@ -98,7 +101,7 @@ export default function WorkdeskLayout({
       // First get colaborador
       const { data: colaboradorData } = await supabase
         .from('colaboradores')
-        .select('id, nome, email, is_online, pausa_atual_id')
+        .select('id, nome, email, is_online, pausa_atual_id, foto_url')
         .eq('email', user.email)
         .single()
 
@@ -210,6 +213,7 @@ export default function WorkdeskLayout({
 
   // — Alterar senha
   const [senhaDialogOpen, setSenhaDialogOpen] = useState(false)
+  const [fotoDialogOpen, setFotoDialogOpen] = useState(false)
   const [senhaAtual, setSenhaAtual] = useState('')
   const [novaSenha, setNovaSenha] = useState('')
   const [confirmarSenha, setConfirmarSenha] = useState('')
@@ -355,9 +359,14 @@ export default function WorkdeskLayout({
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" className="gap-2 rounded-xl hover:bg-white/50 dark:hover:bg-white/10">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 ring-2 ring-primary/20">
-                  <User className="h-4 w-4 text-primary" />
-                </div>
+                <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+                  {colaborador.foto_url && (
+                    <AvatarImage src={colaborador.foto_url} alt={colaborador.nome} className="object-cover" />
+                  )}
+                  <AvatarFallback className="bg-primary/10 text-primary">
+                    <User className="h-4 w-4" />
+                  </AvatarFallback>
+                </Avatar>
                 <span className="hidden text-sm font-medium md:inline">{colaborador.nome}</span>
                 <div className="hidden md:flex items-center gap-1 group relative">
                   <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
@@ -421,6 +430,14 @@ export default function WorkdeskLayout({
               </div>
 
               <DropdownMenuSeparator className="mx-2" />
+
+              <DropdownMenuItem
+                onClick={() => setFotoDialogOpen(true)}
+                className="rounded-xl mx-1"
+              >
+                <Camera className="mr-2 h-4 w-4" />
+                Alterar foto
+              </DropdownMenuItem>
 
               <DropdownMenuItem
                 onClick={() => { resetSenhaDialog(); setSenhaDialogOpen(true) }}
@@ -501,6 +518,15 @@ export default function WorkdeskLayout({
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          {/* Dialog — Foto de perfil */}
+          <ProfilePhotoDialog
+            open={fotoDialogOpen}
+            onOpenChange={setFotoDialogOpen}
+            currentFotoUrl={colaborador.foto_url}
+            nome={colaborador.nome}
+            onUpdated={(url) => setColaborador((prev) => (prev ? { ...prev, foto_url: url } : prev))}
+          />
         </div>
       </header>
 
