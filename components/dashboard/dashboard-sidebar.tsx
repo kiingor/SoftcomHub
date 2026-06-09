@@ -32,8 +32,11 @@ const baseNavigation = [
 
 const masterNavigation = [
   { name: 'Supervisores', href: '/dashboard/usuarios', icon: UserCog },
-  { name: 'Atendentes', href: '/dashboard/colaboradores', icon: Headphones },
   { name: 'Logs de Erros', href: '/dashboard/logs', icon: Bug },
+]
+
+const atendentesNavigation = [
+  { name: 'Atendentes', href: '/dashboard/colaboradores', icon: Headphones },
 ]
 
 interface DashboardSidebarProps {
@@ -47,10 +50,17 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
   const [isPending, startTransition] = useTransition()
   const [loadingHref, setLoadingHref] = useState<string | null>(null)
   const { data: colaborador } = useColaborador()
+  const permissao = colaborador?.permissoes as { can_view_dashboard?: boolean; nome?: string } | null | undefined
+  const canAccessAtendentes =
+    colaborador?.is_master ||
+    permissao?.can_view_dashboard ||
+    permissao?.nome?.toLowerCase() === 'supervisor'
 
-  const navigation = colaborador?.is_master
-    ? [...baseNavigation, ...masterNavigation]
-    : baseNavigation
+  const navigation = [
+    ...baseNavigation,
+    ...(canAccessAtendentes ? atendentesNavigation : []),
+    ...(colaborador?.is_master ? masterNavigation : []),
+  ]
 
   const handleNavClick = (e: React.MouseEvent, href: string) => {
     e.preventDefault()

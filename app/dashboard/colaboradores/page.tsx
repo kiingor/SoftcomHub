@@ -43,6 +43,7 @@ import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
+import { useColaborador } from '@/lib/hooks/use-data'
 
 interface Setor {
   id: string
@@ -71,6 +72,12 @@ interface Colaborador {
 }
 
 const MAX_VISIBLE_SETORES = 3
+const ELEVATED_PERMISSION_NAMES = new Set(['admin', 'supervisor'])
+
+function isElevatedPermission(permissao?: Permissao | null) {
+  const permissionName = permissao?.nome?.toLowerCase()
+  return permissao?.can_view_dashboard === true || ELEVATED_PERMISSION_NAMES.has(permissionName || '')
+}
 
 // Lê o access_token do usuário direto do cookie do @supabase/ssr (síncrono).
 // Necessário porque o client supabase-js no browser SERIALIZA queries
@@ -127,6 +134,7 @@ export default function ColaboradoresPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
+  const [setorSearchTerm, setSetorSearchTerm] = useState('')
 
   // Modal de "Configurar setores ativos" — admin escolhe de quais setores
   // o atendente recebe tickets (subset dos vinculados).
@@ -137,9 +145,36 @@ export default function ColaboradoresPage() {
 
   const supabase = createClient()
   const { toast } = useToast()
+  const { data: colaboradorLogado } = useColaborador()
+  const canDeactivateColaborador = colaboradorLogado?.is_master === true
+  const canManagePermissionLevel = colaboradorLogado?.is_master === true
 
   const [colaboradorSetores, setColaboradorSetores] = useState<{ colaborador_id: string; setor_id: string }[]>([])
   const [mediasNPS, setMediasNPS] = useState<Map<string, { media: number; total: number }>>(new Map())
+  const atendentePermissao = useMemo(
+    () => permissoes.find((permissao) => permissao.nome.toLowerCase() === 'atendente')
+      || permissoes.find((permissao) => !isElevatedPermission(permissao)),
+    [permissoes],
+  )
+  const currentFormPermissao = permissoes.find((permissao) => permissao.id === formData.permissao_id)
+  const permissoesDisponiveis = canManagePermissionLevel
+    ? permissoes
+    : Array.from(
+      new Map(
+        [currentFormPermissao, atendentePermissao, ...permissoes.filter((permissao) => !isElevatedPermission(permissao))]
+          .filter(Boolean)
+          .map((permissao) => [permissao!.id, permissao!]),
+      ).values(),
+    )
+  const setoresFiltrados = useMemo(() => {
+    const query = setorSearchTerm.trim().toLowerCase()
+    if (!query) return setores
+    return setores.filter((setor) => setor.nome.toLowerCase().includes(query))
+  }, [setores, setorSearchTerm])
+  const setoresSelecionados = useMemo(() => {
+    const selectedIds = new Set(formData.setores_selecionados)
+    return setores.filter((setor) => selectedIds.has(setor.id))
+  }, [setores, formData.setores_selecionados])
 
   function getSetoresDoColaborador(colaboradorId: string): string[] {
     return colaboradorSetores
@@ -266,6 +301,7 @@ export default function ColaboradoresPage() {
       suporte_id: '',
       setores_selecionados: [],
     })
+    setSetorSearchTerm('')
     setError(null)
     setModalOpen(true)
   }
@@ -281,6 +317,7 @@ export default function ColaboradoresPage() {
       suporte_id: (colaborador as any).suporte_id || '',
       setores_selecionados: getSetoresDoColaborador(colaborador.id),
     })
+    setSetorSearchTerm('')
     setError(null)
     setModalOpen(true)
   }
@@ -294,7 +331,25 @@ export default function ColaboradoresPage() {
     }))
   }
 
+  function selectFilteredSetores() {
+    setFormData((prev) => ({
+      ...prev,
+      setores_selecionados: Array.from(new Set([
+        ...prev.setores_selecionados,
+        ...setoresFiltrados.map((setor) => setor.id),
+      ])),
+    }))
+  }
+
+  function clearSelectedSetores() {
+    setFormData((prev) => ({
+      ...prev,
+      setores_selecionados: [],
+    }))
+  }
+
   function openDeactivateDialog(colaborador: Colaborador) {
+    if (!canDeactivateColaborador) return
     setColaboradorToDeactivate(colaborador)
     setDeactivateDialogOpen(true)
   }
@@ -354,7 +409,19 @@ export default function ColaboradoresPage() {
     setSaving(true)
     setError(null)
 
-    const selectedPermissao = permissoes.find((permissao) => permissao.id === formData.permissao_id)
+    const effectivePermissaoId = canManagePermissionLevel
+      ? formData.permissao_id || null
+      : editingColaborador
+        ? editingColaborador.permissao_id || atendentePermissao?.id || null
+        : atendentePermissao?.id || null
+
+    if (!canManagePermissionLevel && !effectivePermissaoId) {
+      setError('Permissao de atendente nao encontrada. Chame um administrador.')
+      setSaving(false)
+      return
+    }
+
+    const selectedPermissao = permissoes.find((permissao) => permissao.id === effectivePermissaoId)
     const isAdminPermission = selectedPermissao?.nome?.toLowerCase() === 'admin'
     const permissionName = selectedPermissao?.nome?.toLowerCase()
     const hasDashboardAccess = selectedPermissao?.can_view_dashboard === true || permissionName === 'supervisor' || isAdminPermission
@@ -366,7 +433,7 @@ export default function ColaboradoresPage() {
         .update({
           nome: formData.nome.trim(),
           setor_id: formData.setor_id || null,
-          permissao_id: formData.permissao_id || null,
+          permissao_id: effectivePermissaoId,
           is_master: isAdminPermission,
           suporte_id: formData.suporte_id.trim() || null,
         })
@@ -482,7 +549,7 @@ export default function ColaboradoresPage() {
         nome: formData.nome.trim(),
         email: formData.email.trim().toLowerCase(),
         setor_id: formData.setor_id || null,
-        permissao_id: formData.permissao_id || null,
+        permissao_id: effectivePermissaoId,
         is_master: isAdminPermission,
         suporte_id: formData.suporte_id.trim() || null,
         is_online: false,
@@ -535,6 +602,16 @@ export default function ColaboradoresPage() {
 
   async function handleDeactivate() {
     if (!colaboradorToDeactivate) return
+    if (!canDeactivateColaborador) {
+      toast({
+        title: 'Acesso negado',
+        description: 'Apenas administradores podem desativar ou reativar atendentes.',
+        variant: 'destructive',
+      })
+      setDeactivateDialogOpen(false)
+      setColaboradorToDeactivate(null)
+      return
+    }
 
     const newStatus = colaboradorToDeactivate.ativo ? false : true
 
@@ -762,19 +839,21 @@ export default function ColaboradoresPage() {
                               <Pencil className="mr-1 h-4 w-4" />
                               Editar
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => openDeactivateDialog(colaborador)}
-                              className={
-                                colaborador.ativo
-                                  ? 'text-destructive hover:bg-destructive/10 hover:text-destructive'
-                                  : 'text-green-600 hover:bg-green-100 hover:text-green-600'
-                              }
-                            >
-                              <UserX className="mr-1 h-4 w-4" />
-                              {colaborador.ativo ? 'Desativar' : 'Reativar'}
-                            </Button>
+                            {canDeactivateColaborador && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openDeactivateDialog(colaborador)}
+                                className={
+                                  colaborador.ativo
+                                    ? 'text-destructive hover:bg-destructive/10 hover:text-destructive'
+                                    : 'text-green-600 hover:bg-green-100 hover:text-green-600'
+                                }
+                              >
+                                <UserX className="mr-1 h-4 w-4" />
+                                {colaborador.ativo ? 'Desativar' : 'Reativar'}
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </tr>
@@ -788,7 +867,7 @@ export default function ColaboradoresPage() {
 
       {/* Modal for Create/Edit */}
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-        <DialogContent className="glass-card-elevated rounded-3xl border-0 sm:max-w-md">
+        <DialogContent className="glass-card-elevated rounded-3xl border-0 sm:max-w-2xl max-h-[88vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-foreground">
               <Users className="h-5 w-5 text-primary" />
@@ -880,33 +959,100 @@ export default function ColaboradoresPage() {
             </div>
 
             <div className="grid gap-2">
-              <Label className="text-foreground">
-                Setores
-              </Label>
-              <div className="max-h-40 overflow-y-auto rounded-md border border-border bg-card p-3 space-y-2">
-                {setores.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Nenhum setor cadastrado</p>
-                ) : (
-                  setores.map((setor) => (
-                    <div key={setor.id} className="flex items-center gap-2">
-                      <Checkbox
-                        id={`setor-${setor.id}`}
-                        checked={formData.setores_selecionados.includes(setor.id)}
-                        onCheckedChange={() => toggleSetorSelection(setor.id)}
-                      />
-                      <label
-                        htmlFor={`setor-${setor.id}`}
-                        className="text-sm text-foreground cursor-pointer"
-                      >
-                        {setor.nome}
-                      </label>
-                    </div>
-                  ))
-                )}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <Label className="text-foreground">
+                  Setores
+                </Label>
+                <span className="text-xs text-muted-foreground">
+                  {formData.setores_selecionados.length} de {setores.length} selecionado(s)
+                </span>
               </div>
-              {formData.setores_selecionados.length > 0 && (
+              <div className="rounded-xl border border-border bg-card p-3">
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={setorSearchTerm}
+                      onChange={(event) => setSetorSearchTerm(event.target.value)}
+                      placeholder="Buscar setor"
+                      className="h-9 pl-9"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={selectFilteredSetores}
+                      disabled={setoresFiltrados.length === 0}
+                    >
+                      Selecionar visíveis
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={clearSelectedSetores}
+                      disabled={formData.setores_selecionados.length === 0}
+                    >
+                      Limpar
+                    </Button>
+                  </div>
+                </div>
+
+                {setoresSelecionados.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {setoresSelecionados.slice(0, 5).map((setor) => (
+                      <Badge key={setor.id} variant="secondary" className="text-xs">
+                        {setor.nome}
+                      </Badge>
+                    ))}
+                    {setoresSelecionados.length > 5 && (
+                      <Badge variant="outline" className="text-xs">
+                        +{setoresSelecionados.length - 5} mais
+                      </Badge>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+                  {setores.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nenhum setor cadastrado</p>
+                  ) : setoresFiltrados.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nenhum setor encontrado</p>
+                  ) : (
+                    setoresFiltrados.map((setor) => {
+                      const isSelected = formData.setores_selecionados.includes(setor.id)
+                      return (
+                        <div
+                          key={setor.id}
+                          className={cn(
+                            'flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
+                            isSelected
+                              ? 'border-primary bg-primary/10 text-primary'
+                              : 'border-border bg-background hover:bg-muted/60 text-foreground',
+                          )}
+                        >
+                          <Checkbox
+                            checked={isSelected}
+                            onCheckedChange={() => toggleSetorSelection(setor.id)}
+                            id={`setor-${setor.id}`}
+                          />
+                          <label
+                            htmlFor={`setor-${setor.id}`}
+                            className="min-w-0 flex-1 cursor-pointer truncate"
+                          >
+                            {setor.nome}
+                          </label>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+              {setorSearchTerm && (
                 <p className="text-xs text-muted-foreground">
-                  {formData.setores_selecionados.length} setor(es) selecionado(s)
+                  Mostrando {setoresFiltrados.length} resultado(s) para &quot;{setorSearchTerm}&quot;
                 </p>
               )}
             </div>
@@ -916,22 +1062,28 @@ export default function ColaboradoresPage() {
                 Permissao
               </Label>
               <Select
-                value={formData.permissao_id}
+                value={canManagePermissionLevel ? formData.permissao_id : formData.permissao_id || atendentePermissao?.id || ''}
                 onValueChange={(value) =>
-                  setFormData({ ...formData, permissao_id: value })
+                  canManagePermissionLevel && setFormData({ ...formData, permissao_id: value })
                 }
+                disabled={!canManagePermissionLevel}
               >
                 <SelectTrigger className="border-border bg-card">
                   <SelectValue placeholder="Selecione uma permissao" />
                 </SelectTrigger>
                 <SelectContent>
-                  {permissoes.map((permissao) => (
+                  {permissoesDisponiveis.map((permissao) => (
                     <SelectItem key={permissao.id} value={permissao.id}>
                       {permissao.nome}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {!canManagePermissionLevel && (
+                <p className="text-xs text-muted-foreground">
+                  Supervisores podem gerenciar atendentes, mas nao podem alterar nivel de permissao.
+                </p>
+              )}
             </div>
           </div>
 
