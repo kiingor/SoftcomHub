@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { canViewDashboard } from '@/lib/permissions'
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -75,12 +76,12 @@ export async function updateSession(request: NextRequest) {
       .maybeSingle()
 
     // If no colaborador record exists, redirect to workdesk (default for new users)
-    const canViewDashboard = colaborador?.permissoes?.can_view_dashboard ?? false
+    const hasDashboardAccess = canViewDashboard(colaborador?.permissoes)
 
     // Redirect from login pages based on permissions
     if (isLoginPage) {
       const url = request.nextUrl.clone()
-      url.pathname = canViewDashboard ? '/dashboard' : '/workdesk'
+      url.pathname = hasDashboardAccess ? '/dashboard' : '/workdesk'
       return NextResponse.redirect(url)
     }
 
@@ -94,12 +95,12 @@ export async function updateSession(request: NextRequest) {
     // Redirect from root to appropriate page
     if (pathname === '/') {
       const url = request.nextUrl.clone()
-      url.pathname = canViewDashboard ? '/dashboard' : '/workdesk'
+      url.pathname = hasDashboardAccess ? '/dashboard' : '/workdesk'
       return NextResponse.redirect(url)
     }
 
     // Block dashboard access if user doesn't have permission
-    if (isDashboardRoute && !canViewDashboard) {
+    if (isDashboardRoute && !hasDashboardAccess) {
       const url = request.nextUrl.clone()
       url.pathname = '/workdesk'
       return NextResponse.redirect(url)

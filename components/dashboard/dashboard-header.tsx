@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -37,6 +37,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
   const router = useRouter()
   const { data: colaborador, mutate: mutateColaborador } = useColaborador()
   const [fotoDialogOpen, setFotoDialogOpen] = useState(false)
+  const [isMounted, setIsMounted] = useState(false)
 
   // — Alterar senha
   const [senhaDialogOpen, setSenhaDialogOpen] = useState(false)
@@ -103,6 +104,10 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
     router.push('/login')
   }
 
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
   const userInitials = user.email
     ? user.email.slice(0, 2).toUpperCase()
     : 'U'
@@ -150,101 +155,118 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
         <div className="hidden md:block h-6 w-px bg-gradient-to-b from-transparent via-black/10 to-transparent dark:via-white/10 mx-1" />
 
         {/* User dropdown */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              className="flex items-center gap-2.5 pl-2 pr-3 h-10 rounded-2xl hover:bg-black/5 dark:hover:bg-white/10 transition-all"
-            >
-              <Avatar className="h-8 w-8 glass-avatar-ring">
-                {colaborador?.foto_url && (
-                  <AvatarImage src={colaborador.foto_url} alt={userDisplayName} className="object-cover" />
-                )}
-                <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
-                  {userInitials}
-                </AvatarFallback>
-              </Avatar>
-              <div className="hidden md:flex flex-col items-start">
-                <span className="text-sm font-medium text-foreground leading-tight capitalize">
-                  {userDisplayName}
-                </span>
-                <span className="text-[10px] text-muted-foreground leading-tight">
-                  {userRole}
-                </span>
-              </div>
-              <ChevronDown className="hidden md:block h-3.5 w-3.5 text-muted-foreground ml-0.5" />
-            </Button>
-          </DropdownMenuTrigger>
-
-          <DropdownMenuContent
-            align="end"
-            className="w-60 rounded-2xl glass-dropdown p-1.5"
-          >
-            {/* User info header */}
-            <div className="px-3 py-3">
-              <div className="flex items-center gap-3">
-                <Avatar className="h-10 w-10 glass-avatar-ring">
+        {isMounted ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                className="flex items-center gap-2.5 pl-2 pr-3 h-10 rounded-2xl hover:bg-black/5 dark:hover:bg-white/10 transition-all"
+              >
+                <Avatar className="h-8 w-8 glass-avatar-ring">
                   {colaborador?.foto_url && (
                     <AvatarImage src={colaborador.foto_url} alt={userDisplayName} className="object-cover" />
                   )}
-                  <AvatarFallback className="bg-primary text-primary-foreground text-sm font-bold">
+                  <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
                     {userInitials}
                   </AvatarFallback>
                 </Avatar>
-                <div className="flex flex-col min-w-0">
-                  <p className="text-sm font-semibold text-foreground truncate capitalize">
+                <div className="hidden md:flex flex-col items-start">
+                  <span className="text-sm font-medium text-foreground leading-tight capitalize">
                     {userDisplayName}
-                  </p>
-                  <p className="text-xs text-muted-foreground truncate">
-                    {user.email}
-                  </p>
+                  </span>
+                  <span className="text-[10px] text-muted-foreground leading-tight">
+                    {userRole}
+                  </span>
+                </div>
+                <ChevronDown className="hidden md:block h-3.5 w-3.5 text-muted-foreground ml-0.5" />
+              </Button>
+            </DropdownMenuTrigger>
+
+            <DropdownMenuContent
+              align="end"
+              className="w-60 rounded-2xl glass-dropdown p-1.5"
+            >
+              {/* User info header */}
+              <div className="px-3 py-3">
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-10 w-10 glass-avatar-ring">
+                    {colaborador?.foto_url && (
+                      <AvatarImage src={colaborador.foto_url} alt={userDisplayName} className="object-cover" />
+                    )}
+                    <AvatarFallback className="bg-primary text-primary-foreground text-sm font-bold">
+                      {userInitials}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex flex-col min-w-0">
+                    <p className="text-sm font-semibold text-foreground truncate capitalize">
+                      {userDisplayName}
+                    </p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {user.email}
+                    </p>
+                  </div>
                 </div>
               </div>
+
+              <DropdownMenuSeparator className="bg-black/5 dark:bg-white/8 mx-1" />
+
+              <DropdownMenuItem className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
+                  <UserIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <span className="text-sm">Meu Perfil</span>
+              </DropdownMenuItem>
+
+              <DropdownMenuItem
+                onClick={() => setFotoDialogOpen(true)}
+                className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
+              >
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
+                  <Camera className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <span className="text-sm">Alterar foto</span>
+              </DropdownMenuItem>
+
+              <DropdownMenuItem
+                onClick={() => { resetSenhaDialog(); setSenhaDialogOpen(true) }}
+                className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
+              >
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
+                  <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <span className="text-sm">Alterar Senha</span>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator className="bg-black/5 dark:bg-white/8 mx-1" />
+
+              <DropdownMenuItem
+                onClick={handleSignOut}
+                className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/5"
+              >
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-destructive/10">
+                  <LogOut className="h-3.5 w-3.5 text-destructive" />
+                </div>
+                <span className="text-sm">Sair</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <div className="flex h-10 items-center gap-2.5 pl-2 pr-3">
+            <Avatar className="h-8 w-8 glass-avatar-ring">
+              <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
+                {userInitials}
+              </AvatarFallback>
+            </Avatar>
+            <div className="hidden md:flex flex-col items-start">
+              <span className="text-sm font-medium text-foreground leading-tight capitalize">
+                {userDisplayName}
+              </span>
+              <span className="text-[10px] text-muted-foreground leading-tight">
+                {userRole}
+              </span>
             </div>
-
-            <DropdownMenuSeparator className="bg-black/5 dark:bg-white/8 mx-1" />
-
-            <DropdownMenuItem className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
-                <UserIcon className="h-3.5 w-3.5 text-muted-foreground" />
-              </div>
-              <span className="text-sm">Meu Perfil</span>
-            </DropdownMenuItem>
-
-            <DropdownMenuItem
-              onClick={() => setFotoDialogOpen(true)}
-              className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
-            >
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
-                <Camera className="h-3.5 w-3.5 text-muted-foreground" />
-              </div>
-              <span className="text-sm">Alterar foto</span>
-            </DropdownMenuItem>
-
-            <DropdownMenuItem
-              onClick={() => { resetSenhaDialog(); setSenhaDialogOpen(true) }}
-              className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
-            >
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
-                <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-              </div>
-              <span className="text-sm">Alterar Senha</span>
-            </DropdownMenuItem>
-
-            <DropdownMenuSeparator className="bg-black/5 dark:bg-white/8 mx-1" />
-
-            <DropdownMenuItem
-              onClick={handleSignOut}
-              className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/5"
-            >
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-destructive/10">
-                <LogOut className="h-3.5 w-3.5 text-destructive" />
-              </div>
-              <span className="text-sm">Sair da conta</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
+          </div>
+        )}
         {/* Dialog — Alterar Senha */}
         <Dialog open={senhaDialogOpen} onOpenChange={(open) => { if (!open) resetSenhaDialog(); setSenhaDialogOpen(open) }}>
           <DialogContent className="sm:max-w-md">

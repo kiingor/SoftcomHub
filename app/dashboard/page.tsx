@@ -474,7 +474,7 @@ export default function DashboardPage() {
                 variant="outline"
                 onClick={() => {
                   setEditingTag(null)
-                  setTagForm({ nome: '', cor: '#6B7280' })
+                  setTagForm({ nome: '', cor: '#6B7280', ordem: 0 })
                   setIsTagsDialogOpen(true)
                 }}
                 className="gap-2 h-10 rounded-2xl"

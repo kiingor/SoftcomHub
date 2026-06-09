@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     if (canalMatch?.discord_bot_token) {
       discordBotToken = canalMatch.discord_bot_token
       guildId = canalMatch.discord_guild_id
-      console.log('[Discord Send] Usando setor_canais — canal_id:', canalMatch.id, '| nome:', canalMatch.nome, '| token prefix:', discordBotToken.slice(0, 15) + '...')
+      console.log('[Discord Send] Usando setor_canais — canal_id:', canalMatch.id, '| nome:', canalMatch.nome, '| token prefix:', canalMatch.discord_bot_token.slice(0, 15) + '...')
     }
 
     // Priority 2: Fallback to setores table
@@ -75,6 +75,7 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       )
     }
+    const botToken = discordBotToken
 
     // Get the discord_user_id from the client or from the last client message
     let discordUserId: string | null = null
@@ -115,12 +116,12 @@ export async function POST(request: NextRequest) {
     const dmUrl = `${DISCORD_API_URL}/users/@me/channels`
     const dmBody = JSON.stringify({ recipient_id: discordUserId })
     console.log(`[Discord Send] CURL Step 1 — Abrir DM:`)
-    console.log(`curl -X POST '${dmUrl}' -H 'Authorization: Bot ${discordBotToken}' -H 'Content-Type: application/json' -d '${dmBody}'`)
+    console.log(`curl -X POST '${dmUrl}' -H 'Authorization: Bot ${botToken}' -H 'Content-Type: application/json' -d '${dmBody}'`)
 
     const dmChannelResponse = await fetch(dmUrl, {
       method: 'POST',
       headers: {
-        Authorization: `Bot ${discordBotToken}`,
+        Authorization: `Bot ${botToken}`,
         'Content-Type': 'application/json',
       },
       body: dmBody,
@@ -167,24 +168,24 @@ export async function POST(request: NextRequest) {
       )
 
       console.log(`[Discord Send] CURL Step 2 — Enviar arquivo para canal ${dmChannel.id}:`)
-      console.log(`curl -X POST '${sendMsgUrl}' -H 'Authorization: Bot ${discordBotToken}' -F 'files[0]=@${resolvedFileName}'`)
+      console.log(`curl -X POST '${sendMsgUrl}' -H 'Authorization: Bot ${botToken}' -F 'files[0]=@${resolvedFileName}'`)
 
       discordResponse = await fetch(sendMsgUrl, {
         method: 'POST',
         headers: {
-          Authorization: `Bot ${discordBotToken}`,
+          Authorization: `Bot ${botToken}`,
         },
         body: formData,
       })
     } else {
       const sendBody = JSON.stringify({ content: message })
       console.log(`[Discord Send] CURL Step 2 — Enviar mensagem para canal ${dmChannel.id}:`)
-      console.log(`curl -X POST '${sendMsgUrl}' -H 'Authorization: Bot ${discordBotToken}' -H 'Content-Type: application/json' -d '${sendBody}'`)
+      console.log(`curl -X POST '${sendMsgUrl}' -H 'Authorization: Bot ${botToken}' -H 'Content-Type: application/json' -d '${sendBody}'`)
 
       discordResponse = await fetch(sendMsgUrl, {
         method: 'POST',
         headers: {
-          Authorization: `Bot ${discordBotToken}`,
+          Authorization: `Bot ${botToken}`,
           'Content-Type': 'application/json',
         },
         body: sendBody,

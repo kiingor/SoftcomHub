@@ -10,6 +10,7 @@ import { useState } from 'react'
 import { LayoutDashboard, Eye, EyeOff, ArrowRight, BarChart3, Settings, Shield, PieChart } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { canViewDashboard } from '@/lib/permissions'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -47,9 +48,7 @@ export default function LoginPage() {
         throw new Error('Sua conta esta desativada. Entre em contato com o administrador.')
       }
 
-      const canViewDashboard = colaborador?.permissoes?.can_view_dashboard ?? false
-      
-      if (!canViewDashboard) {
+      if (!canViewDashboard(colaborador?.permissoes)) {
         throw new Error('Voce nao tem permissao para acessar o Dashboard. Use o WorkDesk.')
       }
 

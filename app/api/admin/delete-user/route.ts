@@ -30,11 +30,21 @@ export async function DELETE(request: Request) {
       }
     )
 
-    // 1. Remover vínculos de setores
-    await supabaseAdmin
-      .from('colaborador_setores')
-      .delete()
-      .eq('colaborador_id', colaboradorId)
+    // 1. Remover vínculos de setores e subsetores
+    await Promise.all([
+      supabaseAdmin
+        .from('colaborador_setores')
+        .delete()
+        .eq('colaborador_id', colaboradorId),
+      supabaseAdmin
+        .from('colaboradores_setores')
+        .delete()
+        .eq('colaborador_id', colaboradorId),
+      supabaseAdmin
+        .from('colaboradores_subsetores')
+        .delete()
+        .eq('colaborador_id', colaboradorId),
+    ])
 
     // 2. Remover o colaborador
     const { error: colabError } = await supabaseAdmin

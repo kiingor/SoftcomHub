@@ -257,7 +257,8 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
   const colabSubsetoresMap: Record<string, { id: string; nome: string }[]> = {}
   for (const cs of (colabSubsetoresRes.data || [])) {
     if (!colabSubsetoresMap[cs.colaborador_id]) colabSubsetoresMap[cs.colaborador_id] = []
-    if (cs.subsetores) colabSubsetoresMap[cs.colaborador_id].push(cs.subsetores as { id: string; nome: string })
+    const subsetor = Array.isArray(cs.subsetores) ? cs.subsetores[0] : cs.subsetores
+    if (subsetor) colabSubsetoresMap[cs.colaborador_id].push(subsetor as { id: string; nome: string })
   }
   const atendentes = atendentesSetor.map((as: any) => ({
     ...as.colaboradores,
