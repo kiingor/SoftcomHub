@@ -3,6 +3,24 @@
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 
+async function getAssignedSetorIds(supabase: ReturnType<typeof createClient>, colaboradorId: string) {
+  const [dashboardResult, atendimentoResult] = await Promise.all([
+    supabase
+      .from('colaborador_setores')
+      .select('setor_id')
+      .eq('colaborador_id', colaboradorId),
+    supabase
+      .from('colaboradores_setores')
+      .select('setor_id')
+      .eq('colaborador_id', colaboradorId),
+  ])
+
+  return new Set([
+    ...(dashboardResult.data?.map((assignment) => assignment.setor_id) || []),
+    ...(atendimentoResult.data?.map((assignment) => assignment.setor_id) || []),
+  ])
+}
+
 // Colaborador + Setores combined hook to avoid waterfall (used by dashboard page)
 export function useDashboardData() {
   return useSWR(
@@ -30,12 +48,7 @@ export function useDashboardData() {
 
       // If not master, filter to assigned setores
       if (colaborador && !colaborador.is_master) {
-        const { data: assignments } = await supabase
-          .from('colaborador_setores')
-          .select('setor_id')
-          .eq('colaborador_id', colaborador.id)
-
-        const assignedIds = new Set(assignments?.map((a) => a.setor_id) || [])
+        const assignedIds = await getAssignedSetorIds(supabase, colaborador.id)
         setores = setores.filter((s: { id: string }) => assignedIds.has(s.id))
       }
 
@@ -85,12 +98,25 @@ export function useSetores(colaboradorId?: string, isMaster?: boolean) {
         return data || []
       }
 
-      const { data: assignments } = await supabase
-        .from('colaborador_setores')
-        .select('setor_id, setores(*, setor_canais(tipo, ativo), tags(id, nome, cor, ordem))')
-        .eq('colaborador_id', colaboradorId)
+      const [dashboardResult, atendimentoResult] = await Promise.all([
+        supabase
+          .from('colaborador_setores')
+          .select('setor_id, setores(*, setor_canais(tipo, ativo), tags(id, nome, cor, ordem))')
+          .eq('colaborador_id', colaboradorId),
+        supabase
+          .from('colaboradores_setores')
+          .select('setor_id, setores(*, setor_canais(tipo, ativo), tags(id, nome, cor, ordem))')
+          .eq('colaborador_id', colaboradorId),
+      ])
 
-      return assignments?.map((a) => a.setores).filter(Boolean) || []
+      const setoresById = new Map<string, unknown>()
+      for (const assignment of [...(dashboardResult.data || []), ...(atendimentoResult.data || [])]) {
+        if (assignment.setor_id && assignment.setores) {
+          setoresById.set(assignment.setor_id, assignment.setores)
+        }
+      }
+
+      return Array.from(setoresById.values())
     },
     {
       revalidateOnFocus: false,

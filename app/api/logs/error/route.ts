@@ -50,7 +50,7 @@ export async function POST(request: Request) {
     // Espelhamento no banco externo — fire-and-forget, nunca bloqueia a resposta
     const extClient = createExtLogsClient()
     if (extClient) {
-      extClient.from('error_logs').insert(payload).then(({ error: extErr }) => {
+      Promise.resolve(extClient.from('error_logs').insert(payload)).then(({ error: extErr }) => {
         if (extErr) console.error('[ErrorLog API] Falha ao espelhar log externo:', extErr.message)
       }).catch(() => {})
     }

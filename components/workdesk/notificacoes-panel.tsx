@@ -118,7 +118,7 @@ export function NotificacoesPanel({ colaboradorId, setorIds }: NotificacoesPanel
 
             const notifComRemetente = {
               ...newNotif,
-              remetente: remetenteData,
+              remetente: remetenteData || undefined,
               lida: false,
             }
 

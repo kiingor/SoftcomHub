@@ -52,6 +52,7 @@ interface Setor {
 interface Permissao {
   id: string
   nome: string
+  can_view_dashboard?: boolean
 }
 
 interface Colaborador {
@@ -60,6 +61,7 @@ interface Colaborador {
   email: string
   setor_id: string | null
   permissao_id: string | null
+  is_master: boolean
   is_online: boolean
   ativo: boolean
   created_at: string
@@ -188,7 +190,7 @@ export default function ColaboradoresPage() {
             'colaboradores?select=*,setor:setores(id,nome),permissao:permissoes(id,nome),colaboradores_setores!inner(setor_id)&order=created_at.desc',
           ),
           rest('setores?select=id,nome&order=nome'),
-          rest('permissoes?select=id,nome&order=nome'),
+          rest('permissoes?select=id,nome,can_view_dashboard&order=nome'),
           rest('colaboradores_setores?select=colaborador_id,setor_id'),
           rest('avaliacoes?select=colaborador_id,nota'),
         ])
@@ -205,7 +207,7 @@ export default function ColaboradoresPage() {
               .select('*, setor:setores(id, nome), permissao:permissoes(id, nome), colaboradores_setores!inner(setor_id)')
               .order('created_at', { ascending: false }),
             supabase.from('setores').select('id, nome').order('nome'),
-            supabase.from('permissoes').select('id, nome').order('nome'),
+            supabase.from('permissoes').select('id, nome, can_view_dashboard').order('nome'),
             supabase.from('colaboradores_setores').select('colaborador_id, setor_id'),
             supabase.from('avaliacoes').select('colaborador_id, nota'),
           ])
@@ -352,6 +354,11 @@ export default function ColaboradoresPage() {
     setSaving(true)
     setError(null)
 
+    const selectedPermissao = permissoes.find((permissao) => permissao.id === formData.permissao_id)
+    const isAdminPermission = selectedPermissao?.nome?.toLowerCase() === 'admin'
+    const permissionName = selectedPermissao?.nome?.toLowerCase()
+    const hasDashboardAccess = selectedPermissao?.can_view_dashboard === true || permissionName === 'supervisor' || isAdminPermission
+
     if (editingColaborador) {
       // Update existing colaborador
       const { error: updateError } = await supabase
@@ -360,6 +367,7 @@ export default function ColaboradoresPage() {
           nome: formData.nome.trim(),
           setor_id: formData.setor_id || null,
           permissao_id: formData.permissao_id || null,
+          is_master: isAdminPermission,
           suporte_id: formData.suporte_id.trim() || null,
         })
         .eq('id', editingColaborador.id)
@@ -371,17 +379,63 @@ export default function ColaboradoresPage() {
       }
 
       // Update colaborador_setores join table
-      await supabase
+      const { error: deleteAtendimentoError } = await supabase
         .from('colaboradores_setores')
         .delete()
         .eq('colaborador_id', editingColaborador.id)
+      if (deleteAtendimentoError) {
+        setError('Erro ao atualizar setores de atendimento: ' + deleteAtendimentoError.message)
+        setSaving(false)
+        return
+      }
 
       if (formData.setores_selecionados.length > 0) {
         const relations = formData.setores_selecionados.map((setorId) => ({
           colaborador_id: editingColaborador.id,
           setor_id: setorId,
         }))
-        await supabase.from('colaboradores_setores').insert(relations)
+        const { error: insertAtendimentoError } = await supabase.from('colaboradores_setores').insert(relations)
+        if (insertAtendimentoError) {
+          setError('Erro ao salvar setores de atendimento: ' + insertAtendimentoError.message)
+          setSaving(false)
+          return
+        }
+      }
+
+      const { error: deleteDashboardError } = await supabase
+        .from('colaborador_setores')
+        .delete()
+        .eq('colaborador_id', editingColaborador.id)
+      if (deleteDashboardError) {
+        setError('Erro ao atualizar setores do dashboard: ' + deleteDashboardError.message)
+        setSaving(false)
+        return
+      }
+
+      if (hasDashboardAccess && !isAdminPermission && formData.setores_selecionados.length > 0) {
+        const dashboardRelations = formData.setores_selecionados.map((setorId) => ({
+          colaborador_id: editingColaborador.id,
+          setor_id: setorId,
+        }))
+        const { error: insertDashboardError } = await supabase.from('colaborador_setores').insert(dashboardRelations)
+        if (insertDashboardError) {
+          setError('Erro ao salvar setores do dashboard: ' + insertDashboardError.message)
+          setSaving(false)
+          return
+        }
+      }
+
+      const selectedSetorIds = new Set(formData.setores_selecionados)
+      const setoresAtivosAtuais = Array.isArray(editingColaborador.setores_ativos_sessao)
+        ? editingColaborador.setores_ativos_sessao
+        : []
+      const setoresAtivosValidos = setoresAtivosAtuais.filter((setorId) => selectedSetorIds.has(setorId))
+
+      if (setoresAtivosValidos.length !== setoresAtivosAtuais.length) {
+        await supabase
+          .from('colaboradores')
+          .update({ setores_ativos_sessao: setoresAtivosValidos })
+          .eq('id', editingColaborador.id)
       }
 
       toast({
@@ -429,6 +483,7 @@ export default function ColaboradoresPage() {
         email: formData.email.trim().toLowerCase(),
         setor_id: formData.setor_id || null,
         permissao_id: formData.permissao_id || null,
+        is_master: isAdminPermission,
         suporte_id: formData.suporte_id.trim() || null,
         is_online: false,
         ativo: true,
@@ -446,7 +501,25 @@ export default function ColaboradoresPage() {
           colaborador_id: authData.user!.id,
           setor_id: setorId,
         }))
-        await supabase.from('colaboradores_setores').insert(relations)
+        const { error: insertAtendimentoError } = await supabase.from('colaboradores_setores').insert(relations)
+        if (insertAtendimentoError) {
+          setError('Erro ao salvar setores de atendimento: ' + insertAtendimentoError.message)
+          setSaving(false)
+          return
+        }
+      }
+
+      if (hasDashboardAccess && !isAdminPermission && formData.setores_selecionados.length > 0) {
+        const dashboardRelations = formData.setores_selecionados.map((setorId) => ({
+          colaborador_id: authData.user!.id,
+          setor_id: setorId,
+        }))
+        const { error: insertDashboardError } = await supabase.from('colaborador_setores').insert(dashboardRelations)
+        if (insertDashboardError) {
+          setError('Erro ao salvar setores do dashboard: ' + insertDashboardError.message)
+          setSaving(false)
+          return
+        }
       }
 
       toast({

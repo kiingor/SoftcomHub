@@ -43,18 +43,18 @@ export async function POST(request: NextRequest) {
     const phoneNumber = message.from
     const customerName = contact?.profile?.name || 'Desconhecido'
     const messageContent = message.text?.body || ''
-    const messageType = message.type || 'texto'
+    const messageType = String(message.type || 'texto')
     const phoneNumberId = metadata?.phone_number_id
 
     // Map WhatsApp message types to our types
-    const tipoMapeado =
-      {
-        text: 'texto',
-        image: 'imagem',
-        audio: 'audio',
-        video: 'video',
-        document: 'documento',
-      }[messageType] || 'texto'
+    const tipoPorMensagem: Record<string, string> = {
+      text: 'texto',
+      image: 'imagem',
+      audio: 'audio',
+      video: 'video',
+      document: 'documento',
+    }
+    const tipoMapeado = tipoPorMensagem[messageType] || 'texto'
 
     // 1. Find or create customer (using upsert to prevent duplicates)
     let { data: cliente, error: clienteError } = await supabase
@@ -158,13 +158,14 @@ export async function POST(request: NextRequest) {
       targetSetorId = defaultSetor.id
       console.log(`[v0] Using default setor ${targetSetorId}`)
     }
+    const resolvedTargetSetorId = targetSetorId as string
 
     // 3. Find open ticket for this cliente IN THIS SPECIFIC SETOR - 1 ticket per setor per client
     let { data: ticket } = await supabase
       .from('tickets')
       .select('id, setor_id, colaborador_id')
       .eq('cliente_id', cliente.id)
-      .eq('setor_id', targetSetorId)
+      .eq('setor_id', resolvedTargetSetorId)
       .in('status', ['aberto', 'em_atendimento'])
       .order('criado_em', { ascending: false })
       .limit(1)
@@ -184,7 +185,7 @@ export async function POST(request: NextRequest) {
           .from('tickets')
           .select('id, setor_id, cliente_id, colaborador_id')
           .in('cliente_id', clienteIds)
-          .eq('setor_id', targetSetorId)
+          .eq('setor_id', resolvedTargetSetorId)
           .in('status', ['aberto', 'em_atendimento'])
           .order('criado_em', { ascending: false })
           .limit(1)
@@ -193,7 +194,7 @@ export async function POST(request: NextRequest) {
         if (existingTicket) {
           ticket = existingTicket
           cliente = { id: existingTicket.cliente_id }
-          console.log(`[v0] Found existing ticket ${ticket.id} for phone ${phoneNumber} in setor ${targetSetorId}`)
+          console.log(`[v0] Found existing ticket ${ticket.id} for phone ${phoneNumber} in setor ${resolvedTargetSetorId}`)
         }
       }
     }
@@ -216,17 +217,17 @@ export async function POST(request: NextRequest) {
 
     if (!ticket) {
       // Create and distribute ticket in the resolved setor
-      const result = await criarEDistribuirTicket(cliente.id, targetSetorId, 'whatsapp')
+      const result = await criarEDistribuirTicket(cliente.id, resolvedTargetSetorId, 'whatsapp')
 
       if (!result) {
         console.error('[v0] Error creating ticket')
         return NextResponse.json({ error: 'Error creating ticket' }, { status: 500 })
       }
 
-      ticket = { id: result.ticketId, setor_id: targetSetorId, colaborador_id: result.colaboradorId }
+      ticket = { id: result.ticketId, setor_id: resolvedTargetSetorId, colaborador_id: result.colaboradorId }
 
       console.log(
-        `[v0] New ticket created: ${result.ticketId} in setor ${targetSetorId}, assigned to: ${result.colaboradorId || 'none'}`
+        `[v0] New ticket created: ${result.ticketId} in setor ${resolvedTargetSetorId}, assigned to: ${result.colaboradorId || 'none'}`
       )
     }
 

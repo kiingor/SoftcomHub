@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { canViewDashboard } from '@/lib/permissions'
 
 export default async function Home() {
   const supabase = await createClient()
@@ -16,7 +17,5 @@ export default async function Home() {
     .eq('email', user.email)
     .maybeSingle()
 
-  const canViewDashboard = colaborador?.permissoes?.can_view_dashboard ?? false
-
-  redirect(canViewDashboard ? '/dashboard' : '/workdesk')
+  redirect(canViewDashboard(colaborador?.permissoes) ? '/dashboard' : '/workdesk')
 }

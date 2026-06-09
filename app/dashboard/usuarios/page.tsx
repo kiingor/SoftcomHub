@@ -81,14 +81,18 @@ const supabase = createClient()
 
 async function fetchUsuariosData() {
   const [colabsRes, setoresRes, permissoesRes, colabSetoresRes] = await Promise.all([
-    // Filtra somente supervisores — atendentes (is_master=false) ficam na tela /dashboard/colaboradores
-    supabase.from('colaboradores').select('*, permissoes:permissao_id(*)').eq('is_master', true).order('nome'),
+    supabase.from('colaboradores').select('*, permissoes:permissao_id(*)').order('nome'),
     supabase.from('setores').select('*').order('nome'),
     supabase.from('permissoes').select('*').order('nome'),
     supabase.from('colaborador_setores').select('*'),
   ])
+
+  const dashboardUsers = (colabsRes.data || []).filter((colaborador: any) =>
+    colaborador.is_master || colaborador.permissoes?.can_view_dashboard
+  )
+
   return {
-    colaboradores: colabsRes.data || [],
+    colaboradores: dashboardUsers,
     setores: setoresRes.data || [],
     permissoes: permissoesRes.data || [],
     colaboradorSetores: colabSetoresRes.data || [],
@@ -121,6 +125,8 @@ export default function UsuariosPage() {
   const setores = data?.setores || []
   const permissoes = data?.permissoes || []
   const colaboradorSetores = data?.colaboradorSetores || []
+  const selectedPermissao = permissoes.find((permissao: Permissao) => permissao.id === formData.permissao_id)
+  const isAdminPermission = selectedPermissao?.nome?.toLowerCase() === 'admin'
 
   const filteredColaboradores = useMemo(() => {
     if (!searchTerm) return colaboradores
@@ -142,8 +148,7 @@ export default function UsuariosPage() {
       nome: '',
       email: '',
       senha: '',
-      // Nesta tela só criamos supervisores — is_master sempre true
-      is_master: true,
+      is_master: false,
       permissao_id: '',
       setores_selecionados: [],
     })
@@ -168,13 +173,15 @@ export default function UsuariosPage() {
 
     setSaving(true)
     try {
+      const nextIsMaster = isAdminPermission
+
       if (editingUser) {
         // Update existing user
         await supabase
           .from('colaboradores')
           .update({
             nome: formData.nome,
-            is_master: formData.is_master,
+            is_master: nextIsMaster,
             permissao_id: formData.permissao_id || null,
           })
           .eq('id', editingUser.id)
@@ -186,8 +193,8 @@ export default function UsuariosPage() {
           .delete()
           .eq('colaborador_id', editingUser.id)
 
-        // Then add new ones (only if not master)
-        if (!formData.is_master && formData.setores_selecionados.length > 0) {
+        // Then add new ones for non-admin dashboard users.
+        if (!nextIsMaster && formData.setores_selecionados.length > 0) {
           const newRelations = formData.setores_selecionados.map((setorId) => ({
             colaborador_id: editingUser.id,
             setor_id: setorId,
@@ -212,7 +219,7 @@ export default function UsuariosPage() {
           .insert({
             nome: formData.nome,
             email: formData.email,
-            is_master: formData.is_master,
+            is_master: nextIsMaster,
             permissao_id: formData.permissao_id || null,
             ativo: true,
             is_online: false,
@@ -222,8 +229,8 @@ export default function UsuariosPage() {
 
         if (colabError) throw colabError
 
-        // Add setor relationships (only if not master)
-        if (!formData.is_master && formData.setores_selecionados.length > 0 && newColab) {
+        // Add setor relationships for non-admin dashboard users.
+        if (!nextIsMaster && formData.setores_selecionados.length > 0 && newColab) {
           const relations = formData.setores_selecionados.map((setorId) => ({
             colaborador_id: newColab.id,
             setor_id: setorId,
@@ -542,18 +549,18 @@ export default function UsuariosPage() {
                   </Select>
                 </div>
 
-                {/* Nesta tela só gerenciamos supervisores — is_master fica fixo.
-                    Pra criar atendente, use a tela "Atendentes". */}
+                {/* Nesta tela gerenciamos usuários com acesso ao dashboard.
+                    A permissão Admin libera todos os setores automaticamente. */}
                 <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 h-fit mt-auto">
                   <UserCog className="h-4 w-4 text-primary shrink-0" />
                   <span className="text-sm text-foreground">
-                    Supervisor — acesso ao dashboard
+                    {isAdminPermission ? 'Admin — todos os setores' : 'Supervisor — setores selecionados'}
                   </span>
                 </div>
               </div>
 
               {/* Setores */}
-              {!formData.is_master && (
+              {!isAdminPermission && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label>Setores que o usuário pode acessar</Label>
