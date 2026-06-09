@@ -68,6 +68,8 @@ interface Colaborador {
   setores_ativos_sessao?: string[]
 }
 
+const MAX_VISIBLE_SETORES = 3
+
 // Lê o access_token do usuário direto do cookie do @supabase/ssr (síncrono).
 // Necessário porque o client supabase-js no browser SERIALIZA queries
 // concorrentes pelo seu auth lock interno — um Promise.all de 5 selects roda em
@@ -578,30 +580,45 @@ export default function ColaboradoresPage() {
                             const ativos = Array.isArray(colaborador.setores_ativos_sessao)
                               ? new Set(colaborador.setores_ativos_sessao)
                               : new Set<string>()
-                            const inativos = setorIds.filter(sid => !ativos.has(sid))
+                            const setorItems = setorIds
+                              .map((sid) => {
+                                const setor = setores.find((st) => st.id === sid)
+                                return setor ? { id: sid, nome: setor.nome, isAtivo: ativos.has(sid) } : null
+                              })
+                              .filter(Boolean) as { id: string; nome: string; isAtivo: boolean }[]
+                            const visibleSetores = setorItems.slice(0, MAX_VISIBLE_SETORES)
+                            const hiddenSetores = setorItems.slice(MAX_VISIBLE_SETORES)
+                            const inativos = setorItems.filter((setor) => !setor.isAtivo)
                             return (
                               <div className="flex flex-wrap items-center gap-1">
-                                {setorIds.map((sid) => {
-                                  const s = setores.find((st) => st.id === sid)
-                                  if (!s) return null
-                                  const isAtivo = ativos.has(sid)
-                                  return (
-                                    <Badge
-                                      key={sid}
-                                      variant={isAtivo ? 'default' : 'outline'}
-                                      className={cn(
-                                        'text-xs',
-                                        isAtivo
-                                          ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 hover:bg-green-100'
-                                          : 'opacity-60 line-through',
-                                      )}
-                                      title={isAtivo ? 'Recebendo tickets' : 'Inativo — não recebe novos tickets'}
-                                    >
-                                      {s.nome}
-                                    </Badge>
-                                  )
-                                })}
-                                {inativos.length > 0 && setorIds.length === inativos.length && (
+                                {visibleSetores.map((setor) => (
+                                  <Badge
+                                    key={setor.id}
+                                    variant={setor.isAtivo ? 'default' : 'outline'}
+                                    className={cn(
+                                      'text-xs',
+                                      setor.isAtivo
+                                        ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 hover:bg-green-100'
+                                        : 'opacity-60 line-through',
+                                    )}
+                                    title={setor.isAtivo ? 'Recebendo tickets' : 'Inativo — não recebe novos tickets'}
+                                  >
+                                    {setor.nome}
+                                  </Badge>
+                                ))}
+                                {hiddenSetores.length > 0 && (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 rounded-full px-2 text-xs text-muted-foreground"
+                                    title={hiddenSetores.map((setor) => setor.nome).join(', ')}
+                                    aria-label={`${hiddenSetores.length} setores adicionais: ${hiddenSetores.map((setor) => setor.nome).join(', ')}`}
+                                  >
+                                    +{hiddenSetores.length} mais
+                                  </Button>
+                                )}
+                                {inativos.length > 0 && setorItems.length === inativos.length && (
                                   <span className="text-[10px] text-muted-foreground italic">
                                     nenhum ativo
                                   </span>
