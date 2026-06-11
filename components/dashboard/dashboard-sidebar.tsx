@@ -15,6 +15,7 @@ import {
   Headphones,
   Loader2,
   Activity,
+  Bot,
   HelpCircle,
   ExternalLink,
   Bug,
@@ -27,6 +28,7 @@ import { useColaborador } from '@/lib/hooks/use-data'
 const baseNavigation = [
   { name: 'Setores', href: '/dashboard', icon: Building2 },
   { name: 'Monitoramento', href: '/dashboard/monitoramento', icon: Activity },
+  { name: 'Nexus IA', href: '/dashboard/nexus', icon: Bot },
   { name: 'Dashboard Geral', href: '/dashboard/metricas', icon: BarChart3 },
 ]
 

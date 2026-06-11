@@ -28,11 +28,10 @@ import {
   Activity,
   RefreshCw,
   Search,
-  Filter,
   Clock,
   User,
   AlertCircle,
-  Eye,
+  Bot,
   MessageCircle,
   X,
   ArrowRightLeft,
@@ -64,9 +63,14 @@ import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
+import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calcularOrigem, type SetorLookupEntry } from '@/lib/ticket-origem'
 import { OrigemBadge } from '@/components/origem-badge'
+
+const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
+const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
+const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
+const NEXUS_BOT_REMETENTE = 'bot-nexus'
 
 function formatMs(ms: number) {
   const hours = Math.floor(ms / (1000 * 60 * 60))
@@ -98,6 +102,29 @@ function formatPhone(phone: string | null) {
     return `(${num.slice(0, 2)}) ${num.slice(2, 6)}-${num.slice(6)}`
   }
   return num
+}
+
+function formatRelativeTime(date: string | null) {
+  if (!date) return 'sem horario'
+  const diffMs = Math.max(0, Date.now() - new Date(date).getTime())
+  const minutes = Math.floor(diffMs / 60000)
+  if (minutes < 1) return 'agora'
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}min`
+}
+
+type NexusConversation = {
+  clienteKey: string
+  clienteId: string | null
+  contato: string
+  telefone: string | null
+  setorId: string
+  setorNome: string
+  lastMessageAt: string
+  lastBotMessageAt: string
+  lastRemetente: string
+  messages: any[]
 }
 
 export default function MonitoramentoPage() {
@@ -154,6 +181,8 @@ export default function MonitoramentoPage() {
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [conversationTab, setConversationTab] = useState<'conversa' | 'historico'>('conversa')
+  const [selectedNexusConversation, setSelectedNexusConversation] = useState<NexusConversation | null>(null)
+  const nexusConversationScrollRef = useRef<HTMLDivElement>(null)
 
   // Transfer & finalize state
   const [encerrarDialogOpen, setEncerrarDialogOpen] = useState(false)
@@ -196,6 +225,12 @@ export default function MonitoramentoPage() {
       clearTimeout(stop)
     }
   }, [conversationTab, loadingMessages, conversationMessages])
+
+  useEffect(() => {
+    if (!selectedNexusConversation || !nexusConversationScrollRef.current) return
+    const el = nexusConversationScrollRef.current
+    el.scrollTop = el.scrollHeight
+  }, [selectedNexusConversation])
 
   // Fetch subsetores when setor filter changes
   useEffect(() => {
@@ -354,10 +389,159 @@ export default function MonitoramentoPage() {
         avgResolution = total / resolved.length
       }
 
+      const nexusActiveSince = new Date(Date.now() - NEXUS_BOT_VISIBILITY_MINUTES * 60000).toISOString()
+      const nexusLookbackSince = new Date(
+        Date.now() - Math.max(NEXUS_MESSAGE_LOOKBACK_MINUTES, NEXUS_BOT_VISIBILITY_MINUTES) * 60000,
+      ).toISOString()
+
+      const { data: setoresIaData } = await supabase
+        .from('setores')
+        .select('id, nome, assistente_ia, setor_canais(tipo, ativo, instancia, phone_number_id)')
+        .in('id', targetSetorIds)
+        .eq('assistente_ia', true)
+
+      const setoresIa = setoresIaData || []
+      const channelSetores = new Map<string, { id: string; nome: string }>()
+
+      for (const setor of setoresIa as any[]) {
+        for (const canal of setor.setor_canais || []) {
+          if (!canal.ativo) continue
+          if (canal.phone_number_id) channelSetores.set(`phone:${canal.phone_number_id}`, setor)
+          if (canal.instancia) channelSetores.set(`instance:${canal.instancia}`, setor)
+        }
+      }
+
+      const resolveNexusSetor = (message: any) => {
+        const byPhone = message.phone_number_id ? channelSetores.get(`phone:${message.phone_number_id}`) : null
+        if (byPhone) return byPhone
+
+        const byInstance = message.instancia ? channelSetores.get(`instance:${message.instancia}`) : null
+        if (byInstance) return byInstance
+
+        return setoresIa.length === 1 ? setoresIa[0] : null
+      }
+
+      const { data: nexusMessagesData } = setoresIa.length > 0
+        ? await supabase
+            .from('mensagens')
+            .select('*, clientes(id, nome, telefone)')
+            .is('ticket_id', null)
+            .in('remetente', [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE])
+            .gte('enviado_em', nexusLookbackSince)
+            .order('enviado_em', { ascending: true })
+            .limit(500)
+        : { data: [] }
+
+      const nexusMessages = nexusMessagesData || []
+      const clienteIds = new Set<string>()
+      const telefones = new Set<string>()
+
+      for (const message of nexusMessages) {
+        if (message.cliente_id) clienteIds.add(message.cliente_id)
+        const telefone = (message as any).clientes?.telefone
+        if (telefone) telefones.add(telefone)
+      }
+
+      const clientesPorTelefone = telefones.size > 0
+        ? await supabase
+            .from('clientes')
+            .select('id, telefone')
+            .in('telefone', Array.from(telefones))
+        : { data: [] }
+
+      const telefonePorClienteId = new Map<string, string>()
+      for (const cliente of clientesPorTelefone.data || []) {
+        clienteIds.add(cliente.id)
+        if (cliente.telefone) telefonePorClienteId.set(cliente.id, cliente.telefone)
+      }
+
+      const nexusTicketsAtivos = clienteIds.size > 0
+        ? await supabase
+            .from('tickets')
+            .select('cliente_id')
+            .in('cliente_id', Array.from(clienteIds))
+            .in('status', ['aberto', 'em_atendimento'])
+        : { data: [] }
+
+      const clientesComTicketAtivo = new Set<string>()
+      const telefonesComTicketAtivo = new Set<string>()
+      for (const ticket of nexusTicketsAtivos.data || []) {
+        if (!ticket.cliente_id) continue
+        clientesComTicketAtivo.add(ticket.cliente_id)
+        const telefone = telefonePorClienteId.get(ticket.cliente_id)
+        if (telefone) telefonesComTicketAtivo.add(telefone)
+      }
+
+      const ocorrenciasPorCliente = clienteIds.size > 0
+        ? await supabase
+            .from('nexus_ocorrencias')
+            .select('cliente_id, telefone')
+            .in('cliente_id', Array.from(clienteIds))
+            .eq('status', 'aberta')
+            .gte('criado_em', nexusLookbackSince)
+        : { data: [] }
+
+      const ocorrenciasPorTelefone = telefones.size > 0
+        ? await supabase
+            .from('nexus_ocorrencias')
+            .select('cliente_id, telefone')
+            .in('telefone', Array.from(telefones))
+            .eq('status', 'aberta')
+            .gte('criado_em', nexusLookbackSince)
+        : { data: [] }
+
+      const clientesComOcorrencia = new Set<string>()
+      const telefonesComOcorrencia = new Set<string>()
+      for (const ocorrencia of [...(ocorrenciasPorCliente.data || []), ...(ocorrenciasPorTelefone.data || [])]) {
+        if (ocorrencia.cliente_id) clientesComOcorrencia.add(ocorrencia.cliente_id)
+        if (ocorrencia.telefone) telefonesComOcorrencia.add(ocorrencia.telefone)
+      }
+
+      const nexusGroups = new Map<string, Omit<NexusConversation, 'setorId' | 'setorNome' | 'lastBotMessageAt'>>()
+      for (const message of nexusMessages) {
+        const cliente = (message as any).clientes
+        if (message.cliente_id && clientesComTicketAtivo.has(message.cliente_id)) continue
+        if (cliente?.telefone && telefonesComTicketAtivo.has(cliente.telefone)) continue
+        if (message.cliente_id && clientesComOcorrencia.has(message.cliente_id)) continue
+        if (cliente?.telefone && telefonesComOcorrencia.has(cliente.telefone)) continue
+
+        const clienteKey = message.cliente_id || cliente?.telefone || message.id
+        const current = nexusGroups.get(clienteKey)
+        const nextMessages = [...(current?.messages || []), message]
+
+        nexusGroups.set(clienteKey, {
+          clienteKey,
+          clienteId: message.cliente_id,
+          contato: cliente?.nome || cliente?.telefone || 'Cliente sem nome',
+          telefone: cliente?.telefone || null,
+          lastMessageAt: message.enviado_em,
+          lastRemetente: message.remetente,
+          messages: nextMessages,
+        })
+      }
+
+      const nexusConversas = Array.from(nexusGroups.values())
+        .map((conversation): NexusConversation | null => {
+          const setor = conversation.messages.map(resolveNexusSetor).find(Boolean)
+          if (!setor) return null
+
+          const lastBotMessage = [...conversation.messages].reverse().find((m) => m.remetente === NEXUS_BOT_REMETENTE)
+          return {
+            ...conversation,
+            setorId: setor.id,
+            setorNome: setor.nome,
+            lastBotMessageAt: lastBotMessage?.enviado_em || '',
+          }
+        })
+        .filter((conversation): conversation is NexusConversation => Boolean(conversation))
+        .filter((conversation) => conversation.lastBotMessageAt >= nexusActiveSince)
+        .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
+
       return {
         tickets,
         atendentes,
         todosSetores: todosSetoresData || [],
+        nexusConversas,
         stats: {
           total: tickets.length,
           naFila: ticketsNaFila.length,
@@ -387,7 +571,50 @@ export default function MonitoramentoPage() {
   const temposHoje = data?.temposHoje || { tempoMedioPrimeiraResposta: '00:00:00', tempoMedioResolucao: '00:00:00', totalRecebidos: 0, totalResolvidos: 0 }
   const tickets = data?.tickets || []
   const atendentesRaw: any[] = data?.atendentes || []
+  const nexusConversasRaw: NexusConversation[] = data?.nexusConversas || []
   const todosSetores = (data?.todosSetores || []) as Array<{ id: string; nome: string; setor_receptor_id: string | null }>
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('dashboard-monitoramento-nexus-mensagens')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'mensagens' },
+        (payload) => {
+          const row = (payload.new || payload.old) as { ticket_id?: string | null } | null
+          if (row?.ticket_id === null) mutate()
+        },
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [mutate, supabase])
+
+  const nexusConversas = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase()
+    if (!query) return nexusConversasRaw
+
+    return nexusConversasRaw.filter((conversation) => (
+      conversation.contato.toLowerCase().includes(query) ||
+      formatPhone(conversation.telefone).toLowerCase().includes(query) ||
+      conversation.setorNome.toLowerCase().includes(query)
+    ))
+  }, [nexusConversasRaw, searchTerm])
+
+  const selectedNexusConversationKey = selectedNexusConversation
+    ? `${selectedNexusConversation.setorId}-${selectedNexusConversation.clienteKey}`
+    : null
+
+  useEffect(() => {
+    if (!selectedNexusConversationKey) return
+    const updated = nexusConversasRaw.find((conversation) => (
+      `${conversation.setorId}-${conversation.clienteKey}` === selectedNexusConversationKey
+    ))
+
+    setSelectedNexusConversation(updated || null)
+  }, [nexusConversasRaw, selectedNexusConversationKey])
 
   // Lookup de setores pra reescrita ao vivo de logs antigos de transbordo
   const setoresLookup = useMemo(() => {
@@ -1044,7 +1271,7 @@ export default function MonitoramentoPage() {
       </div>
 
       {/* Stats Cards Row 2 */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card className="glass-card-elevated rounded-2xl border-0">
           <CardContent className="pt-6">
             <div className="text-center space-y-1">
@@ -1074,6 +1301,14 @@ export default function MonitoramentoPage() {
             <div className="text-center space-y-1">
               <p className="text-xs text-muted-foreground">Tickets resolvidos (Hoje)</p>
               <p className="text-2xl font-bold text-green-500">{temposHoje.totalResolvidos}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="glass-card-elevated rounded-2xl border-0">
+          <CardContent className="pt-6">
+            <div className="text-center space-y-1">
+              <p className="text-xs text-muted-foreground">Nexus IA ativo</p>
+              <p className="text-2xl font-bold text-blue-500">{nexusConversas.length}</p>
             </div>
           </CardContent>
         </Card>
@@ -1145,6 +1380,22 @@ export default function MonitoramentoPage() {
                   {atendentesRaw.length > 0 && (
                     <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-[10px]">
                       {atendentesRaw.length}
+                    </Badge>
+                  )}
+                </button>
+                <button
+                  onClick={() => setActiveTab('nexus-ia')}
+                  className={cn(
+                    "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                    activeTab === 'nexus-ia'
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
+                  )}
+                >
+                  Nexus IA
+                  {nexusConversas.length > 0 && (
+                    <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-[10px]">
+                      {nexusConversas.length}
                     </Badge>
                   )}
                 </button>
@@ -1388,6 +1639,92 @@ export default function MonitoramentoPage() {
                           </TableCell>
                           <TableCell>
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openConversation(ticket)}>
+                              <MessageCircle className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+
+            {activeTab === 'nexus-ia' && (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ultima msg bot</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Numero</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor IA</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ultimo envio</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Mensagens</TableHead>
+                      <TableHead className="text-xs w-12"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {isLoading ? (
+                      Array.from({ length: 3 }).map((_, i) => (
+                        <TableRow key={i}>
+                          <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-8" /></TableCell>
+                        </TableRow>
+                      ))
+                    ) : nexusConversas.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={7} className="h-32 text-center">
+                          <div className="flex flex-col items-center justify-center text-muted-foreground">
+                            <Bot className="mb-2 h-8 w-8" />
+                            <p>Nenhuma conversa recente do Nexus sem ticket</p>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      nexusConversas.map((conversation) => (
+                        <TableRow key={`${conversation.setorId}-${conversation.clienteKey}`}>
+                          <TableCell className="text-sm tabular-nums text-blue-600 font-medium">
+                            {formatRelativeTime(conversation.lastBotMessageAt)}
+                          </TableCell>
+                          <TableCell className="text-sm text-foreground max-w-[180px]">
+                            <div className="flex items-center gap-1">
+                              <User className="h-3 w-3 text-muted-foreground shrink-0" />
+                              <span className="truncate" title={conversation.contato}>{conversation.contato}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm text-foreground">
+                            {formatPhone(conversation.telefone)}
+                          </TableCell>
+                          <TableCell className="text-sm text-foreground">
+                            <Badge variant="outline" className="gap-1 text-[10px]">
+                              <Bot className="h-3 w-3" />
+                              {conversation.setorNome}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={conversation.lastRemetente === NEXUS_CLIENT_REMETENTE ? 'secondary' : 'outline'}
+                              className="text-[10px]"
+                            >
+                              {conversation.lastRemetente === NEXUS_CLIENT_REMETENTE ? 'Cliente' : 'Nexus'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm tabular-nums text-foreground">
+                            {conversation.messages.length}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => setSelectedNexusConversation(conversation)}
+                            >
                               <MessageCircle className="h-4 w-4" />
                             </Button>
                           </TableCell>
@@ -1671,15 +2008,15 @@ export default function MonitoramentoPage() {
                           key={msg.id}
                           className={cn(
                             "flex",
-                            msg.remetente === 'cliente' ? "justify-start" : "justify-end"
+                            isClientMessage(msg.remetente) ? "justify-start" : "justify-end"
                           )}
                         >
                           <div
                             className={cn(
                               "max-w-[80%] rounded-lg px-3 py-2 text-sm",
-                              msg.remetente === 'cliente'
+                              isClientMessage(msg.remetente)
                                 ? "bg-muted"
-                                : msg.remetente === 'bot'
+                                : isBotMessage(msg.remetente)
                                 ? "bg-blue-100 dark:bg-blue-900/30"
                                 : "bg-primary text-primary-foreground"
                             )}
@@ -1693,7 +2030,7 @@ export default function MonitoramentoPage() {
                             {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
                             <p className={cn(
                               "text-[10px] mt-1",
-                              msg.remetente === 'cliente' ? "text-muted-foreground" : "opacity-70"
+                              isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"
                             )}>
                               {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                             </p>
@@ -1782,13 +2119,13 @@ export default function MonitoramentoPage() {
                                     key={msg.id}
                                     className={cn(
                                       "flex",
-                                      msg.remetente === 'cliente' ? "justify-start" : "justify-end"
+                                      isClientMessage(msg.remetente) ? "justify-start" : "justify-end"
                                     )}
                                   >
                                     <div
                                       className={cn(
                                         "max-w-[80%] rounded px-2 py-1 text-[11px]",
-                                        msg.remetente === 'cliente'
+                                        isClientMessage(msg.remetente)
                                           ? "bg-background border"
                                           : "bg-primary/80 text-primary-foreground"
                                       )}
@@ -1809,6 +2146,84 @@ export default function MonitoramentoPage() {
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedNexusConversation && (
+        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-lg">
+          <div className="fixed inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setSelectedNexusConversation(null)} />
+
+          <div className="absolute inset-0 flex flex-col bg-background shadow-xl">
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Bot className="h-4 w-4 text-blue-500" />
+                  <h2 className="truncate font-semibold">Nexus IA</h2>
+                  <Badge variant="outline" className="text-[10px]">Sem ticket</Badge>
+                </div>
+                <p className="truncate text-sm text-muted-foreground">
+                  {selectedNexusConversation.contato} - {selectedNexusConversation.setorNome}
+                </p>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setSelectedNexusConversation(null)}>
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+
+            <div className="border-b px-4 py-2">
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div>
+                  <p className="font-semibold text-foreground">{formatPhone(selectedNexusConversation.telefone)}</p>
+                  <p className="text-muted-foreground">Numero</p>
+                </div>
+                <div>
+                  <p className="font-semibold text-blue-600">{formatRelativeTime(selectedNexusConversation.lastBotMessageAt)}</p>
+                  <p className="text-muted-foreground">Ultimo bot</p>
+                </div>
+                <div>
+                  <p className="font-semibold text-foreground">{selectedNexusConversation.messages.length}</p>
+                  <p className="text-muted-foreground">Mensagens</p>
+                </div>
+              </div>
+            </div>
+
+            <div ref={nexusConversationScrollRef} className="flex-1 overflow-y-auto">
+              <div className="p-4 space-y-3">
+                {selectedNexusConversation.messages.map((msg: any) => (
+                  <div
+                    key={msg.id}
+                    className={cn(
+                      "flex",
+                      msg.remetente === NEXUS_CLIENT_REMETENTE ? "justify-start" : "justify-end"
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        "max-w-[80%] rounded-lg px-3 py-2 text-sm",
+                        msg.remetente === NEXUS_CLIENT_REMETENTE
+                          ? "bg-muted"
+                          : "bg-blue-100 text-blue-950 dark:bg-blue-900/30 dark:text-blue-50"
+                      )}
+                    >
+                      <MessageMediaPreview
+                        url={msg.url_imagem}
+                        mediaType={msg.media_type}
+                        tipo={msg.tipo}
+                        conteudo={msg.conteudo}
+                      />
+                      {msg.conteudo && <p className="break-words whitespace-pre-wrap">{msg.conteudo}</p>}
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] opacity-70">
+                        <span>{msg.remetente === NEXUS_CLIENT_REMETENTE ? 'Cliente' : 'Nexus'}</span>
+                        <span>
+                          {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

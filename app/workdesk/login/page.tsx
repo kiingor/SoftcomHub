@@ -101,7 +101,7 @@ export default function WorkdeskLoginPage() {
     setError(null)
 
     try {
-      const origin = window.location.origin
+      const origin = process.env.NEXT_PUBLIC_APP_URL || window.location.origin
       const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail.trim().toLowerCase(), {
         redirectTo: `${origin}/workdesk/reset-password`,
       })

@@ -12,6 +12,22 @@ import { ThemeToggle } from '@/components/theme-toggle'
 
 type Status = 'idle' | 'loading' | 'success' | 'error' | 'invalid'
 
+function getRecoveryErrorMessage(url: URL) {
+  const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''))
+  const errorCode = url.searchParams.get('error_code') || hashParams.get('error_code')
+  const errorDescription = url.searchParams.get('error_description') || hashParams.get('error_description')
+
+  if (errorCode === 'otp_expired') {
+    return 'Este link expirou ou ja foi usado. Solicite um novo link de recuperacao.'
+  }
+
+  if (errorDescription) {
+    return decodeURIComponent(errorDescription.replace(/\+/g, ' '))
+  }
+
+  return 'Este link de recuperacao e invalido ou expirou. Solicite um novo link.'
+}
+
 export default function ResetPasswordPage() {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -20,22 +36,91 @@ export default function ResetPasswordPage() {
   const [status, setStatus] = useState<Status>('idle')
   const [error, setError] = useState<string | null>(null)
   const [sessionReady, setSessionReady] = useState(false)
+  const [checkingLink, setCheckingLink] = useState(true)
   const router = useRouter()
 
-  // Supabase sends the recovery token via hash fragment (#access_token=...).
-  // The browser client automatically exchanges it for a session when we call
-  // onAuthStateChange and receives the PASSWORD_RECOVERY event.
   useEffect(() => {
     const supabase = createClient()
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') {
         setSessionReady(true)
+        setCheckingLink(false)
       }
     })
-    // Also check if already in a valid session (e.g. page refresh after exchange)
-    supabase.auth.getSession().then(({ data }) => {
+
+    async function prepareRecoverySession() {
+      const url = new URL(window.location.href)
+      const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''))
+      const hasError = url.searchParams.has('error') || hashParams.has('error')
+      const tokenHash = url.searchParams.get('token_hash')
+      const type = url.searchParams.get('type')
+      const code = url.searchParams.get('code')
+      const accessToken = hashParams.get('access_token')
+      const refreshToken = hashParams.get('refresh_token')
+
+      if (hasError) {
+        setError(getRecoveryErrorMessage(url))
+        setStatus('invalid')
+        setCheckingLink(false)
+        return
+      }
+
+      // Preferred flow: token_hash is only consumed when our JS runs verifyOtp,
+      // so email security scanners that pre-click the link don't burn the OTP.
+      if (tokenHash) {
+        const { error } = await supabase.auth.verifyOtp({
+          token_hash: tokenHash,
+          type: (type as 'recovery') || 'recovery',
+        })
+        if (error) {
+          setError(error.message)
+          setStatus('invalid')
+        } else {
+          setSessionReady(true)
+        }
+        setCheckingLink(false)
+        return
+      }
+
+      if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code)
+        if (error) {
+          setError(error.message)
+          setStatus('invalid')
+        } else {
+          setSessionReady(true)
+        }
+        setCheckingLink(false)
+        return
+      }
+
+      if (accessToken && refreshToken) {
+        const { error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        })
+        if (error) {
+          setError(error.message)
+          setStatus('invalid')
+        } else {
+          setSessionReady(true)
+        }
+        setCheckingLink(false)
+        return
+      }
+
+      const { data } = await supabase.auth.getSession()
       if (data.session) setSessionReady(true)
+      else setStatus('invalid')
+      setCheckingLink(false)
+    }
+
+    prepareRecoverySession().catch((error) => {
+      setError(error instanceof Error ? error.message : 'Erro ao validar link de recuperacao.')
+      setStatus('invalid')
+      setCheckingLink(false)
     })
+
     return () => subscription.unsubscribe()
   }, [])
 
@@ -172,6 +257,16 @@ export default function ResetPasswordPage() {
                 </div>
               </div>
             </div>
+          ) : checkingLink ? (
+            <div className="text-center">
+              <div className="mb-6 flex justify-center">
+                <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500/20 border-t-emerald-500" />
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight text-foreground">Validando link</h2>
+              <p className="mt-3 text-muted-foreground">
+                Aguarde enquanto preparamos a redefinicao da senha.
+              </p>
+            </div>
           ) : !sessionReady ? (
             /* Invalid / expired link */
             <div className="text-center">
@@ -182,9 +277,7 @@ export default function ResetPasswordPage() {
               </div>
               <h2 className="text-3xl font-bold tracking-tight text-foreground">Link invalido</h2>
               <p className="mt-3 text-muted-foreground">
-                Este link de recuperacao e invalido ou expirou.
-                <br />
-                Solicite um novo link de redefinicao.
+                {error || 'Este link de recuperacao e invalido ou expirou.'}
               </p>
               <Button
                 onClick={() => router.push('/workdesk/login')}

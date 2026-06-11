@@ -11,7 +11,7 @@ import { createClient } from '@/lib/supabase/server'
  * Body:
  *   - telefone (string, obrigatório): telefone do cliente (ex: "553389127816")
  *   - conteudo (string, obrigatório): conteúdo da mensagem
- *   - remetente (string): "cliente" | "bot" | "sistema" (default: "bot")
+ *   - remetente (string): "cliente" | "bot" | "cliente-nexus" | "bot-nexus" | "sistema" (default: "bot")
  *   - tipo (string): "texto" | "imagem" | "audio" | "video" | "documento" (default: "texto")
  *   - ticket_id (string, opcional): ID do ticket (se já existir)
  *   - cliente_id (string, opcional): ID do cliente (se já souber)

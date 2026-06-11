@@ -4,6 +4,7 @@ import React from "react"
 
 import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { isClientMessage } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -1021,7 +1022,7 @@ export default function TicketsPage() {
                           <div
                             key={msg.id}
                             className={`rounded-lg p-3 ${
-                              msg.remetente === 'cliente'
+                              isClientMessage(msg.remetente)
                                 ? 'bg-muted ml-0 mr-8'
                                 : 'bg-primary/10 ml-8 mr-0'
                             }`}

@@ -8,7 +8,7 @@ import { logError } from '@/lib/error-logger'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
-import { cn } from '@/lib/utils'
+import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import {
   MessageCircle,
   Clock,
@@ -247,11 +247,11 @@ function parseSendErrorMessage(result: unknown): string {
   return 'Erro ao enviar mensagem'
 }
 
-// Helper to check if message is from the support side (colaborador or bot)
-const isOutgoingMessage = (remetente: string) => {
-  const r = remetente?.toLowerCase?.()?.trim?.() || ''
-  return r === 'colaborador' || r === 'bot'
-}
+// Helper to check if message is from the support side. Anything that isn't a
+// client message (cliente / cliente-nexus) renders on the outgoing side —
+// covers colaborador, bot and the Nexus "bot-nexus" variant. sistema and
+// supervisor are intercepted by dedicated branches before this is used.
+const isOutgoingMessage = (remetente: string) => !isClientMessage(remetente)
 
 interface ColaboradorSetor {
   setor_id: string
@@ -1957,7 +1957,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     pollTickets()
 
     const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
-    const pollInterval = setInterval(pollTickets, 120000) // 2min — fallback de segurança, Realtime é o primário
+    const pollInterval = setInterval(pollTickets, 15000)
     const syncStatusInterval = setInterval(syncColaboradorStatus, 60000)
 
     // Periodically refresh Supabase auth session to prevent token expiry
@@ -2034,7 +2034,11 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         }
       })
 
-    // Fallback polling every 60s to catch any missed messages (Realtime é o primário)
+    const refreshSelectedMessages = async () => {
+      await fetchMensagens(selectedTicketIdRef2, selectedClienteIdRef, { silent: true })
+    }
+
+    // Fallback polling to catch any missed messages (Realtime é o primário)
     const pollInterval = setInterval(async () => {
       if (!selectedTicketIdRef2) return
       const todayStart = new Date()
@@ -2119,13 +2123,17 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           return [...merged, ...remainingTemps]
         })
       }
-    }, 120000) // 2min — fallback de segurança, Realtime é o primário para mensagens
+    }, 10000)
+
+    refreshSelectedMessages().catch((err) => {
+      console.warn('[WorkDesk] Falha ao atualizar mensagens após conectar realtime:', err)
+    })
 
     return () => {
       supabase.removeChannel(channel)
       clearInterval(pollInterval)
     }
-  }, [selectedTicketIdRef2, selectedClienteIdRef, supabase])
+  }, [selectedTicketIdRef2, selectedClienteIdRef, supabase, fetchMensagens])
 
   // Global subscription for new messages on all tickets (for audio alerts)
   // Use ref for ticketIds to avoid recreating the channel on every ticket list change
@@ -6531,7 +6539,12 @@ function TicketList({
           <div className="divide-y divide-border">
             {tickets.map((ticket) => {
               const unreadCount = unreadCounts.get(ticket.id) || 0
-              const isWaitingResponse = ticket.ultima_mensagem_remetente && isOutgoingMessage(ticket.ultima_mensagem_remetente)
+              // "Aguardando" = suporte falou por último e espera o cliente.
+              // Só conta resposta real do suporte (colaborador/bot), NÃO notas
+              // internas de sistema/supervisor — senão um ticket recém-transferido
+              // (última msg = "sistema") apareceria como "Sem resposta"/SLA estourado.
+              const ultimoRemetente = ticket.ultima_mensagem_remetente
+              const isWaitingResponse = !!ultimoRemetente && (ultimoRemetente === 'colaborador' || isBotMessage(ultimoRemetente))
               const isSelected = selectedTicket?.id === ticket.id
 
               // Check if ticket exceeded wait time (last msg from collaborator, no client response)

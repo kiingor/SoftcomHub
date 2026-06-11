@@ -13,10 +13,13 @@ vsc-controller {
 }
 
 /* Defensive cap: any element trying to render absolutely positioned content
-   outside the viewport gets clipped at the document root level instead of
-   forcing the browser to grow scrollbars. Doesn't affect intentional scroll
-   containers (they have their own overflow set). */
-html, body {
+   outside the viewport gets clipped instead of forcing a horizontal scrollbar.
+   Aplicado só no body (não no html) de propósito: com clip no html, o html
+   vira o container de scroll vertical, mas o react-remove-scroll (usado pelos
+   dropdowns do Radix) só trava o body — o descasamento super-compensa com
+   margin-right e faz o header "pular" ao abrir um Select numa página rolável.
+   Mantendo o scroll no body, a compensação do Radix bate certo. */
+body {
   overflow-x: clip;
 }
 

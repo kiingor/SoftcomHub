@@ -125,7 +125,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { cn } from '@/lib/utils'
+import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { OrigemBadge } from '@/components/origem-badge'
 import { toast } from 'sonner'
@@ -6373,12 +6373,12 @@ const saveConfig = async () => {
                             <div
                               className={cn(
                                 "flex",
-                                msg.remetente === 'cliente' ? "justify-start" : "justify-end"
+                                isClientMessage(msg.remetente) ? "justify-start" : "justify-end"
                               )}
                             >
                               <div className={cn(
                                 "max-w-[85%] rounded-lg px-3 py-2",
-                                msg.remetente === 'cliente'
+                                isClientMessage(msg.remetente)
                                   ? "bg-muted text-foreground rounded-bl-none"
                                   : "bg-primary text-primary-foreground rounded-br-none"
                               )}>
@@ -6436,15 +6436,15 @@ const saveConfig = async () => {
                           key={msg.id}
                           className={cn(
                             "flex",
-                            msg.remetente === 'cliente' ? "justify-start" : "justify-end"
+                            isClientMessage(msg.remetente) ? "justify-start" : "justify-end"
                           )}
                         >
                           <div
                             className={cn(
                               "max-w-[80%] rounded-lg px-3 py-2 text-sm",
-                              msg.remetente === 'cliente'
+                              isClientMessage(msg.remetente)
                                 ? "bg-muted"
-                                : msg.remetente === 'bot'
+                                : isBotMessage(msg.remetente)
                                 ? "bg-blue-100 dark:bg-blue-900/30"
                                 : "bg-primary text-primary-foreground"
                             )}
@@ -6458,7 +6458,7 @@ const saveConfig = async () => {
                             {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
                             <p className={cn(
                               "text-[10px] mt-1",
-                              msg.remetente === 'cliente' ? "text-muted-foreground" : "opacity-70"
+                              isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"
                             )}>
                               {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
                                 hour: '2-digit',
