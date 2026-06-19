@@ -97,7 +97,7 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid audio type' }, { status: 400 })
   }
 
-  return new NextResponse(audioBuffer, {
+  return new NextResponse(new Uint8Array(audioBuffer), {
     headers: {
       'Content-Type': 'audio/wav',
       'Cache-Control': 'public, max-age=31536000, immutable',

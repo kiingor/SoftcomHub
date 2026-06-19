@@ -9,6 +9,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
+import { upload } from '@vercel/blob/client'
+import { resolveMime } from '@/lib/whatsapp-media'
 import {
   MessageCircle,
   Clock,
@@ -61,6 +63,7 @@ import {
   Info,
   RefreshCw,
   CornerUpLeft,
+  Tag,
 } from 'lucide-react'
 import {
   Dialog,
@@ -773,6 +776,10 @@ export default function WorkdeskPage() {
   
   // Dialog
   const [encerrarDialogOpen, setEncerrarDialogOpen] = useState(false)
+  // Classificação do atendimento (tipos cadastrados no setor)
+  const [tiposEncerramento, setTiposEncerramento] = useState<{ id: string; nome: string }[]>([])
+  const [selectedTipoEncerramento, setSelectedTipoEncerramento] = useState<string>('')
+  const [loadingTiposEncerramento, setLoadingTiposEncerramento] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   // Em desktop o painel de info já vem aberto; em mobile/tablet começa fechado
@@ -894,8 +901,10 @@ export default function WorkdeskPage() {
   const [messageErrors, setMessageErrors] = useState<Map<string, string>>(new Map())
   
   // File upload (images and PDFs)
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [filePreview, setFilePreview] = useState<string | null>(null)
+  // Multiple attachments — like WhatsApp, each file becomes its own message
+  // (the channels deliver one media per message). `preview` is a blob: URL for
+  // images, or a `video:`/`file:` marker for everything else.
+  const [attachments, setAttachments] = useState<{ id: string; file: File; preview: string }[]>([])
   const [uploadingFile, setUploadingFile] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messageTextareaRef = useRef<HTMLTextAreaElement>(null)
@@ -2426,6 +2435,7 @@ const handleEncerrarTicket = async () => {
         .update({
           status: 'encerrado',
           encerrado_em: new Date().toISOString(),
+          ...(selectedTipoEncerramento ? { tipo_atendimento_id: selectedTipoEncerramento } : {}),
         })
 .eq('id', selectedTicket.id)
 
@@ -2446,6 +2456,8 @@ const handleEncerrarTicket = async () => {
       setSelectedTicket(null)
       selectedTicketIdRef.current = null
       setEncerrarDialogOpen(false)
+      setSelectedTipoEncerramento('')
+      setTiposEncerramento([])
       setMobileDrawerOpen(false)
       setMensagens([])
 
@@ -2459,6 +2471,29 @@ const handleEncerrarTicket = async () => {
 
   // Helper: cliente tem CNPJ informado
   const clienteTemCNPJ = !!(selectedTicket?.clientes?.CNPJ)
+
+  // Abrir dialog de encerramento — carrega os tipos de atendimento do setor
+  const handleAbrirEncerrar = async () => {
+    if (!selectedTicket) return
+    setSelectedTipoEncerramento('')
+    setTiposEncerramento([])
+    setEncerrarDialogOpen(true)
+    setLoadingTiposEncerramento(true)
+    try {
+      const { data } = await supabase
+        .from('tipos_atendimento')
+        .select('id, nome')
+        .eq('setor_id', selectedTicket.setor_id)
+        .eq('ativo', true)
+        .order('ordem', { ascending: true })
+        .order('nome', { ascending: true })
+      setTiposEncerramento(data || [])
+    } catch (err) {
+      console.error('[Encerrar] erro ao carregar tipos:', err)
+    } finally {
+      setLoadingTiposEncerramento(false)
+    }
+  }
 
   // Confirmar encerrar — verifica cliente antes
   const handleConfirmarEncerrar = () => {
@@ -3188,39 +3223,39 @@ const insertEmoji = (emoji: string) => {
     setShowTemplates(false)
   }
 
-  // Handle file selection (images, videos and PDFs)
-  const handleFileSelect = (file: File) => {
-    const isImage = file.type.startsWith('image/')
-    const isVideo = file.type.startsWith('video/')
-    const isAudio = file.type.startsWith('audio/')
-    // Size limits: videos 50MB | images/audio 16MB | documents 100MB
-    const maxSize = isVideo ? 50 * 1024 * 1024 : isImage || isAudio ? 16 * 1024 * 1024 : 100 * 1024 * 1024
-    const maxLabel = isVideo ? '50MB' : isImage || isAudio ? '16MB' : '100MB'
-    if (file.size > maxSize) {
-      toast.error(`Arquivo muito grande. Máximo ${maxLabel}.`)
-      return
+  // Handle file selection — validates each file and appends to the queue.
+  // Oversized files are skipped with a per-file toast so the others still go.
+  const handleFilesSelect = (files: File[]) => {
+    const next: { id: string; file: File; preview: string }[] = []
+    for (const file of files) {
+      const isImage = file.type.startsWith('image/')
+      const isVideo = file.type.startsWith('video/')
+      const isAudio = file.type.startsWith('audio/')
+      // Size limits: videos 50MB | images/audio 16MB | documents 100MB
+      const maxSize = isVideo ? 50 * 1024 * 1024 : isImage || isAudio ? 16 * 1024 * 1024 : 100 * 1024 * 1024
+      const maxLabel = isVideo ? '50MB' : isImage || isAudio ? '16MB' : '100MB'
+      if (file.size > maxSize) {
+        toast.error(`${file.name}: arquivo muito grande. Máximo ${maxLabel}.`)
+        continue
+      }
+      const preview = isImage
+        ? URL.createObjectURL(file)
+        : isVideo
+          ? `video:${file.name}`
+          : `file:${file.name}`
+      next.push({ id: crypto.randomUUID(), file, preview })
     }
-    setSelectedFile(file)
-    if (isImage) {
-      const reader = new FileReader()
-      reader.onloadend = () => setFilePreview(reader.result as string)
-      reader.readAsDataURL(file)
-    } else if (isVideo) {
-      setFilePreview(`video:${file.name}`)
-    } else {
-      // Audio, documents, and any other file — generic preview with filename
-      setFilePreview(`file:${file.name}`)
-    }
+    if (next.length) setAttachments((prev) => [...prev, ...next])
   }
 
 
 
   // Handle file input change
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      handleFileSelect(file)
-    }
+    const files = e.target.files
+    if (files && files.length) handleFilesSelect(Array.from(files))
+    // Reset so picking the same file(s) again still fires onChange
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   // Handle paste event
@@ -3228,22 +3263,34 @@ const insertEmoji = (emoji: string) => {
     const items = e.clipboardData?.items
     if (!items) return
 
+    const pasted: File[] = []
     for (const item of items) {
       if (item.type.startsWith('image/') || item.type === 'application/pdf') {
-        e.preventDefault()
         const file = item.getAsFile()
-        if (file) {
-          handleFileSelect(file)
-        }
-        break
+        if (file) pasted.push(file)
       }
+    }
+    if (pasted.length) {
+      e.preventDefault()
+      handleFilesSelect(pasted)
     }
   }
 
-  // Clear selected file
-  const clearSelectedFile = () => {
-    setSelectedFile(null)
-    setFilePreview(null)
+  // Remove a single attachment from the queue
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const found = prev.find((a) => a.id === id)
+      if (found?.preview.startsWith('blob:')) URL.revokeObjectURL(found.preview)
+      return prev.filter((a) => a.id !== id)
+    })
+  }
+
+  // Clear all selected files
+  const clearSelectedFiles = () => {
+    setAttachments((prev) => {
+      prev.forEach((a) => { if (a.preview.startsWith('blob:')) URL.revokeObjectURL(a.preview) })
+      return []
+    })
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -3253,8 +3300,8 @@ const insertEmoji = (emoji: string) => {
   // (the only format Meta Cloud API renders as a voice note, and Evolution
   // accepts as-is with encoding:true).
   const startRecording = async () => {
-    if (selectedFile) {
-      toast.error('Remova o arquivo selecionado antes de gravar áudio.')
+    if (attachments.length) {
+      toast.error('Remova os arquivos selecionados antes de gravar áudio.')
       return
     }
     try {
@@ -3364,24 +3411,26 @@ const insertEmoji = (emoji: string) => {
 
 
 
-// Upload file to Vercel Blob (images and PDFs)
+// Upload file directly from the browser to Vercel Blob.
+  // Direct (client) upload bypasses the 4.5MB request-body limit of Vercel
+  // serverless functions — files larger than that (e.g. an 8MB .zip) used to
+  // fail with a generic "Upload failed". /api/upload now only mints the token.
   const uploadImage = async (file: File): Promise<string | null> => {
-    const formData = new FormData()
-    formData.append('file', file)
-    
     try {
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
+      // Infer a canonical MIME (browsers leave file.type empty for unknown
+      // extensions like .xml/.cer) and keep the original extension so WhatsApp
+      // clients show the right icon and the recipient OS can open it.
+      const resolvedType = resolveMime(file.type, file.name)
+      const extension = file.name.split('.').pop()?.toLowerCase() || 'bin'
+      const pathname = `workdesk/${Date.now()}-${Math.random().toString(36).substring(7)}.${extension}`
+
+      const blob = await upload(pathname, file, {
+        access: 'public',
+        handleUploadUrl: '/api/upload',
+        contentType: resolvedType,
       })
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Upload failed' }))
-        throw new Error(errorData.error || 'Upload failed')
-      }
-      
-      const data = await response.json()
-      return data.url
+
+      return blob.url
     } catch (error: any) {
       console.error('Error uploading file:', error)
       toast.error(error?.message || 'Erro ao enviar arquivo')
@@ -3395,9 +3444,11 @@ const insertEmoji = (emoji: string) => {
   // textarea content is preserved (audio bypasses any typed text).
   const handleSendMessage = async (overrideFile?: File | null) => {
     const isAutoFile = !!overrideFile
-    const fileToUpload = overrideFile ?? selectedFile
+    // Files to send, in order. Auto-send (voice note) carries a single file;
+    // otherwise we send every queued attachment as its own message.
+    const filesToSend: File[] = overrideFile ? [overrideFile] : attachments.map((a) => a.file)
     const rawMessage = isAutoFile ? '' : messageInput.trim()
-    if ((!rawMessage && !fileToUpload) || !selectedTicket || !colaborador) return
+    if ((!rawMessage && filesToSend.length === 0) || !selectedTicket || !colaborador) return
 
     // Capture ticket context at call-time (before any awaits).
     // This snapshot is used throughout the async flow so that if the user
@@ -3410,24 +3461,19 @@ const insertEmoji = (emoji: string) => {
     const capturedReplyTo = replyingTo
     setReplyingTo(null)
 
-const tempId = `temp-${Date.now()}`
-    let currentMsgId = tempId // atualizado para o ID real após o save; usado em todos os setPendingMessages/setMessageErrors
-    // Aplicar assinatura se ativa no setor e houver texto
+    // Aplicar assinatura se ativa no setor e houver texto. The caption rides on
+    // the FIRST message only (WhatsApp behaviour); extra files go captionless.
     const messageContent = (setorAssinaturaAtiva && rawMessage && colaborador?.nome)
       ? `*${colaborador.nome}:*\n\n${rawMessage}`
       : rawMessage
-    const hasFile = !!fileToUpload
-  const isImage = fileToUpload?.type.startsWith('image/')
-  const isVideo = fileToUpload?.type.startsWith('video/')
-  const isAudio = fileToUpload?.type.startsWith('audio/')
 
     // Clear input immediately (optimistic). Skip on auto-send — there's nothing
     // to clear (selectedFile wasn't set) and we want to preserve typed text.
     if (!isAutoFile) {
       setMessageInput('')
-      clearSelectedFile()
+      clearSelectedFiles()
     }
-    
+
     // Send in background
     try {
       // Determinar canal de envio pela última mensagem do ticket
@@ -3534,7 +3580,6 @@ const tempId = `temp-${Date.now()}`
       // Validate phone_number_id for WhatsApp/Evolution
       if ((setorCanal === 'whatsapp' || setorCanal === 'evolution_api') && !phoneNumberId) {
         console.warn('[workdesk] No phone_number_id found for ticket:', capturedTicketId)
-        setPendingMessages((prev) => new Map(prev).set(tempId, 'error'))
         toast.error('Nao foi possivel determinar o canal de envio. Nenhum phone_number_id encontrado.')
         return
       }
@@ -3542,83 +3587,226 @@ const tempId = `temp-${Date.now()}`
       // Map canal_envio values for consistent use
       const canalEnvioValue = setorCanal === 'evolution_api' ? 'evolutionapi' : setorCanal
 
-      // Upload file if present
-      let fileUrl: string | null = null
-      if (hasFile && fileToUpload) {
-        setUploadingFile(true)
-        fileUrl = await uploadImage(fileToUpload) // uploadImage works for any file
-        setUploadingFile(false)
+      // Sends one message (optional file + caption). Returns true on success.
+      // Each call owns its own optimistic bubble, DB row and channel dispatch,
+      // so a single failure marks only that message — the rest still go.
+      const sendOne = async (
+        file: File | null,
+        caption: string,
+        replyTo: typeof capturedReplyTo,
+      ): Promise<boolean> => {
+        const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        let currentMsgId = tempId
+        const isImage = file?.type.startsWith('image/')
+        const isVideo = file?.type.startsWith('video/')
+        const isAudio = file?.type.startsWith('audio/')
+        const hasFile = !!file
+        const messageType = isImage ? 'imagem' : isVideo ? 'video' : isAudio ? 'audio' : hasFile ? 'documento' : 'texto'
 
-        if (!fileUrl) {
-          setPendingMessages((prev) => new Map(prev).set(tempId, 'error'))
-          return
+        // Upload file if present
+        let fileUrl: string | null = null
+        if (hasFile && file) {
+          fileUrl = await uploadImage(file) // uploadImage works for any file
+          if (!fileUrl) {
+            // Surface the failure as an errored bubble so it isn't lost silently.
+            if (selectedTicketIdRef.current === capturedTicketId) {
+              setMensagens((prev) => [...prev, {
+                id: tempId, ticket_id: capturedTicketId, cliente_id: null,
+                remetente: 'colaborador', conteudo: caption || file.name || '',
+                tipo: messageType, enviado_em: new Date().toISOString(),
+                url_imagem: null, media_type: file.type || null,
+                reply_to_message_id: replyTo?.id || null, reply_parent: null,
+              } as Mensagem])
+            }
+            setPendingMessages((prev) => new Map(prev).set(tempId, 'error'))
+            setMessageErrors((prev) => new Map(prev).set(tempId, 'Falha ao enviar arquivo'))
+            return false
+          }
         }
-      }
 
-      // Determine message type
-      const messageType = isImage ? 'imagem' : isVideo ? 'video' : isAudio ? 'audio' : hasFile ? 'documento' : 'texto'
-
-      // Add optimistic message to UI
-      const optimisticMessage: Mensagem = {
-        id: tempId,
-        ticket_id: capturedTicketId,
-        cliente_id: null,
-        remetente: 'colaborador',
-  conteudo: messageContent || fileToUpload?.name || '',
-  tipo: messageType,
-  enviado_em: new Date().toISOString(),
-  url_imagem: fileUrl,
-  media_type: fileToUpload?.type || null,
-  reply_to_message_id: capturedReplyTo?.id || null,
-  reply_parent: capturedReplyTo
-    ? { id: capturedReplyTo.id, conteudo: capturedReplyTo.conteudo, remetente: capturedReplyTo.remetente, tipo: capturedReplyTo.tipo }
-    : null,
-  }
-  // Only update UI if user is still viewing this ticket
-  if (selectedTicketIdRef.current === capturedTicketId) {
-    setMensagens((prev) => [...prev, optimisticMessage])
-  }
-  setPendingMessages((prev) => new Map(prev).set(tempId, 'sending'))
-
-  // Save message to Supabase
-  const { data: savedMsg, error: dbError } = await supabase
-  .from('mensagens')
-  .insert({
-  ticket_id: capturedTicketId,
-  cliente_id: capturedTicket.cliente_id,
-  remetente: 'colaborador',
-  conteudo: messageContent || fileToUpload?.name || '',
+        // Add optimistic message to UI
+        const optimisticMessage: Mensagem = {
+          id: tempId,
+          ticket_id: capturedTicketId,
+          cliente_id: null,
+          remetente: 'colaborador',
+          conteudo: caption || file?.name || '',
           tipo: messageType,
+          enviado_em: new Date().toISOString(),
           url_imagem: fileUrl,
-          media_type: fileToUpload?.type || null,
-          phone_number_id: phoneNumberId,
-          canal_envio: canalEnvioValue,
-          reply_to_message_id: capturedReplyTo?.id || null,
-        })
-        .select()
-        .single()
+          media_type: file?.type || null,
+          reply_to_message_id: replyTo?.id || null,
+          reply_parent: replyTo
+            ? { id: replyTo.id, conteudo: replyTo.conteudo, remetente: replyTo.remetente, tipo: replyTo.tipo }
+            : null,
+        }
+        // Only update UI if user is still viewing this ticket
+        if (selectedTicketIdRef.current === capturedTicketId) {
+          setMensagens((prev) => [...prev, optimisticMessage])
+        }
+        setPendingMessages((prev) => new Map(prev).set(tempId, 'sending'))
 
-      if (dbError || !savedMsg) {
-        console.error('[v0] Error saving message to database:', dbError)
-        setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
-        setMessageErrors(prev => new Map(prev).set(tempId, 'Erro ao salvar mensagem no banco'))
-        return
+        // Save message to Supabase
+        const { data: savedMsg, error: dbError } = await supabase
+          .from('mensagens')
+          .insert({
+            ticket_id: capturedTicketId,
+            cliente_id: capturedTicket.cliente_id,
+            remetente: 'colaborador',
+            conteudo: caption || file?.name || '',
+            tipo: messageType,
+            url_imagem: fileUrl,
+            media_type: file?.type || null,
+            phone_number_id: phoneNumberId,
+            canal_envio: canalEnvioValue,
+            reply_to_message_id: replyTo?.id || null,
+          })
+          .select()
+          .single()
+
+        if (dbError || !savedMsg) {
+          console.error('[v0] Error saving message to database:', dbError)
+          setPendingMessages(prev => new Map(prev).set(tempId, 'error'))
+          setMessageErrors(prev => new Map(prev).set(tempId, 'Erro ao salvar mensagem no banco'))
+          return false
+        }
+        // Update optimistic message with real ID + canal_envio (para retry)
+        setMensagens(prev => prev.map(m =>
+          m.id === tempId
+            ? { ...m, id: savedMsg.id, canal_envio: canalEnvioValue, phone_number_id: phoneNumberId || undefined }
+            : m
+        ))
+        // Migrar chave de pendingMessages do tempId para o ID real — sem isso,
+        // o estado de envio/erro não é encontrado pelo render (msg.id é o real agora)
+        setPendingMessages(prev => {
+          const n = new Map(prev)
+          const v = n.get(tempId)
+          if (v !== undefined) { n.set(savedMsg.id, v); n.delete(tempId) }
+          return n
+        })
+        currentMsgId = savedMsg.id
+
+        // Send via the appropriate channel API
+        let sendUrl = '/api/whatsapp/send'
+        try {
+          let sendBody: Record<string, any> = {}
+
+          if (setorCanal === 'discord') {
+            sendUrl = '/api/discord/send'
+            sendBody = {
+              ticketId: capturedTicketId,
+              message: caption,
+              messageId: savedMsg.id,
+              fileUrl: fileUrl,
+              fileType: file?.type || null,
+              fileName: file?.name || null,
+            }
+          } else if (setorCanal === 'evolution_api') {
+            sendUrl = '/api/evolution/send'
+            sendBody = {
+              ticketId: capturedTicketId,
+              message: caption,
+              messageId: savedMsg.id,
+              instanceName: phoneNumberId,
+              fileUrl: fileUrl,
+              fileType: file?.type || null,
+              fileName: file?.name || null,
+              replyToMessageId: replyTo?.id || null,
+            }
+          } else {
+            sendBody = {
+              recipientPhone: capturedTicket.clientes.telefone,
+              message: caption,
+              ticketId: capturedTicketId,
+              phoneNumberId: phoneNumberId,
+              fileUrl: fileUrl,
+              fileType: file?.type || null,
+              fileName: file?.name || null,
+              messageId: savedMsg.id,
+              replyToMessageId: replyTo?.id || null,
+            }
+          }
+
+          console.log(`[workdesk] Enviando via ${setorCanal.toUpperCase()} → ${sendUrl}`, sendBody)
+
+          const response = await fetch(sendUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sendBody),
+          })
+
+          const result = await response.json()
+
+          console.log(`[workdesk] Resposta ${sendUrl} (status ${response.status}):`, result)
+
+          if (!response.ok) {
+            console.warn('[workdesk] Send API failed:', result)
+            logError({
+              tela: 'WorkDesk',
+              error: `Falha ao enviar mensagem (${response.status}): ${result?.error || 'desconhecido'}`,
+              componente: 'sendMessage',
+              metadata: { type: 'send_api_error', status: response.status, sendUrl, ticketId: selectedTicketIdRef.current, details: result?.details },
+            })
+
+            // Aviso especial para dispositivo offline (Evolution API)
+            let userMsg: string
+            if (result?.deviceOffline) {
+              userMsg = '📱 Dispositivo desconectado! A mensagem não foi enviada porque o WhatsApp do dispositivo está offline.'
+              toast.error(userMsg, { duration: 8000 })
+            } else {
+              userMsg = parseSendErrorMessage(result)
+              toast.error(userMsg, { duration: 6000 })
+            }
+
+            setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
+            setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
+            return false
+          }
+        } catch (sendError) {
+          console.warn('[v0] Send request failed:', sendError)
+          logError({
+            tela: 'WorkDesk',
+            error: sendError,
+            componente: 'sendMessage',
+            metadata: { type: 'send_network_error', sendUrl, ticketId: selectedTicketIdRef.current },
+          })
+          const userMsg = 'Erro de conexão ao enviar mensagem'
+          toast.error(userMsg)
+          setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
+          setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
+          return false
+        }
+
+        // Mark as sent — clear the sending/sent mark after 2s (never touch 'error')
+        setPendingMessages(prev => new Map(prev).set(currentMsgId, 'sent'))
+        setTimeout(() => {
+          setPendingMessages(prev => {
+            const n = new Map(prev)
+            if (n.get(currentMsgId) !== 'error') n.delete(currentMsgId)
+            return n
+          })
+        }, 2000)
+        return true
       }
-      // Update optimistic message with real ID + canal_envio (para retry)
-      setMensagens(prev => prev.map(m =>
-        m.id === tempId
-          ? { ...m, id: savedMsg.id, canal_envio: canalEnvioValue, phone_number_id: phoneNumberId || undefined }
-          : m
-      ))
-      // Migrar chave de pendingMessages do tempId para o ID real — sem isso,
-      // o estado de envio/erro não é encontrado pelo render (msg.id é o real agora)
-      setPendingMessages(prev => {
-        const n = new Map(prev)
-        const v = n.get(tempId)
-        if (v !== undefined) { n.set(savedMsg.id, v); n.delete(tempId) }
-        return n
-      })
-      currentMsgId = savedMsg.id
+
+      // Dispatch: each file is its own message; the caption rides on the first
+      // one only (and so does the reply context). Text-only sends one message.
+      setUploadingFile(true)
+      let anySent = false
+      try {
+        if (filesToSend.length > 0) {
+          for (let i = 0; i < filesToSend.length; i++) {
+            const ok = await sendOne(filesToSend[i], i === 0 ? messageContent : '', i === 0 ? capturedReplyTo : null)
+            anySent = anySent || ok
+          }
+        } else {
+          anySent = await sendOne(null, messageContent, capturedReplyTo)
+        }
+      } finally {
+        setUploadingFile(false)
+      }
+
+      if (!anySent) return
 
       // Resposta enviada — zera o timer de urgência desse ticket.
       // O cliente agora "foi respondido"; nova rajada (se vier) começará do zero.
@@ -3629,100 +3817,6 @@ const tempId = `temp-${Date.now()}`
         return next
       })
 
-      // Send via the appropriate channel API
-      let sendUrl = '/api/whatsapp/send'
-      try {
-        let sendBody: Record<string, any> = {}
-
-        if (setorCanal === 'discord') {
-          sendUrl = '/api/discord/send'
-          sendBody = {
-            ticketId: capturedTicketId,
-            message: messageContent,
-            messageId: savedMsg.id,
-            fileUrl: fileUrl,
-            fileType: fileToUpload?.type || null,
-            fileName: fileToUpload?.name || null,
-          }
-        } else if (setorCanal === 'evolution_api') {
-          sendUrl = '/api/evolution/send'
-          sendBody = {
-            ticketId: capturedTicketId,
-            message: messageContent,
-            messageId: savedMsg.id,
-            instanceName: phoneNumberId,
-            fileUrl: fileUrl,
-            fileType: fileToUpload?.type || null,
-            fileName: fileToUpload?.name || null,
-            replyToMessageId: capturedReplyTo?.id || null,
-          }
-        } else {
-          sendBody = {
-            recipientPhone: capturedTicket.clientes.telefone,
-            message: messageContent,
-            ticketId: capturedTicketId,
-            phoneNumberId: phoneNumberId,
-            fileUrl: fileUrl,
-            fileType: fileToUpload?.type || null,
-            fileName: fileToUpload?.name || null,
-            messageId: savedMsg.id,
-            replyToMessageId: capturedReplyTo?.id || null,
-          }
-        }
-
-        console.log(`[workdesk] Enviando via ${setorCanal.toUpperCase()} → ${sendUrl}`, sendBody)
-
-        const response = await fetch(sendUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(sendBody),
-        })
-        
-        const result = await response.json()
-        
-        console.log(`[workdesk] Resposta ${sendUrl} (status ${response.status}):`, result)
-
-        if (!response.ok) {
-          console.warn('[workdesk] Send API failed:', result)
-          logError({
-            tela: 'WorkDesk',
-            error: `Falha ao enviar mensagem (${response.status}): ${result?.error || 'desconhecido'}`,
-            componente: 'sendMessage',
-            metadata: { type: 'send_api_error', status: response.status, sendUrl, ticketId: selectedTicketIdRef.current, details: result?.details },
-          })
-
-          // Aviso especial para dispositivo offline (Evolution API)
-          let userMsg: string
-          if (result?.deviceOffline) {
-            userMsg = '📱 Dispositivo desconectado! A mensagem não foi enviada porque o WhatsApp do dispositivo está offline.'
-            toast.error(userMsg, { duration: 8000 })
-          } else {
-            userMsg = parseSendErrorMessage(result)
-            toast.error(userMsg, { duration: 6000 })
-          }
-
-          setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
-          setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
-          return
-        }
-      } catch (sendError) {
-        console.warn('[v0] Send request failed:', sendError)
-        logError({
-          tela: 'WorkDesk',
-          error: sendError,
-          componente: 'sendMessage',
-          metadata: { type: 'send_network_error', sendUrl, ticketId: selectedTicketIdRef.current },
-        })
-        const userMsg = 'Erro de conexão ao enviar mensagem'
-        toast.error(userMsg)
-        setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
-        setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
-        return
-      }
-
-// Mark as sent
-  setPendingMessages(prev => new Map(prev).set(currentMsgId, 'sent'))
-  
   // Update ticket's last message and move to top (like WhatsApp)
   const now = new Date().toISOString()
   setTickets((prev) => {
@@ -3776,23 +3870,17 @@ const tempId = `temp-${Date.now()}`
           .eq('id', capturedTicketId)
       }
       
-      // After 2 seconds, silently refresh to get real message ID (sem loading spinner)
+      // After 2 seconds, silently refresh to get real message IDs (sem loading
+      // spinner). Per-message sending/sent cleanup already happened in sendOne.
       setTimeout(() => {
         if (selectedTicketIdRef.current === capturedTicketId) {
           fetchMensagens(capturedTicketId, capturedTicket.cliente_id, { silent: true })
         }
-        // Limpa marcações de sending/sent — NÃO toca em 'error' (usuário precisa ver e poder retry)
-        setPendingMessages(prev => {
-          const newMap = new Map(prev)
-          if (newMap.get(tempId) !== 'error') newMap.delete(tempId)
-          if (newMap.get(currentMsgId) !== 'error') newMap.delete(currentMsgId)
-          return newMap
-        })
       }, 2000)
 
     } catch (error: any) {
-      setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
-      setMessageErrors(prev => new Map(prev).set(currentMsgId, 'Erro inesperado ao enviar mensagem'))
+      console.error('[workdesk] Unexpected error sending message:', error)
+      toast.error('Erro inesperado ao enviar mensagem')
     }
   }
   // Keep the ref pointing at the latest handleSendMessage so the voice-note
@@ -4132,7 +4220,7 @@ const tempId = `temp-${Date.now()}`
   <Button
   variant="destructive"
   size="sm"
-  onClick={() => setEncerrarDialogOpen(true)}
+  onClick={handleAbrirEncerrar}
   disabled={selectedTicket?.is_disparo && !isDisparoEncerrarEnabled(selectedTicket)}
   className="gap-1.5 px-2 md:px-3"
   >
@@ -4523,6 +4611,7 @@ const tempId = `temp-${Date.now()}`
                   {/* Hidden file input */}
 <input
   type="file"
+  multiple
   ref={fileInputRef}
   onChange={handleFileInputChange}
   accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.xml,.json,.csv,.zip,.rar,.7z,.tar,.gz,.cer,.crt,.pem,.p12,.pfx,.key"
@@ -4530,23 +4619,24 @@ const tempId = `temp-${Date.now()}`
   />
 
 {/* File Preview */}
-                    {filePreview && (
-                      <div className="mb-2 p-2 bg-muted/30 rounded-lg border">
-                        <div className="relative inline-block">
-  {filePreview.startsWith('file:') ? (
-  (() => { const { icon: FIcon, label, color, bg, border } = getFileInfo(filePreview.replace('file:', '').split('.').pop() || '', selectedFile?.type); return (
+                    {attachments.length > 0 && (
+                      <div className="mb-2 p-2 bg-muted/30 rounded-lg border flex flex-wrap gap-2">
+                        {attachments.map((att) => (
+                          <div key={att.id} className="relative inline-block">
+  {att.preview.startsWith('file:') ? (
+  (() => { const { icon: FIcon, color, bg, border } = getFileInfo(att.file.name.split('.').pop() || '', att.file.type); return (
   <div className={cn('flex items-center gap-2 px-3 py-2 rounded border', bg, border)}>
     <FIcon className={cn('h-6 w-6', color)} />
-    <span className="text-sm text-foreground max-w-[200px] truncate">{filePreview.replace('file:', '')}</span>
+    <span className="text-sm text-foreground max-w-[200px] truncate">{att.file.name}</span>
   </div>) })()
-  ) : filePreview.startsWith('video:') ? (
+  ) : att.preview.startsWith('video:') ? (
   <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950/30 rounded border border-blue-200 dark:border-blue-800">
   <Video className="h-6 w-6 text-blue-600" />
-  <span className="text-sm text-foreground">{filePreview.replace('video:', '')}</span>
+  <span className="text-sm text-foreground max-w-[200px] truncate">{att.file.name}</span>
   </div>
   ) : (
   <img
-  src={filePreview || '/placeholder.svg'}
+  src={att.preview}
   alt="Preview"
   className="max-h-32 rounded object-contain"
   />
@@ -4555,11 +4645,12 @@ const tempId = `temp-${Date.now()}`
                             variant="destructive"
                             size="icon"
                             className="absolute -right-2 -top-2 h-5 w-5"
-                            onClick={clearSelectedFile}
+                            onClick={() => removeAttachment(att.id)}
                           >
                             <X className="h-3 w-3" />
                           </Button>
-                        </div>
+                          </div>
+                        ))}
                       </div>
                     )}
 
@@ -4669,7 +4760,7 @@ const tempId = `temp-${Date.now()}`
                           size="icon"
                           onClick={startRecording}
                           className="shrink-0"
-                          disabled={isWindowExpired || !!selectedFile || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                          disabled={isWindowExpired || attachments.length > 0 || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                           title="Gravar áudio"
                         >
                           <Mic className="h-5 w-5 text-muted-foreground" />
@@ -4716,7 +4807,7 @@ const tempId = `temp-${Date.now()}`
                       <Button
                         size="icon"
                         onClick={() => handleSendMessage()}
-                        disabled={(!messageInput.trim() && !selectedFile) || isWindowExpired || uploadingFile || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                        disabled={(!messageInput.trim() && attachments.length === 0) || isWindowExpired || uploadingFile || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                         className="shrink-0"
                       >
                       {uploadingFile ? (
@@ -5479,35 +5570,37 @@ onClick={() => {
                 )}
                 
 {/* File Preview Mobile */}
-                    {filePreview && (
-                      <div className="mb-2 p-2 bg-muted/30 rounded-lg border">
-                        <div className="relative inline-block">
-  {filePreview.startsWith('file:') ? (
-  (() => { const { icon: FIcon, label, color, bg, border } = getFileInfo(filePreview.replace('file:', '').split('.').pop() || '', selectedFile?.type); return (
+                    {attachments.length > 0 && (
+                      <div className="mb-2 p-2 bg-muted/30 rounded-lg border flex flex-wrap gap-2">
+                        {attachments.map((att) => (
+                          <div key={att.id} className="relative inline-block">
+  {att.preview.startsWith('file:') ? (
+  (() => { const { icon: FIcon, color, bg, border } = getFileInfo(att.file.name.split('.').pop() || '', att.file.type); return (
   <div className={cn('flex items-center gap-2 px-2 py-1.5 rounded border', bg, border)}>
     <FIcon className={cn('h-5 w-5', color)} />
-    <span className="text-xs text-foreground max-w-[100px] truncate">{filePreview.replace('file:', '')}</span>
+    <span className="text-xs text-foreground max-w-[100px] truncate">{att.file.name}</span>
   </div>) })()
-  ) : filePreview.startsWith('video:') ? (
+  ) : att.preview.startsWith('video:') ? (
   <div className="flex items-center gap-2 px-2 py-1.5 bg-blue-50 dark:bg-blue-950/30 rounded border border-blue-200 dark:border-blue-800">
   <Video className="h-5 w-5 text-blue-600" />
-  <span className="text-xs text-foreground">{filePreview.replace('video:', '')}</span>
+  <span className="text-xs text-foreground max-w-[100px] truncate">{att.file.name}</span>
   </div>
   ) : (
   <img
-  src={filePreview || "/placeholder.svg"}
+  src={att.preview}
   alt="Preview"
   className="max-h-16 max-w-[120px] rounded-lg border object-cover"
   />
   )}
   <button
                             type="button"
-                            onClick={clearSelectedFile}
+                            onClick={() => removeAttachment(att.id)}
                             className="absolute -top-2 -right-2 rounded-full bg-destructive text-destructive-foreground p-1"
                           >
                             <X className="h-3 w-3" />
                           </button>
-                        </div>
+                          </div>
+                        ))}
                       </div>
                     )}
 
@@ -5549,7 +5642,7 @@ onClick={() => {
                       <Button
                         size="icon"
                         onClick={() => handleSendMessage()}
-                        disabled={(!messageInput.trim() && !selectedFile) || uploadingFile}
+                        disabled={(!messageInput.trim() && attachments.length === 0) || uploadingFile}
                         className="shrink-0"
                       >
                   {uploadingFile ? (
@@ -5572,9 +5665,9 @@ onClick={() => {
                       Transferir
                     </Button>
                     <Button 
-                      variant="destructive" 
+                      variant="destructive"
                       size="sm"
-                      onClick={() => setEncerrarDialogOpen(true)}
+                      onClick={handleAbrirEncerrar}
                       className="flex-1 gap-1"
                     >
                       <XCircle className="h-4 w-4" />
@@ -5598,10 +5691,39 @@ onClick={() => {
               será movido para o histórico.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {/* Classificação do atendimento */}
+          <div className="space-y-2 py-1">
+            <Label className="flex items-center gap-1.5">
+              <Tag className="h-4 w-4" />
+              Tipo de atendimento
+              {tiposEncerramento.length > 0 && <span className="text-destructive">*</span>}
+            </Label>
+            {loadingTiposEncerramento ? (
+              <p className="text-sm text-muted-foreground py-2">Carregando tipos...</p>
+            ) : tiposEncerramento.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Nenhum tipo de atendimento cadastrado para este setor.
+              </p>
+            ) : (
+              <Select value={selectedTipoEncerramento} onValueChange={setSelectedTipoEncerramento}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione o tipo de atendimento..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {tiposEncerramento.map((tipo) => (
+                    <SelectItem key={tipo.id} value={tipo.id}>{tipo.nome}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmarEncerrar}
+              disabled={tiposEncerramento.length > 0 && !selectedTipoEncerramento}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               ✅ Confirmar Encerramento

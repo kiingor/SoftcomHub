@@ -1,53 +1,41 @@
-import { put } from '@vercel/blob'
+import { handleUpload, type HandleUploadBody } from '@vercel/blob/client'
 import { type NextRequest, NextResponse } from 'next/server'
-import { resolveMime } from '@/lib/whatsapp-media'
 
-export async function POST(request: NextRequest) {
+// Client-side direct upload to Vercel Blob.
+//
+// Files now go straight from the browser to Blob storage; this route only
+// mints the upload token. This bypasses the 4.5MB request-body limit that
+// Vercel serverless functions impose — previously any file above ~4.5MB
+// (e.g. an 8MB .zip) was rejected by the platform before reaching our code,
+// surfacing as a generic "Upload failed" on the client.
+//
+// The browser sets the contentType (resolved via resolveMime) so Vercel Blob
+// serves the file with the right Content-Type — both Meta Cloud API and
+// Evolution use that header to classify the media on the recipient side.
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const body = (await request.json()) as HandleUploadBody
+
   try {
-    const formData = await request.formData()
-    const file = formData.get('file') as File
-
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 })
-    }
-
-    // Browsers leave `file.type` empty for unknown extensions (certs, .key, etc.).
-    // Infer a canonical MIME so Vercel Blob serves the file with the right
-    // Content-Type — both Meta Cloud API and Evolution use that header to
-    // classify the media on the recipient side.
-    const resolvedType = resolveMime(file.type, file.name)
-
-    // Validate file size based on resolved MIME (WhatsApp/Evolution limits)
-    // Videos: 50MB | Images/Audio: 16MB | Documents: 100MB
-    const isVideo = resolvedType.startsWith('video/')
-    const isImageOrAudio = resolvedType.startsWith('image/') || resolvedType.startsWith('audio/')
-    const maxSize = isVideo ? 50 * 1024 * 1024 : isImageOrAudio ? 16 * 1024 * 1024 : 100 * 1024 * 1024
-    if (file.size > maxSize) {
-      const maxMB = isVideo ? '50' : isImageOrAudio ? '16' : '100'
-      return NextResponse.json({ error: `Arquivo deve ter no maximo ${maxMB}MB` }, { status: 400 })
-    }
-
-    // Generate unique filename — keep original extension so WhatsApp clients
-    // pick the correct file icon and the recipient OS can open it.
-    const timestamp = Date.now()
-    const extension = file.name.split('.').pop()?.toLowerCase() || 'bin'
-    const filename = `workdesk/${timestamp}-${Math.random().toString(36).substring(7)}.${extension}`
-
-    // Upload to Vercel Blob with explicit contentType so /downloads serve
-    // with the resolved MIME instead of application/octet-stream.
-    const blob = await put(filename, file, {
-      access: 'public',
-      contentType: resolvedType,
+    const jsonResponse = await handleUpload({
+      body,
+      request,
+      onBeforeGenerateToken: async () => ({
+        // No allowedContentTypes restriction: certs/archives/xml must pass
+        // through (Evolution channel). Size is capped at the WhatsApp/Evolution
+        // document limit; the client also pre-validates per media type.
+        addRandomSuffix: false,
+        maximumSizeInBytes: 100 * 1024 * 1024,
+      }),
+      // onUploadCompleted intentionally omitted: nothing to persist
+      // server-side, and on localhost Blob can't resolve a callback URL.
     })
 
-    return NextResponse.json({
-      url: blob.url,
-      filename: file.name,
-      size: file.size,
-      type: resolvedType,
-    })
+    return NextResponse.json(jsonResponse)
   } catch (error) {
     console.error('Upload error:', error)
-    return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Upload failed' },
+      { status: 400 },
+    )
   }
 }

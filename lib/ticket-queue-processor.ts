@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
 // Configuration defaults
 const DEFAULT_CHECK_INTERVAL_MS = 30000 // 30 seconds
@@ -445,6 +446,13 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
 
       if (setorData?.transmissao_ativa && !setorData?.setor_receptor_id) {
         console.warn(`[TicketQueue] ⚠️ Setor ${setorId} tem transmissao_ativa=true mas setor_receptor_id está vazio — ${ticketIds.length} tickets não serão transmitidos. Configure o setor receptor.`)
+      }
+
+      // Janela de bloqueio de transbordo (ex.: almoço): segura os tickets na
+      // fila do próprio setor sem transbordar enquanto a janela estiver ativa.
+      if (setorData?.transmissao_ativa && setorData?.setor_receptor_id && await isTransbordoBloqueado(supabase, setorId)) {
+        console.log(`[TicketQueue] Transbordo bloqueado por horário no setor ${setorId} — ${ticketIds.length} ticket(s) aguardam na fila.`)
+        continue
       }
 
       if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {

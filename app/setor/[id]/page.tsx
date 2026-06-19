@@ -123,6 +123,10 @@ import {
   CircleOff,
   CircleCheck,
   Sparkles,
+  History,
+  Minus,
+  Maximize2,
+  GripVertical,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
@@ -136,6 +140,25 @@ import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
+import {
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
+} from 'recharts'
+import { Responsive, WidthProvider, type Layout } from 'react-grid-layout'
+import 'react-grid-layout/css/styles.css'
+import 'react-resizable/css/styles.css'
+
+const ResponsiveReactGridLayout = WidthProvider(Responsive)
 
 const supabase = createClient()
 
@@ -195,6 +218,7 @@ const DIAS_SEMANA = [
 const sidebarItems = [
     { id: 'monitoramento', name: 'Monitoramento', icon: Activity, description: 'Monitore sua operação em tempo real' },
     { id: 'relatorios', name: 'Relatórios de atendimento', icon: FileText, description: 'Analise as métricas de atendimentos' },
+    { id: 'historico', name: 'Histórico por Cliente', icon: History, description: 'Consulte o histórico de atendimentos por cliente' },
     { id: 'atendentes', name: 'Atendentes', icon: Users, description: 'Gerencie os atendentes do setor' },
     { id: 'horarios', name: 'Horários de atendimento', icon: Clock, description: 'Defina dias e horários disponíveis' },
     { id: 'pausas', name: 'Pausas', icon: Coffee, description: 'Gerencie os tipos de pausas dos atendentes' },
@@ -376,6 +400,155 @@ temposHoje: (() => {
   }
   }
 
+// Cards selecionáveis no relatório (mostrar/ocultar via "Personalizar")
+const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
+const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
+const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v4'
+
+// Tamanho padrão (em colunas de 12 / linhas de grid) de cada card
+const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
+  kpiPrimeiraResposta: { w: 4, h: 2 },
+  kpiResolucao: { w: 4, h: 2 },
+  kpiRecebidos: { w: 4, h: 2 },
+  kpiResolvidos: { w: 4, h: 2 },
+  kpiTaxa: { w: 4, h: 2 },
+  kpiNps: { w: 4, h: 2 },
+  volume: { w: 6, h: 5 },
+  heatmap: { w: 6, h: 5 },
+  sla: { w: 6, h: 5 },
+  nps: { w: 6, h: 4 },
+  canal: { w: 4, h: 4 },
+  status: { w: 4, h: 4 },
+  roteamento: { w: 4, h: 4 },
+  rankAtendente: { w: 4, h: 6 },
+  rankPDV: { w: 4, h: 6 },
+  rankTipo: { w: 4, h: 6 },
+  matrizTipoTecnico: { w: 12, h: 6 },
+  tabela: { w: 12, h: 7 },
+}
+const RELATORIO_COLLAPSED_H = 1
+
+// Empacota os cards visíveis da esquerda p/ direita (quebra a cada 12 colunas)
+function buildDefaultLayout(orderedIds: string[]): Layout[] {
+  let x = 0, y = 0, rowH = 0
+  return orderedIds.map((id) => {
+    const d = RELATORIO_DEFAULT_SIZE[id] || { w: 6, h: 4 }
+    if (x + d.w > 12) { x = 0; y += rowH; rowH = 0 }
+    const item = { i: id, x, y, w: d.w, h: d.h }
+    x += d.w
+    rowH = Math.max(rowH, d.h)
+    return item
+  })
+}
+const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
+  { id: 'kpiPrimeiraResposta', label: 'Tempo médio 1ª resposta' },
+  { id: 'kpiResolucao', label: 'Tempo médio resolução' },
+  { id: 'kpiRecebidos', label: 'Tickets recebidos' },
+  { id: 'kpiResolvidos', label: 'Tickets resolvidos' },
+  { id: 'kpiTaxa', label: 'Taxa de resolução' },
+  { id: 'kpiNps', label: 'NPS Score' },
+  { id: 'volume', label: 'Atendimentos ao longo do tempo' },
+  { id: 'heatmap', label: 'Horários de pico' },
+  { id: 'sla', label: 'SLA de 1ª resposta' },
+  { id: 'nps', label: 'Satisfação (NPS)' },
+  { id: 'canal', label: 'Por canal' },
+  { id: 'status', label: 'Por resultado' },
+  { id: 'roteamento', label: 'Transferências & transbordos' },
+  { id: 'rankAtendente', label: 'Tickets por atendente' },
+  { id: 'rankPDV', label: 'Tickets por PDV' },
+  { id: 'rankTipo', label: 'Tipos de atendimento (ranking)' },
+  { id: 'matrizTipoTecnico', label: 'Tipos por técnico (matriz)' },
+  { id: 'tabela', label: 'Últimos atendimentos' },
+]
+
+// Wrapper de cada relatório: punho p/ arrastar + minimizar. Tamanho/posição
+// são controlados pelo react-grid-layout (arrastar pelo punho, redimensionar pelo canto).
+function ReportWidget({
+  editMode, label, collapsed, onToggleCollapse, children,
+}: {
+  editMode: boolean
+  label: string
+  collapsed: boolean
+  onToggleCollapse: () => void
+  children: React.ReactNode
+}) {
+  // Minimizado: barra compacta ocupando a célula
+  if (collapsed) {
+    return (
+      <div className="flex h-full items-center gap-2 rounded-2xl border bg-card px-3">
+        {editMode && (
+          <span className="report-drag-handle flex cursor-move items-center text-muted-foreground touch-none" title="Arraste para mover">
+            <GripVertical className="h-4 w-4" />
+          </span>
+        )}
+        <span className="truncate text-sm font-medium text-foreground">{label}</span>
+        <Button variant="ghost" size="icon" className="ml-auto h-6 w-6 text-muted-foreground" onClick={onToggleCollapse} title="Expandir">
+          <Maximize2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    )
+  }
+  // Normal: o card preenche a célula; controles flutuam no canto só no modo de edição
+  return (
+    <div className="relative h-full [&>*]:h-full">
+      {editMode && (
+        <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded-lg border bg-background/85 px-0.5 shadow-sm backdrop-blur-sm">
+          <span className="report-drag-handle flex h-6 cursor-move items-center px-0.5 text-muted-foreground touch-none" title="Arraste para mover">
+            <GripVertical className="h-4 w-4" />
+          </span>
+          <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground" onClick={onToggleCollapse} title="Minimizar">
+            <Minus className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      )}
+      {children}
+    </div>
+  )
+}
+
+// Filtro de período próprio dos gráficos de Demanda
+const CHART_PERIOD_OPTIONS = [
+  { value: '1', label: 'Hoje' },
+  { value: '7', label: 'Últimos 7 dias' },
+  { value: '15', label: 'Últimos 15 dias' },
+  { value: '30', label: 'Últimos 30 dias' },
+  { value: '90', label: 'Últimos 90 dias' },
+]
+function chartPeriodCutoffMs(days: number) {
+  const now = new Date()
+  if (days <= 1) { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime() }
+  return now.getTime() - days * 24 * 60 * 60 * 1000
+}
+function filterTicketsByDays(tickets: any[], days: number) {
+  const cutoff = chartPeriodCutoffMs(days)
+  return tickets.filter((t) => t.criado_em && new Date(t.criado_em).getTime() >= cutoff)
+}
+function buildSerieVolume(tickets: any[]) {
+  const volumeMap: Record<string, number> = {}
+  for (const t of tickets) {
+    if (!t.criado_em) continue
+    const d = new Date(t.criado_em)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    volumeMap[key] = (volumeMap[key] || 0) + 1
+  }
+  return Object.entries(volumeMap)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, count]) => { const [, m, dd] = key.split('-'); return { date: `${dd}/${m}`, count } })
+}
+function buildHeatmapData(tickets: any[]) {
+  const matrix: number[][] = Array.from({ length: 7 }, () => Array(12).fill(0))
+  let max = 0
+  for (const t of tickets) {
+    if (!t.criado_em) continue
+    const d = new Date(t.criado_em)
+    const dia = d.getDay()
+    const bloco = Math.floor(d.getHours() / 2)
+    matrix[dia][bloco]++
+    if (matrix[dia][bloco] > max) max = matrix[dia][bloco]
+  }
+  return { matrix, max }
+}
+
 // Calculate relatorio statistics
 function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => string) {
   const ticketsEncerrados = tickets.filter((t) => t.status === 'encerrado')
@@ -400,15 +573,19 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
     tempoMedioResolucao = total / ticketsComResolucao.length
   }
 
-  // Tickets por atendente
-  const ticketsPorAtendente: Record<string, { nome: string; count: number }> = {}
+  // Tickets por atendente (com tempo médio de 1ª resposta)
+  const atendenteAgg: Record<string, { id: string | null; nome: string; count: number; respSum: number; respCount: number }> = {}
   for (const ticket of tickets) {
     if (ticket.colaboradores?.nome) {
-      const nome = ticket.colaboradores.nome
-      if (!ticketsPorAtendente[nome]) {
-        ticketsPorAtendente[nome] = { nome, count: 0 }
+      const key = ticket.colaborador_id || ticket.colaboradores.nome
+      if (!atendenteAgg[key]) {
+        atendenteAgg[key] = { id: ticket.colaborador_id || null, nome: ticket.colaboradores.nome, count: 0, respSum: 0, respCount: 0 }
       }
-      ticketsPorAtendente[nome].count++
+      atendenteAgg[key].count++
+      if (ticket.primeira_resposta_em && ticket.criado_em) {
+        atendenteAgg[key].respSum += new Date(ticket.primeira_resposta_em).getTime() - new Date(ticket.criado_em).getTime()
+        atendenteAgg[key].respCount++
+      }
     }
   }
 
@@ -421,6 +598,96 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
     }
     ticketsPorPDV[pdv].count++
   }
+
+  // Tickets por tipo de atendimento (classificação no encerramento)
+  const ticketsPorTipo: Record<string, { tipo: string; count: number }> = {}
+  for (const ticket of ticketsEncerrados) {
+    const tipo = ticket.tipos_atendimento?.nome || 'Sem classificação'
+    if (!ticketsPorTipo[tipo]) {
+      ticketsPorTipo[tipo] = { tipo, count: 0 }
+    }
+    ticketsPorTipo[tipo].count++
+  }
+
+  // Série de volume por dia (criação)
+  const volumeMap: Record<string, number> = {}
+  for (const ticket of tickets) {
+    if (!ticket.criado_em) continue
+    const d = new Date(ticket.criado_em)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    volumeMap[key] = (volumeMap[key] || 0) + 1
+  }
+  const serieVolume = Object.entries(volumeMap)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, count]) => {
+      const [, m, dd] = key.split('-')
+      return { date: `${dd}/${m}`, count }
+    })
+
+  // Heatmap dia da semana (0=Dom) x bloco de 2h (0..11)
+  const heatmapMatrix: number[][] = Array.from({ length: 7 }, () => Array(12).fill(0))
+  let heatmapMax = 0
+  for (const ticket of tickets) {
+    if (!ticket.criado_em) continue
+    const d = new Date(ticket.criado_em)
+    const dia = d.getDay()
+    const bloco = Math.floor(d.getHours() / 2)
+    heatmapMatrix[dia][bloco]++
+    if (heatmapMatrix[dia][bloco] > heatmapMax) heatmapMax = heatmapMatrix[dia][bloco]
+  }
+
+  // SLA de 1ª resposta (meta: <= 15 min)
+  const slaCount = { lt5: 0, lt15: 0, lt30: 0, gt30: 0 }
+  for (const ticket of ticketsComPrimeiraResposta) {
+    const min = (new Date(ticket.primeira_resposta_em).getTime() - new Date(ticket.criado_em).getTime()) / 60000
+    if (min < 5) slaCount.lt5++
+    else if (min < 15) slaCount.lt15++
+    else if (min < 30) slaCount.lt30++
+    else slaCount.gt30++
+  }
+  const semResposta = tickets.length - ticketsComPrimeiraResposta.length
+  const slaBuckets = [
+    { faixa: '< 5 min', count: slaCount.lt5 },
+    { faixa: '5–15 min', count: slaCount.lt15 },
+    { faixa: '15–30 min', count: slaCount.lt30 },
+    { faixa: '> 30 min', count: slaCount.gt30 },
+    { faixa: 'Sem resposta', count: semResposta },
+  ]
+  const slaDentroDaMeta = ticketsComPrimeiraResposta.length > 0
+    ? Math.round(((slaCount.lt5 + slaCount.lt15) / ticketsComPrimeiraResposta.length) * 100)
+    : 0
+
+  // Distribuição por canal
+  const canalMap: Record<string, number> = {}
+  for (const ticket of tickets) {
+    const canal = ticket.canal || 'desconhecido'
+    canalMap[canal] = (canalMap[canal] || 0) + 1
+  }
+  const porCanal = Object.entries(canalMap).map(([canal, count]) => ({ canal, count })).sort((a, b) => b.count - a.count)
+
+  // Distribuição por status/resultado
+  const statusLabels: Record<string, string> = { aberto: 'Aberto', em_atendimento: 'Em atendimento', encerrado: 'Encerrado' }
+  const statusMap: Record<string, number> = {}
+  for (const ticket of tickets) {
+    const st = ticket.status || 'desconhecido'
+    statusMap[st] = (statusMap[st] || 0) + 1
+  }
+  const porStatus = Object.entries(statusMap).map(([status, count]) => ({ status: statusLabels[status] || status, count }))
+
+  // Tipos de atendimento por técnico (matriz) — sobre encerrados classificados
+  const tiposColunasSet = new Set<string>()
+  const tecnicoTipoAgg: Record<string, { nome: string; porTipo: Record<string, number>; total: number }> = {}
+  for (const ticket of ticketsEncerrados) {
+    if (!ticket.colaboradores?.nome) continue
+    const tipoNome = ticket.tipos_atendimento?.nome || 'Sem classificação'
+    tiposColunasSet.add(tipoNome)
+    const key = ticket.colaborador_id || ticket.colaboradores.nome
+    if (!tecnicoTipoAgg[key]) tecnicoTipoAgg[key] = { nome: ticket.colaboradores.nome, porTipo: {}, total: 0 }
+    tecnicoTipoAgg[key].porTipo[tipoNome] = (tecnicoTipoAgg[key].porTipo[tipoNome] || 0) + 1
+    tecnicoTipoAgg[key].total++
+  }
+  const tiposColunas = Array.from(tiposColunasSet).sort()
+  const tiposPorAtendente = Object.values(tecnicoTipoAgg).sort((a, b) => b.total - a.total)
 
   // NPS calculation
   const ticketsComAvaliacao = tickets.filter((t) => t.avaliacoes?.[0]?.nota != null)
@@ -439,12 +706,24 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
     totalResolvidos: ticketsEncerrados.length,
     tempoMedioPrimeiraResposta: formatMs(tempoMedioPrimeiraResposta),
     tempoMedioResolucao: formatMs(tempoMedioResolucao),
-    ticketsPorAtendente: Object.values(ticketsPorAtendente).sort((a, b) => b.count - a.count),
+    ticketsPorAtendente: Object.values(atendenteAgg)
+      .map((a) => ({ id: a.id, nome: a.nome, count: a.count, avgPrimeiraRespostaMs: a.respCount > 0 ? a.respSum / a.respCount : null }))
+      .sort((a, b) => b.count - a.count),
     ticketsPorPDV: Object.values(ticketsPorPDV).sort((a, b) => b.count - a.count),
+    ticketsPorTipo: Object.values(ticketsPorTipo).sort((a, b) => b.count - a.count),
     taxaResolucao: tickets.length > 0 ? Math.round((ticketsEncerrados.length / tickets.length) * 100) : 0,
     npsScore,
     totalAvaliacoes,
     mediaNotas,
+    serieVolume,
+    heatmap: { matrix: heatmapMatrix, max: heatmapMax },
+    slaBuckets,
+    slaDentroDaMeta,
+    porCanal,
+    porStatus,
+    tiposColunas,
+    tiposPorAtendente,
+    satisfacao: { promotores, neutros: totalAvaliacoes - promotores - detratores, detratores, media: mediaNotas, nps: npsScore },
   }
 }
 
@@ -480,6 +759,11 @@ export default function SetorPage() {
   const [hasUnsavedTipos, setHasUnsavedTipos] = useState(false)
   const [hasUnsavedDistribution, setHasUnsavedDistribution] = useState(false)
   const [hasUnsavedDestino, setHasUnsavedDestino] = useState(false)
+  // Janelas de bloqueio de transbordo (ex.: almoço)
+  interface TransbordoBloqueio { id?: string; hora_inicio: string; hora_fim: string; dias: number[] }
+  const [transbordoBloqueios, setTransbordoBloqueios] = useState<TransbordoBloqueio[]>([])
+  const [hasUnsavedTransbordoBloqueio, setHasUnsavedTransbordoBloqueio] = useState(false)
+  const [savingTransbordoBloqueio, setSavingTransbordoBloqueio] = useState(false)
 
   const handleBackClick = () => {
     setIsNavigatingBack(true)
@@ -634,6 +918,20 @@ export default function SetorPage() {
     comercial: null,
   })
   const [savingTiposAtendimento, setSavingTiposAtendimento] = useState(false)
+
+  // Classificação de Atendimento (tipos por setor usados no encerramento)
+  interface TipoAtendimento {
+    id: string
+    nome: string
+    cor: string | null
+    ativo: boolean
+    ordem: number
+  }
+  const [classificacoes, setClassificacoes] = useState<TipoAtendimento[]>([])
+  const [novaClassificacao, setNovaClassificacao] = useState('')
+  const [savingClassificacao, setSavingClassificacao] = useState(false)
+  const [editingClassificacaoId, setEditingClassificacaoId] = useState<string | null>(null)
+  const [editingClassificacaoNome, setEditingClassificacaoNome] = useState('')
 
   // Distribuição de tickets state
   const [distributionConfig, setDistributionConfig] = useState({
@@ -845,8 +1143,12 @@ export default function SetorPage() {
       const ticketIds = (tickets || []).map((t: any) => t.id)
       let avaliacoesMap = new Map<string, number>()
       let logsMap = new Map<string, any[]>()
+      // Tipos de atendimento (classificação) do setor — buscados à parte (mesmo
+      // motivo das avaliações: embed direto via client RLS é frágil). Robusto
+      // mesmo se a tabela/coluna ainda não existir (retorna erro silencioso → mapa vazio).
+      const tiposMap = new Map<string, string>()
       if (ticketIds.length > 0) {
-        const [avalRes, logsRes] = await Promise.all([
+        const [avalRes, logsRes, tiposRes] = await Promise.all([
           supabase.from('avaliacoes').select('ticket_id, nota').in('ticket_id', ticketIds),
           // Logs relevantes pra derivar "origem" do ticket (criacao, transferencias, transbordos)
           supabase
@@ -854,6 +1156,7 @@ export default function SetorPage() {
             .select('ticket_id, tipo, descricao, criado_em')
             .in('ticket_id', ticketIds)
             .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+          supabase.from('tipos_atendimento').select('id, nome').eq('setor_id', setorId),
         ])
         if (avalRes.data) {
           for (const a of avalRes.data) {
@@ -867,12 +1170,20 @@ export default function SetorPage() {
             logsMap.set(l.ticket_id, arr)
           }
         }
+        if (tiposRes.data) {
+          for (const t of tiposRes.data) {
+            tiposMap.set(t.id, t.nome)
+          }
+        }
       }
-      // Merge avaliações + logs nos tickets
+      // Merge avaliações + logs + tipo de atendimento nos tickets
       return (tickets || []).map((t: any) => ({
         ...t,
         avaliacoes: avaliacoesMap.has(t.id) ? [{ nota: avaliacoesMap.get(t.id) }] : [],
         _logs: logsMap.get(t.id) || [],
+        tipos_atendimento: t.tipo_atendimento_id && tiposMap.has(t.tipo_atendimento_id)
+          ? { nome: tiposMap.get(t.tipo_atendimento_id) }
+          : null,
       }))
     },
     { revalidateOnFocus: false }
@@ -1001,6 +1312,157 @@ export default function SetorPage() {
     }
     return calculateRelatorioStats(ticketsRelatorio, formatMs)
   }, [ticketsRelatorio])
+
+  // Gráficos de Demanda com filtro de período próprio (independente do filtro global)
+  const [volumePeriod, setVolumePeriod] = useState('7')
+  const [heatmapPeriod, setHeatmapPeriod] = useState('7')
+  const [chartTickets, setChartTickets] = useState<{ criado_em: string }[]>([])
+  useEffect(() => {
+    if (!setorId) return
+    let cancelled = false
+    ;(async () => {
+      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+      const { data, error } = await supabase
+        .from('tickets')
+        .select('criado_em')
+        .eq('setor_id', setorId)
+        .gte('criado_em', cutoff)
+        .order('criado_em', { ascending: false })
+        .limit(1000)
+      if (error) console.error('[charts] erro ao buscar tickets:', error)
+      if (!cancelled) setChartTickets(data || [])
+    })()
+    return () => { cancelled = true }
+  }, [setorId])
+  // Fonte dos gráficos: fetch dedicado de 90 dias; se ainda vazio, usa os tickets já carregados
+  const chartSource = chartTickets.length > 0 ? chartTickets : ticketsRelatorioRaw
+  const volumeSerie = useMemo(
+    () => buildSerieVolume(filterTicketsByDays(chartSource, Number(volumePeriod))),
+    [chartSource, volumePeriod]
+  )
+  const heatmapData = useMemo(
+    () => buildHeatmapData(filterTicketsByDays(chartSource, Number(heatmapPeriod))),
+    [chartSource, heatmapPeriod]
+  )
+
+  // Roteamento: transferências/transbordos no período (usa origensMap + logs)
+  const roteamentoStats = useMemo(() => {
+    const total = ticketsRelatorio.length
+    let transferidos = 0
+    let transbordos = 0
+    let hopsSum = 0
+    let hopsCount = 0
+    for (const ticket of ticketsRelatorio) {
+      const origem = origensMap.get(ticket.id)
+      if (origem?.tipo === 'transferencia') transferidos++
+      if (origem?.tipo === 'transbordo') transbordos++
+      const hops = ticket.transbordo_hops || 0
+      if (hops > 0) { hopsSum += hops; hopsCount++ }
+    }
+    return {
+      total,
+      transferidos,
+      transbordos,
+      pctTransferidos: total > 0 ? Math.round((transferidos / total) * 100) : 0,
+      pctTransbordos: total > 0 ? Math.round((transbordos / total) * 100) : 0,
+      hopsMedio: hopsCount > 0 ? (hopsSum / hopsCount).toFixed(1) : '0',
+    }
+  }, [ticketsRelatorio, origensMap])
+
+  // Formata duração curta (ex.: "2m 30s") para os cards de desempenho
+  const fmtDur = (ms: number | null) => {
+    if (ms == null) return '—'
+    const totalSec = Math.floor(ms / 1000)
+    const h = Math.floor(totalSec / 3600)
+    const m = Math.floor((totalSec % 3600) / 60)
+    const s = totalSec % 60
+    if (h > 0) return `${h}h ${m}m`
+    if (m > 0) return `${m}m ${s}s`
+    return `${s}s`
+  }
+
+  // Estilo/paletas dos gráficos do relatório
+  const chartTooltipStyle = {
+    background: 'hsl(var(--popover))',
+    border: '1px solid hsl(var(--border))',
+    borderRadius: 8,
+    fontSize: 12,
+    color: 'hsl(var(--popover-foreground))',
+  }
+  const SLA_COLORS = ['#22C55E', '#84CC16', '#EAB308', '#EF4444', '#94A3B8']
+  const PIE_COLORS = ['#F97316', '#3B82F6', '#22C55E', '#EAB308', '#A855F7', '#EF4444', '#06B6D4', '#64748B']
+
+  // Personalização: quais cards do relatório aparecem (persistido no navegador)
+  const [visibleCards, setVisibleCards] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(RELATORIO_CARD_OPTIONS.map((o) => [o.id, true]))
+  )
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(RELATORIO_CARDS_STORAGE_KEY)
+      if (saved) setVisibleCards((prev) => ({ ...prev, ...JSON.parse(saved) }))
+    } catch {}
+  }, [])
+  const toggleCard = (id: string) => {
+    setVisibleCards((prev) => {
+      const next = { ...prev, [id]: !prev[id] }
+      try { window.localStorage.setItem(RELATORIO_CARDS_STORAGE_KEY, JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+  // Modo de edição: fora dele os cards ficam fixos; dentro dele dá p/ arrastar/redimensionar/ocultar
+  const [editMode, setEditMode] = useState(false)
+
+  // Estado minimizado + layout (posição/tamanho) dos cards — persistido no navegador
+  const [collapsedCards, setCollapsedCards] = useState<Record<string, boolean>>({})
+  const [savedLgLayout, setSavedLgLayout] = useState<Layout[] | null>(null)
+  useEffect(() => {
+    try {
+      const savedCollapsed = window.localStorage.getItem(RELATORIO_COLLAPSED_STORAGE_KEY)
+      if (savedCollapsed) setCollapsedCards(JSON.parse(savedCollapsed))
+      const savedLayout = window.localStorage.getItem(RELATORIO_LAYOUT_STORAGE_KEY)
+      if (savedLayout) setSavedLgLayout(JSON.parse(savedLayout))
+    } catch {}
+  }, [])
+
+  const toggleCollapse = (id: string) => {
+    setCollapsedCards((prev) => {
+      const next = { ...prev, [id]: !prev[id] }
+      try { window.localStorage.setItem(RELATORIO_COLLAPSED_STORAGE_KEY, JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+
+  // ids visíveis (ordem padrão usada só para gerar o layout inicial)
+  const relatorioVisibleIds = useMemo(
+    () => RELATORIO_CARD_OPTIONS.map((o) => o.id).filter((id) => visibleCards[id] ?? true),
+    [visibleCards]
+  )
+  // Layout base (lg): salvo pelo usuário (com defaults p/ cards recém-exibidos) ou gerado
+  const baseLgLayout = useMemo(() => {
+    const defaults = buildDefaultLayout(relatorioVisibleIds)
+    if (!savedLgLayout) return defaults
+    const byId = new Map(savedLgLayout.map((l) => [l.i, l]))
+    return relatorioVisibleIds.map((id) => byId.get(id) || defaults.find((d) => d.i === id)!)
+  }, [savedLgLayout, relatorioVisibleIds])
+  // Aplica o colapso: cards minimizados ficam baixos e sem redimensionar
+  const effectiveLgLayout = useMemo(
+    () => baseLgLayout.map((l) => (collapsedCards[l.i] ? { ...l, h: RELATORIO_COLLAPSED_H, isResizable: false } : l)),
+    [baseLgLayout, collapsedCards]
+  )
+  const handleLayoutChange = (current: Layout[]) => {
+    // não persiste a altura reduzida de cards minimizados (preserva a expandida)
+    const prevById = new Map(baseLgLayout.map((l) => [l.i, l]))
+    const merged = current.map((l) => (collapsedCards[l.i] ? { ...l, h: prevById.get(l.i)?.h ?? l.h } : l))
+    setSavedLgLayout(merged)
+    try { window.localStorage.setItem(RELATORIO_LAYOUT_STORAGE_KEY, JSON.stringify(merged)) } catch {}
+  }
+  const wprops = (id: string) => ({
+    editMode,
+    label: RELATORIO_CARD_OPTIONS.find((o) => o.id === id)?.label || id,
+    collapsed: !!collapsedCards[id],
+    onToggleCollapse: () => toggleCollapse(id),
+  })
+
   const horarios = data?.horarios || []
   const atendentes = data?.atendentes || []
   const permissoes = data?.permissoes || []
@@ -1062,9 +1524,11 @@ export default function SetorPage() {
       fetchCanais()
       fetchTodosSetores()
       fetchTiposAtendimento()
+      fetchClassificacoes()
       fetchSubsetores()
       fetchDistributionConfig()
       fetchSetoresDestino()
+      fetchTransbordoBloqueios()
       fetchTagsList()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1187,6 +1651,72 @@ export default function SetorPage() {
     setHasUnsavedDestino(true)
   }
 
+  // ===== Janelas de bloqueio de transbordo =====
+  const fetchTransbordoBloqueios = async () => {
+    try {
+      const { data } = await supabase
+        .from('transbordo_bloqueios')
+        .select('id, hora_inicio, hora_fim, dias')
+        .eq('setor_id', setorId)
+        .order('hora_inicio', { ascending: true })
+      if (data) {
+        setTransbordoBloqueios(
+          data.map((r: any) => ({
+            id: r.id,
+            hora_inicio: String(r.hora_inicio).slice(0, 5),
+            hora_fim: String(r.hora_fim).slice(0, 5),
+            dias: Array.isArray(r.dias) ? r.dias : [0, 1, 2, 3, 4, 5, 6],
+          }))
+        )
+      }
+    } catch {
+      // Tabela pode não existir ainda
+    }
+  }
+
+  const addTransbordoBloqueio = () => {
+    setTransbordoBloqueios((prev) => [...prev, { hora_inicio: '12:00', hora_fim: '13:00', dias: [0, 1, 2, 3, 4, 5, 6] }])
+    setHasUnsavedTransbordoBloqueio(true)
+  }
+  const updateTransbordoBloqueio = (index: number, patch: Partial<TransbordoBloqueio>) => {
+    setTransbordoBloqueios((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)))
+    setHasUnsavedTransbordoBloqueio(true)
+  }
+  const removeTransbordoBloqueio = (index: number) => {
+    setTransbordoBloqueios((prev) => prev.filter((_, i) => i !== index))
+    setHasUnsavedTransbordoBloqueio(true)
+  }
+  const toggleTransbordoDia = (index: number, dia: number) => {
+    setTransbordoBloqueios((prev) =>
+      prev.map((b, i) => {
+        if (i !== index) return b
+        const dias = b.dias.includes(dia) ? b.dias.filter((d) => d !== dia) : [...b.dias, dia].sort((a, c) => a - c)
+        return { ...b, dias }
+      })
+    )
+    setHasUnsavedTransbordoBloqueio(true)
+  }
+  const saveTransbordoBloqueios = async () => {
+    setSavingTransbordoBloqueio(true)
+    try {
+      await supabase.from('transbordo_bloqueios').delete().eq('setor_id', setorId)
+      const validos = transbordoBloqueios.filter((b) => b.hora_inicio && b.hora_fim && b.hora_fim > b.hora_inicio && b.dias.length > 0)
+      if (validos.length > 0) {
+        const { error } = await supabase.from('transbordo_bloqueios').insert(
+          validos.map((b) => ({ setor_id: setorId, hora_inicio: b.hora_inicio, hora_fim: b.hora_fim, dias: b.dias }))
+        )
+        if (error) throw error
+      }
+      setHasUnsavedTransbordoBloqueio(false)
+      await fetchTransbordoBloqueios()
+      toast.success('Bloqueios de transbordo salvos!')
+    } catch {
+      toast.error('Erro ao salvar bloqueios de transbordo')
+    } finally {
+      setSavingTransbordoBloqueio(false)
+    }
+  }
+
   // Salva todas as seções dirty da página Configurações em paralelo.
   // Cada save já cuida do próprio toast e do reset do dirty flag.
   const saveAllDirty = async () => {
@@ -1195,6 +1725,7 @@ export default function SetorPage() {
     if (hasUnsavedTipos) tasks.push(saveTiposAtendimento())
     if (hasUnsavedDistribution) tasks.push(saveDistributionConfig())
     if (hasUnsavedDestino) tasks.push(saveSetoresDestino())
+    if (hasUnsavedTransbordoBloqueio) tasks.push(saveTransbordoBloqueios())
     await Promise.all(tasks)
   }
 
@@ -1655,6 +2186,91 @@ const saveConfig = async () => {
       toast.error('Erro ao salvar roteamento de atendimento')
     } finally {
       setSavingTiposAtendimento(false)
+    }
+  }
+
+  // ============ CLASSIFICAÇÃO DE ATENDIMENTO (tipos do setor) ============
+  const fetchClassificacoes = async () => {
+    const { data } = await supabase
+      .from('tipos_atendimento')
+      .select('id, nome, cor, ativo, ordem')
+      .eq('setor_id', setorId)
+      .order('ordem', { ascending: true })
+      .order('nome', { ascending: true })
+    setClassificacoes(data || [])
+  }
+
+  const addClassificacao = async () => {
+    const nome = novaClassificacao.trim()
+    if (!nome) {
+      toast.error('Digite um nome para a classificação')
+      return
+    }
+    setSavingClassificacao(true)
+    try {
+      const proximaOrdem = classificacoes.length
+        ? Math.max(...classificacoes.map((c) => c.ordem)) + 1
+        : 0
+      const { error } = await supabase
+        .from('tipos_atendimento')
+        .insert({ setor_id: setorId, nome, ordem: proximaOrdem })
+      if (error) throw error
+      setNovaClassificacao('')
+      await fetchClassificacoes()
+      toast.success('Classificação adicionada!')
+    } catch (error) {
+      console.error('Error adding classificacao:', error)
+      toast.error('Erro ao adicionar classificação')
+    } finally {
+      setSavingClassificacao(false)
+    }
+  }
+
+  const saveEditingClassificacao = async () => {
+    const nome = editingClassificacaoNome.trim()
+    if (!nome || !editingClassificacaoId) return
+    try {
+      const { error } = await supabase
+        .from('tipos_atendimento')
+        .update({ nome })
+        .eq('id', editingClassificacaoId)
+      if (error) throw error
+      setEditingClassificacaoId(null)
+      setEditingClassificacaoNome('')
+      await fetchClassificacoes()
+      toast.success('Classificação atualizada!')
+    } catch (error) {
+      console.error('Error updating classificacao:', error)
+      toast.error('Erro ao atualizar classificação')
+    }
+  }
+
+  const toggleClassificacaoAtivo = async (tipo: TipoAtendimento) => {
+    try {
+      const { error } = await supabase
+        .from('tipos_atendimento')
+        .update({ ativo: !tipo.ativo })
+        .eq('id', tipo.id)
+      if (error) throw error
+      await fetchClassificacoes()
+    } catch (error) {
+      console.error('Error toggling classificacao:', error)
+      toast.error('Erro ao alterar status da classificação')
+    }
+  }
+
+  const deleteClassificacao = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('tipos_atendimento')
+        .delete()
+        .eq('id', id)
+      if (error) throw error
+      await fetchClassificacoes()
+      toast.success('Classificação removida!')
+    } catch (error) {
+      console.error('Error deleting classificacao:', error)
+      toast.error('Erro ao remover classificação')
     }
   }
 
@@ -3486,22 +4102,77 @@ const saveConfig = async () => {
               <div>
                 <h1 className="text-xl font-bold">Relatorios de Atendimento</h1>
               </div>
-              <DatePeriodFilter
-                dateFilter={dateFilter}
-                onDateFilterChange={setDateFilter}
-                customRange={customRange}
-                onCustomRangeChange={setCustomRange}
-                showToday={true}
-                triggerClassName="w-44"
-              />
+              <div className="flex items-center gap-2">
+                {editMode ? (
+                  <>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" size="sm" className="gap-2">
+                          <Eye className="h-4 w-4" />
+                          Mostrar/ocultar
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-72 p-2 max-h-[420px] overflow-y-auto">
+                        <p className="text-xs font-medium text-muted-foreground px-2 py-1.5">Relatórios visíveis</p>
+                        {RELATORIO_CARD_OPTIONS.map((opt) => (
+                          <label
+                            key={opt.id}
+                            className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 hover:bg-accent cursor-pointer"
+                          >
+                            <span className="text-sm">{opt.label}</span>
+                            <Switch checked={visibleCards[opt.id] ?? true} onCheckedChange={() => toggleCard(opt.id)} />
+                          </label>
+                        ))}
+                      </PopoverContent>
+                    </Popover>
+                    <Button size="sm" className="gap-2" onClick={() => setEditMode(false)}>
+                      <Check className="h-4 w-4" />
+                      Concluir
+                    </Button>
+                  </>
+                ) : (
+                  <Button variant="outline" size="sm" className="gap-2" onClick={() => setEditMode(true)}>
+                    <Settings className="h-4 w-4" />
+                    Personalizar
+                  </Button>
+                )}
+                <DatePeriodFilter
+                  dateFilter={dateFilter}
+                  onDateFilterChange={setDateFilter}
+                  customRange={customRange}
+                  onCustomRangeChange={setCustomRange}
+                  showToday={true}
+                  triggerClassName="w-44"
+                />
+              </div>
             </div>
 
-            {/* KPIs - Clean minimal design */}
-            <div className="grid gap-4 grid-cols-2 lg:grid-cols-6">
-              {/* Tempo médio 1a resposta */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between">
+            {editMode && (
+              <div className="rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior‑direito para redimensionar. Clique em <strong>Concluir</strong> para fixar.
+              </div>
+            )}
+            {/* ===== Relatórios — cartões (fixos; editáveis no modo Personalizar) ===== */}
+            <ResponsiveReactGridLayout
+              layouts={{ lg: effectiveLgLayout }}
+              breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+              cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+              rowHeight={64}
+              margin={[16, 16]}
+              isDraggable={editMode}
+              isResizable={editMode}
+              draggableHandle=".report-drag-handle"
+              resizeHandles={['se']}
+              onLayoutChange={(_cur, all) => handleLayoutChange(all.lg || _cur)}
+            >
+
+            {/* KPIs — cada indicador é um card solto (ativar/ocultar, arrastar, redimensionar) */}
+            {visibleCards.kpiPrimeiraResposta && (
+            <div key="kpiPrimeiraResposta" className="overflow-hidden">
+            <ReportWidget {...wprops('kpiPrimeiraResposta')}>
+              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+                <CardContent className="p-5 h-full flex items-center">
+                  <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio 1a resposta</p>
                       <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.tempoMedioPrimeiraResposta}</p>
@@ -3512,11 +4183,16 @@ const saveConfig = async () => {
                   </div>
                 </CardContent>
               </Card>
+            </ReportWidget>
+            </div>
+            )}
 
-              {/* Tempo médio resolução */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between">
+            {visibleCards.kpiResolucao && (
+            <div key="kpiResolucao" className="overflow-hidden">
+            <ReportWidget {...wprops('kpiResolucao')}>
+              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+                <CardContent className="p-5 h-full flex items-center">
+                  <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio resolução</p>
                       <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.tempoMedioResolucao}</p>
@@ -3527,11 +4203,16 @@ const saveConfig = async () => {
                   </div>
                 </CardContent>
               </Card>
+            </ReportWidget>
+            </div>
+            )}
 
-              {/* Tickets recebidos */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between">
+            {visibleCards.kpiRecebidos && (
+            <div key="kpiRecebidos" className="overflow-hidden">
+            <ReportWidget {...wprops('kpiRecebidos')}>
+              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+                <CardContent className="p-5 h-full flex items-center">
+                  <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets recebidos</p>
                       <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.totalRecebidos}</p>
@@ -3542,11 +4223,16 @@ const saveConfig = async () => {
                   </div>
                 </CardContent>
               </Card>
+            </ReportWidget>
+            </div>
+            )}
 
-              {/* Tickets resolvidos */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between">
+            {visibleCards.kpiResolvidos && (
+            <div key="kpiResolvidos" className="overflow-hidden">
+            <ReportWidget {...wprops('kpiResolvidos')}>
+              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+                <CardContent className="p-5 h-full flex items-center">
+                  <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets resolvidos</p>
                       <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.totalResolvidos}</p>
@@ -3557,11 +4243,16 @@ const saveConfig = async () => {
                   </div>
                 </CardContent>
               </Card>
+            </ReportWidget>
+            </div>
+            )}
 
-              {/* Taxa de resolução */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between">
+            {visibleCards.kpiTaxa && (
+            <div key="kpiTaxa" className="overflow-hidden">
+            <ReportWidget {...wprops('kpiTaxa')}>
+              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+                <CardContent className="p-5 h-full flex items-center">
+                  <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Taxa de resolução</p>
                       <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.taxaResolucao}%</p>
@@ -3572,42 +4263,374 @@ const saveConfig = async () => {
                   </div>
                 </CardContent>
               </Card>
-
-              {/* NPS Score */}
-              <Card className="glass-card-elevated rounded-2xl border-0 p-4 flex flex-col justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground">NPS Score</p>
-                  <p className={cn(
-                    "text-xl lg:text-2xl font-semibold tracking-tight",
-                    relatorioStats.npsScore >= 50 ? 'text-green-600' :
-                    relatorioStats.npsScore >= 0 ? 'text-yellow-600' :
-                    'text-red-600'
-                  )}>
-                    {relatorioStats.totalAvaliacoes > 0 ? relatorioStats.npsScore : '—'}
-                  </p>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-1">{relatorioStats.totalAvaliacoes} avaliações</p>
-              </Card>
+            </ReportWidget>
             </div>
+            )}
+
+            {visibleCards.kpiNps && (
+            <div key="kpiNps" className="overflow-hidden">
+            <ReportWidget {...wprops('kpiNps')}>
+              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+                <CardContent className="p-5 h-full flex items-center">
+                  <div className="flex w-full items-start justify-between">
+                    <div className="space-y-4">
+                      <p className="text-xs text-muted-foreground">NPS Score</p>
+                      <div>
+                        <p className={cn(
+                          "text-xl lg:text-2xl font-semibold tracking-tight",
+                          relatorioStats.npsScore >= 50 ? 'text-green-600' :
+                          relatorioStats.npsScore >= 0 ? 'text-yellow-600' :
+                          'text-red-600'
+                        )}>
+                          {relatorioStats.totalAvaliacoes > 0 ? relatorioStats.npsScore : '—'}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-1">{relatorioStats.totalAvaliacoes} avaliações</p>
+                      </div>
+                    </div>
+                    <div className="h-9 w-9 rounded-lg bg-rose-50 dark:bg-rose-950/30 flex items-center justify-center">
+                      <Star className="h-5 w-5 text-rose-600 dark:text-rose-400" />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Atendimentos ao longo do tempo */}
+            {visibleCards.volume && (
+            <div key="volume" className="overflow-hidden">
+            <ReportWidget {...wprops('volume')}>
+                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <TrendingUp className="h-4 w-4" />
+                        Atendimentos ao longo do tempo
+                      </CardTitle>
+                      <Select value={volumePeriod} onValueChange={setVolumePeriod}>
+                        <SelectTrigger className="h-7 w-[150px] text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {CHART_PERIOD_OPTIONS.map((o) => (
+                            <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="min-h-0 flex-1">
+                    {volumeSerie.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-8 text-center">
+                        <TrendingUp className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                        <p className="text-sm text-muted-foreground">Sem dados no período</p>
+                      </div>
+                    ) : (
+                      <div className="h-full min-h-[180px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={volumeSerie} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="volFill" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#F97316" stopOpacity={0.35} />
+                                <stop offset="95%" stopColor="#F97316" stopOpacity={0} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                            <XAxis dataKey="date" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
+                            <YAxis allowDecimals={false} width={28} tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
+                            <RechartsTooltip contentStyle={chartTooltipStyle} />
+                            <Area type="monotone" dataKey="count" name="Atendimentos" stroke="#F97316" strokeWidth={2} fill="url(#volFill)" />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Horários de pico (heatmap) */}
+            {visibleCards.heatmap && (
+            <div key="heatmap" className="overflow-hidden">
+            <ReportWidget {...wprops('heatmap')}>
+                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Clock className="h-4 w-4" />
+                        Horários de pico
+                      </CardTitle>
+                      <Select value={heatmapPeriod} onValueChange={setHeatmapPeriod}>
+                        <SelectTrigger className="h-7 w-[150px] text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {CHART_PERIOD_OPTIONS.map((o) => (
+                            <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Concentração por dia da semana e faixa de hora.</p>
+                  </CardHeader>
+                  <CardContent className="min-h-0 flex-1">
+                    {heatmapData.max === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-8 text-center">
+                        <Clock className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                        <p className="text-sm text-muted-foreground">Sem dados no período</p>
+                      </div>
+                    ) : (
+                      <div className="flex h-full flex-col gap-1 text-[10px]">
+                        <div className="flex items-center gap-1">
+                          <div className="w-8 shrink-0" />
+                          {Array.from({ length: 12 }).map((_, b) => (
+                            <div key={b} className="flex-1 text-center text-muted-foreground">{b % 2 === 0 ? b * 2 : ''}</div>
+                          ))}
+                        </div>
+                        {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map((dia, di) => (
+                          <div key={dia} className="flex flex-1 items-stretch gap-1 min-h-[14px]">
+                            <div className="w-8 shrink-0 flex items-center text-muted-foreground">{dia}</div>
+                            {heatmapData.matrix[di].map((v: number, b: number) => {
+                              const intensity = heatmapData.max > 0 ? v / heatmapData.max : 0
+                              return (
+                                <div
+                                  key={b}
+                                  className="flex-1 rounded-sm"
+                                  title={`${dia} ${b * 2}h–${b * 2 + 2}h: ${v} atendimento(s)`}
+                                  style={{ backgroundColor: v === 0 ? 'hsl(var(--muted))' : `rgba(249, 115, 22, ${0.15 + intensity * 0.85})` }}
+                                />
+                              )
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* SLA de 1ª resposta */}
+            {visibleCards.sla && (
+            <div key="sla" className="overflow-hidden">
+            <ReportWidget {...wprops('sla')}>
+                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Timer className="h-4 w-4" />
+                      SLA de 1ª resposta
+                    </CardTitle>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-semibold tracking-tight">{relatorioStats.slaDentroDaMeta}%</span>
+                      <span className="text-xs text-muted-foreground">respondidos em até 15 min</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="min-h-0 flex-1">
+                    <div className="h-full min-h-[160px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={relatorioStats.slaBuckets} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                          <XAxis dataKey="faixa" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }} />
+                          <YAxis allowDecimals={false} width={28} tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
+                          <RechartsTooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'hsl(var(--muted) / 0.3)' }} />
+                          <Bar dataKey="count" name="Tickets" radius={[6, 6, 0, 0]}>
+                            {relatorioStats.slaBuckets.map((_: any, i: number) => (
+                              <Cell key={i} fill={SLA_COLORS[i % SLA_COLORS.length]} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </CardContent>
+                </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Satisfação (NPS) */}
+            {visibleCards.nps && (
+            <div key="nps" className="overflow-hidden">
+            <ReportWidget {...wprops('nps')}>
+                <Card className="glass-card-elevated rounded-2xl border-0">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Star className="h-4 w-4" />
+                      Satisfação (NPS)
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {relatorioStats.totalAvaliacoes === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-8 text-center">
+                        <Star className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                        <p className="text-sm text-muted-foreground">Nenhuma avaliação no período</p>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-4">
+                        <div className="h-[180px] w-[180px] shrink-0 relative">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={[
+                                  { name: 'Promotores', value: relatorioStats.satisfacao.promotores },
+                                  { name: 'Neutros', value: relatorioStats.satisfacao.neutros },
+                                  { name: 'Detratores', value: relatorioStats.satisfacao.detratores },
+                                ]}
+                                dataKey="value"
+                                nameKey="name"
+                                innerRadius={55}
+                                outerRadius={80}
+                                paddingAngle={2}
+                              >
+                                <Cell fill="#22C55E" />
+                                <Cell fill="#EAB308" />
+                                <Cell fill="#EF4444" />
+                              </Pie>
+                              <RechartsTooltip contentStyle={chartTooltipStyle} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                            <span className="text-2xl font-semibold tracking-tight">{relatorioStats.satisfacao.nps}</span>
+                            <span className="text-[10px] text-muted-foreground">NPS</span>
+                          </div>
+                        </div>
+                        <div className="space-y-2 text-sm">
+                          <p className="text-xs text-muted-foreground">Média: <span className="font-medium text-foreground">{relatorioStats.satisfacao.media.toFixed(1)}</span> · {relatorioStats.totalAvaliacoes} avaliações</p>
+                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-[#22C55E]" /> Promotores <span className="text-muted-foreground">({relatorioStats.satisfacao.promotores})</span></div>
+                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-[#EAB308]" /> Neutros <span className="text-muted-foreground">({relatorioStats.satisfacao.neutros})</span></div>
+                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-[#EF4444]" /> Detratores <span className="text-muted-foreground">({relatorioStats.satisfacao.detratores})</span></div>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Por canal */}
+            {visibleCards.canal && (
+            <div key="canal" className="overflow-hidden">
+            <ReportWidget {...wprops('canal')}>
+                <Card className="glass-card-elevated rounded-2xl border-0">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Radio className="h-4 w-4" />
+                      Por canal
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {relatorioStats.porCanal.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-4 text-center">Sem dados</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {relatorioStats.porCanal.map((item: { canal: string; count: number }, i: number) => (
+                          <div key={item.canal} className="space-y-1">
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="font-medium capitalize">{item.canal}</span>
+                              <span className="text-muted-foreground">{item.count}</span>
+                            </div>
+                            <div className="h-2 bg-muted rounded-full overflow-hidden">
+                              <div className="h-full rounded-full transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Por status/resultado */}
+            {visibleCards.status && (
+            <div key="status" className="overflow-hidden">
+            <ReportWidget {...wprops('status')}>
+                <Card className="glass-card-elevated rounded-2xl border-0">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Activity className="h-4 w-4" />
+                      Por resultado
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {relatorioStats.porStatus.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-4 text-center">Sem dados</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {relatorioStats.porStatus.map((item: { status: string; count: number }, i: number) => (
+                          <div key={item.status} className="space-y-1">
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="font-medium">{item.status}</span>
+                              <span className="text-muted-foreground">{item.count}</span>
+                            </div>
+                            <div className="h-2 bg-muted rounded-full overflow-hidden">
+                              <div className="h-full rounded-full transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[(i + 2) % PIE_COLORS.length] }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Transferências & transbordos */}
+            {visibleCards.roteamento && (
+            <div key="roteamento" className="overflow-hidden">
+            <ReportWidget {...wprops('roteamento')}>
+                <Card className="glass-card-elevated rounded-2xl border-0">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <ArrowRightLeft className="h-4 w-4" />
+                      Transferências &amp; transbordos
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4 pt-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Transferidos</span>
+                      <span className="text-sm font-semibold">{roteamentoStats.transferidos} <span className="text-muted-foreground font-normal">({roteamentoStats.pctTransferidos}%)</span></span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Transbordos</span>
+                      <span className="text-sm font-semibold">{roteamentoStats.transbordos} <span className="text-muted-foreground font-normal">({roteamentoStats.pctTransbordos}%)</span></span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Saltos médios (hops)</span>
+                      <span className="text-sm font-semibold">{roteamentoStats.hopsMedio}</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground pt-1">Altas taxas indicam possível erro de roteamento inicial.</p>
+                  </CardContent>
+                </Card>
+            </ReportWidget>
+            </div>
+            )}
 
             {/* Tickets por atendente */}
-            <Card className="glass-card-elevated rounded-2xl border-0">
+            {visibleCards.rankAtendente && (
+            <div key="rankAtendente" className="overflow-hidden">
+            <ReportWidget {...wprops('rankAtendente')}>
+            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Users className="h-4 w-4" />
                   Tickets por atendente
                 </CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="min-h-0 flex-1">
                 {relatorioStats.ticketsPorAtendente.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-8 text-center">
                     <Users className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum atendimento registrado</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {relatorioStats.ticketsPorAtendente.map((atendente: { nome: string; count: number }, index: number) => (
-                      <div key={atendente.nome} className="flex items-center gap-3">
+                  <div className="space-y-3 h-full overflow-y-auto">
+                    {relatorioStats.ticketsPorAtendente.map((atendente: { id: string | null; nome: string; count: number; avgPrimeiraRespostaMs: number | null }, index: number) => {
+                      const npsEntry = atendente.id ? mediaNPSPorColaborador.get(atendente.id) : undefined
+                      const mediaNota = npsEntry && npsEntry.total > 0 ? (npsEntry.soma / npsEntry.total).toFixed(1) : null
+                      return (
+                      <div key={atendente.id || atendente.nome} className="flex items-center gap-3">
                         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-medium">
                           {index + 1}
                         </div>
@@ -3617,35 +4640,52 @@ const saveConfig = async () => {
                             <span className="text-sm text-muted-foreground">{atendente.count} tickets</span>
                           </div>
                           <div className="h-2 bg-muted rounded-full overflow-hidden">
-                            <div 
+                            <div
                               className="h-full bg-primary rounded-full transition-all"
                               style={{ width: `${Math.min(100, (atendente.count / Math.max(...relatorioStats.ticketsPorAtendente.map((a: { count: number }) => a.count))) * 100)}%` }}
                             />
                           </div>
+                          <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+                            <span className="inline-flex items-center gap-1" title="Tempo médio de 1ª resposta">
+                              <Timer className="h-3 w-3" />{fmtDur(atendente.avgPrimeiraRespostaMs)}
+                            </span>
+                            {mediaNota && (
+                              <span className="inline-flex items-center gap-1" title="Média de avaliação">
+                                <Star className="h-3 w-3" />{mediaNota}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </CardContent>
             </Card>
+            </ReportWidget>
+            </div>
+            )}
 
             {/* Tickets por PDV */}
-            <Card className="glass-card-elevated rounded-2xl border-0">
+            {visibleCards.rankPDV && (
+            <div key="rankPDV" className="overflow-hidden">
+            <ReportWidget {...wprops('rankPDV')}>
+            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Hash className="h-4 w-4" />
                   Tickets por PDV
                 </CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="min-h-0 flex-1">
                 {relatorioStats.ticketsPorPDV.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-8 text-center">
                     <Hash className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum dado de PDV encontrado</p>
                   </div>
                 ) : (
-                  <div className="space-y-3 max-h-[300px] overflow-y-auto">
+                  <div className="space-y-3 h-full overflow-y-auto">
                     {relatorioStats.ticketsPorPDV.map((item: { pdv: string; count: number }, index: number) => (
                       <div key={item.pdv} className="flex items-center gap-3">
                         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/50 text-xs font-medium">
@@ -3669,9 +4709,118 @@ const saveConfig = async () => {
                 )}
               </CardContent>
             </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Tickets por Tipo de Atendimento */}
+            {visibleCards.rankTipo && (
+            <div key="rankTipo" className="overflow-hidden">
+            <ReportWidget {...wprops('rankTipo')}>
+            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Tag className="h-4 w-4" />
+                  Tipos de Atendimento
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  Principais motivos/produtos dos atendimentos encerrados no período.
+                </p>
+              </CardHeader>
+              <CardContent className="min-h-0 flex-1">
+                {relatorioStats.ticketsPorTipo.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-center">
+                    <Tag className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                    <p className="text-sm text-muted-foreground">Nenhum atendimento classificado no período</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 h-full overflow-y-auto">
+                    {relatorioStats.ticketsPorTipo.map((item: { tipo: string; count: number }, index: number) => (
+                      <div key={item.tipo} className="flex items-center gap-3">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/50 text-xs font-medium">
+                          {index + 1}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-sm font-medium">{item.tipo}</span>
+                            <span className="text-sm text-muted-foreground">{item.count} tickets</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-accent rounded-full transition-all"
+                              style={{ width: `${Math.min(100, (item.count / Math.max(...relatorioStats.ticketsPorTipo.map((a: { count: number }) => a.count))) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Tipos de atendimento por técnico */}
+            {visibleCards.matrizTipoTecnico && (
+            <div key="matrizTipoTecnico" className="overflow-hidden">
+            <ReportWidget {...wprops('matrizTipoTecnico')}>
+              <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Users className="h-4 w-4" />
+                    Total por tipo, por técnico
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Quantos atendimentos de cada tipo cada atendente encerrou no período.
+                  </p>
+                </CardHeader>
+                <CardContent className="min-h-0 flex-1">
+                  {relatorioStats.tiposPorAtendente.length === 0 || relatorioStats.tiposColunas.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-8 text-center">
+                      <Tag className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                      <p className="text-sm text-muted-foreground">Nenhum atendimento classificado no período</p>
+                    </div>
+                  ) : (
+                    <div className="h-full overflow-auto rounded-lg border border-border/50">
+                      <Table>
+                        <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
+                          <TableRow>
+                            <TableHead className="text-xs font-medium pl-4 sticky left-0 bg-muted/80 z-20">Atendente</TableHead>
+                            {relatorioStats.tiposColunas.map((tipo: string) => (
+                              <TableHead key={tipo} className="text-xs font-medium text-center whitespace-nowrap">{tipo}</TableHead>
+                            ))}
+                            <TableHead className="text-xs font-medium text-center pr-4">Total</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {relatorioStats.tiposPorAtendente.map((row: { nome: string; porTipo: Record<string, number>; total: number }, idx: number) => (
+                            <TableRow key={`${row.nome}-${idx}`} className="hover:bg-muted/30">
+                              <TableCell className="text-sm font-medium pl-4 sticky left-0 bg-background z-10">{row.nome}</TableCell>
+                              {relatorioStats.tiposColunas.map((tipo: string) => (
+                                <TableCell key={tipo} className="text-sm text-center tabular-nums">
+                                  {row.porTipo[tipo] ? row.porTipo[tipo] : <span className="text-muted-foreground">—</span>}
+                                </TableCell>
+                              ))}
+                              <TableCell className="text-sm text-center font-semibold tabular-nums pr-4">{row.total}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </ReportWidget>
+            </div>
+            )}
 
             {/* Últimos atendimentos */}
-            <Card className="glass-card-elevated rounded-2xl border-0">
+            {visibleCards.tabela && (
+            <div key="tabela" className="overflow-hidden">
+            <ReportWidget {...wprops('tabela')}>
+            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between gap-4">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -3689,20 +4838,21 @@ const saveConfig = async () => {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="px-4 pb-4 pt-2">
+              <CardContent className="px-4 pb-4 pt-2 min-h-0 flex-1">
                 {ticketsRelatorio.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-8 text-center">
                     <AlertCircle className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum ticket encontrado no período</p>
                   </div>
                 ) : (
-                  <div className="max-h-[400px] overflow-y-auto rounded-lg border border-border/50">
+                  <div className="h-full overflow-y-auto rounded-lg border border-border/50">
                     <Table>
                       <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
                         <TableRow>
                           <TableHead className="text-xs font-medium pl-4">Ticket</TableHead>
                           <TableHead className="text-xs font-medium">Cliente</TableHead>
                           <TableHead className="text-xs font-medium">Atendente</TableHead>
+                          <TableHead className="text-xs font-medium">Tipo</TableHead>
                           <TableHead className="text-xs font-medium">Origem</TableHead>
                           <TableHead className="text-xs font-medium">Status</TableHead>
                           <TableHead className="text-xs font-medium">NPS</TableHead>
@@ -3721,6 +4871,15 @@ const saveConfig = async () => {
                               </div>
                             </TableCell>
                             <TableCell className="text-sm">{ticket.colaboradores?.nome || '-'}</TableCell>
+                            <TableCell className="text-xs">
+                              {ticket.tipos_atendimento?.nome ? (
+                                <Badge variant="secondary" className="text-[10px] whitespace-nowrap">
+                                  {ticket.tipos_atendimento.nome}
+                                </Badge>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
                             <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
                             <TableCell>
                               <Badge
@@ -3770,7 +4929,17 @@ const saveConfig = async () => {
                 )}
               </CardContent>
           </Card>
+            </ReportWidget>
+            </div>
+            )}
 
+            </ResponsiveReactGridLayout>
+        </div>
+      )}
+
+      {/* Histórico por Cliente Section */}
+      {activeSection === 'historico' && (
+        <div className="space-y-6">
           <HistoricoClienteSection setorId={setorId} />
         </div>
       )}
@@ -4438,6 +5607,140 @@ const saveConfig = async () => {
                 </div>
               )
             })}
+          </CardContent>
+        </Card>
+
+        {/* Classificação de Atendimento */}
+        <Card className="glass-card-elevated rounded-2xl border-0">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Tag className="h-5 w-5" />
+              Classificação de Atendimento
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Cadastre os tipos de atendimento deste setor. Ao encerrar um chat no workdesk, o atendente deverá escolher uma destas classificações.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Adicionar nova classificação */}
+            <div className="flex gap-2">
+              <Input
+                placeholder="Ex: Dúvida, Reclamação, Instalação..."
+                value={novaClassificacao}
+                onChange={(e) => setNovaClassificacao(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addClassificacao()
+                  }
+                }}
+                maxLength={60}
+              />
+              <Button onClick={addClassificacao} disabled={savingClassificacao || !novaClassificacao.trim()}>
+                {savingClassificacao ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                <span className="ml-1 hidden sm:inline">Adicionar</span>
+              </Button>
+            </div>
+
+            {/* Lista de classificações */}
+            {classificacoes.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                Nenhuma classificação cadastrada para este setor.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {classificacoes.map((tipo) => (
+                  <div
+                    key={tipo.id}
+                    className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                  >
+                    {editingClassificacaoId === tipo.id ? (
+                      <>
+                        <Input
+                          value={editingClassificacaoNome}
+                          onChange={(e) => setEditingClassificacaoNome(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              saveEditingClassificacao()
+                            } else if (e.key === 'Escape') {
+                              setEditingClassificacaoId(null)
+                              setEditingClassificacaoNome('')
+                            }
+                          }}
+                          autoFocus
+                          maxLength={60}
+                          className="flex-1"
+                        />
+                        <Button size="sm" onClick={saveEditingClassificacao} disabled={!editingClassificacaoNome.trim()}>
+                          <Check className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setEditingClassificacaoId(null)
+                            setEditingClassificacaoNome('')
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Tag className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span className={cn('flex-1 font-medium', !tipo.ativo && 'text-muted-foreground line-through')}>
+                          {tipo.nome}
+                        </span>
+                        {!tipo.ativo && (
+                          <Badge variant="secondary" className="text-xs">Inativo</Badge>
+                        )}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Switch
+                            checked={tipo.ativo}
+                            onCheckedChange={() => toggleClassificacaoAtivo(tipo)}
+                          />
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setEditingClassificacaoId(tipo.id)
+                              setEditingClassificacaoNome(tipo.nome)
+                            }}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive">
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Remover classificação?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Tem certeza que deseja remover &quot;{tipo.nome}&quot;? Atendimentos já encerrados com este tipo manterão o registro.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => deleteClassificacao(tipo.id)}
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                >
+                                  Remover
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -5323,6 +6626,89 @@ const saveConfig = async () => {
           </Card>
         )}
 
+        {/* Bloqueio de transbordo por horário — apenas admin */}
+        {colaboradorLogado?.is_master && (
+          <Card className="glass-card-elevated rounded-2xl border-0">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Clock className="h-5 w-5" />
+                Bloqueio de Transbordo
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Defina os horários em que este setor <strong>não deve transbordar</strong>. Durante essas janelas, mesmo que todos os atendentes fiquem offline, os tickets <strong>aguardam na fila do próprio setor</strong> em vez de irem para o setor receptor.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {!configForm.transmissao_ativa && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  Este setor não tem transmissão ativa — o bloqueio só tem efeito em setores que transbordam.
+                </p>
+              )}
+              {transbordoBloqueios.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-2">Nenhuma janela de bloqueio cadastrada.</p>
+              ) : (
+                <div className="space-y-3">
+                  {transbordoBloqueios.map((b, i) => (
+                    <div key={b.id || i} className="rounded-lg border bg-card p-3 space-y-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="flex items-center gap-2">
+                          <Label className="text-xs text-muted-foreground">Das</Label>
+                          <Input
+                            type="time"
+                            value={b.hora_inicio}
+                            onChange={(e) => updateTransbordoBloqueio(i, { hora_inicio: e.target.value })}
+                            className="h-8 w-[110px]"
+                          />
+                          <Label className="text-xs text-muted-foreground">até</Label>
+                          <Input
+                            type="time"
+                            value={b.hora_fim}
+                            onChange={(e) => updateTransbordoBloqueio(i, { hora_fim: e.target.value })}
+                            className="h-8 w-[110px]"
+                          />
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="ml-auto h-8 w-8 text-destructive hover:text-destructive"
+                          onClick={() => removeTransbordoBloqueio(i)}
+                          title="Remover janela"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map((nome, dia) => (
+                          <button
+                            key={dia}
+                            type="button"
+                            onClick={() => toggleTransbordoDia(i, dia)}
+                            className={cn(
+                              'rounded-md border px-2.5 py-1 text-xs transition-colors',
+                              b.dias.includes(dia)
+                                ? 'border-primary bg-primary/10 text-primary font-medium'
+                                : 'border-transparent bg-muted text-muted-foreground hover:bg-accent'
+                            )}
+                          >
+                            {nome}
+                          </button>
+                        ))}
+                      </div>
+                      {b.hora_fim <= b.hora_inicio && (
+                        <p className="text-[11px] text-destructive">A hora final deve ser maior que a inicial.</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button variant="outline" size="sm" className="gap-2" onClick={addTransbordoBloqueio}>
+                <Plus className="h-4 w-4" />
+                Adicionar janela
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Zona de Perigo */}
         <Card className="glass-card-elevated rounded-2xl border-0 border-destructive/50">
           <CardHeader>
@@ -5413,14 +6799,15 @@ const saveConfig = async () => {
 
         {/* Barra de save flutuante — unifica os saves da página Configurações */}
         <FloatingSaveBar
-          show={hasUnsavedConfig || hasUnsavedTipos || hasUnsavedDistribution || hasUnsavedDestino}
-          saving={saving || savingTiposAtendimento || savingDistribution || savingSetoresDestino}
+          show={hasUnsavedConfig || hasUnsavedTipos || hasUnsavedDistribution || hasUnsavedDestino || hasUnsavedTransbordoBloqueio}
+          saving={saving || savingTiposAtendimento || savingDistribution || savingSetoresDestino || savingTransbordoBloqueio}
           onSave={saveAllDirty}
           dirtyLabels={[
             ...(hasUnsavedConfig ? ['Informações e aparência'] : []),
             ...(hasUnsavedTipos ? ['Roteamento'] : []),
             ...(hasUnsavedDistribution ? ['Distribuição'] : []),
             ...(hasUnsavedDestino ? ['Transferência'] : []),
+            ...(hasUnsavedTransbordoBloqueio ? ['Bloqueio de transbordo'] : []),
           ]}
         />
       </div>
@@ -6282,18 +7669,18 @@ const saveConfig = async () => {
         </DialogContent>
       </Dialog>
 
-      {/* Conversation Slide-out Panel */}
+      {/* Conversation Modal — balão centralizado */}
       {selectedTicket && (
-        <div className="fixed inset-y-0 right-0 z-50 flex">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           {/* Backdrop */}
-          <div 
-            className="fixed inset-0 bg-black/20 backdrop-blur-sm" 
+          <div
+            className="fixed inset-0 bg-black/20 backdrop-blur-sm"
             onClick={closeConversation}
           />
-          
-          {/* Panel — largura fixa no viewport (w-screen + max-w-md) para não
-              variar conforme o conteúdo de cada aba (Atendimento/Transferir/Info) */}
-          <div className="relative ml-auto flex h-full w-screen max-w-md flex-col bg-background shadow-xl">
+
+          {/* Balão — centralizado, bordas arredondadas, altura fixa (não varia
+              conforme o conteúdo de cada aba: Atendimento/Transferir/Info) */}
+          <div className="relative flex h-[85vh] max-h-[760px] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>

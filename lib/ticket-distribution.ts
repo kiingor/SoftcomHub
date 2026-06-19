@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
 interface DistribuicaoResult {
   ticketId: string
@@ -245,6 +246,9 @@ export async function criarEDistribuirTicket(
 
         if (setorTemAtendentePresente) {
           console.log(`[Distribuição] Setor ${setorId} tem atendente(s) online servindo o setor — ticket ${ticket.id} fica na fila (sem transbordo).`)
+        } else if (setorData?.transmissao_ativa && setorData?.setor_receptor_id && await isTransbordoBloqueado(supabase, setorId)) {
+          // Janela de bloqueio de transbordo (ex.: almoço): aguarda na fila.
+          console.log(`[Distribuição] Transbordo bloqueado por horário no setor ${setorId} — ticket ${ticket.id} aguarda na fila.`)
         } else if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
           const receptorId = setorData.setor_receptor_id
           console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
