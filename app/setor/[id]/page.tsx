@@ -2,8 +2,8 @@
 
 import { useRef } from "react"
 
-import React, { useState, useMemo, useEffect, useTransition, Fragment } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import React, { useState, useMemo, useEffect, useTransition, Fragment, Suspense } from 'react'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
@@ -128,10 +128,14 @@ import {
   Minus,
   Maximize2,
   GripVertical,
+  Download,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
+import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { OrigemBadge } from '@/components/origem-badge'
 import { toast } from 'sonner'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -728,6 +732,123 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
   }
 }
 
+// Client-side filters applied over the already-loaded report tickets
+// (atendente + canal selects + cliente search). Shared by the current period
+// view and the previous-period comparison so the Δ stays consistent.
+function applyRelatorioFilters(
+  list: any[],
+  opts: { searchCliente: string; atendente: string; canal: string },
+): any[] {
+  let out = list
+  if (opts.atendente !== 'all') {
+    out = out.filter((t) => (t.colaboradores?.nome || '') === opts.atendente)
+  }
+  if (opts.canal !== 'all') {
+    out = out.filter((t) => (t.canal || 'desconhecido') === opts.canal)
+  }
+  const term = opts.searchCliente.trim().toLowerCase()
+  if (term) {
+    const termPhone = term.replace(/\D/g, '')
+    out = out.filter((t: any) => {
+      const nome = (t.clientes?.nome || '').toLowerCase()
+      const cnpj = (t.clientes?.CNPJ || '').replace(/\D/g, '')
+      const telefone = (t.clientes?.telefone || '').replace(/\D/g, '')
+      const telefoneNorm = telefone.startsWith('55') ? telefone.slice(2) : telefone
+      if (nome.includes(term)) return true
+      if (termPhone && telefoneNorm.includes(termPhone)) return true
+      if (termPhone && cnpj.includes(termPhone)) return true
+      return false
+    })
+  }
+  return out
+}
+
+// Numeric KPIs used for the period-over-period comparison (Δ%). Kept separate
+// from calculateRelatorioStats because we need raw numbers, not formatted strings.
+function computeRelatorioKpis(tickets: any[]) {
+  const encerrados = tickets.filter((t) => t.status === 'encerrado')
+  const comPrimeira = tickets.filter((t) => t.primeira_resposta_em && t.criado_em)
+  const comResolucao = encerrados.filter((t) => t.encerrado_em && t.criado_em)
+  const avgPrimeira = comPrimeira.length
+    ? comPrimeira.reduce((a, t) => a + (new Date(t.primeira_resposta_em).getTime() - new Date(t.criado_em).getTime()), 0) / comPrimeira.length
+    : 0
+  const avgResolucao = comResolucao.length
+    ? comResolucao.reduce((a, t) => a + (new Date(t.encerrado_em).getTime() - new Date(t.criado_em).getTime()), 0) / comResolucao.length
+    : 0
+  return {
+    recebidos: tickets.length,
+    resolvidos: encerrados.length,
+    taxaResolucao: tickets.length ? (encerrados.length / tickets.length) * 100 : 0,
+    tmaPrimeiraRespostaMs: avgPrimeira,
+    tmaResolucaoMs: avgResolucao,
+  }
+}
+
+// Equivalent previous period for the Δ comparison (e.g. last 7 days → the 7 days
+// before that). Returns null when there is no meaningful previous window.
+function getPrevPeriodCutoffs(
+  dateFilter: string,
+  customRange?: DateRange,
+): { from: string; to: string } | null {
+  if (dateFilter === 'all' || dateFilter === '0') return null
+  if (dateFilter === 'custom') {
+    if (!customRange?.from) return null
+    const from = new Date(customRange.from)
+    from.setHours(0, 0, 0, 0)
+    const to = customRange.to ? new Date(customRange.to) : new Date(customRange.from)
+    to.setHours(23, 59, 59, 999)
+    const dur = to.getTime() - from.getTime()
+    return { from: new Date(from.getTime() - dur - 1).toISOString(), to: new Date(from.getTime() - 1).toISOString() }
+  }
+  if (dateFilter === 'today') {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    return { from: new Date(start.getTime() - 24 * 60 * 60 * 1000).toISOString(), to: new Date(start.getTime() - 1).toISOString() }
+  }
+  const days = parseInt(dateFilter, 10)
+  if (!Number.isNaN(days) && days > 0) {
+    const ms = days * 24 * 60 * 60 * 1000
+    const curStart = Date.now() - ms
+    return { from: new Date(curStart - ms).toISOString(), to: new Date(curStart - 1).toISOString() }
+  }
+  return null
+}
+
+// Variation badge (▲/▼ + percent) vs. the previous period. Green/red are used
+// strictly as variation semantics (orange stays the brand signal). `invert`
+// flips the color logic for "lower is better" metrics like response time.
+function DeltaBadge({
+  current,
+  previous,
+  invert = false,
+}: {
+  current: number
+  previous: number | null | undefined
+  invert?: boolean
+}) {
+  if (previous == null) return null
+  if (previous === 0 && current === 0) return null
+  const diff = current - previous
+  const pct = previous === 0 ? 100 : (diff / previous) * 100
+  const flat = Math.abs(pct) < 0.5
+  const up = diff > 0
+  const good = flat ? null : invert ? !up : up
+  const Icon = flat ? Minus : up ? ArrowUp : ArrowDown
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-0.5 text-[11px] font-medium tabular-nums',
+        flat ? 'text-muted-foreground' : good ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive',
+      )}
+      title="Variação vs. período anterior"
+      aria-label={`Variação de ${Math.abs(pct).toFixed(0)}% ${up ? 'para cima' : 'para baixo'} versus o período anterior`}
+    >
+      <Icon className="h-3 w-3" aria-hidden="true" />
+      {Math.abs(pct).toFixed(0)}%
+    </span>
+  )
+}
+
 // Get icon component by name
 function getIconComponent(iconName: string | null) {
   if (!iconName) return MessageCircle
@@ -735,9 +856,10 @@ function getIconComponent(iconName: string | null) {
   return found ? found.icon : MessageCircle
 }
 
-export default function SetorPage() {
+function SetorPageInner() {
   const params = useParams()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const setorId = params.id as string
   const { data: colaboradorLogado } = useColaborador()
   const [isPending, startTransition] = useTransition()
@@ -750,8 +872,18 @@ export default function SetorPage() {
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
   const [, setTick] = useState(0) // Force re-render for time updates
-  const [dateFilter, setDateFilter] = useState('today')
-  const [customRange, setCustomRange] = useState<DateRange | undefined>()
+  // Filtros do relatório inicializados a partir da querystring (link
+  // compartilhável). A escrita de volta na URL acontece num effect mais abaixo.
+  const [dateFilter, setDateFilter] = useState(() => searchParams.get('periodo') || 'today')
+  const [customRange, setCustomRange] = useState<DateRange | undefined>(() => {
+    const de = searchParams.get('de')
+    if (!de) return undefined
+    const from = new Date(de)
+    if (Number.isNaN(from.getTime())) return undefined
+    const ate = searchParams.get('ate')
+    const to = ate ? new Date(ate) : undefined
+    return { from, to: to && !Number.isNaN(to.getTime()) ? to : undefined }
+  })
   const [saving, setSaving] = useState(false)
   const [hasUnsavedConfig, setHasUnsavedConfig] = useState(false)
   const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
@@ -1128,7 +1260,7 @@ export default function SetorPage() {
 
   // Relatório separado: recarrega quando filtro de data muda (server-side filtering)
   const { from: dateFrom, to: dateTo } = getDateCutoffs(dateFilter, customRange)
-  const { data: relatorioData } = useSWR(
+  const { data: relatorioData, isLoading: relatorioLoading } = useSWR(
     setorId ? ['setor-relatorio', setorId, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()] : null,
     async () => {
       let query = supabase
@@ -1186,6 +1318,25 @@ export default function SetorPage() {
           ? { nome: tiposMap.get(t.tipo_atendimento_id) }
           : null,
       }))
+    },
+    { revalidateOnFocus: false }
+  )
+
+  // Período anterior equivalente (para o Δ% dos KPIs). Fetch enxuto — só os
+  // campos necessários pros indicadores numéricos + joins p/ aplicar os mesmos
+  // filtros client-side. NPS fica de fora (precisaria de avaliacoes).
+  const prevPeriod = useMemo(() => getPrevPeriodCutoffs(dateFilter, customRange), [dateFilter, customRange])
+  const { data: prevRelatorioData } = useSWR(
+    setorId && prevPeriod ? ['setor-relatorio-prev', setorId, prevPeriod.from, prevPeriod.to] : null,
+    async () => {
+      const { data } = await supabase
+        .from('tickets')
+        .select('criado_em, status, primeira_resposta_em, encerrado_em, canal, colaboradores(nome), clientes(nome, telefone, CNPJ)')
+        .eq('setor_id', setorId)
+        .gte('criado_em', prevPeriod!.from)
+        .lte('criado_em', prevPeriod!.to)
+        .limit(1000)
+      return data || []
     },
     { revalidateOnFocus: false }
   )
@@ -1283,25 +1434,50 @@ export default function SetorPage() {
     return calcularOrigem(allTickets, allLogs, setoresLookup)
   }, [tickets, ticketsRelatorioRaw, setoresLookup])
 
-  // Busca por cliente (telefone/CNPJ/nome) — filtro client-side
-  const [searchCliente, setSearchCliente] = useState('')
-  const ticketsRelatorio = useMemo(() => {
-    if (!searchCliente.trim()) return ticketsRelatorioRaw
-    const term = searchCliente.trim().toLowerCase()
-    // Normalizar telefone: remover +55, 55 do início para busca parcial
-    const termPhone = term.replace(/\D/g, '')
-    return ticketsRelatorioRaw.filter((t: any) => {
-      const nome = (t.clientes?.nome || '').toLowerCase()
-      const cnpj = (t.clientes?.CNPJ || '').replace(/\D/g, '')
-      const telefone = (t.clientes?.telefone || '').replace(/\D/g, '')
-      // Normalizar: remover 55 do início do telefone do banco
-      const telefoneNorm = telefone.startsWith('55') ? telefone.slice(2) : telefone
-      if (nome.includes(term)) return true
-      if (termPhone && telefoneNorm.includes(termPhone)) return true
-      if (termPhone && cnpj.includes(termPhone)) return true
-      return false
-    })
-  }, [ticketsRelatorioRaw, searchCliente])
+  // Filtros client-side do relatório (busca por cliente + atendente + canal),
+  // inicializados pela querystring. Aplicados sobre os tickets já carregados.
+  const [searchCliente, setSearchCliente] = useState(() => searchParams.get('cliente') || '')
+  const [relatorioAtendente, setRelatorioAtendente] = useState(() => searchParams.get('atendente') || 'all')
+  const [relatorioCanal, setRelatorioCanal] = useState(() => searchParams.get('canal') || 'all')
+
+  // Opções dos selects derivadas dos próprios tickets do período
+  const relatorioAtendentesOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of ticketsRelatorioRaw) {
+      if (t.colaboradores?.nome) set.add(t.colaboradores.nome)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [ticketsRelatorioRaw])
+  const relatorioCanaisOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of ticketsRelatorioRaw) set.add(t.canal || 'desconhecido')
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [ticketsRelatorioRaw])
+
+  const ticketsRelatorio = useMemo(
+    () => applyRelatorioFilters(ticketsRelatorioRaw, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal }),
+    [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal]
+  )
+
+  // KPIs numéricos do período atual e do anterior (para o Δ%)
+  const kpiAtual = useMemo(() => computeRelatorioKpis(ticketsRelatorio), [ticketsRelatorio])
+  const kpiAnterior = useMemo(() => {
+    if (!prevRelatorioData) return null
+    const filtered = applyRelatorioFilters(prevRelatorioData, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal })
+    return computeRelatorioKpis(filtered)
+  }, [prevRelatorioData, searchCliente, relatorioAtendente, relatorioCanal])
+
+  // Base do nome do arquivo exportado (setor + data atual)
+  const exportFilenameBase = useMemo(() => {
+    const slug = (setor?.nome || 'setor')
+      .toString()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+    return `relatorio-${slug || 'setor'}-${new Date().toISOString().slice(0, 10)}`
+  }, [setor?.nome])
 
   // Recalculate stats from filtered tickets
   const relatorioStats = useMemo(() => {
@@ -1313,6 +1489,29 @@ export default function SetorPage() {
     }
     return calculateRelatorioStats(ticketsRelatorio, formatMs)
   }, [ticketsRelatorio])
+
+  // Reflete os filtros do relatório na URL (link compartilhável/recarregável).
+  // Debounce evita spam de navegações enquanto o usuário digita; router.replace
+  // não empilha histórico. Os estados são lidos da URL só no mount, então não há
+  // loop de fetch.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      const next = new URLSearchParams()
+      if (dateFilter !== 'today') next.set('periodo', dateFilter)
+      if (dateFilter === 'custom') {
+        if (customRange?.from) next.set('de', customRange.from.toISOString())
+        if (customRange?.to) next.set('ate', customRange.to.toISOString())
+      }
+      if (searchCliente.trim()) next.set('cliente', searchCliente.trim())
+      if (relatorioAtendente !== 'all') next.set('atendente', relatorioAtendente)
+      if (relatorioCanal !== 'all') next.set('canal', relatorioCanal)
+      const qs = next.toString()
+      const pathname = window.location.pathname
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+    }, 350)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilter, customRange, searchCliente, relatorioAtendente, relatorioCanal])
 
   // Gráficos de Demanda com filtro de período próprio (independente do filtro global)
   const [volumePeriod, setVolumePeriod] = useState('7')
@@ -4139,6 +4338,30 @@ const saveConfig = async () => {
                     Personalizar
                   </Button>
                 )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="gap-2" disabled={ticketsRelatorio.length === 0}>
+                      <Download className="h-4 w-4" />
+                      Exportar
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onClick={() => exportRelatorioCsv(ticketsRelatorio, `${exportFilenameBase}.csv`)}
+                    >
+                      Exportar CSV
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        exportRelatorioXlsx(ticketsRelatorio, `${exportFilenameBase}.xlsx`).catch(() =>
+                          toast.error('Falha ao gerar o arquivo XLSX')
+                        )
+                      }}
+                    >
+                      Exportar XLSX
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <DatePeriodFilter
                   dateFilter={dateFilter}
                   onDateFilterChange={setDateFilter}
@@ -4148,6 +4371,50 @@ const saveConfig = async () => {
                   triggerClassName="w-44"
                 />
               </div>
+            </div>
+
+            {/* Filtros client-side: atendente + canal (sobre os tickets já carregados) */}
+            <div className="flex flex-wrap items-center gap-2 anim-rise">
+              <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+                <Filter className="h-3.5 w-3.5" />
+                Filtrar:
+              </span>
+              <Select value={relatorioAtendente} onValueChange={setRelatorioAtendente}>
+                <SelectTrigger className="h-9 w-[200px] text-sm">
+                  <SelectValue placeholder="Atendente" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os atendentes</SelectItem>
+                  {relatorioAtendentesOptions.map((nome) => (
+                    <SelectItem key={nome} value={nome}>{nome}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={relatorioCanal} onValueChange={setRelatorioCanal}>
+                <SelectTrigger className="h-9 w-[180px] text-sm">
+                  <SelectValue placeholder="Canal" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os canais</SelectItem>
+                  {relatorioCanaisOptions.map((canal) => (
+                    <SelectItem key={canal} value={canal} className="capitalize">{canal}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {(relatorioAtendente !== 'all' || relatorioCanal !== 'all') && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 gap-1.5 text-muted-foreground"
+                  onClick={() => { setRelatorioAtendente('all'); setRelatorioCanal('all') }}
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Limpar filtros
+                </Button>
+              )}
+              <span className="ml-auto text-xs text-muted-foreground tabular-nums" data-nums>
+                {ticketsRelatorio.length} de {ticketsRelatorioRaw.length} atendimentos
+              </span>
             </div>
 
             {editMode && (
@@ -4178,7 +4445,10 @@ const saveConfig = async () => {
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio 1a resposta</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioPrimeiraResposta}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioPrimeiraResposta}</p>
+                        <DeltaBadge current={kpiAtual.tmaPrimeiraRespostaMs} previous={kpiAnterior?.tmaPrimeiraRespostaMs} invert />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
                       <Timer className="h-5 w-5 text-blue-600 dark:text-blue-400" />
@@ -4198,7 +4468,10 @@ const saveConfig = async () => {
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio resolução</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioResolucao}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioResolucao}</p>
+                        <DeltaBadge current={kpiAtual.tmaResolucaoMs} previous={kpiAnterior?.tmaResolucaoMs} invert />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-green-50 dark:bg-green-950/30 flex items-center justify-center">
                       <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />
@@ -4218,7 +4491,10 @@ const saveConfig = async () => {
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets recebidos</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalRecebidos}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalRecebidos}</p>
+                        <DeltaBadge current={kpiAtual.recebidos} previous={kpiAnterior?.recebidos} />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center">
                       <TrendingUp className="h-5 w-5 text-amber-600 dark:text-amber-400" />
@@ -4238,7 +4514,10 @@ const saveConfig = async () => {
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets resolvidos</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalResolvidos}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalResolvidos}</p>
+                        <DeltaBadge current={kpiAtual.resolvidos} previous={kpiAnterior?.resolvidos} />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-purple-50 dark:bg-purple-950/30 flex items-center justify-center">
                       <UserCheck className="h-5 w-5 text-purple-600 dark:text-purple-400" />
@@ -4258,7 +4537,10 @@ const saveConfig = async () => {
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Taxa de resolução</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.taxaResolucao}%</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.taxaResolucao}%</p>
+                        <DeltaBadge current={kpiAtual.taxaResolucao} previous={kpiAnterior?.taxaResolucao} />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center">
                       <Activity className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
@@ -4328,7 +4610,11 @@ const saveConfig = async () => {
                         <p className="text-sm text-muted-foreground">Sem dados no período</p>
                       </div>
                     ) : (
-                      <div className="h-full min-h-[180px] w-full">
+                      <div
+                        className="h-full min-h-[180px] w-full"
+                        role="img"
+                        aria-label={`Gráfico de área com o volume de atendimentos ao longo do tempo, ${volumeSerie.length} pontos no período selecionado`}
+                      >
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={volumeSerie} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
                             <defs>
@@ -4381,7 +4667,11 @@ const saveConfig = async () => {
                         <p className="text-sm text-muted-foreground">Sem dados no período</p>
                       </div>
                     ) : (
-                      <div className="flex h-full flex-col gap-1 text-[10px]">
+                      <div
+                        className="flex h-full flex-col gap-1 text-[10px]"
+                        role="img"
+                        aria-label="Mapa de calor de horários de pico por dia da semana e faixa de hora"
+                      >
                         <div className="flex items-center gap-1">
                           <div className="w-8 shrink-0" />
                           {Array.from({ length: 12 }).map((_, b) => (
@@ -4428,7 +4718,11 @@ const saveConfig = async () => {
                     </div>
                   </CardHeader>
                   <CardContent className="min-h-0 flex-1">
-                    <div className="h-full min-h-[160px] w-full">
+                    <div
+                      className="h-full min-h-[160px] w-full"
+                      role="img"
+                      aria-label={`Gráfico de barras do SLA de 1ª resposta. ${relatorioStats.slaDentroDaMeta}% respondidos em até 15 minutos`}
+                    >
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={relatorioStats.slaBuckets} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
@@ -4468,7 +4762,11 @@ const saveConfig = async () => {
                       </div>
                     ) : (
                       <div className="flex items-center gap-4">
-                        <div className="h-[180px] w-[180px] shrink-0 relative">
+                        <div
+                          className="h-[180px] w-[180px] shrink-0 relative"
+                          role="img"
+                          aria-label={`Gráfico de pizza de satisfação NPS. NPS ${relatorioStats.satisfacao.nps}, com ${relatorioStats.satisfacao.promotores} promotores, ${relatorioStats.satisfacao.neutros} neutros e ${relatorioStats.satisfacao.detratores} detratores`}
+                        >
                           <ResponsiveContainer width="100%" height="100%">
                             <PieChart>
                               <Pie
@@ -4842,7 +5140,19 @@ const saveConfig = async () => {
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-4 pt-2 min-h-0 flex-1">
-                {ticketsRelatorio.length === 0 ? (
+                {relatorioLoading && ticketsRelatorioRaw.length === 0 ? (
+                  <div className="space-y-2 py-2" aria-busy="true" aria-label="Carregando atendimentos">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="flex items-center gap-3">
+                        <div className="skeleton h-4 w-16" />
+                        <div className="skeleton h-4 flex-1" />
+                        <div className="skeleton h-4 w-24" />
+                        <div className="skeleton h-4 w-16" />
+                        <div className="skeleton h-4 w-20" />
+                      </div>
+                    ))}
+                  </div>
+                ) : ticketsRelatorio.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-8 text-center">
                     <AlertCircle className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum ticket encontrado no período</p>
@@ -4852,15 +5162,15 @@ const saveConfig = async () => {
                     <Table>
                       <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
                         <TableRow>
-                          <TableHead className="text-xs font-medium pl-4">Ticket</TableHead>
-                          <TableHead className="text-xs font-medium">Cliente</TableHead>
-                          <TableHead className="text-xs font-medium">Atendente</TableHead>
-                          <TableHead className="text-xs font-medium">Tipo</TableHead>
-                          <TableHead className="text-xs font-medium">Origem</TableHead>
-                          <TableHead className="text-xs font-medium">Status</TableHead>
-                          <TableHead className="text-xs font-medium">NPS</TableHead>
-                          <TableHead className="text-xs font-medium">Data</TableHead>
-                          <TableHead className="text-xs font-medium w-[60px] pr-4">Ações</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium pl-4">Ticket</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Cliente</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Atendente</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Tipo</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Origem</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Status</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">NPS</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Data</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium w-[60px] pr-4">Ações</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -8237,5 +8547,17 @@ const saveConfig = async () => {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/**
+ * Wrapper com Suspense: useSearchParams() exige um boundary de Suspense para
+ * o build do Next não falhar (missing-suspense-with-csr-bailout).
+ */
+export default function SetorPage() {
+  return (
+    <Suspense fallback={null}>
+      <SetorPageInner />
+    </Suspense>
   )
 }
