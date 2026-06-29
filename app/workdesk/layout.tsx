@@ -333,7 +333,7 @@ export default function WorkdeskLayout({
           {/* Title escondido em mobile (375px) pra economizar espaço com o lado direito */}
           <h1 className="hidden sm:block text-base font-bold text-foreground tracking-tight">WorkDesk</h1>
           {/* Hint visual do command palette global (⌘K / Ctrl+K) — apenas indicativo */}
-          <kbd className="kbd hidden lg:inline-flex" aria-hidden="true">⌘K</kbd>
+          <kbd className="kbd hidden lg:inline-flex" aria-hidden="true">Ctrl K</kbd>
         </div>
 
         <div className="flex items-center gap-1 sm:gap-2 shrink-0">

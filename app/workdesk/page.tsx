@@ -4866,7 +4866,7 @@ const insertEmoji = (emoji: string) => {
               <h2 className="text-xl font-semibold tracking-tight text-foreground">Selecione um ticket</h2>
               <p className="mt-1 max-w-xs text-sm text-muted-foreground">Escolha um ticket na lista para iniciar o atendimento.</p>
               <p className="mt-3 text-xs text-muted-foreground">
-                Dica: pressione <kbd className="kbd">⌘K</kbd> para buscar.
+                Dica: pressione <kbd className="kbd">Ctrl K</kbd> para buscar.
               </p>
             </div>
           )}

@@ -964,7 +964,7 @@ export default function NexusPage() {
                 onChange={(event) => setSearchTerm(event.target.value)}
                 className="h-9 w-72 rounded-md pl-9 pr-14 glass-input"
               />
-              <kbd className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" aria-hidden="true">⌘K</kbd>
+              <kbd className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" aria-hidden="true">Ctrl K</kbd>
             </div>
           </div>
         </CardHeader>
@@ -1073,7 +1073,7 @@ export default function NexusPage() {
                   onChange={(event) => setSearchTerm(event.target.value)}
                   className="h-9 w-full rounded-md pl-9 pr-14 glass-input sm:w-72"
                 />
-                <kbd className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" aria-hidden="true">⌘K</kbd>
+                <kbd className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" aria-hidden="true">Ctrl K</kbd>
               </div>
             </div>
           </CardHeader>

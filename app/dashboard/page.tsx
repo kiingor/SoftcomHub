@@ -463,7 +463,7 @@ export default function DashboardPage() {
                 className="kbd pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex"
                 aria-hidden
               >
-                ⌘K
+                Ctrl K
               </kbd>
             </div>
             {colaborador?.is_master && (

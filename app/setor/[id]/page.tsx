@@ -3583,7 +3583,7 @@ const saveConfig = async () => {
           </Button>
 
           {/* Busca rápida — atalho ⌘K (somente indicativo) */}
-          <kbd className="kbd hidden md:inline-flex" aria-hidden="true">⌘K</kbd>
+          <kbd className="kbd hidden md:inline-flex" aria-hidden="true">Ctrl K</kbd>
 
           <ThemeToggle />
           
