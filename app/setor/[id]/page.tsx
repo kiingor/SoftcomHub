@@ -145,6 +145,7 @@ import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import {
   AreaChart,
   Area,
@@ -8089,7 +8090,7 @@ const saveConfig = async () => {
                                   ? "bg-muted text-foreground rounded-bl-none"
                                   : "bg-primary text-primary-foreground rounded-br-none"
                               )}>
-                                <p className="text-xs whitespace-pre-wrap">{msg.conteudo}</p>
+                                <TextoMensagem conteudo={msg.conteudo} className="text-xs whitespace-pre-wrap" />
                                 <p className="text-[10px] mt-1 opacity-60 text-right">
                                   {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                                 </p>
@@ -8162,7 +8163,7 @@ const saveConfig = async () => {
                               tipo={msg.tipo}
                               conteudo={msg.conteudo}
                             />
-                            {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
+                            <TextoMensagem conteudo={msg.conteudo} />
                             <p className={cn(
                               "text-[10px] mt-1",
                               isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"

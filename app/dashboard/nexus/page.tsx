@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/table'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { cn } from '@/lib/utils'
 
 const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
@@ -1274,7 +1275,7 @@ export default function NexusPage() {
                         tipo={message.tipo}
                         conteudo={message.conteudo}
                       />
-                      {message.conteudo && <p className="break-words whitespace-pre-wrap">{message.conteudo}</p>}
+                      <TextoMensagem conteudo={message.conteudo} className="whitespace-pre-wrap" />
                       <div className="mt-1 flex items-center justify-between gap-2 text-[10px] opacity-70">
                         <span>{message.remetente === NEXUS_CLIENT_REMETENTE ? 'Cliente' : 'Nexus'}</span>
                         <span className="tabular-nums">

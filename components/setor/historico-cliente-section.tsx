@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import {
   Search,
@@ -439,7 +440,7 @@ function MessageBubble({ msg }: { msg: Mensagem }) {
           isCliente ? 'bg-muted' : isBot ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-primary text-primary-foreground',
         )}
       >
-        <p className="whitespace-pre-wrap">{msg.conteudo}</p>
+        <TextoMensagem conteudo={msg.conteudo} className="whitespace-pre-wrap" />
         <p className={cn('text-[10px] mt-1', isCliente ? 'text-muted-foreground' : 'opacity-70')}>
           {formatTime(msg.enviado_em)}
         </p>

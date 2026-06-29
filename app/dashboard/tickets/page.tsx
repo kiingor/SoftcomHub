@@ -36,6 +36,7 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import {
   Ticket,
   Plus,
@@ -1033,7 +1034,7 @@ export default function TicketsPage() {
                               tipo={msg.tipo}
                               conteudo={msg.conteudo}
                             />
-                            {msg.conteudo && <p className="text-sm">{msg.conteudo}</p>}
+                            <TextoMensagem conteudo={msg.conteudo} className="text-sm" />
                             <p className="mt-1 text-xs text-muted-foreground">
                               {format(new Date(msg.created_at), 'dd/MM HH:mm', { locale: ptBR })}
                             </p>

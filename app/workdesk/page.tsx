@@ -98,6 +98,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Checkbox } from '@/components/ui/checkbox'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
+import { isConteudoProtocolo } from '@/lib/mensagem-conteudo'
 import { toast } from 'sonner'
 import { useAudioAlert } from '@/hooks/use-audio-alert'
 
@@ -4527,7 +4529,11 @@ const insertEmoji = (emoji: string) => {
                         )}
                         {isContactMessage(msg) && msg.conteudo ? (
                           <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
-                        ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>}
+                        ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && (
+                          isConteudoProtocolo(msg.conteudo)
+                            ? <TextoMensagem conteudo={msg.conteudo} className="text-sm whitespace-pre-wrap" />
+                            : <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>
+                        )}
                         {msgStatus === 'error' && (
                           <div className="mt-2 space-y-1.5">
                             {messageErrors.get(msg.id) && (
@@ -5559,7 +5565,7 @@ onClick={() => {
                   )}
                   {isContactMessage(msg) && msg.conteudo ? (
                     <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
-                  ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <p className="text-sm whitespace-pre-wrap">{msg.conteudo}</p>}
+                  ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <TextoMensagem conteudo={msg.conteudo} className="text-sm whitespace-pre-wrap" />}
                   {msgStatus === 'error' && (
                     <div className="mt-2 space-y-1.5">
                       {messageErrors.get(msg.id) && (

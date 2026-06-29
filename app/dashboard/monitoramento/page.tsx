@@ -66,6 +66,7 @@ import { toast } from 'sonner'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calcularOrigem, type SetorLookupEntry } from '@/lib/ticket-origem'
 import { OrigemBadge } from '@/components/origem-badge'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
 
 const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
@@ -2033,7 +2034,7 @@ export default function MonitoramentoPage() {
                               tipo={msg.tipo}
                               conteudo={msg.conteudo}
                             />
-                            {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
+                            <TextoMensagem conteudo={msg.conteudo} />
                             <p className={cn(
                               "text-[10px] mt-1",
                               isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"
@@ -2136,7 +2137,7 @@ export default function MonitoramentoPage() {
                                           : "bg-primary/80 text-primary-foreground"
                                       )}
                                     >
-                                      <p className="break-words">{msg.conteudo}</p>
+                                      <TextoMensagem conteudo={msg.conteudo} />
                                       <p className="text-[9px] mt-0.5 opacity-60">
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                                       </p>
@@ -2219,7 +2220,7 @@ export default function MonitoramentoPage() {
                         tipo={msg.tipo}
                         conteudo={msg.conteudo}
                       />
-                      {msg.conteudo && <p className="break-words whitespace-pre-wrap">{msg.conteudo}</p>}
+                      <TextoMensagem conteudo={msg.conteudo} className="whitespace-pre-wrap" />
                       <div className="mt-1 flex items-center justify-between gap-2 text-[10px] opacity-70">
                         <span>{msg.remetente === NEXUS_CLIENT_REMETENTE ? 'Cliente' : 'Nexus'}</span>
                         <span>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { isConteudoProtocolo, CONTEUDO_PROTOCOLO_LABEL } from '@/lib/mensagem-conteudo'
 
 /**
  * POST /api/mensagens/save
@@ -108,12 +109,18 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Sanitiza blobs de protocolo do WhatsApp (messageContextInfo, secretEncType…)
+    // que o integrador às vezes envia como "conteudo" no lugar do texto real.
+    const conteudoLimpo = isConteudoProtocolo(conteudo)
+      ? CONTEUDO_PROTOCOLO_LABEL
+      : (conteudo || '')
+
     // Montar objeto da mensagem
     const mensagemData: Record<string, unknown> = {
       cliente_id: resolvedClienteId,
       ticket_id: ticket_id || null,
       remetente,
-      conteudo: conteudo || '',
+      conteudo: conteudoLimpo,
       tipo,
       enviado_em: new Date().toISOString(),
     }
@@ -167,7 +174,7 @@ export async function POST(request: NextRequest) {
       const { notifyAtendenteNovaMensagem } = await import('@/lib/notify-mensagem')
       await notifyAtendenteNovaMensagem({
         ticketId: ticket_id,
-        conteudo: conteudo || '',
+        conteudo: conteudoLimpo,
         tipo,
       })
     }
