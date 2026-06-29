@@ -1,25 +1,42 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <filter id="shadow" x="116" y="136" width="792" height="792" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <filter id="shadow" x="80" y="100" width="880" height="880" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
       <feFlood flood-opacity="0" result="BackgroundImageFix"/>
       <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
-      <feOffset dy="10"/>
-      <feGaussianBlur stdDeviation="12"/>
-      <feColorMatrix type="matrix" values="0 0 0 0 0.35 0 0 0 0 0.14 0 0 0 0 0.02 0 0 0 0.08 0"/>
-      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
-      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+      <feOffset dy="14"/>
+      <feGaussianBlur stdDeviation="16"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.35 0 0 0 0 0.14 0 0 0 0 0.02 0 0 0 0.10 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow" result="shape"/>
     </filter>
+    <linearGradient id="tile" x1="140" y1="150" x2="884" y2="894" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6852F"/>
+      <stop offset="1" stop-color="#E5610F"/>
+    </linearGradient>
   </defs>
 
+  <!-- Tile com leve gradiente vertical p/ dar profundidade -->
   <g filter="url(#shadow)">
-    <rect x="140" y="150" width="744" height="744" rx="190" fill="#EE6D1D"/>
+    <rect x="140" y="150" width="744" height="744" rx="196" fill="url(#tile)"/>
   </g>
 
-  <path d="M616.686 373C496.457 373 399 468.094 399 585.394C399 629.77 412.955 670.969 437.298 704.857L411 773L504.503 743.891C537.712 765.487 576.406 778 616.686 778C736.915 778 834.372 682.906 834.372 565.606C834.372 448.306 736.915 373 616.686 373Z"
-        transform="translate(-110 -70)"
-        fill="none" stroke="white" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Bolha de chat centralizada (rounded-rect + cauda), traço branco -->
+  <path d="M400 358
+           L624 358
+           A82 82 0 0 1 706 440
+           L706 530
+           A82 82 0 0 1 624 612
+           L470 612
+           L388 692
+           L400 612
+           A82 82 0 0 1 318 530
+           L318 440
+           A82 82 0 0 1 400 358 Z"
+        fill="none" stroke="white" stroke-width="48"
+        stroke-linejoin="round" stroke-linecap="round"/>
 
-  <circle cx="456" cy="514" r="26" fill="white"/>
-  <circle cx="560" cy="514" r="26" fill="white"/>
-  <circle cx="664" cy="514" r="26" fill="white"/>
+  <!-- 3 pontos centralizados na bolha -->
+  <circle cx="436" cy="486" r="31" fill="white"/>
+  <circle cx="512" cy="486" r="31" fill="white"/>
+  <circle cx="588" cy="486" r="31" fill="white"/>
 </svg>
