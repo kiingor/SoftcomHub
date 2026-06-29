@@ -204,7 +204,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
 
               <DropdownMenuSeparator className="bg-border mx-1" />
 
-              <DropdownMenuItem className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5">
+              <DropdownMenuItem className="rounded-md py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-muted">
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
                   <UserIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 </div>

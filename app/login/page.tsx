@@ -163,12 +163,7 @@ export default function LoginPage() {
           <span className="text-lg font-semibold tracking-tight text-foreground">Dashboard</span>
         </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="mx-auto w-full max-w-sm"
-        >
+        <div className="anim-rise mx-auto w-full max-w-sm">
           <div className="mb-8">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
               Entrar
@@ -298,7 +293,7 @@ export default function LoginPage() {
           >
             <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-50 dark:invert" />
           </motion.div>
-        </motion.div>
+        </div>
       </div>
     </div>
   )

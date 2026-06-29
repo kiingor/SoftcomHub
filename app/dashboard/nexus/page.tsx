@@ -10,7 +10,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
   SelectContent,
@@ -814,11 +813,8 @@ export default function NexusPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Nexus IA</h1>
           <div className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-500/60 opacity-75 motion-reduce:hidden" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
-            </span>
-            <span className="text-xs font-medium text-green-600 dark:text-green-400">Ao vivo</span>
+            <span className="signal-dot signal-dot--pulse" aria-hidden="true" />
+            <span className="text-xs font-medium text-primary">Ao vivo</span>
           </div>
         </div>
 
@@ -921,7 +917,7 @@ export default function NexusPage() {
 
       {activeTab === 'ao-vivo' && (
       <>
-      <div className="anim-rise grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="stagger grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="glass-card-elevated rounded-lg shadow-none">
           <CardContent className="pt-6">
             <div className="space-y-1 text-center">
@@ -986,17 +982,17 @@ export default function NexusPage() {
                   <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody className="stagger">
                 {isLoading ? (
                   Array.from({ length: 5 }).map((_, index) => (
                     <TableRow key={index}>
-                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-16" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-36" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-16" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-8" /></TableCell>
+                      <TableCell><div className="skeleton h-4 w-20" /></TableCell>
+                      <TableCell><div className="skeleton h-4 w-16" /></TableCell>
+                      <TableCell><div className="skeleton h-4 w-36" /></TableCell>
+                      <TableCell><div className="skeleton h-4 w-24" /></TableCell>
+                      <TableCell><div className="skeleton h-4 w-20" /></TableCell>
+                      <TableCell><div className="skeleton h-4 w-16" /></TableCell>
+                      <TableCell><div className="skeleton h-4 w-8" /></TableCell>
                     </TableRow>
                   ))
                 ) : conversations.length === 0 ? (
@@ -1094,16 +1090,16 @@ export default function NexusPage() {
                     <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <TableBody className="stagger">
                   {atendimentosLoading ? (
                     Array.from({ length: 5 }).map((_, index) => (
                       <TableRow key={index}>
-                        <TableCell><Skeleton className="h-4 w-20" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-36" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-28" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-12" /></TableCell>
-                        <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                        <TableCell><div className="skeleton h-4 w-20" /></TableCell>
+                        <TableCell><div className="skeleton h-4 w-36" /></TableCell>
+                        <TableCell><div className="skeleton h-4 w-24" /></TableCell>
+                        <TableCell><div className="skeleton h-4 w-28" /></TableCell>
+                        <TableCell><div className="skeleton h-4 w-12" /></TableCell>
+                        <TableCell><div className="skeleton h-4 w-20" /></TableCell>
                       </TableRow>
                     ))
                   ) : atendimentos.length === 0 ? (

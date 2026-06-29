@@ -3988,10 +3988,50 @@ const insertEmoji = (emoji: string) => {
 
   if (loading) {
     return (
-      <div className="flex h-[calc(100svh-4rem)] items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="text-muted-foreground">Carregando tickets...</p>
+      <div
+        className="flex h-[calc(100svh-4rem)] flex-col overflow-hidden"
+        aria-busy="true"
+        aria-label="Carregando tickets"
+      >
+        <div className="flex flex-1 overflow-hidden w-full max-w-full">
+          {/* Skeleton da coluna de tickets */}
+          <aside className="shrink-0 border-r border-border bg-card h-full overflow-hidden flex flex-col w-full md:w-52 lg:w-60 xl:w-72">
+            <div className="p-2 border-b border-border shrink-0 space-y-1.5">
+              <div className="skeleton h-9 w-full rounded-md" />
+              <div className="skeleton h-8 w-full rounded-md" />
+            </div>
+            <div className="stagger divide-y divide-border">
+              {Array.from({ length: 7 }).map((_, i) => (
+                <div key={i} className="px-3 py-2.5 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="skeleton h-3 w-20 rounded-sm" />
+                    <div className="skeleton h-4 w-5 rounded-full" />
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="skeleton h-3.5 w-28 rounded-sm" />
+                    <div className="skeleton h-2.5 w-10 rounded-sm" />
+                  </div>
+                  <div className="skeleton h-3 w-full rounded-sm" />
+                </div>
+              ))}
+            </div>
+          </aside>
+          {/* Skeleton do painel de conversa (desktop) */}
+          <div className="hidden md:flex flex-1 flex-col overflow-hidden">
+            <div className="flex h-14 items-center gap-3 border-b border-border px-4 shrink-0">
+              <div className="skeleton h-8 w-8 rounded-full" />
+              <div className="space-y-1.5">
+                <div className="skeleton h-3.5 w-32 rounded-sm" />
+                <div className="skeleton h-2.5 w-20 rounded-sm" />
+              </div>
+            </div>
+            <div className="flex flex-1 items-center justify-center">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent motion-reduce:animate-none" />
+                Carregando tickets...
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     )
@@ -6665,7 +6705,7 @@ function TicketList({
             <p className="mt-0.5 text-xs text-muted-foreground">Ajuste os filtros ou aguarde a fila.</p>
           </div>
         ) : (
-          <div className="divide-y divide-border">
+          <div className="stagger divide-y divide-border">
             {tickets.map((ticket) => {
               const unreadCount = unreadCounts.get(ticket.id) || 0
               // "Aguardando" = suporte falou por último e espera o cliente.
@@ -6690,7 +6730,6 @@ function TicketList({
                   key={ticket.id}
                   role="button"
                   tabIndex={0}
-                  whileHover={{ backgroundColor: isSelected ? undefined : 'rgba(0,0,0,0.02)' }}
                   onClick={() => onSelectTicket(ticket)}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectTicket(ticket) }}
                   className={cn(
@@ -6712,12 +6751,12 @@ function TicketList({
                         {/* Status: ponto-sinal + rótulo (laranja = ao vivo / precisa de ação) */}
                         {isExpiredWait ? (
                           <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-foreground">
-                            <span className="signal-dot animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                            <span className="signal-dot signal-dot--pulse" aria-hidden="true" />
                             Sem resposta
                           </span>
                         ) : ticket.ultima_mensagem_remetente === 'cliente' ? (
                           <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-foreground">
-                            <span className="signal-dot animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                            <span className="signal-dot signal-dot--pulse" aria-hidden="true" />
                             Cliente respondeu
                           </span>
                         ) : isWaitingResponse && unreadCount === 0 ? (

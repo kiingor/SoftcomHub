@@ -79,9 +79,8 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
       {/* Logo Section */}
       <div className="flex h-16 items-center justify-between px-5">
         <Link href="/dashboard" className="flex items-center gap-3 group">
-          <div className="relative flex h-10 w-10 items-center justify-center rounded-2xl bg-primary shadow-md transition-transform duration-300 group-hover:scale-105">
+          <div className="relative flex h-10 w-10 items-center justify-center rounded-md bg-primary transition-transform duration-300 group-hover:scale-105">
             <MessageCircle className="h-5 w-5 text-primary-foreground" />
-            <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-white/30 to-transparent pointer-events-none" />
           </div>
           <div className="flex flex-col">
             <span className="font-bold text-foreground tracking-tight text-base leading-tight">
@@ -97,7 +96,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
             variant="ghost"
             size="icon"
             onClick={onClose}
-            className="lg:hidden rounded-xl hover:bg-black/5 dark:hover:bg-white/10"
+            className="lg:hidden rounded-md hover:bg-muted"
           >
             <X className="h-5 w-5" />
             <span className="sr-only">Fechar menu</span>
@@ -106,7 +105,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
       </div>
 
       {/* Separator */}
-      <div className="mx-5 h-px bg-gradient-to-r from-transparent via-black/8 to-transparent dark:via-white/8" />
+      <div className="mx-5 h-px bg-border" />
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-3 py-4">
@@ -122,7 +121,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
               href={item.href}
               onClick={(e) => handleNavClick(e, item.href)}
               className={cn(
-                'group relative flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-medium transition-all cursor-pointer select-none active:scale-[0.97]',
+                'group relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-all cursor-pointer select-none outline-none active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0',
                 isActive
                   ? 'text-foreground'
                   : 'text-muted-foreground glass-nav-hover hover:text-foreground',
@@ -132,14 +131,14 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
               {isActive && (
                 <motion.div
                   layoutId="activeNav"
-                  className="absolute inset-0 rounded-2xl glass-nav-active"
+                  className="absolute inset-0 rounded-md glass-nav-active"
                   transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
                 />
               )}
 
               <div
                 className={cn(
-                  'relative z-10 flex h-8 w-8 items-center justify-center rounded-xl transition-all duration-300',
+                  'relative z-10 flex h-8 w-8 items-center justify-center rounded-md transition-all duration-300',
                   isActive
                     ? 'bg-primary/10 text-primary'
                     : 'text-muted-foreground group-hover:text-foreground'
@@ -167,14 +166,14 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
       </nav>
 
       {/* Separator */}
-      <div className="mx-5 h-px bg-gradient-to-r from-transparent via-black/8 to-transparent dark:via-white/8" />
+      <div className="mx-5 h-px bg-border" />
 
       {/* Footer - Support Card */}
       <div className="p-4">
-        <div className="glass-card-elevated rounded-2xl p-4 overflow-hidden">
+        <div className="glass-card-elevated rounded-lg p-4 overflow-hidden">
           <div className="flex items-start gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-              <HelpCircle className="h-4 w-4 text-primary" />
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+              <HelpCircle className="h-4 w-4 text-muted-foreground" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-xs font-semibold text-foreground">
@@ -188,7 +187,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
           <Button
             variant="ghost"
             size="sm"
-            className="w-full mt-3 h-8 rounded-xl text-xs font-medium text-primary hover:bg-primary/10 hover:text-primary gap-1.5"
+            className="w-full mt-3 h-8 rounded-md text-xs font-medium text-primary hover:bg-primary/10 hover:text-primary gap-1.5"
           >
             Central de Ajuda
             <ExternalLink className="h-3 w-3" />
