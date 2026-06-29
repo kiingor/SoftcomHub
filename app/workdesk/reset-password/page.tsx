@@ -155,93 +155,104 @@ export default function ResetPasswordPage() {
 
   const passwordStrength = (() => {
     if (!password) return null
-    if (password.length < 6) return { label: 'Muito curta', color: 'bg-red-500', width: 'w-1/4' }
-    if (password.length < 8) return { label: 'Fraca', color: 'bg-orange-500', width: 'w-2/4' }
-    if (!/[A-Z]/.test(password) || !/[0-9]/.test(password)) return { label: 'Media', color: 'bg-yellow-500', width: 'w-3/4' }
-    return { label: 'Forte', color: 'bg-emerald-500', width: 'w-full' }
+    if (password.length < 6) return { label: 'Muito curta', color: 'bg-red-500', width: 'w-1/4', text: 'text-red-500' }
+    if (password.length < 8) return { label: 'Fraca', color: 'bg-orange-500', width: 'w-2/4', text: 'text-orange-500' }
+    if (!/[A-Z]/.test(password) || !/[0-9]/.test(password)) return { label: 'Media', color: 'bg-yellow-500', width: 'w-3/4', text: 'text-yellow-600 dark:text-yellow-500' }
+    return { label: 'Forte', color: 'bg-emerald-500', width: 'w-full', text: 'text-emerald-600 dark:text-emerald-500' }
   })()
 
   return (
-    <div className="flex min-h-svh">
-      {/* Left Side - Branding */}
-      <div className="relative hidden w-1/2 bg-gradient-to-br from-emerald-500 via-teal-500 to-cyan-500 lg:flex lg:flex-col lg:justify-between p-12">
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute top-20 left-20 h-64 w-64 rounded-full bg-white blur-3xl" />
-          <div className="absolute bottom-20 right-20 h-96 w-96 rounded-full bg-white blur-3xl" />
-        </div>
-
+    <div className="flex min-h-svh bg-background">
+      {/* Left Side - Editorial Branding */}
+      <div className="relative hidden w-1/2 flex-col justify-between border-r border-border bg-card p-12 lg:flex xl:p-16">
+        {/* Masthead */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           className="relative z-10 flex items-center gap-3"
         >
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/20 backdrop-blur-sm">
-            <Headphones className="h-6 w-6 text-white" />
+          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-foreground text-background">
+            <Headphones className="h-5 w-5" />
           </div>
-          <span className="text-2xl font-bold text-white">WorkDesk</span>
+          <div className="leading-none">
+            <p className="text-[0.7rem] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Softcom · Atendimento
+            </p>
+            <p className="mt-1.5 text-lg font-semibold tracking-tight text-foreground">
+              WorkDesk
+            </p>
+          </div>
         </motion.div>
 
+        {/* Main Content */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="relative z-10 space-y-4"
+          transition={{ delay: 0.1 }}
+          className="relative z-10 max-w-md"
         >
-          <h1 className="text-4xl font-bold leading-tight text-white xl:text-5xl">
-            Nova senha,
-            <br />
-            novo acesso.
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+            Recuperacao de acesso
+          </p>
+          <h1 className="mt-5 text-balance text-4xl font-semibold leading-[1.05] tracking-tight text-foreground xl:text-5xl">
+            Nova senha, novo acesso.
           </h1>
-          <p className="max-w-md text-lg text-white/80">
+          <p className="mt-5 max-w-sm text-base leading-relaxed text-muted-foreground">
             Defina uma senha segura para retomar seus atendimentos.
           </p>
         </motion.div>
 
+        {/* Footer */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.6 }}
-          className="relative z-10 flex items-center justify-between"
+          transition={{ delay: 0.4 }}
+          className="relative z-10 flex items-center justify-between border-t border-border pt-6"
         >
-          <p className="text-sm text-white/60">Atendimento de qualidade comeca aqui</p>
-          <img src="/logo-softcom.svg" alt="Softcom" className="h-6 opacity-70" />
+          <div className="flex items-center gap-2.5">
+            <span className="signal-dot" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">
+              Atendimento de qualidade comeca aqui
+            </p>
+          </div>
+          <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-70 dark:invert" />
         </motion.div>
       </div>
 
       {/* Right Side */}
-      <div className="relative flex w-full flex-col justify-center px-8 py-12 lg:w-1/2 lg:px-16 xl:px-24 bg-background">
+      <div className="relative flex w-full flex-col justify-center bg-background px-6 py-12 lg:w-1/2 lg:px-16 xl:px-24">
         <div className="absolute right-6 top-6">
           <ThemeToggle />
         </div>
 
         {/* Mobile Logo */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-8 flex items-center gap-3 lg:hidden"
+          className="mb-10 flex items-center gap-3 lg:hidden"
         >
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500">
-            <Headphones className="h-5 w-5 text-white" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-foreground text-background">
+            <Headphones className="h-5 w-5" />
           </div>
-          <span className="text-xl font-bold text-foreground">WorkDesk</span>
+          <span className="text-lg font-semibold tracking-tight text-foreground">WorkDesk</span>
         </motion.div>
 
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="mx-auto w-full max-w-sm"
+          className="anim-rise mx-auto w-full max-w-sm"
         >
           {/* Success State */}
           {status === 'success' ? (
             <div className="text-center">
               <div className="mb-6 flex justify-center">
-                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10">
-                  <ShieldCheck className="h-10 w-10 text-emerald-500" />
+                <div className="flex h-16 w-16 items-center justify-center rounded-md border border-border bg-secondary">
+                  <ShieldCheck className="h-8 w-8 text-primary" />
                 </div>
               </div>
-              <h2 className="text-3xl font-bold tracking-tight text-foreground">Senha redefinida!</h2>
-              <p className="mt-3 text-muted-foreground">
+              <h2 className="text-3xl font-semibold tracking-tight text-foreground">Senha redefinida!</h2>
+              <p className="mt-3 text-sm text-muted-foreground">
                 Sua senha foi atualizada com sucesso.
                 <br />
                 Redirecionando para o login...
@@ -249,7 +260,7 @@ export default function ResetPasswordPage() {
               <div className="mt-6 flex justify-center">
                 <div className="h-1 w-48 overflow-hidden rounded-full bg-secondary">
                   <motion.div
-                    className="h-full bg-emerald-500"
+                    className="h-full bg-primary"
                     initial={{ width: 0 }}
                     animate={{ width: '100%' }}
                     transition={{ duration: 3 }}
@@ -260,10 +271,10 @@ export default function ResetPasswordPage() {
           ) : checkingLink ? (
             <div className="text-center">
               <div className="mb-6 flex justify-center">
-                <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500/20 border-t-emerald-500" />
+                <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-primary motion-reduce:animate-none" />
               </div>
-              <h2 className="text-3xl font-bold tracking-tight text-foreground">Validando link</h2>
-              <p className="mt-3 text-muted-foreground">
+              <h2 className="text-3xl font-semibold tracking-tight text-foreground">Validando link</h2>
+              <p className="mt-3 text-sm text-muted-foreground">
                 Aguarde enquanto preparamos a redefinicao da senha.
               </p>
             </div>
@@ -271,17 +282,17 @@ export default function ResetPasswordPage() {
             /* Invalid / expired link */
             <div className="text-center">
               <div className="mb-6 flex justify-center">
-                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-destructive/10">
-                  <AlertTriangle className="h-10 w-10 text-destructive" />
+                <div className="flex h-16 w-16 items-center justify-center rounded-md border border-destructive/30 bg-destructive/10">
+                  <AlertTriangle className="h-8 w-8 text-destructive" />
                 </div>
               </div>
-              <h2 className="text-3xl font-bold tracking-tight text-foreground">Link invalido</h2>
-              <p className="mt-3 text-muted-foreground">
+              <h2 className="text-3xl font-semibold tracking-tight text-foreground">Link invalido</h2>
+              <p className="mt-3 text-sm text-muted-foreground">
                 {error || 'Este link de recuperacao e invalido ou expirou.'}
               </p>
               <Button
                 onClick={() => router.push('/workdesk/login')}
-                className="mt-8 h-12 w-full bg-gradient-to-r from-emerald-500 to-teal-500 font-semibold text-white hover:from-emerald-600 hover:to-teal-600"
+                className="mt-8 h-11 w-full font-semibold"
               >
                 Ir para o login
               </Button>
@@ -290,20 +301,20 @@ export default function ResetPasswordPage() {
             /* Reset Form */
             <>
               <div className="mb-8">
-                <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10">
-                  <ShieldCheck className="h-7 w-7 text-emerald-500" />
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md border border-border bg-secondary">
+                  <ShieldCheck className="h-6 w-6 text-primary" />
                 </div>
-                <h2 className="text-3xl font-bold tracking-tight text-foreground">
+                <h2 className="text-3xl font-semibold tracking-tight text-foreground">
                   Redefinir senha
                 </h2>
-                <p className="mt-2 text-muted-foreground">
+                <p className="mt-2 text-sm text-muted-foreground">
                   Escolha uma nova senha para sua conta.
                 </p>
               </div>
 
               <form onSubmit={handleReset} className="space-y-5">
                 <div className="space-y-2">
-                  <Label htmlFor="new-password" className="text-sm font-medium">
+                  <Label htmlFor="new-password" className="text-sm font-medium text-foreground">
                     Nova senha
                   </Label>
                   <div className="relative">
@@ -314,12 +325,13 @@ export default function ResetPasswordPage() {
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="h-12 bg-secondary/50 border-border/50 pr-12 focus:border-emerald-500 focus:ring-emerald-500"
+                      className="glass-input h-11 pr-11 shadow-none"
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                      aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                     </button>
@@ -340,10 +352,7 @@ export default function ResetPasswordPage() {
                           transition={{ duration: 0.3 }}
                         />
                       </div>
-                      <p className={`text-xs font-medium ${
-                        passwordStrength.label === 'Forte' ? 'text-emerald-500' :
-                        passwordStrength.label === 'Media' ? 'text-yellow-500' : 'text-orange-500'
-                      }`}>
+                      <p className={`text-xs font-medium ${passwordStrength.text}`}>
                         Forca: {passwordStrength.label}
                       </p>
                     </motion.div>
@@ -351,7 +360,7 @@ export default function ResetPasswordPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="confirm-password" className="text-sm font-medium">
+                  <Label htmlFor="confirm-password" className="text-sm font-medium text-foreground">
                     Confirmar nova senha
                   </Label>
                   <div className="relative">
@@ -362,12 +371,13 @@ export default function ResetPasswordPage() {
                       required
                       value={confirm}
                       onChange={(e) => setConfirm(e.target.value)}
-                      className="h-12 bg-secondary/50 border-border/50 pr-12 focus:border-emerald-500 focus:ring-emerald-500"
+                      className="glass-input h-11 pr-11 shadow-none"
                     />
                     <button
                       type="button"
                       onClick={() => setShowConfirm(!showConfirm)}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                      aria-label={showConfirm ? 'Ocultar senha' : 'Mostrar senha'}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {showConfirm ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                     </button>
@@ -376,15 +386,17 @@ export default function ResetPasswordPage() {
                     <p className="text-xs text-destructive">As senhas nao coincidem.</p>
                   )}
                   {confirm && password === confirm && confirm.length > 0 && (
-                    <p className="text-xs text-emerald-500">Senhas coincidem.</p>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-500">Senhas coincidem.</p>
                   )}
                 </div>
 
                 {error && (
                   <motion.div
-                    initial={{ opacity: 0, y: -10 }}
+                    role="alert"
+                    aria-live="assertive"
+                    initial={{ opacity: 0, y: -6 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                    className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
                   >
                     {error}
                   </motion.div>
@@ -392,12 +404,12 @@ export default function ResetPasswordPage() {
 
                 <Button
                   type="submit"
-                  className="h-12 w-full bg-gradient-to-r from-emerald-500 to-teal-500 font-semibold text-white hover:from-emerald-600 hover:to-teal-600 transition-all"
+                  className="h-11 w-full font-semibold"
                   disabled={status === 'loading'}
                 >
                   {status === 'loading' ? (
                     <div className="flex items-center gap-2">
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                       Salvando...
                     </div>
                   ) : (

@@ -133,55 +133,60 @@ export default function WorkdeskLoginPage() {
   ]
 
   return (
-    <div className="flex min-h-svh">
-      {/* Left Side - Branding */}
-      <div className="relative hidden w-1/2 bg-gradient-to-br from-emerald-500 via-teal-500 to-cyan-500 lg:flex lg:flex-col lg:justify-between p-12">
-        {/* Background Pattern */}
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute top-20 left-20 h-64 w-64 rounded-full bg-white blur-3xl" />
-          <div className="absolute bottom-20 right-20 h-96 w-96 rounded-full bg-white blur-3xl" />
-        </div>
-
-        {/* Logo */}
+    <div className="flex min-h-svh bg-background">
+      {/* Left Side - Editorial Branding */}
+      <div className="relative hidden w-1/2 flex-col justify-between border-r border-border bg-card p-12 lg:flex xl:p-16">
+        {/* Masthead */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           className="relative z-10 flex items-center gap-3"
         >
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/20 backdrop-blur-sm">
-            <Headphones className="h-6 w-6 text-white" />
+          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-foreground text-background">
+            <Headphones className="h-5 w-5" />
           </div>
-          <span className="text-2xl font-bold text-white">WorkDesk</span>
+          <div className="leading-none">
+            <p className="text-[0.7rem] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Softcom · Atendimento
+            </p>
+            <p className="mt-1.5 text-lg font-semibold tracking-tight text-foreground">
+              WorkDesk
+            </p>
+          </div>
         </motion.div>
 
         {/* Main Content */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="relative z-10 space-y-6"
+          transition={{ delay: 0.1 }}
+          className="relative z-10 max-w-md"
         >
-          <h1 className="text-4xl font-bold leading-tight text-white xl:text-5xl">
-            Pronto para
-            <br />
-            atender?
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+            Central de atendimento
+          </p>
+          <h1 className="mt-5 text-balance text-4xl font-semibold leading-[1.05] tracking-tight text-foreground xl:text-5xl">
+            Pronto para atender?
           </h1>
-          <p className="max-w-md text-lg text-white/80">
+          <p className="mt-5 max-w-sm text-base leading-relaxed text-muted-foreground">
             Sua central de atendimento ao cliente. Conecte-se e faca a diferenca em cada conversa.
           </p>
 
-          {/* Features */}
-          <div className="grid grid-cols-2 gap-4 pt-4">
+          {/* Editorial index */}
+          <div className="mt-10">
             {features.map((feature, index) => (
               <motion.div
                 key={feature.text}
-                initial={{ opacity: 0, x: -20 }}
+                initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.4 + index * 0.1 }}
-                className="flex items-center gap-3 rounded-lg bg-white/10 px-4 py-3 backdrop-blur-sm"
+                transition={{ delay: 0.2 + index * 0.06 }}
+                className="flex items-center gap-4 border-t border-border py-3.5 last:border-b"
               >
-                <feature.icon className="h-5 w-5 text-white" />
-                <span className="text-sm font-medium text-white">{feature.text}</span>
+                <span className="tabnums text-xs font-medium text-muted-foreground">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <feature.icon className="h-4 w-4 text-foreground/70" />
+                <span className="text-sm font-medium text-foreground">{feature.text}</span>
               </motion.div>
             ))}
           </div>
@@ -191,18 +196,21 @@ export default function WorkdeskLoginPage() {
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.6 }}
-          className="relative z-10 flex items-center justify-between"
+          transition={{ delay: 0.4 }}
+          className="relative z-10 flex items-center justify-between border-t border-border pt-6"
         >
-          <p className="text-sm text-white/60">
-            Atendimento de qualidade comeca aqui
-          </p>
-          <img src="/logo-softcom.svg" alt="Softcom" className="h-6 opacity-70" />
+          <div className="flex items-center gap-2.5">
+            <span className="signal-dot" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">
+              Atendimento de qualidade comeca aqui
+            </p>
+          </div>
+          <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-70 dark:invert" />
         </motion.div>
       </div>
 
       {/* Right Side - Form */}
-      <div className="relative flex w-full flex-col justify-center px-8 py-12 lg:w-1/2 lg:px-16 xl:px-24 bg-background">
+      <div className="relative flex w-full flex-col justify-center bg-background px-6 py-12 lg:w-1/2 lg:px-16 xl:px-24">
         {/* Theme Toggle */}
         <div className="absolute right-6 top-6">
           <ThemeToggle />
@@ -210,14 +218,14 @@ export default function WorkdeskLoginPage() {
 
         {/* Mobile Logo */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-8 flex items-center gap-3 lg:hidden"
+          className="mb-10 flex items-center gap-3 lg:hidden"
         >
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500">
-            <Headphones className="h-5 w-5 text-white" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-foreground text-background">
+            <Headphones className="h-5 w-5" />
           </div>
-          <span className="text-xl font-bold text-foreground">WorkDesk</span>
+          <span className="text-lg font-semibold tracking-tight text-foreground">WorkDesk</span>
         </motion.div>
 
         <div className="mx-auto w-full max-w-sm">
@@ -227,23 +235,27 @@ export default function WorkdeskLoginPage() {
             {view === 'login' && (
               <motion.div
                 key="login"
-                initial={{ opacity: 0, y: 20 }}
+                initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
+                exit={{ opacity: 0, y: -12 }}
                 transition={{ duration: 0.2 }}
+                className="anim-rise"
               >
                 <div className="mb-8">
-                  <h2 className="text-3xl font-bold tracking-tight text-foreground">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                    Entrar
+                  </p>
+                  <h2 className="mt-2 text-3xl font-semibold tracking-tight text-foreground">
                     Bom te ver!
                   </h2>
-                  <p className="mt-2 text-muted-foreground">
+                  <p className="mt-2 text-sm text-muted-foreground">
                     Entre com suas credenciais para acessar sua area de trabalho
                   </p>
                 </div>
 
                 <form onSubmit={handleLogin} className="space-y-5">
                   <div className="space-y-2">
-                    <Label htmlFor="email" className="text-sm font-medium">
+                    <Label htmlFor="email" className="text-sm font-medium text-foreground">
                       E-mail
                     </Label>
                     <Input
@@ -253,19 +265,19 @@ export default function WorkdeskLoginPage() {
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="h-12 bg-secondary/50 border-border/50 focus:border-emerald-500 focus:ring-emerald-500"
+                      className="glass-input h-11 shadow-none"
                     />
                   </div>
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="password" className="text-sm font-medium">
+                      <Label htmlFor="password" className="text-sm font-medium text-foreground">
                         Senha
                       </Label>
                       <button
                         type="button"
                         onClick={goToForgot}
-                        className="text-xs text-emerald-500 hover:text-emerald-600 transition-colors font-medium"
+                        className="rounded text-xs font-medium text-primary underline-offset-4 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         Esqueceu sua senha?
                       </button>
@@ -278,12 +290,13 @@ export default function WorkdeskLoginPage() {
                         required
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="h-12 bg-secondary/50 border-border/50 pr-12 focus:border-emerald-500 focus:ring-emerald-500"
+                        className="glass-input h-11 pr-11 shadow-none"
                       />
                       <button
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                        aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                       </button>
@@ -292,9 +305,11 @@ export default function WorkdeskLoginPage() {
 
                   {error && (
                     <motion.div
-                      initial={{ opacity: 0, y: -10 }}
+                      role="alert"
+                      aria-live="assertive"
+                      initial={{ opacity: 0, y: -6 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                      className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
                     >
                       {error}
                     </motion.div>
@@ -302,12 +317,12 @@ export default function WorkdeskLoginPage() {
 
                   <Button
                     type="submit"
-                    className="h-12 w-full bg-gradient-to-r from-emerald-500 to-teal-500 font-semibold text-white hover:from-emerald-600 hover:to-teal-600 transition-all"
+                    className="h-11 w-full font-semibold"
                     disabled={isLoading}
                   >
                     {isLoading ? (
                       <div className="flex items-center gap-2">
-                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                         Entrando...
                       </div>
                     ) : (
@@ -319,24 +334,39 @@ export default function WorkdeskLoginPage() {
                   </Button>
                 </form>
 
+                <div className="mt-8 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    E um administrador?{' '}
+                    <a
+                      href="/login"
+                      className="rounded font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Acesse o Dashboard
+                    </a>
+                  </p>
+                </div>
+
                 {/* Stats */}
                 <motion.div
-                  initial={{ opacity: 0, y: 20 }}
+                  initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3 }}
-                  className="mt-12 grid grid-cols-3 gap-4 border-t border-border/50 pt-8"
+                  transition={{ delay: 0.25 }}
+                  className="mt-12 grid grid-cols-3 divide-x divide-border rounded-md border border-border"
                 >
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-foreground">24/7</p>
-                    <p className="text-xs text-muted-foreground">Suporte</p>
+                  <div className="px-3 py-4 text-center">
+                    <p className="tabnums text-sm font-semibold tracking-tight text-foreground">24/7</p>
+                    <p className="mt-1 text-[0.7rem] uppercase tracking-[0.12em] text-muted-foreground">Suporte</p>
                   </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-foreground">99%</p>
-                    <p className="text-xs text-muted-foreground">Uptime</p>
+                  <div className="px-3 py-4 text-center">
+                    <p className="tabnums text-sm font-semibold tracking-tight text-foreground">99%</p>
+                    <p className="mt-1 text-[0.7rem] uppercase tracking-[0.12em] text-muted-foreground">Uptime</p>
                   </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-emerald-500">Ativo</p>
-                    <p className="text-xs text-muted-foreground">Status</p>
+                  <div className="px-3 py-4 text-center">
+                    <span className="inline-flex items-center justify-center gap-1.5">
+                      <span className="signal-dot" aria-hidden="true" />
+                      <span className="text-sm font-semibold tracking-tight text-foreground">Ativo</span>
+                    </span>
+                    <p className="mt-1 text-[0.7rem] uppercase tracking-[0.12em] text-muted-foreground">Status</p>
                   </div>
                 </motion.div>
 
@@ -344,7 +374,7 @@ export default function WorkdeskLoginPage() {
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  transition={{ delay: 0.5 }}
+                  transition={{ delay: 0.4 }}
                   className="mt-8 flex justify-center"
                 >
                   <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-50 dark:invert" />
@@ -356,35 +386,35 @@ export default function WorkdeskLoginPage() {
             {view === 'forgot' && (
               <motion.div
                 key="forgot"
-                initial={{ opacity: 0, y: 20 }}
+                initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
+                exit={{ opacity: 0, y: -12 }}
                 transition={{ duration: 0.2 }}
               >
                 <button
                   type="button"
                   onClick={goToLogin}
-                  className="mb-6 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  className="mb-6 flex items-center gap-2 rounded text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <ArrowLeft className="h-4 w-4" />
                   Voltar ao login
                 </button>
 
                 <div className="mb-8">
-                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10">
-                    <Mail className="h-7 w-7 text-emerald-500" />
+                  <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md border border-border bg-secondary">
+                    <Mail className="h-6 w-6 text-primary" />
                   </div>
-                  <h2 className="text-3xl font-bold tracking-tight text-foreground">
+                  <h2 className="text-3xl font-semibold tracking-tight text-foreground">
                     Recuperar senha
                   </h2>
-                  <p className="mt-2 text-muted-foreground">
+                  <p className="mt-2 text-sm text-muted-foreground">
                     Informe seu e-mail e enviaremos um link para redefinir sua senha.
                   </p>
                 </div>
 
                 <form onSubmit={handleForgotPassword} className="space-y-5">
                   <div className="space-y-2">
-                    <Label htmlFor="forgot-email" className="text-sm font-medium">
+                    <Label htmlFor="forgot-email" className="text-sm font-medium text-foreground">
                       E-mail
                     </Label>
                     <Input
@@ -394,15 +424,17 @@ export default function WorkdeskLoginPage() {
                       required
                       value={forgotEmail}
                       onChange={(e) => setForgotEmail(e.target.value)}
-                      className="h-12 bg-secondary/50 border-border/50 focus:border-emerald-500 focus:ring-emerald-500"
+                      className="glass-input h-11 shadow-none"
                     />
                   </div>
 
                   {error && (
                     <motion.div
-                      initial={{ opacity: 0, y: -10 }}
+                      role="alert"
+                      aria-live="assertive"
+                      initial={{ opacity: 0, y: -6 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                      className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
                     >
                       {error}
                     </motion.div>
@@ -410,12 +442,12 @@ export default function WorkdeskLoginPage() {
 
                   <Button
                     type="submit"
-                    className="h-12 w-full bg-gradient-to-r from-emerald-500 to-teal-500 font-semibold text-white hover:from-emerald-600 hover:to-teal-600 transition-all"
+                    className="h-11 w-full font-semibold"
                     disabled={isLoading}
                   >
                     {isLoading ? (
                       <div className="flex items-center gap-2">
-                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                         Enviando...
                       </div>
                     ) : (
@@ -437,29 +469,29 @@ export default function WorkdeskLoginPage() {
             {view === 'forgot-sent' && (
               <motion.div
                 key="forgot-sent"
-                initial={{ opacity: 0, scale: 0.95 }}
+                initial={{ opacity: 0, scale: 0.98 }}
                 animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
+                exit={{ opacity: 0, scale: 0.98 }}
                 transition={{ duration: 0.2 }}
                 className="text-center"
               >
                 <div className="mb-6 flex justify-center">
-                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10">
-                    <Mail className="h-10 w-10 text-emerald-500" />
+                  <div className="flex h-16 w-16 items-center justify-center rounded-md border border-border bg-secondary">
+                    <Mail className="h-8 w-8 text-primary" />
                   </div>
                 </div>
 
-                <h2 className="text-3xl font-bold tracking-tight text-foreground">
+                <h2 className="text-3xl font-semibold tracking-tight text-foreground">
                   E-mail enviado!
                 </h2>
-                <p className="mt-3 text-muted-foreground">
+                <p className="mt-3 text-sm text-muted-foreground">
                   Enviamos um link de recuperacao para{' '}
                   <span className="font-medium text-foreground">{forgotEmail}</span>.
                   <br />
                   Verifique sua caixa de entrada e spam.
                 </p>
 
-                <div className="mt-8 rounded-lg bg-secondary/50 px-4 py-3 text-sm text-muted-foreground">
+                <div className="mt-8 rounded-md border border-border bg-secondary px-4 py-3 text-sm text-muted-foreground">
                   O link expira em <span className="font-medium text-foreground">1 hora</span>.
                 </div>
 
@@ -467,7 +499,7 @@ export default function WorkdeskLoginPage() {
                   type="button"
                   variant="outline"
                   onClick={goToLogin}
-                  className="mt-8 h-12 w-full"
+                  className="mt-8 h-11 w-full"
                 >
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Voltar ao login
