@@ -249,6 +249,17 @@ export async function POST(request: NextRequest) {
 
     console.log(`[v0] Message received and saved for ticket ${ticket.id}`)
 
+    // Web Push para o atendente atribuído (não notifica se em fila/encerrado,
+    // nem se o WorkDesk já estiver em foco — o service worker decide isso).
+    if (ticket.colaborador_id) {
+      const { notifyAtendenteNovaMensagem } = await import('@/lib/notify-mensagem')
+      await notifyAtendenteNovaMensagem({
+        ticketId: ticket.id,
+        conteudo: messageContent,
+        tipo: tipoMapeado,
+      })
+    }
+
     return NextResponse.json({ status: 'ok' })
   } catch (error) {
     console.error('[v0] Webhook error:', error)
