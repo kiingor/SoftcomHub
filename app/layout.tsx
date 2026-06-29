@@ -2,6 +2,7 @@ import React from "react"
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
+import { ThemeProvider } from '@/components/theme-provider'
 import { Toaster } from '@/components/ui/toaster'
 import { Toaster as SonnerToaster } from 'sonner'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -34,13 +35,20 @@ export default function RootLayout({
         <meta name="google" content="notranslate" />
       </head>
       <body className={`font-sans antialiased notranslate`} suppressHydrationWarning>
-        <ErrorBoundary tela="Global">
-          {children}
-        </ErrorBoundary>
-        <GlobalErrorHandler />
-        <Toaster />
-        <SonnerToaster richColors position="top-right" />
-        <Analytics />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <ErrorBoundary tela="Global">
+            {children}
+          </ErrorBoundary>
+          <GlobalErrorHandler />
+          <Toaster />
+          <SonnerToaster richColors position="top-right" />
+          <Analytics />
+        </ThemeProvider>
       </body>
     </html>
   )

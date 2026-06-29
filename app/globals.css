@@ -350,4 +350,68 @@ body {
   .dark .glass-fab {
     box-shadow: 0 6px 18px oklch(0 0 0 / 0.45);
   }
+
+  /* ─── Skeleton de carregamento (shimmer sutil) ─── */
+  @keyframes skeleton-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .skeleton {
+    background: color-mix(in oklch, var(--muted-foreground) 14%, var(--muted));
+    border-radius: var(--radius-sm);
+    animation: skeleton-pulse 1.5s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton {
+      animation: none;
+    }
+  }
+
+  /* ─── Stagger: filhos entram em sequência reaproveitando rise-in ───
+     Basta envolver a lista/grid com .stagger; respeita reduced-motion. */
+  .stagger > * {
+    animation: rise-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .stagger > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger > *:nth-child(2) { animation-delay: 40ms; }
+  .stagger > *:nth-child(3) { animation-delay: 80ms; }
+  .stagger > *:nth-child(4) { animation-delay: 120ms; }
+  .stagger > *:nth-child(5) { animation-delay: 160ms; }
+  .stagger > *:nth-child(6) { animation-delay: 200ms; }
+  .stagger > *:nth-child(7) { animation-delay: 240ms; }
+  .stagger > *:nth-child(8) { animation-delay: 280ms; }
+  .stagger > *:nth-child(n + 9) { animation-delay: 320ms; }
+  @media (prefers-reduced-motion: reduce) {
+    .stagger > * {
+      animation: none;
+    }
+  }
+
+  /* ─── Ponto-sinal pulsante (status "ao vivo" enfático) ─── */
+  .signal-dot--pulse {
+    position: relative;
+  }
+  .signal-dot--pulse::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: var(--primary);
+    animation: signal-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+  @keyframes signal-ping {
+    0% {
+      transform: scale(1);
+      opacity: 0.5;
+    }
+    80%, 100% {
+      transform: scale(2.4);
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .signal-dot--pulse::after {
+      animation: none;
+    }
+  }
 }
