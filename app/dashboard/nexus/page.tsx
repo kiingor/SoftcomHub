@@ -110,9 +110,9 @@ function DesfechoBadge({ atendimento }: { atendimento: NexusAtendimento }) {
       : 'Aberto'
     return (
       <div className="flex flex-col gap-0.5">
-        <Badge className="w-fit gap-1 border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-400">
-          <Ticket className="h-3 w-3" />
-          Ticket{ticket?.numero ? ` #${ticket.numero}` : ''} · {statusLabel}
+        <Badge variant="outline" className="w-fit gap-1 rounded-md border-border text-[10px] font-medium text-foreground">
+          <Ticket className="h-3 w-3 text-muted-foreground" />
+          Ticket{ticket?.numero ? <span className="font-mono tabnums"> #{ticket.numero}</span> : ''} · {statusLabel}
         </Badge>
         {ticket?.atendente && <span className="pl-1 text-[10px] text-muted-foreground">{ticket.atendente}</span>}
       </div>
@@ -121,18 +121,18 @@ function DesfechoBadge({ atendimento }: { atendimento: NexusAtendimento }) {
 
   if (atendimento.desfecho === 'no_bot') {
     return (
-      <Badge className="gap-1 border-blue-500/30 bg-blue-500/10 text-[10px] text-blue-600 dark:text-blue-400">
-        <Bot className="h-3 w-3" />
+      <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+        <span className="signal-dot" aria-hidden="true" />
         Ainda no bot
-      </Badge>
+      </div>
     )
   }
 
   return (
-    <Badge variant="secondary" className="gap-1 text-[10px]">
-      <CircleSlash className="h-3 w-3" />
+    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <CircleSlash className="h-3.5 w-3.5 shrink-0" />
       Encerrada sem ticket
-    </Badge>
+    </div>
   )
 }
 
@@ -205,7 +205,7 @@ function AbrirTicketButton({
   const label = opening ? 'Abrindo...' : 'Abrir ticket'
   const triggerButton =
     variant === 'drawer' ? (
-      <Button size="sm" className="h-8 gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600" disabled={opening}>
+      <Button size="sm" className="h-8 gap-1.5" disabled={opening}>
         <Headset className="h-4 w-4" />
         {label}
       </Button>
@@ -222,7 +222,7 @@ function AbrirTicketButton({
       <PopoverContent align="end" className="w-64 p-2">
         {loading ? (
           <div className="flex items-center justify-center py-4">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-emerald-500/30 border-t-emerald-500" />
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-primary" />
           </div>
         ) : tipo === 'setor' ? (
           <div className="space-y-0.5">
@@ -232,7 +232,7 @@ function AbrirTicketButton({
                 key={s.id}
                 type="button"
                 onClick={() => escolher({ setorId: s.id, subsetorId: null })}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">{s.nome}</span>
@@ -250,7 +250,7 @@ function AbrirTicketButton({
                 key={s.id}
                 type="button"
                 onClick={() => escolher({ setorId: conversation.setorId, subsetorId: s.id })}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Layers className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">{s.nome}</span>
@@ -259,7 +259,7 @@ function AbrirTicketButton({
             <button
               type="button"
               onClick={() => escolher({ setorId: conversation.setorId, subsetorId: null })}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Sem subsetor (setor atual)
             </button>
@@ -269,7 +269,7 @@ function AbrirTicketButton({
             <p className="text-xs text-muted-foreground">Sem setor de transferência configurado para este setor.</p>
             <Button
               size="sm"
-              className="w-full gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600"
+              className="w-full gap-1.5"
               onClick={() => escolher({ setorId: conversation.setorId, subsetorId: null })}
             >
               <Headset className="h-4 w-4" />
@@ -525,15 +525,30 @@ export default function NexusPage() {
 
       // Mensagens do bot no período — SEM filtro de ticket_id (as que viraram
       // ticket já têm ticket_id e continuam sendo do bot).
-      const { data: messages } = await supabase
-        .from('mensagens')
-        .select('*, clientes(id, nome, telefone)')
-        .in('remetente', [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE])
-        .gte('enviado_em', since)
-        .order('enviado_em', { ascending: true })
-        .limit(1000)
-
-      const nexusMessages = messages || []
+      // Paginação real: percorre TODAS as mensagens Nexus do período em lotes
+      // (o PostgREST devolve no máx. ~1000 por request). Carrega da mais recente
+      // para a mais antiga e, no fim, reordena ascendente para o agrupamento.
+      // Sem isso, com volume alto (milhares/dia) o período era cortado e os
+      // atendimentos de hoje sumiam.
+      const CHUNK = 1000
+      const MAX_LOTES = 30 // teto de segurança (~30k mensagens)
+      const lotesDesc: any[] = []
+      for (let i = 0; i < MAX_LOTES; i += 1) {
+        const { data: lote } = await supabase
+          .from('mensagens')
+          .select('*, clientes(id, nome, telefone)')
+          .in('remetente', [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE])
+          .gte('enviado_em', since)
+          .order('enviado_em', { ascending: false })
+          .range(i * CHUNK, i * CHUNK + CHUNK - 1)
+        if (!lote || lote.length === 0) break
+        lotesDesc.push(...lote)
+        if (lote.length < CHUNK) break
+        if (i === MAX_LOTES - 1) {
+          console.warn(`[Nexus] período com >${MAX_LOTES * CHUNK} mensagens — exibindo as mais recentes`)
+        }
+      }
+      const nexusMessages = lotesDesc.reverse()
 
       // 1. Agrupa as mensagens por cliente (já vêm ordenadas asc).
       const porCliente = new Map<string, { clienteId: string | null; contato: string; telefone: string | null; messages: any[] }>()
@@ -797,10 +812,10 @@ export default function NexusPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold text-foreground">Nexus IA</h1>
-          <div className="flex items-center gap-1.5 rounded-full bg-green-500/10 px-2.5 py-1">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Nexus IA</h1>
+          <div className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1">
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-500/60 opacity-75 motion-reduce:hidden" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
             </span>
             <span className="text-xs font-medium text-green-600 dark:text-green-400">Ao vivo</span>
@@ -843,6 +858,8 @@ export default function NexusPage() {
           <Button
             variant="outline"
             size="sm"
+            aria-label="Atualizar"
+            title="Atualizar"
             onClick={() => (activeTab === 'ao-vivo' ? mutate() : mutateAtendimentos())}
             className="gap-2 bg-transparent"
           >
@@ -852,28 +869,28 @@ export default function NexusPage() {
       </div>
 
       {/* Abas: Ao vivo (monitoramento) x Atendimentos (histórico com desfecho) */}
-      <div className="flex flex-wrap items-center gap-1 border-b border-border/50">
+      <div className="flex flex-wrap items-center gap-1 border-b border-border">
         <button
           type="button"
           onClick={() => setActiveTab('ao-vivo')}
           className={cn(
-            'relative px-4 py-2 text-sm font-medium transition-colors',
-            activeTab === 'ao-vivo' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground hover:text-foreground',
+            'relative rounded-t-md px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            activeTab === 'ao-vivo' ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
           )}
         >
           Ao vivo
-          {activeTab === 'ao-vivo' && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-blue-500" />}
+          {activeTab === 'ao-vivo' && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-primary" />}
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('atendimentos')}
           className={cn(
-            'relative px-4 py-2 text-sm font-medium transition-colors',
-            activeTab === 'atendimentos' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground hover:text-foreground',
+            'relative rounded-t-md px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            activeTab === 'atendimentos' ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
           )}
         >
           Atendimentos
-          {activeTab === 'atendimentos' && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-blue-500" />}
+          {activeTab === 'atendimentos' && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-primary" />}
         </button>
         {activeTab === 'atendimentos' && (
           <div className="ml-auto flex items-center gap-2 pb-1">
@@ -904,53 +921,54 @@ export default function NexusPage() {
 
       {activeTab === 'ao-vivo' && (
       <>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="glass-card-elevated rounded-2xl border-0 border-l-4 border-l-blue-500">
+      <div className="anim-rise grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Card className="glass-card-elevated rounded-lg shadow-none">
           <CardContent className="pt-6">
-            <div className="text-center space-y-1">
-              <p className="text-xs text-muted-foreground">Conversas ativas</p>
-              <p className="text-3xl font-bold text-blue-500">{conversations.length}</p>
+            <div className="space-y-1 text-center">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Conversas ativas</p>
+              <p className="text-3xl font-semibold tracking-tight tabular-nums text-primary">{conversations.length}</p>
             </div>
           </CardContent>
         </Card>
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg shadow-none">
           <CardContent className="pt-6">
-            <div className="text-center space-y-1">
-              <p className="text-xs text-muted-foreground">Setores IA no filtro</p>
-              <p className="text-3xl font-bold text-foreground">{data?.setoresIa?.length || 0}</p>
+            <div className="space-y-1 text-center">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Setores IA no filtro</p>
+              <p className="text-3xl font-semibold tracking-tight tabular-nums text-foreground">{data?.setoresIa?.length || 0}</p>
             </div>
           </CardContent>
         </Card>
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg shadow-none">
           <CardContent className="pt-6">
-            <div className="text-center space-y-1">
-              <p className="text-xs text-muted-foreground">Ocorrencias abertas</p>
-              <p className="text-3xl font-bold text-green-500">{data?.ocorrenciasAbertas || 0}</p>
+            <div className="space-y-1 text-center">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Ocorrencias abertas</p>
+              <p className="text-3xl font-semibold tracking-tight tabular-nums text-foreground">{data?.ocorrenciasAbertas || 0}</p>
             </div>
           </CardContent>
         </Card>
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg shadow-none">
           <CardContent className="pt-6">
-            <div className="text-center space-y-1">
-              <p className="text-xs text-muted-foreground">Tempo visivel apos bot</p>
-              <p className="text-3xl font-bold text-foreground">{NEXUS_BOT_VISIBILITY_MINUTES} min</p>
+            <div className="space-y-1 text-center">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Tempo visivel apos bot</p>
+              <p className="text-3xl font-semibold tracking-tight tabular-nums text-foreground">{NEXUS_BOT_VISIBILITY_MINUTES} min</p>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      <Card className="glass-card-elevated rounded-2xl border-0">
+      <Card className="anim-rise glass-card-elevated rounded-lg shadow-none">
         <CardHeader className="pb-0">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle className="text-lg">Atendimentos do bot sem ticket</CardTitle>
+            <CardTitle className="text-lg font-semibold tracking-tight">Atendimentos do bot sem ticket</CardTitle>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder="Buscar contato, numero ou setor"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                className="w-72 pl-9 h-9 rounded-2xl glass-input"
+                className="h-9 w-72 rounded-md pl-9 pr-14 glass-input"
               />
+              <kbd className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" aria-hidden="true">⌘K</kbd>
             </div>
           </div>
         </CardHeader>
@@ -984,16 +1002,17 @@ export default function NexusPage() {
                 ) : conversations.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="h-40 text-center">
-                      <div className="flex flex-col items-center justify-center text-muted-foreground">
-                        <Bot className="mb-2 h-8 w-8" />
-                        <p>Nenhuma conversa recente do Nexus sem ticket</p>
+                      <div className="flex flex-col items-center justify-center gap-1">
+                        <Bot className="mb-1 h-8 w-8 text-muted-foreground/60" />
+                        <p className="text-sm font-medium tracking-tight text-foreground">Nenhuma conversa ao vivo</p>
+                        <p className="text-xs text-muted-foreground">Conversas do bot sem ticket aparecem aqui assim que chegam.</p>
                       </div>
                     </TableCell>
                   </TableRow>
                 ) : (
                   conversations.map((conversation) => (
                     <TableRow key={`${conversation.setorId}-${conversation.clienteKey}`}>
-                      <TableCell className="text-sm tabular-nums text-blue-600 font-medium">
+                      <TableCell className="text-sm font-medium tabular-nums text-foreground">
                         {formatDuration(conversation.messages)}
                       </TableCell>
                       <TableCell className="text-sm tabular-nums text-muted-foreground">
@@ -1005,7 +1024,7 @@ export default function NexusPage() {
                           <span className="truncate" title={conversation.contato}>{conversation.contato}</span>
                         </div>
                       </TableCell>
-                      <TableCell className="text-sm text-foreground">{formatPhone(conversation.telefone)}</TableCell>
+                      <TableCell className="text-sm tabular-nums text-foreground">{formatPhone(conversation.telefone)}</TableCell>
                       <TableCell>
                         <Badge
                           variant={conversation.lastRemetente === NEXUS_CLIENT_REMETENTE ? 'secondary' : 'outline'}
@@ -1026,6 +1045,7 @@ export default function NexusPage() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            aria-label="Ver conversa"
                             className="h-7 w-7"
                             onClick={() => setSelectedConversation(conversation)}
                           >
@@ -1045,18 +1065,19 @@ export default function NexusPage() {
       )}
 
       {activeTab === 'atendimentos' && (
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="anim-rise glass-card-elevated rounded-lg shadow-none">
           <CardHeader className="pb-0">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="text-lg">Atendimentos do bot</CardTitle>
+              <CardTitle className="text-lg font-semibold tracking-tight">Atendimentos do bot</CardTitle>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder="Buscar contato, numero ou setor"
                   value={searchTerm}
                   onChange={(event) => setSearchTerm(event.target.value)}
-                  className="w-full pl-9 h-9 rounded-2xl glass-input sm:w-72"
+                  className="h-9 w-full rounded-md pl-9 pr-14 glass-input sm:w-72"
                 />
+                <kbd className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" aria-hidden="true">⌘K</kbd>
               </div>
             </div>
           </CardHeader>
@@ -1088,9 +1109,10 @@ export default function NexusPage() {
                   ) : atendimentos.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={6} className="h-40 text-center">
-                        <div className="flex flex-col items-center justify-center text-muted-foreground">
-                          <Bot className="mb-2 h-8 w-8" />
-                          <p>Nenhum atendimento do Nexus no periodo selecionado</p>
+                        <div className="flex flex-col items-center justify-center gap-1">
+                          <Bot className="mb-1 h-8 w-8 text-muted-foreground/60" />
+                          <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendimento no periodo</p>
+                          <p className="text-xs text-muted-foreground">Ajuste o intervalo ou o filtro de desfecho para ver mais.</p>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -1099,7 +1121,7 @@ export default function NexusPage() {
                       const key = `${atendimento.setorId}-${atendimento.clienteKey}`
                       return (
                         <TableRow key={key}>
-                          <TableCell className="text-sm tabular-nums font-medium text-blue-600">
+                          <TableCell className="text-sm font-medium tabular-nums text-foreground">
                             {formatDuration(atendimento.messages)}
                           </TableCell>
                           <TableCell className="text-sm text-foreground max-w-[200px]">
@@ -1108,7 +1130,7 @@ export default function NexusPage() {
                               <span className="truncate" title={atendimento.contato}>{atendimento.contato}</span>
                             </div>
                           </TableCell>
-                          <TableCell className="text-sm text-foreground">{formatPhone(atendimento.telefone)}</TableCell>
+                          <TableCell className="text-sm tabular-nums text-foreground">{formatPhone(atendimento.telefone)}</TableCell>
                           <TableCell>
                             <DesfechoBadge atendimento={atendimento} />
                           </TableCell>
@@ -1126,6 +1148,7 @@ export default function NexusPage() {
                               <Button
                                 variant="ghost"
                                 size="icon"
+                                aria-label="Ver conversa"
                                 className="h-7 w-7"
                                 onClick={() => setSelectedConversation(atendimento)}
                               >
@@ -1143,7 +1166,7 @@ export default function NexusPage() {
 
             {!atendimentosLoading && atendimentosFiltrados.length > 0 && (
               <div className="flex flex-col gap-2 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs tabular-nums text-muted-foreground">
                   {atendimentosFiltrados.length} atendimento{atendimentosFiltrados.length > 1 ? 's' : ''}
                   {' · '}pagina {paginaAtendimentos + 1} de {totalPaginasAtendimentos}
                 </p>
@@ -1179,16 +1202,16 @@ export default function NexusPage() {
         <div className="fixed inset-y-0 right-0 z-50 w-full max-w-lg">
           <div className="fixed inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setSelectedConversation(null)} />
 
-          <div className="absolute inset-0 flex flex-col bg-background shadow-xl">
+          <div className="anim-rise absolute inset-0 flex flex-col border-l border-border bg-background shadow-xl">
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <Bot className="h-4 w-4 text-blue-500" />
-                  <h2 className="truncate font-semibold">Nexus IA</h2>
+                  <Bot className="h-4 w-4 text-primary" />
+                  <h2 className="truncate font-semibold tracking-tight">Nexus IA</h2>
                   {selectedConversation.ticket ? (
-                    <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-400">
-                      <Ticket className="h-3 w-3" />
-                      Ticket{selectedConversation.ticket.numero ? ` #${selectedConversation.ticket.numero}` : ''}
+                    <Badge variant="outline" className="gap-1 rounded-md border-border text-[10px] text-foreground">
+                      <Ticket className="h-3 w-3 text-muted-foreground" />
+                      Ticket{selectedConversation.ticket.numero ? <span className="font-mono tabnums"> #{selectedConversation.ticket.numero}</span> : ''}
                     </Badge>
                   ) : (
                     <Badge variant="outline" className="text-[10px]">Sem ticket</Badge>
@@ -1216,20 +1239,20 @@ export default function NexusPage() {
             <div className="border-b px-4 py-2">
               <div className="grid grid-cols-4 gap-2 text-center text-xs">
                 <div>
-                  <p className="font-semibold text-foreground">{formatPhone(selectedConversation.telefone)}</p>
-                  <p className="text-muted-foreground">Numero</p>
+                  <p className="font-semibold tabular-nums text-foreground">{formatPhone(selectedConversation.telefone)}</p>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Numero</p>
                 </div>
                 <div>
-                  <p className="font-semibold text-blue-600">{formatDuration(selectedConversation.messages)}</p>
-                  <p className="text-muted-foreground">Tempo de atendimento</p>
+                  <p className="font-semibold tabular-nums text-foreground">{formatDuration(selectedConversation.messages)}</p>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Tempo de atendimento</p>
                 </div>
                 <div>
-                  <p className="font-semibold text-foreground">{formatRelativeTime(selectedConversation.lastMessageAt)}</p>
-                  <p className="text-muted-foreground">Ultima mensagem</p>
+                  <p className="font-semibold tabular-nums text-foreground">{formatRelativeTime(selectedConversation.lastMessageAt)}</p>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Ultima mensagem</p>
                 </div>
                 <div>
-                  <p className="font-semibold text-foreground">{selectedConversation.messages.length}</p>
-                  <p className="text-muted-foreground">Mensagens</p>
+                  <p className="font-semibold tabular-nums text-foreground">{selectedConversation.messages.length}</p>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Mensagens</p>
                 </div>
               </div>
             </div>
@@ -1245,8 +1268,8 @@ export default function NexusPage() {
                       className={cn(
                         "max-w-[80%] rounded-lg px-3 py-2 text-sm",
                         message.remetente === NEXUS_CLIENT_REMETENTE
-                          ? "bg-muted"
-                          : "bg-blue-100 text-blue-950 dark:bg-blue-900/30 dark:text-blue-50",
+                          ? "bg-muted text-foreground"
+                          : "border border-border bg-card text-foreground",
                       )}
                     >
                       <MessageMediaPreview
@@ -1258,7 +1281,7 @@ export default function NexusPage() {
                       {message.conteudo && <p className="break-words whitespace-pre-wrap">{message.conteudo}</p>}
                       <div className="mt-1 flex items-center justify-between gap-2 text-[10px] opacity-70">
                         <span>{message.remetente === NEXUS_CLIENT_REMETENTE ? 'Cliente' : 'Nexus'}</span>
-                        <span>
+                        <span className="tabular-nums">
                           {new Date(message.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
