@@ -1961,14 +1961,14 @@ function SetorPageInner() {
 
   // Helper function to format time duration
   const formatDuration = (startDate: string | null, endDate: string | Date | null) => {
-    if (!startDate) return '00:00:00'
+    if (!startDate) return '00:00'
     const start = new Date(startDate).getTime()
     const end = endDate ? new Date(endDate).getTime() : Date.now()
     const diffMs = Math.max(0, end - start)
     const hours = Math.floor(diffMs / (1000 * 60 * 60))
     const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
-    const seconds = Math.floor((diffMs % (1000 * 60)) / 1000)
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    // Sem segundos nas colunas da lista de atendimentos (mais enxuto)
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
   }
 
   const ticketsEmAndamento = useMemo(() => {
@@ -1991,7 +1991,7 @@ function SetorPageInner() {
             : formatDuration(t.criado_em, null), // ainda na fila
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
         // Tempo de atendimento = atribuido_em → agora (ou criado_em como fallback)
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00:00',
+        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         fila: setor?.nome || '',
         atendente: t.colaboradores?.nome || null,
@@ -4020,21 +4020,23 @@ const saveConfig = async () => {
                                         Aguardando...
                                       </Badge>
                                     ) : (
-                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
+                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00'}</span>
                                     )}
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
                                   <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
                                     {ticket.numero ? `#${ticket.numero}` : '—'}
                                   </TableCell>
-                                  <TableCell className="text-sm text-foreground">
+                                  <TableCell className="text-sm text-foreground max-w-[180px]">
                                     <div className="flex items-center gap-1">
                                       <User className="h-3 w-3 text-muted-foreground shrink-0" />
-                                      {ticket.contato}
+                                      <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                                     </div>
                                   </TableCell>
-                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
-                                  <TableCell className="text-sm text-foreground">{ticket.fila || setor?.nome}</TableCell>
+                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
+                                  <TableCell className="text-sm text-foreground max-w-[160px]">
+                                    <span className="block truncate" title={ticket.fila || setor?.nome}>{ticket.fila || setor?.nome}</span>
+                                  </TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
                                     <Button 
@@ -4105,14 +4107,16 @@ const saveConfig = async () => {
                                 <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
                                   {ticket.numero ? `#${ticket.numero}` : '—'}
                                 </TableCell>
-                                <TableCell className="text-sm text-foreground">
+                                <TableCell className="text-sm text-foreground max-w-[180px]">
                                   <div className="flex items-center gap-1">
                                     <User className="h-3 w-3 text-muted-foreground shrink-0" />
-                                    {ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}
+                                    <span className="truncate" title={ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}>{ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}</span>
                                   </div>
                                 </TableCell>
-                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
-                                <TableCell className="text-sm text-foreground">{setor?.nome}</TableCell>
+                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
+                                <TableCell className="text-sm text-foreground max-w-[160px]">
+                                  <span className="block truncate" title={setor?.nome}>{setor?.nome}</span>
+                                </TableCell>
                                 <TableCell>
                                   <Badge variant={
                                     ticket.prioridade === 'alta' ? 'destructive' :
@@ -5193,7 +5197,7 @@ const saveConfig = async () => {
                                 <span className="text-muted-foreground">—</span>
                               )}
                             </TableCell>
-                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
                             <TableCell>
                               <Badge
                                 variant="outline"

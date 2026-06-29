@@ -72,19 +72,21 @@ const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESS
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
 
-function formatMs(ms: number) {
+function formatMs(ms: number, withSeconds = true) {
   const hours = Math.floor(ms / (1000 * 60 * 60))
   const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60))
   const seconds = Math.floor((ms % (1000 * 60)) / 1000)
-  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+  const base = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
+  return withSeconds ? `${base}:${seconds.toString().padStart(2, '0')}` : base
 }
 
 function formatDuration(startDate: string | null, endDate: string | Date | null) {
-  if (!startDate) return '00:00:00'
+  if (!startDate) return '00:00'
   const start = new Date(startDate).getTime()
   const end = endDate ? new Date(endDate).getTime() : Date.now()
   const diffMs = Math.max(0, end - start)
-  return formatMs(diffMs)
+  // Sem segundos nas colunas da lista de atendimentos (mais enxuto)
+  return formatMs(diffMs, false)
 }
 
 function formatPhone(phone: string | null) {
@@ -680,7 +682,7 @@ export default function MonitoramentoPage() {
             : formatDuration(t.criado_em, null),
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
         // Tempo de atendimento = atribuido_em (ou criado_em como fallback) → agora
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00:00',
+        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         telefone: t.clientes?.telefone || null,
         canal: t.canal || 'whatsapp',
@@ -1464,7 +1466,7 @@ export default function MonitoramentoPage() {
                                   Aguardando...
                                 </Badge>
                               ) : (
-                                <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
+                                <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00'}</span>
                               )}
                             </TableCell>
                             <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
@@ -1480,12 +1482,14 @@ export default function MonitoramentoPage() {
                                 <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                               </div>
                             </TableCell>
-                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} /></TableCell>
-                            <TableCell className="text-sm text-foreground">
-                              {ticket.setor}
-                              {ticket.subsetor && (
-                                <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                              )}
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
+                            <TableCell className="text-sm text-foreground max-w-[160px]">
+                              <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
+                                {ticket.setor}
+                                {ticket.subsetor && (
+                                  <span className="text-muted-foreground"> / {ticket.subsetor}</span>
+                                )}
+                              </span>
                             </TableCell>
                             <TableCell className="text-sm text-foreground">
                               {ticket.atendente ? (
@@ -1624,18 +1628,20 @@ export default function MonitoramentoPage() {
                           <TableCell className="text-sm text-foreground">
                             {ticket.canal === 'discord' ? '—' : formatPhone(ticket.telefone)}
                           </TableCell>
-                          <TableCell className="text-sm text-foreground">
+                          <TableCell className="text-sm text-foreground max-w-[160px]">
                             <div className="flex items-center gap-1">
                               <User className="h-3 w-3 text-muted-foreground shrink-0" />
-                              {ticket.contato}
+                              <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                             </div>
                           </TableCell>
-                          <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} /></TableCell>
-                          <TableCell className="text-xs text-foreground">
-                            {ticket.setor}
-                            {ticket.subsetor && (
-                              <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                            )}
+                          <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
+                          <TableCell className="text-xs text-foreground max-w-[160px]">
+                            <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
+                              {ticket.setor}
+                              {ticket.subsetor && (
+                                <span className="text-muted-foreground"> / {ticket.subsetor}</span>
+                              )}
+                            </span>
                           </TableCell>
                           <TableCell>
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openConversation(ticket)}>
