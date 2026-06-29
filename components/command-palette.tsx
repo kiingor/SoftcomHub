@@ -2,7 +2,16 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Bot, Building2, Headset, LayoutDashboard } from 'lucide-react'
+import { useTheme } from 'next-themes'
+import {
+  Bot,
+  Building2,
+  Headset,
+  Laptop,
+  LayoutDashboard,
+  Moon,
+  Sun,
+} from 'lucide-react'
 import {
   CommandDialog,
   CommandEmpty,
@@ -21,6 +30,7 @@ import { useColaborador, useSetores } from '@/lib/hooks/use-data'
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const router = useRouter()
+  const { theme, setTheme } = useTheme()
   const { data: colaborador } = useColaborador()
   const { data: setores = [] } = useSetores(
     colaborador?.id,
@@ -41,6 +51,11 @@ export function CommandPalette() {
   const go = (path: string) => {
     setOpen(false)
     router.push(path)
+  }
+
+  const applyTheme = (value: 'light' | 'dark' | 'system') => {
+    setOpen(false)
+    setTheme(value)
   }
 
   return (
@@ -78,6 +93,49 @@ export function CommandPalette() {
           </CommandItem>
         </CommandGroup>
 
+        <CommandSeparator />
+        <CommandGroup heading="Ações">
+          <CommandItem
+            value="tema claro light dia"
+            onSelect={() => applyTheme('light')}
+          >
+            <Sun className="text-muted-foreground" />
+            Tema: Claro
+            {theme === 'light' && (
+              <>
+                <span className="signal-dot ml-auto" aria-hidden="true" />
+                <span className="sr-only">(ativo)</span>
+              </>
+            )}
+          </CommandItem>
+          <CommandItem
+            value="tema escuro dark noite"
+            onSelect={() => applyTheme('dark')}
+          >
+            <Moon className="text-muted-foreground" />
+            Tema: Escuro
+            {theme === 'dark' && (
+              <>
+                <span className="signal-dot ml-auto" aria-hidden="true" />
+                <span className="sr-only">(ativo)</span>
+              </>
+            )}
+          </CommandItem>
+          <CommandItem
+            value="tema sistema system automatico"
+            onSelect={() => applyTheme('system')}
+          >
+            <Laptop className="text-muted-foreground" />
+            Tema: Sistema
+            {theme === 'system' && (
+              <>
+                <span className="signal-dot ml-auto" aria-hidden="true" />
+                <span className="sr-only">(ativo)</span>
+              </>
+            )}
+          </CommandItem>
+        </CommandGroup>
+
         {setores.length > 0 && (
           <>
             <CommandSeparator />
@@ -104,6 +162,11 @@ export function CommandPalette() {
           </>
         )}
       </CommandList>
+
+      <div className="border-border text-muted-foreground flex items-center justify-end gap-1.5 border-t px-3 py-2 text-xs">
+        <span>Atalho</span>
+        <kbd className="kbd">Ctrl K</kbd>
+      </div>
     </CommandDialog>
   )
 }
