@@ -73,21 +73,29 @@ const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESS
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
 
-function formatMs(ms: number, withSeconds = true) {
+function formatMs(ms: number) {
   const hours = Math.floor(ms / (1000 * 60 * 60))
   const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60))
   const seconds = Math.floor((ms % (1000 * 60)) / 1000)
-  const base = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
-  return withSeconds ? `${base}:${seconds.toString().padStart(2, '0')}` : base
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+}
+
+// Duração curta e legível p/ as colunas da lista: "1h 30min", "30min", "2h", "0min".
+function formatDuracaoCurta(ms: number) {
+  const totalMin = Math.floor(ms / 60000)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  if (h > 0 && m > 0) return `${h}h ${m}min`
+  if (h > 0) return `${h}h`
+  return `${m}min`
 }
 
 function formatDuration(startDate: string | null, endDate: string | Date | null) {
-  if (!startDate) return '00:00'
+  if (!startDate) return '0min'
   const start = new Date(startDate).getTime()
   const end = endDate ? new Date(endDate).getTime() : Date.now()
   const diffMs = Math.max(0, end - start)
-  // Sem segundos nas colunas da lista de atendimentos (mais enxuto)
-  return formatMs(diffMs, false)
+  return formatDuracaoCurta(diffMs)
 }
 
 function formatPhone(phone: string | null) {
@@ -683,7 +691,7 @@ export default function MonitoramentoPage() {
             : formatDuration(t.criado_em, null),
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
         // Tempo de atendimento = atribuido_em (ou criado_em como fallback) → agora
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00',
+        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         telefone: t.clientes?.telefone || null,
         canal: t.canal || 'whatsapp',
@@ -1467,7 +1475,7 @@ export default function MonitoramentoPage() {
                                   Aguardando...
                                 </Badge>
                               ) : (
-                                <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00'}</span>
+                                <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '0min'}</span>
                               )}
                             </TableCell>
                             <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>

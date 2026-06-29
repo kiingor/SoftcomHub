@@ -1962,14 +1962,17 @@ function SetorPageInner() {
 
   // Helper function to format time duration
   const formatDuration = (startDate: string | null, endDate: string | Date | null) => {
-    if (!startDate) return '00:00'
+    if (!startDate) return '0min'
     const start = new Date(startDate).getTime()
     const end = endDate ? new Date(endDate).getTime() : Date.now()
     const diffMs = Math.max(0, end - start)
-    const hours = Math.floor(diffMs / (1000 * 60 * 60))
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
-    // Sem segundos nas colunas da lista de atendimentos (mais enxuto)
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
+    const totalMin = Math.floor(diffMs / 60000)
+    const h = Math.floor(totalMin / 60)
+    const m = totalMin % 60
+    // Curto e legível: "1h 30min", "30min", "2h", "0min"
+    if (h > 0 && m > 0) return `${h}h ${m}min`
+    if (h > 0) return `${h}h`
+    return `${m}min`
   }
 
   const ticketsEmAndamento = useMemo(() => {
@@ -1992,7 +1995,7 @@ function SetorPageInner() {
             : formatDuration(t.criado_em, null), // ainda na fila
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
         // Tempo de atendimento = atribuido_em → agora (ou criado_em como fallback)
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00',
+        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         fila: setor?.nome || '',
         atendente: t.colaboradores?.nome || null,
@@ -4021,7 +4024,7 @@ const saveConfig = async () => {
                                         Aguardando...
                                       </Badge>
                                     ) : (
-                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00'}</span>
+                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '0min'}</span>
                                     )}
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
