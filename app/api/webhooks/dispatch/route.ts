@@ -57,6 +57,7 @@ export async function POST(request: Request) {
         encerrado_em,
         primeira_resposta_em,
         subsetor_id,
+        tipo_atendimento_id,
         user_name_discord,
         clientes (
           id,
@@ -109,6 +110,18 @@ export async function POST(request: Request) {
         .single()
       colaboradorNome = colab?.nome || null
       colaboradorSuporteId = colab?.suporte_id || null
+    }
+
+    // Fetch tipo de atendimento (classificação) if set on the ticket
+    let tipoAtendimentoNome: string | null = null
+    const tipoAtendimentoId = (ticket as any).tipo_atendimento_id || null
+    if (tipoAtendimentoId) {
+      const { data: tipo } = await supabase
+        .from('tipos_atendimento')
+        .select('nome')
+        .eq('id', tipoAtendimentoId)
+        .single()
+      tipoAtendimentoNome = tipo?.nome || null
     }
 
     // Fetch all messages for this ticket (conversation history)
@@ -216,6 +229,11 @@ export async function POST(request: Request) {
         },
         subsetor: ticket.subsetor_id
           ? { id: (ticket.subsetores as any)?.id, nome: (ticket.subsetores as any)?.nome }
+          : null,
+
+        // Classificação / tipo de atendimento definido no encerramento
+        tipo_atendimento: tipoAtendimentoId
+          ? { id: tipoAtendimentoId, nome: tipoAtendimentoNome }
           : null,
 
         atendente: colaboradorNome
