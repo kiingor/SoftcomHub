@@ -4002,7 +4002,7 @@ const insertEmoji = (emoji: string) => {
       <div className="flex flex-1 overflow-hidden w-full max-w-full">
         {/* Ticket List Column - responsive width */}
         <aside className={cn(
-          "shrink-0 border-r border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl h-full overflow-hidden flex-col",
+          "anim-rise shrink-0 border-r border-border bg-card h-full overflow-hidden flex-col",
           // Mobile: full width quando nenhum ticket; esconde quando o chat está aberto
           // Tablet/desktop: largura fixa, sempre lado a lado com o chat
           selectedTicket ? "hidden md:flex" : "flex w-full",
@@ -4011,8 +4011,8 @@ const insertEmoji = (emoji: string) => {
           {/* Card de Fila: contador + botão "Puxar próximo".
               O botão ignora o limite max_tickets_per_agent do setor — usado quando
               o atendente quer pegar mais um ticket mesmo já estando no teto. */}
-          <div className="p-2 border-b border-white/30 dark:border-white/8 shrink-0 space-y-1.5">
-            <div className="flex items-center justify-between gap-2 rounded-md bg-white/40 dark:bg-white/[0.03] px-2.5 py-1.5">
+          <div className="p-2 border-b border-border shrink-0 space-y-1.5">
+            <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5">
               <div className="flex items-center gap-2 min-w-0">
                 <div className={cn(
                   'flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
@@ -4027,7 +4027,7 @@ const insertEmoji = (emoji: string) => {
                     Em fila
                   </p>
                   <p className="text-xs font-semibold text-foreground leading-tight mt-0.5">
-                    {filaCount} {filaCount === 1 ? 'aguardando' : 'aguardando'}
+                    <span className="tabnums">{filaCount}</span> {filaCount === 1 ? 'aguardando' : 'aguardando'}
                   </p>
                 </div>
               </div>
@@ -4036,7 +4036,7 @@ const insertEmoji = (emoji: string) => {
                   key={filaCount}
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
-                  className="flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white shadow-sm"
+                  className="tabnums flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white"
                 >
                   {filaCount > 99 ? '99+' : filaCount}
                 </motion.span>
@@ -4067,7 +4067,7 @@ const insertEmoji = (emoji: string) => {
               ? (setorCanaisAtivos.includes('whatsapp') || setorCanaisAtivos.includes('evolution_api'))
               : setorCanalConfig !== 'discord'
             ) && (
-          <div className="p-2 border-b border-white/30 dark:border-white/8 shrink-0">
+          <div className="p-2 border-b border-border shrink-0">
   <Button
   onClick={async () => {
     // Check dispatch limit before opening
@@ -4100,7 +4100,7 @@ const insertEmoji = (emoji: string) => {
           )}
           {/* Subsetor Picker */}
           {subsetoresDisponiveis.length > 0 && (
-            <div className="px-2 py-1.5 border-b border-white/30 dark:border-white/8 shrink-0">
+            <div className="px-2 py-1.5 border-b border-border shrink-0">
               <Popover open={subsetorPickerOpen} onOpenChange={setSubsetorPickerOpen}>
                 <PopoverTrigger asChild>
                   <Button
@@ -4175,7 +4175,7 @@ const insertEmoji = (emoji: string) => {
 
         {/* Chat Area */}
         <main className={cn(
-          "flex-1 flex-col overflow-hidden",
+          "anim-rise flex-1 flex-col overflow-hidden",
           // Mobile: aparece quando há ticket selecionado (full width); senão, esconde
           // Desktop (md+): sempre visível ao lado da sidebar
           selectedTicket ? "flex w-full" : "hidden md:flex"
@@ -4183,7 +4183,7 @@ const insertEmoji = (emoji: string) => {
           {selectedTicket ? (
             <>
               {/* Chat Header */}
-              <div className="flex items-center justify-between border-b border-white/30 dark:border-white/8 bg-white/70 dark:bg-white/5 backdrop-blur-xl px-3 py-2 gap-2">
+              <div className="flex items-center justify-between border-b border-border bg-card px-3 py-2 gap-2">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   {/* Back button — mobile only (volta pra lista de tickets) */}
                   <Button
@@ -4195,12 +4195,12 @@ const insertEmoji = (emoji: string) => {
                   >
                     <ArrowLeft className="h-5 w-5" />
                   </Button>
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary/20 to-primary/10">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
                     <User className="h-4 w-4 text-primary" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <span className="text-sm font-semibold truncate">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</span>
-                    <span className="hidden md:inline text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
+                    <span className="tabnums font-mono hidden md:inline text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
                   </div>
                 </div>
 
@@ -4267,9 +4267,10 @@ const insertEmoji = (emoji: string) => {
                       <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                     </div>
                   ) : mensagens.length === 0 ? (
-                    <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
-                      <MessageCircle className="mb-2 h-12 w-12 opacity-50" />
-                      <p>Nenhuma mensagem ainda</p>
+                    <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
+                      <MessageCircle className="mb-2 h-12 w-12 text-muted-foreground/40" />
+                      <p className="text-sm font-medium tracking-tight text-foreground">Nenhuma mensagem ainda</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">As mensagens aparecerão aqui.</p>
                     </div>
 ) : (
                     <div className="space-y-4">
@@ -4299,7 +4300,7 @@ const insertEmoji = (emoji: string) => {
                                 {isPreviousTicket && (
                                   <div className="flex items-center gap-3 py-3">
                                     <div className="flex-1 h-px bg-border" />
-                                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/50 border border-border text-xs text-muted-foreground">
+                                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted/50 border border-border text-xs text-muted-foreground">
                                       <History className="h-3 w-3" />
                                       <span>
                                         Atendimento anterior -{' '}
@@ -4324,7 +4325,7 @@ const insertEmoji = (emoji: string) => {
                                 {isNewTicket && isCurrentTicket && index > 0 && (
                                   <div className="flex items-center gap-3 py-3">
                                     <div className="flex-1 h-px bg-primary/30" />
-                                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+                                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
                                       <MessageCircle className="h-3 w-3" />
                                       <span>Atendimento atual</span>
                                     </div>
@@ -4413,7 +4414,7 @@ const insertEmoji = (emoji: string) => {
                                   <div
                                     data-msg-id={msg.id}
                                     className={cn(
-                                      'max-w-[85%] lg:max-w-[75%] rounded-2xl px-3 py-2 lg:px-4 lg:py-2.5 break-words overflow-hidden',
+                                      'max-w-[85%] lg:max-w-[75%] rounded-lg px-3 py-2 lg:px-4 lg:py-2.5 break-words overflow-hidden',
                                       isOutgoingMessage(msg.remetente)
                                         ? 'bg-primary text-primary-foreground rounded-br-md'
                                         : 'bg-secondary text-secondary-foreground rounded-bl-md',
@@ -4544,7 +4545,7 @@ const insertEmoji = (emoji: string) => {
               </div>
 
   {/* Input Area */}
-  <div className="border-t border-white/30 dark:border-white/8 bg-white/70 dark:bg-white/5 backdrop-blur-xl p-3">
+  <div className="border-t border-border bg-card p-3">
   {/* Disparo locked warning */}
   {selectedTicket?.is_disparo && isDisparoLocked(selectedTicket) && (
   <div className="mb-3 p-3 rounded-lg bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800">
@@ -4820,10 +4821,13 @@ const insertEmoji = (emoji: string) => {
                 </div>
             </>
           ) : (
-            <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
-              <div className="text-6xl mb-4">{'💬'}</div>
-              <h2 className="text-xl font-semibold">Selecione um ticket</h2>
-              <p className="mt-1 text-sm">Escolha um ticket na lista para iniciar o atendimento</p>
+            <div className="flex h-full flex-col items-center justify-center px-6 text-center text-muted-foreground">
+              <MessageCircle className="mb-4 h-12 w-12 text-muted-foreground/40" />
+              <h2 className="text-xl font-semibold tracking-tight text-foreground">Selecione um ticket</h2>
+              <p className="mt-1 max-w-xs text-sm text-muted-foreground">Escolha um ticket na lista para iniciar o atendimento.</p>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Dica: pressione <kbd className="kbd">⌘K</kbd> para buscar.
+              </p>
             </div>
           )}
         </main>
@@ -4831,7 +4835,7 @@ const insertEmoji = (emoji: string) => {
 {/* Client Info Sidebar — mobile: full-screen overlay; desktop: coluna lateral */}
         {selectedTicket && (
           <aside className={cn(
-            "shrink-0 border-l border-white/30 dark:border-white/8 bg-white/55 dark:bg-white/4 backdrop-blur-xl overflow-y-auto transition-all duration-200",
+            "shrink-0 border-l border-border bg-card overflow-y-auto transition-all duration-200",
             // Largura desktop
             "lg:w-64 xl:w-72",
             // Mobile: overlay full-screen começando ABAIXO do header global (h-16 = 64px).
@@ -4840,7 +4844,7 @@ const insertEmoji = (emoji: string) => {
             showClientInfo ? "block lg:block" : "hidden"
           )}>
             {/* Header fechar (mobile only) */}
-            <div className="md:hidden sticky top-0 z-20 flex items-center justify-between border-b border-border bg-white/95 dark:bg-black/95 backdrop-blur-xl px-3 py-2">
+            <div className="md:hidden sticky top-0 z-20 flex items-center justify-between border-b border-border bg-card px-3 py-2">
               <Button
                 variant="ghost"
                 size="icon"
@@ -4854,13 +4858,13 @@ const insertEmoji = (emoji: string) => {
               <span className="w-8" />
             </div>
             {/* Tabs Informações / Histórico — sticky no topo da sidebar */}
-            <div className="sticky top-0 z-10 bg-white/80 dark:bg-white/5 backdrop-blur-xl border-b border-border">
+            <div className="sticky top-0 z-10 bg-card border-b border-border">
               <div className="flex">
                 <button
                   type="button"
                   onClick={() => setInfoTab('info')}
                   className={cn(
-                    'flex-1 text-xs font-medium py-2 px-3 transition-colors border-b-2',
+                    'flex-1 text-xs font-medium py-2 px-3 transition-colors border-b-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                     infoTab === 'info'
                       ? 'text-primary border-primary'
                       : 'text-muted-foreground border-transparent hover:text-foreground'
@@ -4872,7 +4876,7 @@ const insertEmoji = (emoji: string) => {
                   type="button"
                   onClick={() => setInfoTab('historico')}
                   className={cn(
-                    'flex-1 text-xs font-medium py-2 px-3 transition-colors border-b-2 flex items-center justify-center gap-1.5',
+                    'flex-1 text-xs font-medium py-2 px-3 transition-colors border-b-2 flex items-center justify-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                     infoTab === 'historico'
                       ? 'text-primary border-primary'
                       : 'text-muted-foreground border-transparent hover:text-foreground'
@@ -5098,7 +5102,7 @@ const insertEmoji = (emoji: string) => {
                   {/* Número */}
                   <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
                     <span className="text-muted-foreground shrink-0 w-16">Número</span>
-                    <span className="font-bold text-foreground flex-1 text-right select-all">
+                    <span className="tabnums font-mono font-bold text-foreground flex-1 text-right select-all">
                       #{selectedTicket.numero}
                     </span>
                   </div>
@@ -5209,7 +5213,7 @@ const insertEmoji = (emoji: string) => {
                           className="px-2.5 py-2 flex flex-col gap-0.5"
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-semibold text-foreground">#{h.numero ?? '?'}</span>
+                            <span className="tabnums font-mono font-semibold text-foreground">#{h.numero ?? '?'}</span>
                             <span
                               className={cn(
                                 'text-[9px] uppercase px-1.5 py-0 rounded',
@@ -5348,14 +5352,14 @@ const insertEmoji = (emoji: string) => {
           {selectedTicket && (
             <div className="flex h-full flex-col">
               {/* Chat Header */}
-              <div className="flex items-center justify-between border-b border-white/30 dark:border-white/8 bg-white/70 dark:bg-white/5 backdrop-blur-xl px-4 py-3">
+              <div className="flex items-center justify-between border-b border-border bg-card px-4 py-3">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-secondary">
                     <User className="h-5 w-5 text-secondary-foreground" />
                   </div>
                   <div className="min-w-0">
                     <span className="text-sm font-semibold truncate">{setorCanalConfig === 'discord' ? (selectedTicket.user_name_discord || selectedTicket.clientes.nome) : selectedTicket.clientes.nome}</span>
-                    <span className="hidden md:inline text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
+                    <span className="tabnums font-mono hidden md:inline text-xs text-muted-foreground ml-1.5">#{selectedTicket.numero}</span>
                   </div>
                 </div>
                 <Button
@@ -5374,9 +5378,10 @@ onClick={() => {
               {/* Messages */}
               <ScrollArea className="flex-1 p-4">
                 {mensagens.length === 0 ? (
-                  <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
-                    <MessageCircle className="mb-2 h-12 w-12 opacity-50" />
-                    <p>Nenhuma mensagem ainda</p>
+                  <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
+                    <MessageCircle className="mb-2 h-12 w-12 text-muted-foreground/40" />
+                    <p className="text-sm font-medium tracking-tight text-foreground">Nenhuma mensagem ainda</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">As mensagens aparecerão aqui.</p>
                   </div>
 ) : (
                       <div className="space-y-4">
@@ -5403,7 +5408,7 @@ onClick={() => {
                                 {isPreviousTicket && (
                                   <div className="flex items-center gap-2 py-2">
                                     <div className="flex-1 h-px bg-border" />
-                                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-muted/50 border border-border text-[10px] text-muted-foreground">
+                                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/50 border border-border text-[10px] text-muted-foreground">
                                       <History className="h-2.5 w-2.5" />
                                       <span>
                                         {(msg.tickets?.criado_em || msg.enviado_em)
@@ -5421,7 +5426,7 @@ onClick={() => {
                                 {isNewTicket && isCurrentTicket && index > 0 && (
                                   <div className="flex items-center gap-2 py-2">
                                     <div className="flex-1 h-px bg-primary/30" />
-                                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-primary/10 border border-primary/20 text-[10px] text-primary font-medium">
+                                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-primary/10 border border-primary/20 text-[10px] text-primary font-medium">
                                       <MessageCircle className="h-2.5 w-2.5" />
                                       <span>Atual</span>
                                     </div>
@@ -5484,7 +5489,7 @@ onClick={() => {
                                 >
                                   <div
                                     className={cn(
-'max-w-[85%] rounded-2xl px-3 py-2 break-words overflow-hidden',
+'max-w-[85%] rounded-lg px-3 py-2 break-words overflow-hidden',
                     isOutgoingMessage(msg.remetente)
                       ? 'bg-primary text-primary-foreground rounded-br-md'
                       : 'bg-secondary text-secondary-foreground rounded-bl-md',
@@ -5558,7 +5563,7 @@ onClick={() => {
                   </ScrollArea>
 
             {/* Input Area Mobile */}
-            <div className="border-t border-white/30 dark:border-white/8 bg-white/70 dark:bg-white/5 backdrop-blur-xl p-3 space-y-2">
+            <div className="border-t border-border bg-card p-3 space-y-2">
               {selectedTicket.status === 'aberto' && (
                 <Button
                   onClick={handleMarcarEmAtendimento}
@@ -6500,13 +6505,13 @@ onClick={() => {
             if (e.target === e.currentTarget) setTicketIframeTicket(null)
           }}
         >
-          <div className="relative w-full max-w-[96vw] rounded-2xl overflow-hidden shadow-2xl border border-white/20 bg-background flex flex-col" style={{ height: 'calc(100vh - 88px)' }}>
+          <div className="relative w-full max-w-[96vw] rounded-lg overflow-hidden shadow-2xl border border-border bg-background flex flex-col" style={{ height: 'calc(100vh - 88px)' }}>
             {/* Header */}
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-white/70 dark:bg-white/5 backdrop-blur-xl shrink-0">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-card shrink-0">
               <div className="flex items-center gap-1.5">
                 <Ticket className="h-3.5 w-3.5 text-primary" />
                 <span className="text-xs font-semibold">
-                  Ticket #{ticketIframeTicket.numero} — {ticketIframeTicket.clientes?.nome || 'Cliente'}
+                  Ocorrência rápida — {ticketIframeTicket.clientes?.nome || 'Cliente'}
                 </span>
               </div>
               <Button
@@ -6519,11 +6524,12 @@ onClick={() => {
               </Button>
             </div>
 
-            {/* iFrame */}
+            {/* iFrame — Ocorrência rápida (Service Desk). q = CNPJ → telefone → Registro (só dígitos);
+                ticket = nº do ticket no SoftcomHub; tel = telefone do cliente (só dígitos). */}
             <iframe
-              src={`https://ticket.softcom.solutions/?email=${encodeURIComponent(colaborador.email)}&open_ticket=${ticketIframeTicket.numero}`}
+              src={`https://agenda.softcomtecnologia.com/service-desk/ocorrencia-rapida?q=${encodeURIComponent((ticketIframeTicket.clientes?.CNPJ || ticketIframeTicket.clientes?.telefone || ticketIframeTicket.clientes?.Registro || '').replace(/\D/g, ''))}&ticket=${encodeURIComponent(ticketIframeTicket.numero)}&tel=${encodeURIComponent((ticketIframeTicket.clientes?.telefone || '').replace(/\D/g, ''))}`}
               className="w-full flex-1 border-0"
-              title={`Ticket #${ticketIframeTicket.numero}`}
+              title={`Ocorrência rápida — ${ticketIframeTicket.clientes?.nome || 'Cliente'}`}
               allow="clipboard-read; clipboard-write"
             />
           </div>
@@ -6586,11 +6592,11 @@ function TicketList({
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Filters Toggle */}
-      <div className="shrink-0 border-b border-white/30 dark:border-white/8 px-4 py-2">
+      <div className="shrink-0 border-b border-border px-4 py-2">
         <button
           type="button"
           onClick={() => setFiltersOpen(!filtersOpen)}
-          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full py-1"
+          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full py-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Filter className="h-3 w-3" />
           <span>Filtros</span>
@@ -6653,9 +6659,10 @@ function TicketList({
       {/* Ticket List */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {tickets.length === 0 ? (
-          <div className="flex h-40 flex-col items-center justify-center text-muted-foreground">
-            <MessageCircle className="mb-2 h-8 w-8 opacity-50" />
-            <p className="text-sm">Nenhum ticket encontrado</p>
+          <div className="flex h-40 flex-col items-center justify-center px-4 text-center text-muted-foreground">
+            <MessageCircle className="mb-2 h-8 w-8 text-muted-foreground/40" />
+            <p className="text-sm font-medium tracking-tight text-foreground">Nenhum ticket encontrado</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">Ajuste os filtros ou aguarde a fila.</p>
           </div>
         ) : (
           <div className="divide-y divide-border">
@@ -6687,8 +6694,8 @@ function TicketList({
                   onClick={() => onSelectTicket(ticket)}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectTicket(ticket) }}
                   className={cn(
-                    'w-full px-3 py-2.5 text-left transition-colors border-l-3 cursor-pointer',
-                    isSelected 
+                    'w-full px-3 py-2.5 text-left transition-colors border-l-3 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
+                    isSelected
                       ? 'bg-primary/10 border-l-primary'
                       : isExpiredWait
                       ? 'bg-amber-50 dark:bg-amber-950/30 border-l-amber-500'
@@ -6702,35 +6709,33 @@ function TicketList({
                         {ticket.prioridade === 'urgente' && (
                           <AlertTriangle className="h-3 w-3 text-red-500 shrink-0" />
                         )}
-                        {/* Status badges */}
+                        {/* Status: ponto-sinal + rótulo (laranja = ao vivo / precisa de ação) */}
                         {isExpiredWait ? (
-                          <Badge className="text-[9px] px-1.5 py-0 h-4 bg-amber-500 text-white border-0 animate-pulse">
+                          <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-foreground">
+                            <span className="signal-dot animate-pulse motion-reduce:animate-none" aria-hidden="true" />
                             Sem resposta
-                          </Badge>
+                          </span>
                         ) : ticket.ultima_mensagem_remetente === 'cliente' ? (
-                          <Badge className="text-[9px] px-1.5 py-0 h-4 bg-emerald-500 text-white border-0 animate-pulse">
+                          <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-foreground">
+                            <span className="signal-dot animate-pulse motion-reduce:animate-none" aria-hidden="true" />
                             Cliente respondeu
-                          </Badge>
+                          </span>
                         ) : isWaitingResponse && unreadCount === 0 ? (
-                          <Badge className="text-[9px] px-1.5 py-0 h-4 bg-amber-100 text-amber-700 border-0">
+                          <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />
                             Aguardando
-                          </Badge>
+                          </span>
                         ) : (
-                          <Badge
-                            className={cn(
-                              'text-[9px] px-1.5 py-0 h-4 border-0',
-                              ticket.status === 'aberto' && 'bg-blue-100 text-blue-700',
-                              ticket.status === 'em_atendimento' && 'bg-emerald-100 text-emerald-700'
-                            )}
-                          >
+                          <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />
                             {ticket.status === 'aberto' ? 'Aberto' : 'Atendendo'}
-                          </Badge>
+                          </span>
                         )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {/* Unread badge */}
                         {unreadCount > 0 && (
-                          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground">
+                          <span className="tabnums flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground">
                             {unreadCount > 99 ? '99+' : unreadCount}
                           </span>
                         )}
@@ -6760,7 +6765,7 @@ function TicketList({
                             ? 'agora'
                             : formatDistanceToNow(new Date(firstUnread), { locale: ptBR, addSuffix: true })
                           return (
-                            <span className="text-[10px] shrink-0 text-emerald-600 dark:text-emerald-400 font-medium">
+                            <span className="tabnums text-[10px] shrink-0 text-primary font-medium">
                               {label}
                             </span>
                           )
@@ -6771,7 +6776,7 @@ function TicketList({
                         const elapsedMs = Date.now() - new Date(ref).getTime()
                         if (elapsedMs < 60_000) return null
                         return (
-                          <span className="text-[10px] shrink-0 text-muted-foreground">
+                          <span className="tabnums text-[10px] shrink-0 text-muted-foreground">
                             {formatDistanceToNow(new Date(ref), { locale: ptBR, addSuffix: true })}
                           </span>
                         )
