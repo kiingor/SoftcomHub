@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { WidgetManager } from '@/components/setor/WidgetManager'
 import { FloatingSaveBar } from '@/components/dashboard/floating-save-bar'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -475,7 +476,7 @@ function ReportWidget({
   // Minimizado: barra compacta ocupando a célula
   if (collapsed) {
     return (
-      <div className="flex h-full items-center gap-2 rounded-2xl border bg-card px-3">
+      <div className="flex h-full items-center gap-2 rounded-lg border bg-card px-3">
         {editMode && (
           <span className="report-drag-handle flex cursor-move items-center text-muted-foreground touch-none" title="Arraste para mover">
             <GripVertical className="h-4 w-4" />
@@ -3341,7 +3342,7 @@ const saveConfig = async () => {
         <div className="flex items-center gap-4">
           <button
             onClick={handleBackClick}
-            className="flex items-center gap-3 text-foreground hover:text-primary transition-all cursor-pointer select-none active:scale-[0.98]"
+            className="flex items-center gap-3 rounded-md text-foreground hover:text-primary transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <div className={cn(
               "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
@@ -3382,6 +3383,9 @@ const saveConfig = async () => {
             <span className="hidden sm:inline">Enviar Aviso</span>
           </Button>
 
+          {/* Busca rápida — atalho ⌘K (somente indicativo) */}
+          <kbd className="kbd hidden md:inline-flex" aria-hidden="true">⌘K</kbd>
+
           <ThemeToggle />
           
           <DropdownMenu>
@@ -3413,7 +3417,7 @@ const saveConfig = async () => {
                   key={item.id}
                   onClick={() => setActiveSection(item.id)}
                   className={cn(
-                    'flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left text-sm transition-all cursor-pointer select-none active:scale-[0.98]',
+                    'flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left text-sm transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     isActive
                       ? 'bg-primary/10 text-primary'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -3434,17 +3438,14 @@ const saveConfig = async () => {
         <main className="flex-1 overflow-y-auto bg-muted/30 p-6">
           {/* Monitoramento Section */}
           {activeSection === 'monitoramento' && (
-            <div className="space-y-6">
+            <div className="space-y-6 anim-rise">
               {/* Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <h1 className="text-xl font-bold">Monitoramento de atendimento</h1>
-                  <div className="flex items-center gap-1.5 rounded-full bg-green-500/10 px-2.5 py-1">
-                    <span className="relative flex h-2 w-2">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-                      <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
-                    </span>
-                    <span className="text-xs font-medium text-green-600 dark:text-green-400">Ao vivo</span>
+                  <h1 className="text-2xl font-semibold tracking-tight">Monitoramento de atendimento</h1>
+                  <div className="flex items-center gap-1.5">
+                    <span className="signal-dot" aria-hidden="true" />
+                    <span className="text-xs font-medium text-muted-foreground">Ao vivo</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3467,7 +3468,7 @@ const saveConfig = async () => {
               {/* Stats Cards Row 1 */}
               <div className="grid gap-4 grid-cols-1 lg:grid-cols-[2fr_1fr]">
                 {/* Atendimentos em tempo real */}
-                <Card className="glass-card-elevated rounded-2xl border-0 border-l-4 border-l-primary">
+                <Card className="glass-card-elevated rounded-lg border-l-4 border-l-primary">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
                       Atendimentos em tempo real
@@ -3504,7 +3505,7 @@ const saveConfig = async () => {
                 </Card>
 
                 {/* Status dos atendentes */}
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2 flex flex-row items-center justify-between">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
                       Status dos atendentes
@@ -3549,7 +3550,7 @@ const saveConfig = async () => {
               {/* Stats Cards Row 2 */}
               <div className="grid gap-4 lg:grid-cols-2">
 {/* Atendimento hoje */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
+              <Card className="glass-card-elevated rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Atendimento hoje
@@ -3578,7 +3579,7 @@ const saveConfig = async () => {
               </Card>
 
 {/* Status dos tickets hoje */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
+              <Card className="glass-card-elevated rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Status dos tickets hoje
@@ -3616,7 +3617,7 @@ const saveConfig = async () => {
             </div>
 
             {/* Monitoramento Detalhado - Blip Style */}
-            <Card className="glass-card-elevated rounded-2xl border-0">
+            <Card className="glass-card-elevated rounded-lg">
               <CardHeader className="pb-0">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg">Monitoramento detalhado</CardTitle>
@@ -3709,7 +3710,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('em-andamento')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'em-andamento'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3720,7 +3721,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('aguardando')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'aguardando'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3736,7 +3737,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('atendentes')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'atendentes'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3747,7 +3748,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('filas')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'filas'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3796,8 +3797,9 @@ const saveConfig = async () => {
                             <TableRow>
                               <TableCell colSpan={9} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
-                                  <AlertCircle className="mb-2 h-8 w-8" />
-                                  <p>Nenhum atendimento no momento</p>
+                                  <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
+                                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendimento no momento</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">Os atendimentos ativos aparecem aqui em tempo real.</p>
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -3823,7 +3825,7 @@ const saveConfig = async () => {
                                     )}
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
-                                  <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                                  <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
                                     {ticket.numero ? `#${ticket.numero}` : '—'}
                                   </TableCell>
                                   <TableCell className="text-sm text-foreground">
@@ -3886,8 +3888,8 @@ const saveConfig = async () => {
                             <TableRow>
                               <TableCell colSpan={7} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
-                                  <AlertCircle className="mb-2 h-8 w-8" />
-                                  <p>Nenhum ticket aguardando atendimento</p>
+                                  <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
+                                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum ticket aguardando atendimento</p>
                                   <p className="text-xs mt-1">Tickets só são atribuídos quando há atendentes online</p>
                                 </div>
                               </TableCell>
@@ -3901,7 +3903,7 @@ const saveConfig = async () => {
                                     Aguardando...
                                   </Badge>
                                 </TableCell>
-                                <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                                <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
                                   {ticket.numero ? `#${ticket.numero}` : '—'}
                                 </TableCell>
                                 <TableCell className="text-sm text-foreground">
@@ -3966,8 +3968,9 @@ const saveConfig = async () => {
                             <TableRow>
                               <TableCell colSpan={5} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
-                                  <Users className="mb-2 h-8 w-8" />
-                                  <p>Nenhum atendente cadastrado neste setor</p>
+                                  <Users className="mb-3 h-8 w-8 text-muted-foreground/50" />
+                                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendente cadastrado neste setor</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">Cadastre atendentes para distribuir os tickets.</p>
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -4098,9 +4101,9 @@ const saveConfig = async () => {
         {/* Relatórios Section */}
         {activeSection === 'relatorios' && (
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between anim-rise">
               <div>
-                <h1 className="text-xl font-bold">Relatorios de Atendimento</h1>
+                <h1 className="text-2xl font-semibold tracking-tight">Relatorios de Atendimento</h1>
               </div>
               <div className="flex items-center gap-2">
                 {editMode ? (
@@ -4170,12 +4173,12 @@ const saveConfig = async () => {
             {visibleCards.kpiPrimeiraResposta && (
             <div key="kpiPrimeiraResposta" className="overflow-hidden">
             <ReportWidget {...wprops('kpiPrimeiraResposta')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio 1a resposta</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.tempoMedioPrimeiraResposta}</p>
+                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioPrimeiraResposta}</p>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
                       <Timer className="h-5 w-5 text-blue-600 dark:text-blue-400" />
@@ -4190,12 +4193,12 @@ const saveConfig = async () => {
             {visibleCards.kpiResolucao && (
             <div key="kpiResolucao" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolucao')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio resolução</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.tempoMedioResolucao}</p>
+                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioResolucao}</p>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-green-50 dark:bg-green-950/30 flex items-center justify-center">
                       <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />
@@ -4210,12 +4213,12 @@ const saveConfig = async () => {
             {visibleCards.kpiRecebidos && (
             <div key="kpiRecebidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiRecebidos')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets recebidos</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.totalRecebidos}</p>
+                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalRecebidos}</p>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center">
                       <TrendingUp className="h-5 w-5 text-amber-600 dark:text-amber-400" />
@@ -4230,12 +4233,12 @@ const saveConfig = async () => {
             {visibleCards.kpiResolvidos && (
             <div key="kpiResolvidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolvidos')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets resolvidos</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.totalResolvidos}</p>
+                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalResolvidos}</p>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-purple-50 dark:bg-purple-950/30 flex items-center justify-center">
                       <UserCheck className="h-5 w-5 text-purple-600 dark:text-purple-400" />
@@ -4250,12 +4253,12 @@ const saveConfig = async () => {
             {visibleCards.kpiTaxa && (
             <div key="kpiTaxa" className="overflow-hidden">
             <ReportWidget {...wprops('kpiTaxa')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Taxa de resolução</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.taxaResolucao}%</p>
+                      <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.taxaResolucao}%</p>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center">
                       <Activity className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
@@ -4270,14 +4273,14 @@ const saveConfig = async () => {
             {visibleCards.kpiNps && (
             <div key="kpiNps" className="overflow-hidden">
             <ReportWidget {...wprops('kpiNps')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">NPS Score</p>
                       <div>
                         <p className={cn(
-                          "text-xl lg:text-2xl font-semibold tracking-tight",
+                          "text-xl lg:text-2xl font-semibold tracking-tight tabular-nums",
                           relatorioStats.npsScore >= 50 ? 'text-green-600' :
                           relatorioStats.npsScore >= 0 ? 'text-yellow-600' :
                           'text-red-600'
@@ -4301,7 +4304,7 @@ const saveConfig = async () => {
             {visibleCards.volume && (
             <div key="volume" className="overflow-hidden">
             <ReportWidget {...wprops('volume')}>
-                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                   <CardHeader className="pb-2">
                     <div className="flex items-center gap-3 flex-wrap">
                       <CardTitle className="text-base flex items-center gap-2">
@@ -4353,7 +4356,7 @@ const saveConfig = async () => {
             {visibleCards.heatmap && (
             <div key="heatmap" className="overflow-hidden">
             <ReportWidget {...wprops('heatmap')}>
-                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                   <CardHeader className="pb-2">
                     <div className="flex items-center gap-3 flex-wrap">
                       <CardTitle className="text-base flex items-center gap-2">
@@ -4413,14 +4416,14 @@ const saveConfig = async () => {
             {visibleCards.sla && (
             <div key="sla" className="overflow-hidden">
             <ReportWidget {...wprops('sla')}>
-                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Timer className="h-4 w-4" />
                       SLA de 1ª resposta
                     </CardTitle>
                     <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-semibold tracking-tight">{relatorioStats.slaDentroDaMeta}%</span>
+                      <span className="text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.slaDentroDaMeta}%</span>
                       <span className="text-xs text-muted-foreground">respondidos em até 15 min</span>
                     </div>
                   </CardHeader>
@@ -4450,7 +4453,7 @@ const saveConfig = async () => {
             {visibleCards.nps && (
             <div key="nps" className="overflow-hidden">
             <ReportWidget {...wprops('nps')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Star className="h-4 w-4" />
@@ -4488,7 +4491,7 @@ const saveConfig = async () => {
                             </PieChart>
                           </ResponsiveContainer>
                           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                            <span className="text-2xl font-semibold tracking-tight">{relatorioStats.satisfacao.nps}</span>
+                            <span className="text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.satisfacao.nps}</span>
                             <span className="text-[10px] text-muted-foreground">NPS</span>
                           </div>
                         </div>
@@ -4510,7 +4513,7 @@ const saveConfig = async () => {
             {visibleCards.canal && (
             <div key="canal" className="overflow-hidden">
             <ReportWidget {...wprops('canal')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Radio className="h-4 w-4" />
@@ -4526,10 +4529,10 @@ const saveConfig = async () => {
                           <div key={item.canal} className="space-y-1">
                             <div className="flex items-center justify-between text-sm">
                               <span className="font-medium capitalize">{item.canal}</span>
-                              <span className="text-muted-foreground">{item.count}</span>
+                              <span className="text-muted-foreground tabular-nums">{item.count}</span>
                             </div>
-                            <div className="h-2 bg-muted rounded-full overflow-hidden">
-                              <div className="h-full rounded-full transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+                            <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
+                              <div className="h-full rounded-sm transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
                             </div>
                           </div>
                         ))}
@@ -4545,7 +4548,7 @@ const saveConfig = async () => {
             {visibleCards.status && (
             <div key="status" className="overflow-hidden">
             <ReportWidget {...wprops('status')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Activity className="h-4 w-4" />
@@ -4561,10 +4564,10 @@ const saveConfig = async () => {
                           <div key={item.status} className="space-y-1">
                             <div className="flex items-center justify-between text-sm">
                               <span className="font-medium">{item.status}</span>
-                              <span className="text-muted-foreground">{item.count}</span>
+                              <span className="text-muted-foreground tabular-nums">{item.count}</span>
                             </div>
-                            <div className="h-2 bg-muted rounded-full overflow-hidden">
-                              <div className="h-full rounded-full transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[(i + 2) % PIE_COLORS.length] }} />
+                            <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
+                              <div className="h-full rounded-sm transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[(i + 2) % PIE_COLORS.length] }} />
                             </div>
                           </div>
                         ))}
@@ -4580,7 +4583,7 @@ const saveConfig = async () => {
             {visibleCards.roteamento && (
             <div key="roteamento" className="overflow-hidden">
             <ReportWidget {...wprops('roteamento')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <ArrowRightLeft className="h-4 w-4" />
@@ -4611,7 +4614,7 @@ const saveConfig = async () => {
             {visibleCards.rankAtendente && (
             <div key="rankAtendente" className="overflow-hidden">
             <ReportWidget {...wprops('rankAtendente')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Users className="h-4 w-4" />
@@ -4637,11 +4640,11 @@ const saveConfig = async () => {
                         <div className="flex-1">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium">{atendente.nome}</span>
-                            <span className="text-sm text-muted-foreground">{atendente.count} tickets</span>
+                            <span className="text-sm text-muted-foreground tabular-nums">{atendente.count} tickets</span>
                           </div>
-                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                          <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
                             <div
-                              className="h-full bg-primary rounded-full transition-all"
+                              className="h-full bg-primary rounded-sm transition-all"
                               style={{ width: `${Math.min(100, (atendente.count / Math.max(...relatorioStats.ticketsPorAtendente.map((a: { count: number }) => a.count))) * 100)}%` }}
                             />
                           </div>
@@ -4671,7 +4674,7 @@ const saveConfig = async () => {
             {visibleCards.rankPDV && (
             <div key="rankPDV" className="overflow-hidden">
             <ReportWidget {...wprops('rankPDV')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Hash className="h-4 w-4" />
@@ -4694,11 +4697,11 @@ const saveConfig = async () => {
                         <div className="flex-1">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium">{item.pdv}</span>
-                            <span className="text-sm text-muted-foreground">{item.count} tickets</span>
+                            <span className="text-sm text-muted-foreground tabular-nums">{item.count} tickets</span>
                           </div>
-                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                          <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
                             <div
-                              className="h-full bg-accent rounded-full transition-all"
+                              className="h-full bg-accent rounded-sm transition-all"
                               style={{ width: `${Math.min(100, (item.count / Math.max(...relatorioStats.ticketsPorPDV.map((a: { count: number }) => a.count))) * 100)}%` }}
                             />
                           </div>
@@ -4717,7 +4720,7 @@ const saveConfig = async () => {
             {visibleCards.rankTipo && (
             <div key="rankTipo" className="overflow-hidden">
             <ReportWidget {...wprops('rankTipo')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Tag className="h-4 w-4" />
@@ -4743,11 +4746,11 @@ const saveConfig = async () => {
                         <div className="flex-1">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium">{item.tipo}</span>
-                            <span className="text-sm text-muted-foreground">{item.count} tickets</span>
+                            <span className="text-sm text-muted-foreground tabular-nums">{item.count} tickets</span>
                           </div>
-                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                          <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
                             <div
-                              className="h-full bg-accent rounded-full transition-all"
+                              className="h-full bg-accent rounded-sm transition-all"
                               style={{ width: `${Math.min(100, (item.count / Math.max(...relatorioStats.ticketsPorTipo.map((a: { count: number }) => a.count))) * 100)}%` }}
                             />
                           </div>
@@ -4766,7 +4769,7 @@ const saveConfig = async () => {
             {visibleCards.matrizTipoTecnico && (
             <div key="matrizTipoTecnico" className="overflow-hidden">
             <ReportWidget {...wprops('matrizTipoTecnico')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+              <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Users className="h-4 w-4" />
@@ -4820,7 +4823,7 @@ const saveConfig = async () => {
             {visibleCards.tabela && (
             <div key="tabela" className="overflow-hidden">
             <ReportWidget {...wprops('tabela')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between gap-4">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -4946,10 +4949,10 @@ const saveConfig = async () => {
 
       {/* Atendentes Section */}
       {activeSection === 'atendentes' && (
-        <div className="space-y-6">
+        <div className="space-y-6 anim-rise">
           {/* Header */}
           <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold">Atendentes</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Atendentes</h1>
             <Button onClick={openCreateAtendenteModal} className="gap-2">
               <Plus className="h-4 w-4" />
               Novo Atendente
@@ -4979,7 +4982,7 @@ const saveConfig = async () => {
           <div className="space-y-3">
             {isLoading ? (
               Array.from({ length: 3 }).map((_, i) => (
-                <Card key={i} className="p-4">
+                <Card key={i} className="rounded-lg p-4">
                   <div className="flex items-center gap-4">
                     <Skeleton className="h-10 w-10 rounded-full" />
                     <div className="flex-1 grid grid-cols-4 gap-4">
@@ -4992,12 +4995,12 @@ const saveConfig = async () => {
                 </Card>
               ))
             ) : atendentes.length === 0 ? (
-              <Card className="glass-card-elevated rounded-2xl border-0 p-12">
+              <Card className="glass-card-elevated rounded-lg p-12">
                 <div className="flex flex-col items-center justify-center text-center">
                   <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted">
                     <Users className="h-8 w-8 text-muted-foreground" />
                   </div>
-                  <h3 className="font-semibold">Nenhum atendente cadastrado</h3>
+                  <h3 className="font-semibold tracking-tight">Nenhum atendente cadastrado</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
                     Adicione atendentes para começar a receber tickets neste setor.
                   </p>
@@ -5029,7 +5032,7 @@ const saveConfig = async () => {
                 ).length
 
                 return (
-                  <Card key={atendente.id} className="transition-shadow hover:shadow-md">
+                  <Card key={atendente.id} className="rounded-lg transition-colors hover:border-[var(--border-strong)]">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-4">
                         {/* Avatar */}
@@ -5080,7 +5083,7 @@ const saveConfig = async () => {
                             {atendente.subsetor_nomes?.length > 0 && (
                               <div className="flex flex-wrap gap-1 mt-1">
                                 {atendente.subsetor_nomes.map((nome: string, i: number) => (
-                                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                                  <span key={i} className="inline-flex items-center rounded-md bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground">
                                     {nome}
                                   </span>
                                 ))}
@@ -5091,7 +5094,7 @@ const saveConfig = async () => {
                           {/* Tickets Simultâneos */}
                           <div>
                             <p className="text-[10px] uppercase text-muted-foreground tracking-wide">Tickets em atendimento</p>
-                            <p className="text-sm font-medium">{ticketsDoAtendente}</p>
+                            <p className="text-sm font-medium tabular-nums">{ticketsDoAtendente}</p>
                           </div>
                         </div>
 
@@ -5255,7 +5258,7 @@ const saveConfig = async () => {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold">Horários de Atendimento</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Horários de Atendimento</h1>
             <p className="text-muted-foreground">
               Defina quais dias e horários seus atendentes estarão disponíveis
             </p>
@@ -5265,7 +5268,7 @@ const saveConfig = async () => {
           </Button>
         </div>
 
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardContent className="p-6">
             <div className="space-y-4">
               {DIAS_SEMANA.map((dia) => {
@@ -5322,7 +5325,7 @@ const saveConfig = async () => {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold">Pausas</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Pausas</h1>
             <p className="text-muted-foreground">
               Configure os tipos de pausas disponíveis para os atendentes
             </p>
@@ -5333,12 +5336,12 @@ const saveConfig = async () => {
           </Button>
         </div>
 
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardContent className="p-0">
             {pausas.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <Coffee className="mb-4 h-12 w-12 text-muted-foreground/30" />
-                <h3 className="font-medium">Nenhuma pausa cadastrada</h3>
+                <h3 className="font-medium tracking-tight">Nenhuma pausa cadastrada</h3>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Crie pausas para que os atendentes possam usar durante o expediente
                 </p>
@@ -5403,7 +5406,7 @@ const saveConfig = async () => {
     {activeSection === 'configuracoes' && (
       <div className="space-y-6">
         <div>
-          <h1 className="text-xl font-bold">Configurações do Setor</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Configurações do Setor</h1>
           <p className="text-muted-foreground">
             Personalize as informações e aparência do setor
           </p>
@@ -5411,7 +5414,7 @@ const saveConfig = async () => {
 
         <div className="grid gap-6 md:grid-cols-2">
           {/* Basic info */}
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle>Informações Básicas</CardTitle>
             </CardHeader>
@@ -5477,7 +5480,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Aparencia - Preview + Cor + Icone compacto */}
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle>Aparencia do Setor</CardTitle>
             </CardHeader>
@@ -5549,7 +5552,7 @@ const saveConfig = async () => {
         </div>
 
         {/* Setores de Atendimento */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <ArrowRightLeft className="h-5 w-5" />
@@ -5611,7 +5614,7 @@ const saveConfig = async () => {
         </Card>
 
         {/* Classificação de Atendimento */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Tag className="h-5 w-5" />
@@ -5747,7 +5750,7 @@ const saveConfig = async () => {
         {/* Row 1: Subsetores + Tempo de Espera */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Subsetores */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="flex flex-row items-center justify-between shrink-0">
               <div>
                 <CardTitle className="flex items-center gap-2">
@@ -5814,7 +5817,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Tempo de Espera */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle>Tempo de Espera do Ticket</CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -5845,7 +5848,7 @@ const saveConfig = async () => {
         </div>
 
         {/* Encerramento Automático por Inatividade */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle>Encerramento Automático por Inatividade</CardTitle>
             <p className="text-sm text-muted-foreground">
@@ -5902,7 +5905,7 @@ const saveConfig = async () => {
         {/* Row 2: Distribuição de Tickets + Mensagem de Finalização */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Distribuição de Tickets */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle className="flex items-center gap-2">
                 <UserCheck className="h-5 w-5" />
@@ -5952,7 +5955,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Mensagem de Finalização */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle>Mensagem de Finalização</CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -5990,8 +5993,11 @@ const saveConfig = async () => {
           </Card>
         </div>
 
+        {/* Widget de Chat para site/app */}
+        <WidgetManager setorId={setorId} />
+
         {/* Canais de Atendimento */}
-        <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[420px]">
+        <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[420px]">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0">
             <div>
               <CardTitle>Canais de Atendimento</CardTitle>
@@ -6181,7 +6187,7 @@ const saveConfig = async () => {
         </Card>
 
         {/* IA - Melhorar Mensagem */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Sparkles className="h-5 w-5" />
@@ -6286,7 +6292,7 @@ const saveConfig = async () => {
         </Card>
 
         {/* Assinatura do Atendente */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Pencil className="h-5 w-5" />
@@ -6314,7 +6320,7 @@ const saveConfig = async () => {
         {/* Row 3: Templates de Mensagem + Webhooks */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Templates de Mensagem */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0">
               <div>
                 <CardTitle>Templates de Mensagem</CardTitle>
@@ -6385,7 +6391,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Webhooks */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle>Webhooks</CardTitle>
               <p className="text-sm text-muted-foreground">Dispare notificações para sistemas externos quando eventos ocorrerem neste setor.</p>
@@ -6439,7 +6445,7 @@ const saveConfig = async () => {
         </div>
 
         {/* Setores para Transferência */}
-        <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[420px]">
+        <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[420px]">
           <CardHeader className="shrink-0">
             <CardTitle className="flex items-center gap-2">
               <ArrowRightLeft className="h-5 w-5" />
@@ -6520,7 +6526,7 @@ const saveConfig = async () => {
 
         {/* Receptor / Transmissor — apenas admin */}
         {colaboradorLogado?.is_master && (
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Radio className="h-5 w-5" />
@@ -6628,7 +6634,7 @@ const saveConfig = async () => {
 
         {/* Bloqueio de transbordo por horário — apenas admin */}
         {colaboradorLogado?.is_master && (
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Clock className="h-5 w-5" />
@@ -6710,7 +6716,7 @@ const saveConfig = async () => {
         )}
 
         {/* Zona de Perigo */}
-        <Card className="glass-card-elevated rounded-2xl border-0 border-destructive/50">
+        <Card className="glass-card-elevated rounded-lg border-destructive/50">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
               <AlertTriangle className="h-5 w-5" />
@@ -6957,11 +6963,11 @@ const saveConfig = async () => {
                 <span>Abra o WhatsApp → Menu → Aparelhos conectados → Conectar</span>
               </div>
               {evoQrCode ? (
-                <div className="rounded-2xl border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
+                <div className="rounded-lg border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
                   <img src={evoQrCode} alt="QR Code WhatsApp" className="w-56 h-56" />
                 </div>
               ) : (
-                <div className="w-64 h-64 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/30 gap-3">
+                <div className="w-64 h-64 flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/30 gap-3">
                   <Loader2 className="h-8 w-8 animate-spin text-sky-600" />
                   <p className="text-sm text-muted-foreground">Gerando QR Code...</p>
                 </div>
@@ -7233,7 +7239,7 @@ const saveConfig = async () => {
               </div>
             ) : reconnectDialog.qr ? (
               <>
-                <div className="rounded-2xl border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
+                <div className="rounded-lg border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
                   <img src={reconnectDialog.qr} alt="QR Code WhatsApp" className="w-56 h-56" />
                 </div>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground animate-pulse">
@@ -7680,11 +7686,11 @@ const saveConfig = async () => {
 
           {/* Balão — centralizado, bordas arredondadas, altura fixa (não varia
               conforme o conteúdo de cada aba: Atendimento/Transferir/Info) */}
-          <div className="relative flex h-[85vh] max-h-[760px] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl">
+          <div className="relative flex h-[85vh] max-h-[760px] w-full max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
-                <h2 className="font-semibold">Ticket #{selectedTicket.numero}</h2>
+                <h2 className="font-semibold">Ticket <span className="font-mono tabnums">#{selectedTicket.numero}</span></h2>
                 <p className="text-sm text-muted-foreground">
                   Conversa com {selectedTicket.clientes?.nome || selectedTicket.clientes?.telefone || 'Cliente'}
                 </p>
@@ -8180,8 +8186,9 @@ const saveConfig = async () => {
                 </div>
               ) : avisosEnviados.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <Send className="h-8 w-8 text-muted-foreground/40 mb-2" />
-                  <p className="text-sm text-muted-foreground">Nenhum aviso enviado ainda</p>
+                  <Send className="h-8 w-8 text-muted-foreground/40 mb-3" />
+                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum aviso enviado ainda</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Os avisos disparados para o setor aparecem aqui.</p>
                 </div>
               ) : (
                 <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
