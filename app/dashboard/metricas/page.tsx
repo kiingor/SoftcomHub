@@ -16,7 +16,6 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
   ResponsiveContainer,
   Cell,
   Legend,
@@ -709,22 +708,25 @@ export default function MetricasPage() {
             <CardContent>
               {paginatedTicketsByPDV.length > 0 ? (
                 <>
-                  <ResponsiveContainer width="100%" height={Math.max(200, paginatedTicketsByPDV.length * 40)}>
-                    <BarChart data={paginatedTicketsByPDV} layout="vertical" margin={{ left: 10, right: 30 }}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                      <XAxis type="number" className="text-xs fill-muted-foreground" />
-                      <YAxis dataKey="pdv" type="category" width={100} className="text-xs fill-muted-foreground" tick={{ fontSize: 11 }} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '12px' }}
-                        formatter={(value: number) => [`${value} tickets`, 'Quantidade']}
-                      />
-                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-                        {paginatedTicketsByPDV.map((_, index) => (
-                          <Cell key={`cell-pdv-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+                  <ChartContainer
+                    config={{ count: { label: 'Tickets', color: '#F97316' } }}
+                    className="w-full"
+                    style={{ height: Math.max(200, paginatedTicketsByPDV.length * 40) }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={paginatedTicketsByPDV} layout="vertical" margin={{ left: 10, right: 30 }}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                        <XAxis type="number" className="text-xs fill-muted-foreground" />
+                        <YAxis dataKey="pdv" type="category" width={100} className="text-xs fill-muted-foreground" tick={{ fontSize: 11 }} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="count" name="Tickets" radius={[0, 4, 4, 0]}>
+                          {paginatedTicketsByPDV.map((_, index) => (
+                            <Cell key={`cell-pdv-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartContainer>
                   {pdvTotalPages > 1 && (
                     <div className="flex items-center justify-between mt-4 text-xs text-muted-foreground">
                       <Button variant="outline" size="sm" disabled={pdvPage === 0} onClick={() => setPdvPage(p => p - 1)}>Anterior</Button>
@@ -750,22 +752,25 @@ export default function MetricasPage() {
             <CardContent>
               {paginatedTicketsByCliente.length > 0 ? (
                 <>
-                  <ResponsiveContainer width="100%" height={Math.max(200, paginatedTicketsByCliente.length * 40)}>
-                    <BarChart data={paginatedTicketsByCliente} layout="vertical" margin={{ left: 10, right: 30 }}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                      <XAxis type="number" className="text-xs fill-muted-foreground" />
-                      <YAxis dataKey="cliente" type="category" width={100} className="text-xs fill-muted-foreground" tick={{ fontSize: 11 }} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '12px' }}
-                        formatter={(value: number) => [`${value} tickets`, 'Quantidade']}
-                      />
-                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-                        {paginatedTicketsByCliente.map((_, index) => (
-                          <Cell key={`cell-cli-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+                  <ChartContainer
+                    config={{ count: { label: 'Tickets', color: '#F97316' } }}
+                    className="w-full"
+                    style={{ height: Math.max(200, paginatedTicketsByCliente.length * 40) }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={paginatedTicketsByCliente} layout="vertical" margin={{ left: 10, right: 30 }}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                        <XAxis type="number" className="text-xs fill-muted-foreground" />
+                        <YAxis dataKey="cliente" type="category" width={100} className="text-xs fill-muted-foreground" tick={{ fontSize: 11 }} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="count" name="Tickets" radius={[0, 4, 4, 0]}>
+                          {paginatedTicketsByCliente.map((_, index) => (
+                            <Cell key={`cell-cli-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </ChartContainer>
                   {clienteTotalPages > 1 && (
                     <div className="flex items-center justify-between mt-4 text-xs text-muted-foreground">
                       <Button variant="outline" size="sm" disabled={clientePage === 0} onClick={() => setClientePage(p => p - 1)}>Anterior</Button>

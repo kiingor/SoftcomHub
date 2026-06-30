@@ -2,8 +2,8 @@
 
 import { useRef } from "react"
 
-import React, { useState, useMemo, useEffect, useTransition, Fragment } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import React, { useState, useMemo, useEffect, useTransition, Fragment, Suspense } from 'react'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { WidgetManager } from '@/components/setor/WidgetManager'
 import { FloatingSaveBar } from '@/components/dashboard/floating-save-bar'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -127,19 +128,25 @@ import {
   Minus,
   Maximize2,
   GripVertical,
+  Download,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
+import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { OrigemBadge } from '@/components/origem-badge'
+import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { toast } from 'sonner'
 import { ThemeToggle } from '@/components/theme-toggle'
-import { Send, Hash, Check, Tag, Radio, Inbox } from 'lucide-react'
+import { Send, Hash, Check, Tag, Radio, Inbox, Layers } from 'lucide-react'
 import { DisparoLogsSection } from '@/components/disparo-logs-section'
 import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import {
   AreaChart,
   Area,
@@ -475,7 +482,7 @@ function ReportWidget({
   // Minimizado: barra compacta ocupando a célula
   if (collapsed) {
     return (
-      <div className="flex h-full items-center gap-2 rounded-2xl border bg-card px-3">
+      <div className="flex h-full items-center gap-2 rounded-lg border bg-card px-3">
         {editMode && (
           <span className="report-drag-handle flex cursor-move items-center text-muted-foreground touch-none" title="Arraste para mover">
             <GripVertical className="h-4 w-4" />
@@ -727,6 +734,123 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
   }
 }
 
+// Client-side filters applied over the already-loaded report tickets
+// (atendente + canal selects + cliente search). Shared by the current period
+// view and the previous-period comparison so the Δ stays consistent.
+function applyRelatorioFilters(
+  list: any[],
+  opts: { searchCliente: string; atendente: string; canal: string },
+): any[] {
+  let out = list
+  if (opts.atendente !== 'all') {
+    out = out.filter((t) => (t.colaboradores?.nome || '') === opts.atendente)
+  }
+  if (opts.canal !== 'all') {
+    out = out.filter((t) => (t.canal || 'desconhecido') === opts.canal)
+  }
+  const term = opts.searchCliente.trim().toLowerCase()
+  if (term) {
+    const termPhone = term.replace(/\D/g, '')
+    out = out.filter((t: any) => {
+      const nome = (t.clientes?.nome || '').toLowerCase()
+      const cnpj = (t.clientes?.CNPJ || '').replace(/\D/g, '')
+      const telefone = (t.clientes?.telefone || '').replace(/\D/g, '')
+      const telefoneNorm = telefone.startsWith('55') ? telefone.slice(2) : telefone
+      if (nome.includes(term)) return true
+      if (termPhone && telefoneNorm.includes(termPhone)) return true
+      if (termPhone && cnpj.includes(termPhone)) return true
+      return false
+    })
+  }
+  return out
+}
+
+// Numeric KPIs used for the period-over-period comparison (Δ%). Kept separate
+// from calculateRelatorioStats because we need raw numbers, not formatted strings.
+function computeRelatorioKpis(tickets: any[]) {
+  const encerrados = tickets.filter((t) => t.status === 'encerrado')
+  const comPrimeira = tickets.filter((t) => t.primeira_resposta_em && t.criado_em)
+  const comResolucao = encerrados.filter((t) => t.encerrado_em && t.criado_em)
+  const avgPrimeira = comPrimeira.length
+    ? comPrimeira.reduce((a, t) => a + (new Date(t.primeira_resposta_em).getTime() - new Date(t.criado_em).getTime()), 0) / comPrimeira.length
+    : 0
+  const avgResolucao = comResolucao.length
+    ? comResolucao.reduce((a, t) => a + (new Date(t.encerrado_em).getTime() - new Date(t.criado_em).getTime()), 0) / comResolucao.length
+    : 0
+  return {
+    recebidos: tickets.length,
+    resolvidos: encerrados.length,
+    taxaResolucao: tickets.length ? (encerrados.length / tickets.length) * 100 : 0,
+    tmaPrimeiraRespostaMs: avgPrimeira,
+    tmaResolucaoMs: avgResolucao,
+  }
+}
+
+// Equivalent previous period for the Δ comparison (e.g. last 7 days → the 7 days
+// before that). Returns null when there is no meaningful previous window.
+function getPrevPeriodCutoffs(
+  dateFilter: string,
+  customRange?: DateRange,
+): { from: string; to: string } | null {
+  if (dateFilter === 'all' || dateFilter === '0') return null
+  if (dateFilter === 'custom') {
+    if (!customRange?.from) return null
+    const from = new Date(customRange.from)
+    from.setHours(0, 0, 0, 0)
+    const to = customRange.to ? new Date(customRange.to) : new Date(customRange.from)
+    to.setHours(23, 59, 59, 999)
+    const dur = to.getTime() - from.getTime()
+    return { from: new Date(from.getTime() - dur - 1).toISOString(), to: new Date(from.getTime() - 1).toISOString() }
+  }
+  if (dateFilter === 'today') {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    return { from: new Date(start.getTime() - 24 * 60 * 60 * 1000).toISOString(), to: new Date(start.getTime() - 1).toISOString() }
+  }
+  const days = parseInt(dateFilter, 10)
+  if (!Number.isNaN(days) && days > 0) {
+    const ms = days * 24 * 60 * 60 * 1000
+    const curStart = Date.now() - ms
+    return { from: new Date(curStart - ms).toISOString(), to: new Date(curStart - 1).toISOString() }
+  }
+  return null
+}
+
+// Variation badge (▲/▼ + percent) vs. the previous period. Green/red are used
+// strictly as variation semantics (orange stays the brand signal). `invert`
+// flips the color logic for "lower is better" metrics like response time.
+function DeltaBadge({
+  current,
+  previous,
+  invert = false,
+}: {
+  current: number
+  previous: number | null | undefined
+  invert?: boolean
+}) {
+  if (previous == null) return null
+  if (previous === 0 && current === 0) return null
+  const diff = current - previous
+  const pct = previous === 0 ? 100 : (diff / previous) * 100
+  const flat = Math.abs(pct) < 0.5
+  const up = diff > 0
+  const good = flat ? null : invert ? !up : up
+  const Icon = flat ? Minus : up ? ArrowUp : ArrowDown
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-0.5 text-[11px] font-medium tabular-nums',
+        flat ? 'text-muted-foreground' : good ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive',
+      )}
+      title="Variação vs. período anterior"
+      aria-label={`Variação de ${Math.abs(pct).toFixed(0)}% ${up ? 'para cima' : 'para baixo'} versus o período anterior`}
+    >
+      <Icon className="h-3 w-3" aria-hidden="true" />
+      {Math.abs(pct).toFixed(0)}%
+    </span>
+  )
+}
+
 // Get icon component by name
 function getIconComponent(iconName: string | null) {
   if (!iconName) return MessageCircle
@@ -734,9 +858,10 @@ function getIconComponent(iconName: string | null) {
   return found ? found.icon : MessageCircle
 }
 
-export default function SetorPage() {
+function SetorPageInner() {
   const params = useParams()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const setorId = params.id as string
   const { data: colaboradorLogado } = useColaborador()
   const [isPending, startTransition] = useTransition()
@@ -745,12 +870,23 @@ export default function SetorPage() {
   const [activeTab, setActiveTab] = useState('em-andamento')
   const [searchTerm, setSearchTerm] = useState('')
   const [searchAtendente, setSearchAtendente] = useState('')
-  const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
+  const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
-  const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
+  const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
+  const [subsetorFiltroOpen, setSubsetorFiltroOpen] = useState(false)
   const [, setTick] = useState(0) // Force re-render for time updates
-  const [dateFilter, setDateFilter] = useState('today')
-  const [customRange, setCustomRange] = useState<DateRange | undefined>()
+  // Filtros do relatório inicializados a partir da querystring (link
+  // compartilhável). A escrita de volta na URL acontece num effect mais abaixo.
+  const [dateFilter, setDateFilter] = useState(() => searchParams.get('periodo') || 'today')
+  const [customRange, setCustomRange] = useState<DateRange | undefined>(() => {
+    const de = searchParams.get('de')
+    if (!de) return undefined
+    const from = new Date(de)
+    if (Number.isNaN(from.getTime())) return undefined
+    const ate = searchParams.get('ate')
+    const to = ate ? new Date(ate) : undefined
+    return { from, to: to && !Number.isNaN(to.getTime()) ? to : undefined }
+  })
   const [saving, setSaving] = useState(false)
   const [hasUnsavedConfig, setHasUnsavedConfig] = useState(false)
   const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
@@ -1127,7 +1263,7 @@ export default function SetorPage() {
 
   // Relatório separado: recarrega quando filtro de data muda (server-side filtering)
   const { from: dateFrom, to: dateTo } = getDateCutoffs(dateFilter, customRange)
-  const { data: relatorioData } = useSWR(
+  const { data: relatorioData, isLoading: relatorioLoading } = useSWR(
     setorId ? ['setor-relatorio', setorId, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()] : null,
     async () => {
       let query = supabase
@@ -1185,6 +1321,25 @@ export default function SetorPage() {
           ? { nome: tiposMap.get(t.tipo_atendimento_id) }
           : null,
       }))
+    },
+    { revalidateOnFocus: false }
+  )
+
+  // Período anterior equivalente (para o Δ% dos KPIs). Fetch enxuto — só os
+  // campos necessários pros indicadores numéricos + joins p/ aplicar os mesmos
+  // filtros client-side. NPS fica de fora (precisaria de avaliacoes).
+  const prevPeriod = useMemo(() => getPrevPeriodCutoffs(dateFilter, customRange), [dateFilter, customRange])
+  const { data: prevRelatorioData } = useSWR(
+    setorId && prevPeriod ? ['setor-relatorio-prev', setorId, prevPeriod.from, prevPeriod.to] : null,
+    async () => {
+      const { data } = await supabase
+        .from('tickets')
+        .select('criado_em, status, primeira_resposta_em, encerrado_em, canal, colaboradores(nome), clientes(nome, telefone, CNPJ)')
+        .eq('setor_id', setorId)
+        .gte('criado_em', prevPeriod!.from)
+        .lte('criado_em', prevPeriod!.to)
+        .limit(1000)
+      return data || []
     },
     { revalidateOnFocus: false }
   )
@@ -1282,25 +1437,50 @@ export default function SetorPage() {
     return calcularOrigem(allTickets, allLogs, setoresLookup)
   }, [tickets, ticketsRelatorioRaw, setoresLookup])
 
-  // Busca por cliente (telefone/CNPJ/nome) — filtro client-side
-  const [searchCliente, setSearchCliente] = useState('')
-  const ticketsRelatorio = useMemo(() => {
-    if (!searchCliente.trim()) return ticketsRelatorioRaw
-    const term = searchCliente.trim().toLowerCase()
-    // Normalizar telefone: remover +55, 55 do início para busca parcial
-    const termPhone = term.replace(/\D/g, '')
-    return ticketsRelatorioRaw.filter((t: any) => {
-      const nome = (t.clientes?.nome || '').toLowerCase()
-      const cnpj = (t.clientes?.CNPJ || '').replace(/\D/g, '')
-      const telefone = (t.clientes?.telefone || '').replace(/\D/g, '')
-      // Normalizar: remover 55 do início do telefone do banco
-      const telefoneNorm = telefone.startsWith('55') ? telefone.slice(2) : telefone
-      if (nome.includes(term)) return true
-      if (termPhone && telefoneNorm.includes(termPhone)) return true
-      if (termPhone && cnpj.includes(termPhone)) return true
-      return false
-    })
-  }, [ticketsRelatorioRaw, searchCliente])
+  // Filtros client-side do relatório (busca por cliente + atendente + canal),
+  // inicializados pela querystring. Aplicados sobre os tickets já carregados.
+  const [searchCliente, setSearchCliente] = useState(() => searchParams.get('cliente') || '')
+  const [relatorioAtendente, setRelatorioAtendente] = useState(() => searchParams.get('atendente') || 'all')
+  const [relatorioCanal, setRelatorioCanal] = useState(() => searchParams.get('canal') || 'all')
+
+  // Opções dos selects derivadas dos próprios tickets do período
+  const relatorioAtendentesOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of ticketsRelatorioRaw) {
+      if (t.colaboradores?.nome) set.add(t.colaboradores.nome)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [ticketsRelatorioRaw])
+  const relatorioCanaisOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of ticketsRelatorioRaw) set.add(t.canal || 'desconhecido')
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [ticketsRelatorioRaw])
+
+  const ticketsRelatorio = useMemo(
+    () => applyRelatorioFilters(ticketsRelatorioRaw, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal }),
+    [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal]
+  )
+
+  // KPIs numéricos do período atual e do anterior (para o Δ%)
+  const kpiAtual = useMemo(() => computeRelatorioKpis(ticketsRelatorio), [ticketsRelatorio])
+  const kpiAnterior = useMemo(() => {
+    if (!prevRelatorioData) return null
+    const filtered = applyRelatorioFilters(prevRelatorioData, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal })
+    return computeRelatorioKpis(filtered)
+  }, [prevRelatorioData, searchCliente, relatorioAtendente, relatorioCanal])
+
+  // Base do nome do arquivo exportado (setor + data atual)
+  const exportFilenameBase = useMemo(() => {
+    const slug = (setor?.nome || 'setor')
+      .toString()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+    return `relatorio-${slug || 'setor'}-${new Date().toISOString().slice(0, 10)}`
+  }, [setor?.nome])
 
   // Recalculate stats from filtered tickets
   const relatorioStats = useMemo(() => {
@@ -1312,6 +1492,29 @@ export default function SetorPage() {
     }
     return calculateRelatorioStats(ticketsRelatorio, formatMs)
   }, [ticketsRelatorio])
+
+  // Reflete os filtros do relatório na URL (link compartilhável/recarregável).
+  // Debounce evita spam de navegações enquanto o usuário digita; router.replace
+  // não empilha histórico. Os estados são lidos da URL só no mount, então não há
+  // loop de fetch.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      const next = new URLSearchParams()
+      if (dateFilter !== 'today') next.set('periodo', dateFilter)
+      if (dateFilter === 'custom') {
+        if (customRange?.from) next.set('de', customRange.from.toISOString())
+        if (customRange?.to) next.set('ate', customRange.to.toISOString())
+      }
+      if (searchCliente.trim()) next.set('cliente', searchCliente.trim())
+      if (relatorioAtendente !== 'all') next.set('atendente', relatorioAtendente)
+      if (relatorioCanal !== 'all') next.set('canal', relatorioCanal)
+      const qs = next.toString()
+      const pathname = window.location.pathname
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+    }, 350)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilter, customRange, searchCliente, relatorioAtendente, relatorioCanal])
 
   // Gráficos de Demanda com filtro de período próprio (independente do filtro global)
   const [volumePeriod, setVolumePeriod] = useState('7')
@@ -1761,21 +1964,25 @@ export default function SetorPage() {
 
   // Helper function to format time duration
   const formatDuration = (startDate: string | null, endDate: string | Date | null) => {
-    if (!startDate) return '00:00:00'
+    if (!startDate) return '0min'
     const start = new Date(startDate).getTime()
     const end = endDate ? new Date(endDate).getTime() : Date.now()
     const diffMs = Math.max(0, end - start)
-    const hours = Math.floor(diffMs / (1000 * 60 * 60))
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
-    const seconds = Math.floor((diffMs % (1000 * 60)) / 1000)
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    const totalMin = Math.floor(diffMs / 60000)
+    const h = Math.floor(totalMin / 60)
+    const m = totalMin % 60
+    // Curto e legível: "1h 30min", "30min", "2h", "0min"
+    if (h > 0 && m > 0) return `${h}h ${m}min`
+    if (h > 0) return `${h}h`
+    return `${m}min`
   }
 
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || t.status === 'aberto')
       .filter((t: any) => {
-        if (atendenteFilter !== 'all' && t.colaborador_id !== atendenteFilter) return false
+        if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
+        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
@@ -1791,7 +1998,7 @@ export default function SetorPage() {
             : formatDuration(t.criado_em, null), // ainda na fila
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
         // Tempo de atendimento = atribuido_em → agora (ou criado_em como fallback)
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00:00',
+        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         fila: setor?.nome || '',
         atendente: t.colaboradores?.nome || null,
@@ -1803,7 +2010,34 @@ export default function SetorPage() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor, atendenteFilter])
+  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter])
+
+  const atendenteFiltroOptions = useMemo(() => {
+    const order = (x: any) => (x.is_online && !x.pausa_atual_id ? 0 : x.pausa_atual_id ? 1 : 2)
+    const temTicket = (id: string) =>
+      tickets.some((t: any) => t.colaborador_id === id && (t.status === 'em_atendimento' || t.status === 'aberto'))
+    return [...atendentes]
+      .filter((a: any) => a.ativo)
+      .sort((a: any, b: any) =>
+        order(a) - order(b)
+        || (Number(temTicket(b.id)) - Number(temTicket(a.id)))
+        || (a.nome || '').localeCompare(b.nome || ''),
+      )
+      .map((a: any) => ({
+        id: a.id,
+        nome: a.nome,
+        // Cor do ponto = status: online (verde), pausa (amarelo), offline (cinza).
+        cor: a.is_online && !a.pausa_atual_id ? '#22c55e' : a.pausa_atual_id ? '#eab308' : '#9ca3af',
+      }))
+  }, [atendentes, tickets])
+
+  const subsetorFiltroOptions = useMemo(
+    () => [
+      { id: 'sem_subsetor', nome: 'Sem subsetor' },
+      ...subsetores.filter((s: any) => s.ativo).map((s: any) => ({ id: s.id, nome: s.nome })),
+    ],
+    [subsetores],
+  )
 
   const ticketsAguardando = useMemo(() => {
     return tickets
@@ -1829,7 +2063,7 @@ export default function SetorPage() {
 
 const handleLogout = async () => {
   await supabase.auth.signOut()
-  router.push('/login')
+  window.location.href = '/login'
   }
 
 // Send notification to setor or specific colaborador
@@ -3341,7 +3575,7 @@ const saveConfig = async () => {
         <div className="flex items-center gap-4">
           <button
             onClick={handleBackClick}
-            className="flex items-center gap-3 text-foreground hover:text-primary transition-all cursor-pointer select-none active:scale-[0.98]"
+            className="flex items-center gap-3 rounded-md text-foreground hover:text-primary transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <div className={cn(
               "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
@@ -3382,6 +3616,9 @@ const saveConfig = async () => {
             <span className="hidden sm:inline">Enviar Aviso</span>
           </Button>
 
+          {/* Busca rápida — atalho ⌘K (somente indicativo) */}
+          <kbd className="kbd hidden md:inline-flex" aria-hidden="true">Ctrl K</kbd>
+
           <ThemeToggle />
           
           <DropdownMenu>
@@ -3413,7 +3650,7 @@ const saveConfig = async () => {
                   key={item.id}
                   onClick={() => setActiveSection(item.id)}
                   className={cn(
-                    'flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left text-sm transition-all cursor-pointer select-none active:scale-[0.98]',
+                    'flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left text-sm transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     isActive
                       ? 'bg-primary/10 text-primary'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -3434,17 +3671,14 @@ const saveConfig = async () => {
         <main className="flex-1 overflow-y-auto bg-muted/30 p-6">
           {/* Monitoramento Section */}
           {activeSection === 'monitoramento' && (
-            <div className="space-y-6">
+            <div className="space-y-6 anim-rise">
               {/* Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <h1 className="text-xl font-bold">Monitoramento de atendimento</h1>
-                  <div className="flex items-center gap-1.5 rounded-full bg-green-500/10 px-2.5 py-1">
-                    <span className="relative flex h-2 w-2">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-                      <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
-                    </span>
-                    <span className="text-xs font-medium text-green-600 dark:text-green-400">Ao vivo</span>
+                  <h1 className="text-2xl font-semibold tracking-tight">Monitoramento de atendimento</h1>
+                  <div className="flex items-center gap-1.5">
+                    <span className="signal-dot" aria-hidden="true" />
+                    <span className="text-xs font-medium text-muted-foreground">Ao vivo</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3467,7 +3701,7 @@ const saveConfig = async () => {
               {/* Stats Cards Row 1 */}
               <div className="grid gap-4 grid-cols-1 lg:grid-cols-[2fr_1fr]">
                 {/* Atendimentos em tempo real */}
-                <Card className="glass-card-elevated rounded-2xl border-0 border-l-4 border-l-primary">
+                <Card className="glass-card-elevated rounded-lg border-l-4 border-l-primary">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
                       Atendimentos em tempo real
@@ -3504,7 +3738,7 @@ const saveConfig = async () => {
                 </Card>
 
                 {/* Status dos atendentes */}
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2 flex flex-row items-center justify-between">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
                       Status dos atendentes
@@ -3549,7 +3783,7 @@ const saveConfig = async () => {
               {/* Stats Cards Row 2 */}
               <div className="grid gap-4 lg:grid-cols-2">
 {/* Atendimento hoje */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
+              <Card className="glass-card-elevated rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Atendimento hoje
@@ -3578,7 +3812,7 @@ const saveConfig = async () => {
               </Card>
 
 {/* Status dos tickets hoje */}
-              <Card className="glass-card-elevated rounded-2xl border-0">
+              <Card className="glass-card-elevated rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Status dos tickets hoje
@@ -3616,80 +3850,36 @@ const saveConfig = async () => {
             </div>
 
             {/* Monitoramento Detalhado - Blip Style */}
-            <Card className="glass-card-elevated rounded-2xl border-0">
+            <Card className="glass-card-elevated rounded-lg">
               <CardHeader className="pb-0">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg">Monitoramento detalhado</CardTitle>
                   <div className="flex items-center gap-2">
-                    <Popover open={filtrosOpen} onOpenChange={setFiltrosOpen}>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className={cn(
-                            "gap-2 bg-transparent",
-                            atendenteFilter !== 'all' && "border-primary text-primary"
-                          )}
-                        >
-                          <Filter className="h-4 w-4" />
-                          Filtros
-                          {atendenteFilter !== 'all' && (
-                            <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">1</Badge>
-                          )}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-64 p-3" align="end" onCloseAutoFocus={() => setFiltroAtendenteSearch('')}>
-                        <div className="space-y-2">
-                          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Atendente</p>
-                          <input
-                            type="text"
-                            placeholder="Buscar atendente..."
-                            value={filtroAtendenteSearch}
-                            onChange={(e) => setFiltroAtendenteSearch(e.target.value)}
-                            className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            autoFocus
-                          />
-                          <div className="space-y-1 max-h-[280px] overflow-y-auto">
-                            {!filtroAtendenteSearch && (
-                              <button
-                                onClick={() => { setAtendenteFilter('all'); setFiltrosOpen(false) }}
-                                className={cn(
-                                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                                  atendenteFilter === 'all' && "font-medium text-primary"
-                                )}
-                              >
-                                <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
-                                Todos os atendentes
-                              </button>
-                            )}
-                            {atendentes
-                              .filter((a: any) => a.ativo)
-                              .filter((a: any) => !filtroAtendenteSearch || a.nome?.toLowerCase().includes(filtroAtendenteSearch.toLowerCase()))
-                              .map((a: any) => (
-                                <button
-                                  key={a.id}
-                                  onClick={() => { setAtendenteFilter(a.id); setFiltrosOpen(false) }}
-                                  className={cn(
-                                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                                    atendenteFilter === a.id && "font-medium text-primary"
-                                  )}
-                                >
-                                  <Check className={cn("h-3.5 w-3.5", atendenteFilter !== a.id && "invisible")} />
-                                  <span className={cn(
-                                    "h-2 w-2 rounded-full shrink-0",
-                                    a.is_online && !a.pausa_atual_id ? "bg-green-500" : a.pausa_atual_id ? "bg-yellow-500" : "bg-gray-400"
-                                  )} />
-                                  {a.nome}
-                                </button>
-                              ))
-                            }
-                            {filtroAtendenteSearch && atendentes.filter((a: any) => a.ativo && a.nome?.toLowerCase().includes(filtroAtendenteSearch.toLowerCase())).length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">Nenhum resultado</p>
-                            )}
-                          </div>
-                        </div>
-                      </PopoverContent>
-                    </Popover>
+                    {subsetorFiltroOptions.length > 1 && (
+                      <MultiSelectFilter
+                        icon={Layers}
+                        placeholder="Subsetor"
+                        header="Filtrar por subsetor"
+                        pluralWord="subsetores"
+                        options={subsetorFiltroOptions}
+                        selected={subsetorFilter}
+                        onChange={setSubsetorFilter}
+                        open={subsetorFiltroOpen}
+                        onOpenChange={setSubsetorFiltroOpen}
+                      />
+                    )}
+                    <MultiSelectFilter
+                      icon={User}
+                      placeholder="Atendente"
+                      header="Acompanhar atendentes"
+                      pluralWord="atendentes"
+                      options={atendenteFiltroOptions}
+                      selected={atendenteFilter}
+                      onChange={setAtendenteFilter}
+                      open={filtrosOpen}
+                      onOpenChange={setFiltrosOpen}
+                      searchable
+                    />
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                       <Input
@@ -3709,7 +3899,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('em-andamento')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'em-andamento'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3720,7 +3910,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('aguardando')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'aguardando'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3736,7 +3926,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('atendentes')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'atendentes'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3747,7 +3937,7 @@ const saveConfig = async () => {
                     <button
                       onClick={() => setActiveTab('filas')}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'filas'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -3796,8 +3986,9 @@ const saveConfig = async () => {
                             <TableRow>
                               <TableCell colSpan={9} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
-                                  <AlertCircle className="mb-2 h-8 w-8" />
-                                  <p>Nenhum atendimento no momento</p>
+                                  <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
+                                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendimento no momento</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">Os atendimentos ativos aparecem aqui em tempo real.</p>
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -3819,21 +4010,23 @@ const saveConfig = async () => {
                                         Aguardando...
                                       </Badge>
                                     ) : (
-                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
+                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '0min'}</span>
                                     )}
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
-                                  <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                                  <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
                                     {ticket.numero ? `#${ticket.numero}` : '—'}
                                   </TableCell>
-                                  <TableCell className="text-sm text-foreground">
+                                  <TableCell className="text-sm text-foreground max-w-[180px]">
                                     <div className="flex items-center gap-1">
                                       <User className="h-3 w-3 text-muted-foreground shrink-0" />
-                                      {ticket.contato}
+                                      <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                                     </div>
                                   </TableCell>
-                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
-                                  <TableCell className="text-sm text-foreground">{ticket.fila || setor?.nome}</TableCell>
+                                  <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
+                                  <TableCell className="text-sm text-foreground max-w-[160px]">
+                                    <span className="block truncate" title={ticket.fila || setor?.nome}>{ticket.fila || setor?.nome}</span>
+                                  </TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
                                     <Button 
@@ -3886,8 +4079,8 @@ const saveConfig = async () => {
                             <TableRow>
                               <TableCell colSpan={7} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
-                                  <AlertCircle className="mb-2 h-8 w-8" />
-                                  <p>Nenhum ticket aguardando atendimento</p>
+                                  <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
+                                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum ticket aguardando atendimento</p>
                                   <p className="text-xs mt-1">Tickets só são atribuídos quando há atendentes online</p>
                                 </div>
                               </TableCell>
@@ -3901,17 +4094,19 @@ const saveConfig = async () => {
                                     Aguardando...
                                   </Badge>
                                 </TableCell>
-                                <TableCell className="text-sm tabular-nums text-foreground font-medium">
+                                <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
                                   {ticket.numero ? `#${ticket.numero}` : '—'}
                                 </TableCell>
-                                <TableCell className="text-sm text-foreground">
+                                <TableCell className="text-sm text-foreground max-w-[180px]">
                                   <div className="flex items-center gap-1">
                                     <User className="h-3 w-3 text-muted-foreground shrink-0" />
-                                    {ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}
+                                    <span className="truncate" title={ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}>{ticket.clientes?.nome || ticket.clientes?.telefone || 'Desconhecido'}</span>
                                   </div>
                                 </TableCell>
-                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
-                                <TableCell className="text-sm text-foreground">{setor?.nome}</TableCell>
+                                <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
+                                <TableCell className="text-sm text-foreground max-w-[160px]">
+                                  <span className="block truncate" title={setor?.nome}>{setor?.nome}</span>
+                                </TableCell>
                                 <TableCell>
                                   <Badge variant={
                                     ticket.prioridade === 'alta' ? 'destructive' :
@@ -3966,8 +4161,9 @@ const saveConfig = async () => {
                             <TableRow>
                               <TableCell colSpan={5} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
-                                  <Users className="mb-2 h-8 w-8" />
-                                  <p>Nenhum atendente cadastrado neste setor</p>
+                                  <Users className="mb-3 h-8 w-8 text-muted-foreground/50" />
+                                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendente cadastrado neste setor</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">Cadastre atendentes para distribuir os tickets.</p>
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -4098,9 +4294,9 @@ const saveConfig = async () => {
         {/* Relatórios Section */}
         {activeSection === 'relatorios' && (
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between anim-rise">
               <div>
-                <h1 className="text-xl font-bold">Relatorios de Atendimento</h1>
+                <h1 className="text-2xl font-semibold tracking-tight">Relatorios de Atendimento</h1>
               </div>
               <div className="flex items-center gap-2">
                 {editMode ? (
@@ -4136,6 +4332,30 @@ const saveConfig = async () => {
                     Personalizar
                   </Button>
                 )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="gap-2" disabled={ticketsRelatorio.length === 0}>
+                      <Download className="h-4 w-4" />
+                      Exportar
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onClick={() => exportRelatorioCsv(ticketsRelatorio, `${exportFilenameBase}.csv`)}
+                    >
+                      Exportar CSV
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        exportRelatorioXlsx(ticketsRelatorio, `${exportFilenameBase}.xlsx`).catch(() =>
+                          toast.error('Falha ao gerar o arquivo XLSX')
+                        )
+                      }}
+                    >
+                      Exportar XLSX
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <DatePeriodFilter
                   dateFilter={dateFilter}
                   onDateFilterChange={setDateFilter}
@@ -4145,6 +4365,50 @@ const saveConfig = async () => {
                   triggerClassName="w-44"
                 />
               </div>
+            </div>
+
+            {/* Filtros client-side: atendente + canal (sobre os tickets já carregados) */}
+            <div className="flex flex-wrap items-center gap-2 anim-rise">
+              <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+                <Filter className="h-3.5 w-3.5" />
+                Filtrar:
+              </span>
+              <Select value={relatorioAtendente} onValueChange={setRelatorioAtendente}>
+                <SelectTrigger className="h-9 w-[200px] text-sm">
+                  <SelectValue placeholder="Atendente" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os atendentes</SelectItem>
+                  {relatorioAtendentesOptions.map((nome) => (
+                    <SelectItem key={nome} value={nome}>{nome}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={relatorioCanal} onValueChange={setRelatorioCanal}>
+                <SelectTrigger className="h-9 w-[180px] text-sm">
+                  <SelectValue placeholder="Canal" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os canais</SelectItem>
+                  {relatorioCanaisOptions.map((canal) => (
+                    <SelectItem key={canal} value={canal} className="capitalize">{canal}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {(relatorioAtendente !== 'all' || relatorioCanal !== 'all') && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 gap-1.5 text-muted-foreground"
+                  onClick={() => { setRelatorioAtendente('all'); setRelatorioCanal('all') }}
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Limpar filtros
+                </Button>
+              )}
+              <span className="ml-auto text-xs text-muted-foreground tabular-nums" data-nums>
+                {ticketsRelatorio.length} de {ticketsRelatorioRaw.length} atendimentos
+              </span>
             </div>
 
             {editMode && (
@@ -4170,12 +4434,15 @@ const saveConfig = async () => {
             {visibleCards.kpiPrimeiraResposta && (
             <div key="kpiPrimeiraResposta" className="overflow-hidden">
             <ReportWidget {...wprops('kpiPrimeiraResposta')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio 1a resposta</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.tempoMedioPrimeiraResposta}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioPrimeiraResposta}</p>
+                        <DeltaBadge current={kpiAtual.tmaPrimeiraRespostaMs} previous={kpiAnterior?.tmaPrimeiraRespostaMs} invert />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
                       <Timer className="h-5 w-5 text-blue-600 dark:text-blue-400" />
@@ -4190,12 +4457,15 @@ const saveConfig = async () => {
             {visibleCards.kpiResolucao && (
             <div key="kpiResolucao" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolucao')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tempo médio resolução</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.tempoMedioResolucao}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioResolucao}</p>
+                        <DeltaBadge current={kpiAtual.tmaResolucaoMs} previous={kpiAnterior?.tmaResolucaoMs} invert />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-green-50 dark:bg-green-950/30 flex items-center justify-center">
                       <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />
@@ -4210,12 +4480,15 @@ const saveConfig = async () => {
             {visibleCards.kpiRecebidos && (
             <div key="kpiRecebidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiRecebidos')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets recebidos</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.totalRecebidos}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalRecebidos}</p>
+                        <DeltaBadge current={kpiAtual.recebidos} previous={kpiAnterior?.recebidos} />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center">
                       <TrendingUp className="h-5 w-5 text-amber-600 dark:text-amber-400" />
@@ -4230,12 +4503,15 @@ const saveConfig = async () => {
             {visibleCards.kpiResolvidos && (
             <div key="kpiResolvidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolvidos')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Tickets resolvidos</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.totalResolvidos}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalResolvidos}</p>
+                        <DeltaBadge current={kpiAtual.resolvidos} previous={kpiAnterior?.resolvidos} />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-purple-50 dark:bg-purple-950/30 flex items-center justify-center">
                       <UserCheck className="h-5 w-5 text-purple-600 dark:text-purple-400" />
@@ -4250,12 +4526,15 @@ const saveConfig = async () => {
             {visibleCards.kpiTaxa && (
             <div key="kpiTaxa" className="overflow-hidden">
             <ReportWidget {...wprops('kpiTaxa')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">Taxa de resolução</p>
-                      <p className="text-xl lg:text-2xl font-semibold tracking-tight">{relatorioStats.taxaResolucao}%</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.taxaResolucao}%</p>
+                        <DeltaBadge current={kpiAtual.taxaResolucao} previous={kpiAnterior?.taxaResolucao} />
+                      </div>
                     </div>
                     <div className="h-9 w-9 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center">
                       <Activity className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
@@ -4270,14 +4549,14 @@ const saveConfig = async () => {
             {visibleCards.kpiNps && (
             <div key="kpiNps" className="overflow-hidden">
             <ReportWidget {...wprops('kpiNps')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 h-full">
+              <Card className="glass-card-elevated rounded-lg h-full">
                 <CardContent className="p-5 h-full flex items-center">
                   <div className="flex w-full items-start justify-between">
                     <div className="space-y-4">
                       <p className="text-xs text-muted-foreground">NPS Score</p>
                       <div>
                         <p className={cn(
-                          "text-xl lg:text-2xl font-semibold tracking-tight",
+                          "text-xl lg:text-2xl font-semibold tracking-tight tabular-nums",
                           relatorioStats.npsScore >= 50 ? 'text-green-600' :
                           relatorioStats.npsScore >= 0 ? 'text-yellow-600' :
                           'text-red-600'
@@ -4301,7 +4580,7 @@ const saveConfig = async () => {
             {visibleCards.volume && (
             <div key="volume" className="overflow-hidden">
             <ReportWidget {...wprops('volume')}>
-                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                   <CardHeader className="pb-2">
                     <div className="flex items-center gap-3 flex-wrap">
                       <CardTitle className="text-base flex items-center gap-2">
@@ -4325,7 +4604,11 @@ const saveConfig = async () => {
                         <p className="text-sm text-muted-foreground">Sem dados no período</p>
                       </div>
                     ) : (
-                      <div className="h-full min-h-[180px] w-full">
+                      <div
+                        className="h-full min-h-[180px] w-full"
+                        role="img"
+                        aria-label={`Gráfico de área com o volume de atendimentos ao longo do tempo, ${volumeSerie.length} pontos no período selecionado`}
+                      >
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={volumeSerie} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
                             <defs>
@@ -4353,7 +4636,7 @@ const saveConfig = async () => {
             {visibleCards.heatmap && (
             <div key="heatmap" className="overflow-hidden">
             <ReportWidget {...wprops('heatmap')}>
-                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                   <CardHeader className="pb-2">
                     <div className="flex items-center gap-3 flex-wrap">
                       <CardTitle className="text-base flex items-center gap-2">
@@ -4378,7 +4661,11 @@ const saveConfig = async () => {
                         <p className="text-sm text-muted-foreground">Sem dados no período</p>
                       </div>
                     ) : (
-                      <div className="flex h-full flex-col gap-1 text-[10px]">
+                      <div
+                        className="flex h-full flex-col gap-1 text-[10px]"
+                        role="img"
+                        aria-label="Mapa de calor de horários de pico por dia da semana e faixa de hora"
+                      >
                         <div className="flex items-center gap-1">
                           <div className="w-8 shrink-0" />
                           {Array.from({ length: 12 }).map((_, b) => (
@@ -4413,19 +4700,23 @@ const saveConfig = async () => {
             {visibleCards.sla && (
             <div key="sla" className="overflow-hidden">
             <ReportWidget {...wprops('sla')}>
-                <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Timer className="h-4 w-4" />
                       SLA de 1ª resposta
                     </CardTitle>
                     <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-semibold tracking-tight">{relatorioStats.slaDentroDaMeta}%</span>
+                      <span className="text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.slaDentroDaMeta}%</span>
                       <span className="text-xs text-muted-foreground">respondidos em até 15 min</span>
                     </div>
                   </CardHeader>
                   <CardContent className="min-h-0 flex-1">
-                    <div className="h-full min-h-[160px] w-full">
+                    <div
+                      className="h-full min-h-[160px] w-full"
+                      role="img"
+                      aria-label={`Gráfico de barras do SLA de 1ª resposta. ${relatorioStats.slaDentroDaMeta}% respondidos em até 15 minutos`}
+                    >
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={relatorioStats.slaBuckets} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
@@ -4450,7 +4741,7 @@ const saveConfig = async () => {
             {visibleCards.nps && (
             <div key="nps" className="overflow-hidden">
             <ReportWidget {...wprops('nps')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Star className="h-4 w-4" />
@@ -4465,7 +4756,11 @@ const saveConfig = async () => {
                       </div>
                     ) : (
                       <div className="flex items-center gap-4">
-                        <div className="h-[180px] w-[180px] shrink-0 relative">
+                        <div
+                          className="h-[180px] w-[180px] shrink-0 relative"
+                          role="img"
+                          aria-label={`Gráfico de pizza de satisfação NPS. NPS ${relatorioStats.satisfacao.nps}, com ${relatorioStats.satisfacao.promotores} promotores, ${relatorioStats.satisfacao.neutros} neutros e ${relatorioStats.satisfacao.detratores} detratores`}
+                        >
                           <ResponsiveContainer width="100%" height="100%">
                             <PieChart>
                               <Pie
@@ -4488,7 +4783,7 @@ const saveConfig = async () => {
                             </PieChart>
                           </ResponsiveContainer>
                           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                            <span className="text-2xl font-semibold tracking-tight">{relatorioStats.satisfacao.nps}</span>
+                            <span className="text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.satisfacao.nps}</span>
                             <span className="text-[10px] text-muted-foreground">NPS</span>
                           </div>
                         </div>
@@ -4510,7 +4805,7 @@ const saveConfig = async () => {
             {visibleCards.canal && (
             <div key="canal" className="overflow-hidden">
             <ReportWidget {...wprops('canal')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Radio className="h-4 w-4" />
@@ -4526,10 +4821,10 @@ const saveConfig = async () => {
                           <div key={item.canal} className="space-y-1">
                             <div className="flex items-center justify-between text-sm">
                               <span className="font-medium capitalize">{item.canal}</span>
-                              <span className="text-muted-foreground">{item.count}</span>
+                              <span className="text-muted-foreground tabular-nums">{item.count}</span>
                             </div>
-                            <div className="h-2 bg-muted rounded-full overflow-hidden">
-                              <div className="h-full rounded-full transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+                            <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
+                              <div className="h-full rounded-sm transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
                             </div>
                           </div>
                         ))}
@@ -4545,7 +4840,7 @@ const saveConfig = async () => {
             {visibleCards.status && (
             <div key="status" className="overflow-hidden">
             <ReportWidget {...wprops('status')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Activity className="h-4 w-4" />
@@ -4561,10 +4856,10 @@ const saveConfig = async () => {
                           <div key={item.status} className="space-y-1">
                             <div className="flex items-center justify-between text-sm">
                               <span className="font-medium">{item.status}</span>
-                              <span className="text-muted-foreground">{item.count}</span>
+                              <span className="text-muted-foreground tabular-nums">{item.count}</span>
                             </div>
-                            <div className="h-2 bg-muted rounded-full overflow-hidden">
-                              <div className="h-full rounded-full transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[(i + 2) % PIE_COLORS.length] }} />
+                            <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
+                              <div className="h-full rounded-sm transition-all" style={{ width: `${Math.round((item.count / relatorioStats.totalRecebidos) * 100)}%`, backgroundColor: PIE_COLORS[(i + 2) % PIE_COLORS.length] }} />
                             </div>
                           </div>
                         ))}
@@ -4580,7 +4875,7 @@ const saveConfig = async () => {
             {visibleCards.roteamento && (
             <div key="roteamento" className="overflow-hidden">
             <ReportWidget {...wprops('roteamento')}>
-                <Card className="glass-card-elevated rounded-2xl border-0">
+                <Card className="glass-card-elevated rounded-lg">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                       <ArrowRightLeft className="h-4 w-4" />
@@ -4611,7 +4906,7 @@ const saveConfig = async () => {
             {visibleCards.rankAtendente && (
             <div key="rankAtendente" className="overflow-hidden">
             <ReportWidget {...wprops('rankAtendente')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Users className="h-4 w-4" />
@@ -4637,11 +4932,11 @@ const saveConfig = async () => {
                         <div className="flex-1">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium">{atendente.nome}</span>
-                            <span className="text-sm text-muted-foreground">{atendente.count} tickets</span>
+                            <span className="text-sm text-muted-foreground tabular-nums">{atendente.count} tickets</span>
                           </div>
-                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                          <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
                             <div
-                              className="h-full bg-primary rounded-full transition-all"
+                              className="h-full bg-primary rounded-sm transition-all"
                               style={{ width: `${Math.min(100, (atendente.count / Math.max(...relatorioStats.ticketsPorAtendente.map((a: { count: number }) => a.count))) * 100)}%` }}
                             />
                           </div>
@@ -4671,7 +4966,7 @@ const saveConfig = async () => {
             {visibleCards.rankPDV && (
             <div key="rankPDV" className="overflow-hidden">
             <ReportWidget {...wprops('rankPDV')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Hash className="h-4 w-4" />
@@ -4694,11 +4989,11 @@ const saveConfig = async () => {
                         <div className="flex-1">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium">{item.pdv}</span>
-                            <span className="text-sm text-muted-foreground">{item.count} tickets</span>
+                            <span className="text-sm text-muted-foreground tabular-nums">{item.count} tickets</span>
                           </div>
-                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                          <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
                             <div
-                              className="h-full bg-accent rounded-full transition-all"
+                              className="h-full bg-accent rounded-sm transition-all"
                               style={{ width: `${Math.min(100, (item.count / Math.max(...relatorioStats.ticketsPorPDV.map((a: { count: number }) => a.count))) * 100)}%` }}
                             />
                           </div>
@@ -4717,7 +5012,7 @@ const saveConfig = async () => {
             {visibleCards.rankTipo && (
             <div key="rankTipo" className="overflow-hidden">
             <ReportWidget {...wprops('rankTipo')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Tag className="h-4 w-4" />
@@ -4743,11 +5038,11 @@ const saveConfig = async () => {
                         <div className="flex-1">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium">{item.tipo}</span>
-                            <span className="text-sm text-muted-foreground">{item.count} tickets</span>
+                            <span className="text-sm text-muted-foreground tabular-nums">{item.count} tickets</span>
                           </div>
-                          <div className="h-2 bg-muted rounded-full overflow-hidden">
+                          <div className="h-1.5 bg-muted rounded-sm overflow-hidden">
                             <div
-                              className="h-full bg-accent rounded-full transition-all"
+                              className="h-full bg-accent rounded-sm transition-all"
                               style={{ width: `${Math.min(100, (item.count / Math.max(...relatorioStats.ticketsPorTipo.map((a: { count: number }) => a.count))) * 100)}%` }}
                             />
                           </div>
@@ -4766,7 +5061,7 @@ const saveConfig = async () => {
             {visibleCards.matrizTipoTecnico && (
             <div key="matrizTipoTecnico" className="overflow-hidden">
             <ReportWidget {...wprops('matrizTipoTecnico')}>
-              <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+              <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Users className="h-4 w-4" />
@@ -4820,7 +5115,7 @@ const saveConfig = async () => {
             {visibleCards.tabela && (
             <div key="tabela" className="overflow-hidden">
             <ReportWidget {...wprops('tabela')}>
-            <Card className="glass-card-elevated rounded-2xl border-0 flex h-full flex-col">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between gap-4">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -4839,7 +5134,19 @@ const saveConfig = async () => {
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-4 pt-2 min-h-0 flex-1">
-                {ticketsRelatorio.length === 0 ? (
+                {relatorioLoading && ticketsRelatorioRaw.length === 0 ? (
+                  <div className="space-y-2 py-2" aria-busy="true" aria-label="Carregando atendimentos">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="flex items-center gap-3">
+                        <div className="skeleton h-4 w-16" />
+                        <div className="skeleton h-4 flex-1" />
+                        <div className="skeleton h-4 w-24" />
+                        <div className="skeleton h-4 w-16" />
+                        <div className="skeleton h-4 w-20" />
+                      </div>
+                    ))}
+                  </div>
+                ) : ticketsRelatorio.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-8 text-center">
                     <AlertCircle className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum ticket encontrado no período</p>
@@ -4849,15 +5156,15 @@ const saveConfig = async () => {
                     <Table>
                       <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
                         <TableRow>
-                          <TableHead className="text-xs font-medium pl-4">Ticket</TableHead>
-                          <TableHead className="text-xs font-medium">Cliente</TableHead>
-                          <TableHead className="text-xs font-medium">Atendente</TableHead>
-                          <TableHead className="text-xs font-medium">Tipo</TableHead>
-                          <TableHead className="text-xs font-medium">Origem</TableHead>
-                          <TableHead className="text-xs font-medium">Status</TableHead>
-                          <TableHead className="text-xs font-medium">NPS</TableHead>
-                          <TableHead className="text-xs font-medium">Data</TableHead>
-                          <TableHead className="text-xs font-medium w-[60px] pr-4">Ações</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium pl-4">Ticket</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Cliente</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Atendente</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Tipo</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Origem</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Status</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">NPS</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium">Data</TableHead>
+                          <TableHead scope="col" className="text-xs font-medium w-[60px] pr-4">Ações</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -4880,7 +5187,7 @@ const saveConfig = async () => {
                                 <span className="text-muted-foreground">—</span>
                               )}
                             </TableCell>
-                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} /></TableCell>
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
                             <TableCell>
                               <Badge
                                 variant="outline"
@@ -4946,10 +5253,10 @@ const saveConfig = async () => {
 
       {/* Atendentes Section */}
       {activeSection === 'atendentes' && (
-        <div className="space-y-6">
+        <div className="space-y-6 anim-rise">
           {/* Header */}
           <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold">Atendentes</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Atendentes</h1>
             <Button onClick={openCreateAtendenteModal} className="gap-2">
               <Plus className="h-4 w-4" />
               Novo Atendente
@@ -4979,7 +5286,7 @@ const saveConfig = async () => {
           <div className="space-y-3">
             {isLoading ? (
               Array.from({ length: 3 }).map((_, i) => (
-                <Card key={i} className="p-4">
+                <Card key={i} className="rounded-lg p-4">
                   <div className="flex items-center gap-4">
                     <Skeleton className="h-10 w-10 rounded-full" />
                     <div className="flex-1 grid grid-cols-4 gap-4">
@@ -4992,12 +5299,12 @@ const saveConfig = async () => {
                 </Card>
               ))
             ) : atendentes.length === 0 ? (
-              <Card className="glass-card-elevated rounded-2xl border-0 p-12">
+              <Card className="glass-card-elevated rounded-lg p-12">
                 <div className="flex flex-col items-center justify-center text-center">
                   <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted">
                     <Users className="h-8 w-8 text-muted-foreground" />
                   </div>
-                  <h3 className="font-semibold">Nenhum atendente cadastrado</h3>
+                  <h3 className="font-semibold tracking-tight">Nenhum atendente cadastrado</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
                     Adicione atendentes para começar a receber tickets neste setor.
                   </p>
@@ -5029,7 +5336,7 @@ const saveConfig = async () => {
                 ).length
 
                 return (
-                  <Card key={atendente.id} className="transition-shadow hover:shadow-md">
+                  <Card key={atendente.id} className="rounded-lg transition-colors hover:border-[var(--border-strong)]">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-4">
                         {/* Avatar */}
@@ -5080,7 +5387,7 @@ const saveConfig = async () => {
                             {atendente.subsetor_nomes?.length > 0 && (
                               <div className="flex flex-wrap gap-1 mt-1">
                                 {atendente.subsetor_nomes.map((nome: string, i: number) => (
-                                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                                  <span key={i} className="inline-flex items-center rounded-md bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground">
                                     {nome}
                                   </span>
                                 ))}
@@ -5091,7 +5398,7 @@ const saveConfig = async () => {
                           {/* Tickets Simultâneos */}
                           <div>
                             <p className="text-[10px] uppercase text-muted-foreground tracking-wide">Tickets em atendimento</p>
-                            <p className="text-sm font-medium">{ticketsDoAtendente}</p>
+                            <p className="text-sm font-medium tabular-nums">{ticketsDoAtendente}</p>
                           </div>
                         </div>
 
@@ -5255,7 +5562,7 @@ const saveConfig = async () => {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold">Horários de Atendimento</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Horários de Atendimento</h1>
             <p className="text-muted-foreground">
               Defina quais dias e horários seus atendentes estarão disponíveis
             </p>
@@ -5265,7 +5572,7 @@ const saveConfig = async () => {
           </Button>
         </div>
 
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardContent className="p-6">
             <div className="space-y-4">
               {DIAS_SEMANA.map((dia) => {
@@ -5322,7 +5629,7 @@ const saveConfig = async () => {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold">Pausas</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Pausas</h1>
             <p className="text-muted-foreground">
               Configure os tipos de pausas disponíveis para os atendentes
             </p>
@@ -5333,12 +5640,12 @@ const saveConfig = async () => {
           </Button>
         </div>
 
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardContent className="p-0">
             {pausas.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <Coffee className="mb-4 h-12 w-12 text-muted-foreground/30" />
-                <h3 className="font-medium">Nenhuma pausa cadastrada</h3>
+                <h3 className="font-medium tracking-tight">Nenhuma pausa cadastrada</h3>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Crie pausas para que os atendentes possam usar durante o expediente
                 </p>
@@ -5403,7 +5710,7 @@ const saveConfig = async () => {
     {activeSection === 'configuracoes' && (
       <div className="space-y-6">
         <div>
-          <h1 className="text-xl font-bold">Configurações do Setor</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Configurações do Setor</h1>
           <p className="text-muted-foreground">
             Personalize as informações e aparência do setor
           </p>
@@ -5411,7 +5718,7 @@ const saveConfig = async () => {
 
         <div className="grid gap-6 md:grid-cols-2">
           {/* Basic info */}
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle>Informações Básicas</CardTitle>
             </CardHeader>
@@ -5477,7 +5784,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Aparencia - Preview + Cor + Icone compacto */}
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle>Aparencia do Setor</CardTitle>
             </CardHeader>
@@ -5549,7 +5856,7 @@ const saveConfig = async () => {
         </div>
 
         {/* Setores de Atendimento */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <ArrowRightLeft className="h-5 w-5" />
@@ -5611,7 +5918,7 @@ const saveConfig = async () => {
         </Card>
 
         {/* Classificação de Atendimento */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Tag className="h-5 w-5" />
@@ -5747,7 +6054,7 @@ const saveConfig = async () => {
         {/* Row 1: Subsetores + Tempo de Espera */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Subsetores */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="flex flex-row items-center justify-between shrink-0">
               <div>
                 <CardTitle className="flex items-center gap-2">
@@ -5814,7 +6121,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Tempo de Espera */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle>Tempo de Espera do Ticket</CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -5845,7 +6152,7 @@ const saveConfig = async () => {
         </div>
 
         {/* Encerramento Automático por Inatividade */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle>Encerramento Automático por Inatividade</CardTitle>
             <p className="text-sm text-muted-foreground">
@@ -5902,7 +6209,7 @@ const saveConfig = async () => {
         {/* Row 2: Distribuição de Tickets + Mensagem de Finalização */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Distribuição de Tickets */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle className="flex items-center gap-2">
                 <UserCheck className="h-5 w-5" />
@@ -5952,7 +6259,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Mensagem de Finalização */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle>Mensagem de Finalização</CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -5990,8 +6297,11 @@ const saveConfig = async () => {
           </Card>
         </div>
 
+        {/* Widget de Chat para site/app */}
+        <WidgetManager setorId={setorId} />
+
         {/* Canais de Atendimento */}
-        <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[420px]">
+        <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[420px]">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0">
             <div>
               <CardTitle>Canais de Atendimento</CardTitle>
@@ -6181,7 +6491,7 @@ const saveConfig = async () => {
         </Card>
 
         {/* IA - Melhorar Mensagem */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Sparkles className="h-5 w-5" />
@@ -6286,7 +6596,7 @@ const saveConfig = async () => {
         </Card>
 
         {/* Assinatura do Atendente */}
-        <Card className="glass-card-elevated rounded-2xl border-0">
+        <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Pencil className="h-5 w-5" />
@@ -6314,7 +6624,7 @@ const saveConfig = async () => {
         {/* Row 3: Templates de Mensagem + Webhooks */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Templates de Mensagem */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0">
               <div>
                 <CardTitle>Templates de Mensagem</CardTitle>
@@ -6385,7 +6695,7 @@ const saveConfig = async () => {
           </Card>
 
           {/* Webhooks */}
-          <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[400px]">
+          <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle>Webhooks</CardTitle>
               <p className="text-sm text-muted-foreground">Dispare notificações para sistemas externos quando eventos ocorrerem neste setor.</p>
@@ -6439,7 +6749,7 @@ const saveConfig = async () => {
         </div>
 
         {/* Setores para Transferência */}
-        <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col max-h-[420px]">
+        <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[420px]">
           <CardHeader className="shrink-0">
             <CardTitle className="flex items-center gap-2">
               <ArrowRightLeft className="h-5 w-5" />
@@ -6520,7 +6830,7 @@ const saveConfig = async () => {
 
         {/* Receptor / Transmissor — apenas admin */}
         {colaboradorLogado?.is_master && (
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Radio className="h-5 w-5" />
@@ -6628,7 +6938,7 @@ const saveConfig = async () => {
 
         {/* Bloqueio de transbordo por horário — apenas admin */}
         {colaboradorLogado?.is_master && (
-          <Card className="glass-card-elevated rounded-2xl border-0">
+          <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Clock className="h-5 w-5" />
@@ -6710,7 +7020,7 @@ const saveConfig = async () => {
         )}
 
         {/* Zona de Perigo */}
-        <Card className="glass-card-elevated rounded-2xl border-0 border-destructive/50">
+        <Card className="glass-card-elevated rounded-lg border-destructive/50">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
               <AlertTriangle className="h-5 w-5" />
@@ -6957,11 +7267,11 @@ const saveConfig = async () => {
                 <span>Abra o WhatsApp → Menu → Aparelhos conectados → Conectar</span>
               </div>
               {evoQrCode ? (
-                <div className="rounded-2xl border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
+                <div className="rounded-lg border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
                   <img src={evoQrCode} alt="QR Code WhatsApp" className="w-56 h-56" />
                 </div>
               ) : (
-                <div className="w-64 h-64 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/30 gap-3">
+                <div className="w-64 h-64 flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/30 gap-3">
                   <Loader2 className="h-8 w-8 animate-spin text-sky-600" />
                   <p className="text-sm text-muted-foreground">Gerando QR Code...</p>
                 </div>
@@ -7233,7 +7543,7 @@ const saveConfig = async () => {
               </div>
             ) : reconnectDialog.qr ? (
               <>
-                <div className="rounded-2xl border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
+                <div className="rounded-lg border-2 border-sky-200 dark:border-sky-800 p-3 bg-white">
                   <img src={reconnectDialog.qr} alt="QR Code WhatsApp" className="w-56 h-56" />
                 </div>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground animate-pulse">
@@ -7680,11 +7990,11 @@ const saveConfig = async () => {
 
           {/* Balão — centralizado, bordas arredondadas, altura fixa (não varia
               conforme o conteúdo de cada aba: Atendimento/Transferir/Info) */}
-          <div className="relative flex h-[85vh] max-h-[760px] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl">
+          <div className="relative flex h-[85vh] max-h-[760px] w-full max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
-                <h2 className="font-semibold">Ticket #{selectedTicket.numero}</h2>
+                <h2 className="font-semibold">Ticket <span className="font-mono tabnums">#{selectedTicket.numero}</span></h2>
                 <p className="text-sm text-muted-foreground">
                   Conversa com {selectedTicket.clientes?.nome || selectedTicket.clientes?.telefone || 'Cliente'}
                 </p>
@@ -7769,7 +8079,7 @@ const saveConfig = async () => {
                                   ? "bg-muted text-foreground rounded-bl-none"
                                   : "bg-primary text-primary-foreground rounded-br-none"
                               )}>
-                                <p className="text-xs whitespace-pre-wrap">{msg.conteudo}</p>
+                                <TextoMensagem conteudo={msg.conteudo} className="text-xs whitespace-pre-wrap" />
                                 <p className="text-[10px] mt-1 opacity-60 text-right">
                                   {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                                 </p>
@@ -7842,7 +8152,7 @@ const saveConfig = async () => {
                               tipo={msg.tipo}
                               conteudo={msg.conteudo}
                             />
-                            {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
+                            <TextoMensagem conteudo={msg.conteudo} />
                             <p className={cn(
                               "text-[10px] mt-1",
                               isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"
@@ -8180,8 +8490,9 @@ const saveConfig = async () => {
                 </div>
               ) : avisosEnviados.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <Send className="h-8 w-8 text-muted-foreground/40 mb-2" />
-                  <p className="text-sm text-muted-foreground">Nenhum aviso enviado ainda</p>
+                  <Send className="h-8 w-8 text-muted-foreground/40 mb-3" />
+                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum aviso enviado ainda</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Os avisos disparados para o setor aparecem aqui.</p>
                 </div>
               ) : (
                 <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
@@ -8230,5 +8541,17 @@ const saveConfig = async () => {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/**
+ * Wrapper com Suspense: useSearchParams() exige um boundary de Suspense para
+ * o build do Next não falhar (missing-suspense-with-csr-bailout).
+ */
+export default function SetorPage() {
+  return (
+    <Suspense fallback={null}>
+      <SetorPageInner />
+    </Suspense>
   )
 }

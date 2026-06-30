@@ -23,10 +23,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Menu, LogOut, User as UserIcon, ChevronDown, Bell, KeyRound, Camera } from 'lucide-react'
+import { Menu, LogOut, User as UserIcon, ChevronDown, KeyRound, Camera } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { useColaborador } from '@/lib/hooks/use-data'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
+import { PushToggle } from '@/components/push-toggle'
 
 interface DashboardHeaderProps {
   user: User
@@ -95,13 +96,13 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
 
     // Logout para forçar novo login com nova senha
     await supabase.auth.signOut()
-    router.push('/login')
+    window.location.href = '/login'
   }
 
   const handleSignOut = async () => {
     const supabase = createClient()
     await supabase.auth.signOut()
-    router.push('/login')
+    window.location.href = '/login'
   }
 
   useEffect(() => {
@@ -128,7 +129,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
           variant="ghost"
           size="icon"
           onClick={onMenuClick}
-          className="lg:hidden h-9 w-9 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+          className="lg:hidden h-9 w-9 rounded-md hover:bg-muted transition-colors"
         >
           <Menu className="h-5 w-5" />
           <span className="sr-only">Abrir menu</span>
@@ -138,21 +139,14 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
 
       {/* Right side */}
       <div className="flex items-center gap-1.5">
-        {/* Notifications placeholder */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="relative h-9 w-9 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-        >
-          <Bell className="h-[18px] w-[18px] text-muted-foreground" />
-          <span className="sr-only">Notificacoes</span>
-        </Button>
+        {/* Notificações de desconexão de instância (Web Push) */}
+        <PushToggle />
 
         {/* Theme toggle */}
         <ThemeToggle />
 
         {/* Divider */}
-        <div className="hidden md:block h-6 w-px bg-gradient-to-b from-transparent via-black/10 to-transparent dark:via-white/10 mx-1" />
+        <div className="hidden md:block h-6 w-px bg-border mx-1" />
 
         {/* User dropdown */}
         {isMounted ? (
@@ -160,7 +154,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
-                className="flex items-center gap-2.5 pl-2 pr-3 h-10 rounded-2xl hover:bg-black/5 dark:hover:bg-white/10 transition-all"
+                className="flex items-center gap-2.5 pl-2 pr-3 h-10 rounded-lg hover:bg-muted transition-colors"
               >
                 <Avatar className="h-8 w-8 glass-avatar-ring">
                   {colaborador?.foto_url && (
@@ -184,7 +178,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
 
             <DropdownMenuContent
               align="end"
-              className="w-60 rounded-2xl glass-dropdown p-1.5"
+              className="w-60 rounded-lg glass-dropdown p-1.5"
             >
               {/* User info header */}
               <div className="px-3 py-3">
@@ -208,9 +202,9 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
                 </div>
               </div>
 
-              <DropdownMenuSeparator className="bg-black/5 dark:bg-white/8 mx-1" />
+              <DropdownMenuSeparator className="bg-border mx-1" />
 
-              <DropdownMenuItem className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5">
+              <DropdownMenuItem className="rounded-md py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-muted">
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
                   <UserIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 </div>
@@ -219,7 +213,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
 
               <DropdownMenuItem
                 onClick={() => setFotoDialogOpen(true)}
-                className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
+                className="rounded-md py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-muted"
               >
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
                   <Camera className="h-3.5 w-3.5 text-muted-foreground" />
@@ -229,7 +223,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
 
               <DropdownMenuItem
                 onClick={() => { resetSenhaDialog(); setSenhaDialogOpen(true) }}
-                className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-black/5 dark:focus:bg-white/5"
+                className="rounded-md py-2.5 px-3 gap-2.5 cursor-pointer focus:bg-muted"
               >
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted">
                   <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
@@ -237,11 +231,11 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
                 <span className="text-sm">Alterar Senha</span>
               </DropdownMenuItem>
 
-              <DropdownMenuSeparator className="bg-black/5 dark:bg-white/8 mx-1" />
+              <DropdownMenuSeparator className="bg-border mx-1" />
 
               <DropdownMenuItem
                 onClick={handleSignOut}
-                className="rounded-xl py-2.5 px-3 gap-2.5 cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/5"
+                className="rounded-md py-2.5 px-3 gap-2.5 cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/5"
               >
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-destructive/10">
                   <LogOut className="h-3.5 w-3.5 text-destructive" />

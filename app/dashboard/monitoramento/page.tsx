@@ -26,7 +26,9 @@ import {
 } from '@/components/ui/table'
 import {
   Activity,
+  Building2,
   RefreshCw,
+  Tag,
   Search,
   Clock,
   User,
@@ -39,6 +41,7 @@ import {
   Loader2,
   History,
   Check,
+  Layers,
   XCircle,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -66,6 +69,8 @@ import { toast } from 'sonner'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calcularOrigem, type SetorLookupEntry } from '@/lib/ticket-origem'
 import { OrigemBadge } from '@/components/origem-badge'
+import { TextoMensagem } from '@/components/chat/texto-mensagem'
+import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 
 const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
@@ -79,12 +84,22 @@ function formatMs(ms: number) {
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
 }
 
+// Duração curta e legível p/ as colunas da lista: "1h 30min", "30min", "2h", "0min".
+function formatDuracaoCurta(ms: number) {
+  const totalMin = Math.floor(ms / 60000)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  if (h > 0 && m > 0) return `${h}h ${m}min`
+  if (h > 0) return `${h}h`
+  return `${m}min`
+}
+
 function formatDuration(startDate: string | null, endDate: string | Date | null) {
-  if (!startDate) return '00:00:00'
+  if (!startDate) return '0min'
   const start = new Date(startDate).getTime()
   const end = endDate ? new Date(endDate).getTime() : Date.now()
   const diffMs = Math.max(0, end - start)
-  return formatMs(diffMs)
+  return formatDuracaoCurta(diffMs)
 }
 
 function formatPhone(phone: string | null) {
@@ -133,7 +148,8 @@ export default function MonitoramentoPage() {
   const { data: setoresAcessiveis = [] } = useSetores(colaborador?.id, colaborador?.is_master)
   const setorIdsAcessiveis = setoresAcessiveis.map((s: any) => s.id)
 
-  const [tagFilter, setTagFilter] = useState<string>('all')
+  const [tagFilter, setTagFilter] = useState<string[]>([])
+  const [tagFiltroOpen, setTagFiltroOpen] = useState(false)
 
   // Extrair tags únicas dos setores acessíveis
   const tagsDisponiveis = useMemo(() => {
@@ -148,18 +164,20 @@ export default function MonitoramentoPage() {
 
   // Setores filtrados por tag
   const setoresFiltradosPorTag = useMemo(() => {
-    if (tagFilter === 'all') return setoresAcessiveis
-    return setoresAcessiveis.filter((s: any) => s.tags?.id === tagFilter)
+    if (tagFilter.length === 0) return setoresAcessiveis
+    return setoresAcessiveis.filter((s: any) => s.tags?.id && tagFilter.includes(s.tags.id))
   }, [setoresAcessiveis, tagFilter])
 
   const setorIdsFiltrados = useMemo(() => {
     return setoresFiltradosPorTag.map((s: any) => s.id)
   }, [setoresFiltradosPorTag])
-  const [setorFilter, setSetorFilter] = useState<string>('all')
-  const [subsetorFilter, setSubsetorFilter] = useState<string>('all')
+  const [setorFilter, setSetorFilter] = useState<string[]>([])
+  const [setorFiltroOpen, setSetorFiltroOpen] = useState(false)
+  const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
+  const [subsetorFiltroOpen, setSubsetorFiltroOpen] = useState(false)
   const [subsetoresDisponiveis, setSubsetoresDisponiveis] = useState<{id: string, nome: string}[]>([])
   const [searchTerm, setSearchTerm] = useState('')
-  const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
+  const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosAtendenteOpen, setFiltrosAtendenteOpen] = useState(false)
   const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
   const [activeTab, setActiveTab] = useState('em-andamento')
@@ -235,7 +253,8 @@ export default function MonitoramentoPage() {
   // Fetch subsetores when setor filter changes
   useEffect(() => {
     async function fetchSubsetores() {
-      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsFiltrados
+      // Subsetor só faz sentido com um setor específico selecionado.
+      const targetSetorIds = setorFilter.length > 0 ? setorFilter : []
       if (targetSetorIds.length === 0) {
         setSubsetoresDisponiveis([])
         return
@@ -247,7 +266,7 @@ export default function MonitoramentoPage() {
         .eq('ativo', true)
         .order('nome')
       setSubsetoresDisponiveis(data || [])
-      setSubsetorFilter('all') // Reset subsetor filter when setor changes
+      setSubsetorFilter([]) // Reset subsetor filter when setor changes
     }
     if (colaborador && setorIdsFiltrados.length > 0) {
       fetchSubsetores()
@@ -257,10 +276,10 @@ export default function MonitoramentoPage() {
   // Fetch monitoring data
   const { data, isLoading, mutate } = useSWR(
     colaborador && setorIdsFiltrados.length > 0
-      ? ['dashboard-monitoramento', setorIdsFiltrados.join(','), setorFilter, tagFilter]
+      ? ['dashboard-monitoramento', setorIdsFiltrados.join(','), setorFilter.join(','), tagFilter.join(',')]
       : null,
     async () => {
-      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsFiltrados
+      const targetSetorIds = setorFilter.length > 0 ? setorFilter : setorIdsFiltrados
 
       // Fetch active tickets (aberto + em_atendimento) across all accessible setores
       let ticketsQuery = supabase
@@ -635,29 +654,39 @@ export default function MonitoramentoPage() {
   // Tickets em andamento
   // Lista de atendentes únicos para o filtro
   const atendentesUnicos = useMemo(() => {
-    const map = new Map<string, string>()
+    // Quem tem ticket ativo agora (em atendimento / aberto com atendente).
+    const comTicket = new Set<string>()
     tickets.forEach((t: any) => {
-      if (t.colaborador_id && t.colaboradores?.nome) {
-        map.set(t.colaborador_id, t.colaboradores.nome)
+      if (t.colaborador_id && (t.status === 'em_atendimento' || t.status === 'aberto')) {
+        comTicket.add(t.colaborador_id)
       }
     })
-    return Array.from(map.entries()).map(([id, nome]) => ({ id, nome })).sort((a, b) => a.nome.localeCompare(b.nome))
-  }, [tickets])
+    // Online (sem pausa) → em pausa → offline; depois quem tem ticket agora; depois nome.
+    const order = (x: { is_online: boolean; pausa: boolean }) =>
+      x.is_online && !x.pausa ? 0 : x.pausa ? 1 : 2
+    return (atendentesRaw || [])
+      .filter((a: any) => a.ativo)
+      .map((a: any) => ({
+        id: a.id,
+        nome: a.nome,
+        is_online: !!a.is_online,
+        pausa: !!a.pausa_atual_id,
+      }))
+      .sort((a, b) =>
+        order(a) - order(b)
+        || (Number(comTicket.has(b.id)) - Number(comTicket.has(a.id)))
+        || (a.nome || '').localeCompare(b.nome || ''),
+      )
+  }, [atendentesRaw, tickets])
 
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || (t.status === 'aberto' && t.colaborador_id))
       .filter((t: any) => {
-        // Filtro por atendente
-        if (atendenteFilter !== 'all' && t.colaborador_id !== atendenteFilter) return false
+        // Filtro por atendente (multi-seleção: vazio = todos)
+        if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         // Filtro de subsetor
-        if (subsetorFilter !== 'all') {
-          if (subsetorFilter === 'sem_subsetor') {
-            if (t.subsetor_id) return false
-          } else {
-            if (t.subsetor_id !== subsetorFilter) return false
-          }
-        }
+        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         const numero = String(t.numero ?? t.id?.slice(0, 8) ?? '')
@@ -680,7 +709,7 @@ export default function MonitoramentoPage() {
             : formatDuration(t.criado_em, null),
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
         // Tempo de atendimento = atribuido_em (ou criado_em como fallback) → agora
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '00:00:00',
+        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         telefone: t.clientes?.telefone || null,
         canal: t.canal || 'whatsapp',
@@ -698,13 +727,7 @@ export default function MonitoramentoPage() {
       .filter((t: any) => t.status === 'aberto' && !t.colaborador_id)
       .filter((t: any) => {
         // Filtro de subsetor
-        if (subsetorFilter !== 'all') {
-          if (subsetorFilter === 'sem_subsetor') {
-            if (t.subsetor_id) return false
-          } else {
-            if (t.subsetor_id !== subsetorFilter) return false
-          }
-        }
+        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
@@ -1075,51 +1098,82 @@ export default function MonitoramentoPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           {tagsDisponiveis.length > 0 && (
-            <Select value={tagFilter} onValueChange={(val) => {
-              setTagFilter(val)
-              setSetorFilter('all')
-              setSubsetorFilter('all')
-            }}>
-              <SelectTrigger className="w-40 bg-card">
-                <SelectValue placeholder="Todas as tags" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas as tags</SelectItem>
-                {tagsDisponiveis.map((tag) => (
-                  <SelectItem key={tag.id} value={tag.id}>
-                    <div className="flex items-center gap-2">
-                      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.cor || '#888' }} />
-                      {tag.nome}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <MultiSelectFilter
+              icon={Tag}
+              placeholder="Todas as tags"
+              header="Tags"
+              pluralWord="tags"
+              options={tagsDisponiveis.map((t) => ({ id: t.id, nome: t.nome, cor: t.cor }))}
+              selected={tagFilter}
+              onChange={(next) => { setTagFilter(next); setSetorFilter([]); setSubsetorFilter([]) }}
+              open={tagFiltroOpen}
+              onOpenChange={setTagFiltroOpen}
+            />
           )}
-          <Select value={setorFilter} onValueChange={setSetorFilter}>
-            <SelectTrigger className="w-48 bg-card">
-              <SelectValue placeholder="Todos os setores" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos os setores</SelectItem>
-              {setoresFiltradosPorTag.map((s: any) => (
-                <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {subsetoresDisponiveis.length > 0 && (
-            <Select value={subsetorFilter} onValueChange={setSubsetorFilter}>
-              <SelectTrigger className="w-44 bg-card">
-                <SelectValue placeholder="Todos subsetores" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos subsetores</SelectItem>
-                <SelectItem value="sem_subsetor">Sem subsetor</SelectItem>
-                {subsetoresDisponiveis.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <MultiSelectFilter
+            icon={Building2}
+            placeholder="Todos os setores"
+            header="Setores"
+            pluralWord="setores"
+            options={setoresFiltradosPorTag.map((s: any) => ({ id: s.id, nome: s.nome }))}
+            selected={setorFilter}
+            onChange={(next) => { setSetorFilter(next); setSubsetorFilter([]) }}
+            open={setorFiltroOpen}
+            onOpenChange={setSetorFiltroOpen}
+            searchable
+          />
+          {setorFilter.length > 0 && subsetoresDisponiveis.length > 0 && (
+            <Popover open={subsetorFiltroOpen} onOpenChange={setSubsetorFiltroOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "gap-2 bg-transparent",
+                    subsetorFilter.length > 0 && "border-primary text-primary",
+                  )}
+                >
+                  <Layers className="h-4 w-4" />
+                  Subsetor
+                  {subsetorFilter.length > 0 && (
+                    <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{subsetorFilter.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-56 p-3" align="end">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filtrar por subsetor</p>
+                    {subsetorFilter.length > 0 && (
+                      <button
+                        onClick={() => setSubsetorFilter([])}
+                        className="text-[11px] font-medium text-primary hover:underline"
+                      >
+                        Limpar
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1 max-h-[280px] overflow-y-auto">
+                    {[{ id: 'sem_subsetor', nome: 'Sem subsetor' }, ...subsetoresDisponiveis].map((s) => {
+                      const selected = subsetorFilter.includes(s.id)
+                      return (
+                        <button
+                          key={s.id}
+                          onClick={() => setSubsetorFilter(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
+                            selected && "font-medium text-primary",
+                          )}
+                        >
+                          <Check className={cn("h-3.5 w-3.5 shrink-0", !selected && "invisible")} />
+                          <span className="truncate">{s.nome}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           )}
           <Popover open={filtrosAtendenteOpen} onOpenChange={setFiltrosAtendenteOpen}>
             <PopoverTrigger asChild>
@@ -1128,22 +1182,33 @@ export default function MonitoramentoPage() {
                 size="sm"
                 className={cn(
                   "gap-2 bg-transparent",
-                  atendenteFilter !== 'all' && "border-primary text-primary"
+                  atendenteFilter.length > 0 && "border-primary text-primary"
                 )}
               >
                 <User className="h-4 w-4" />
-                {atendenteFilter !== 'all'
-                  ? (atendentesUnicos.find(a => a.id === atendenteFilter)?.nome || 'Atendente')
-                  : 'Atendente'
-                }
-                {atendenteFilter !== 'all' && (
-                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">1</Badge>
+                {atendenteFilter.length === 0
+                  ? 'Atendente'
+                  : atendenteFilter.length === 1
+                    ? (atendentesUnicos.find(a => a.id === atendenteFilter[0])?.nome || 'Atendente')
+                    : 'Atendentes'}
+                {atendenteFilter.length > 0 && (
+                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{atendenteFilter.length}</Badge>
                 )}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-64 p-3" align="end" onCloseAutoFocus={() => setFiltroAtendenteSearch('')}>
               <div className="space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filtrar por atendente</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Acompanhar atendentes</p>
+                  {atendenteFilter.length > 0 && (
+                    <button
+                      onClick={() => setAtendenteFilter([])}
+                      className="text-[11px] font-medium text-primary hover:underline"
+                    >
+                      Limpar
+                    </button>
+                  )}
+                </div>
                 <input
                   type="text"
                   placeholder="Buscar atendente..."
@@ -1153,33 +1218,31 @@ export default function MonitoramentoPage() {
                   autoFocus
                 />
                 <div className="space-y-1 max-h-[280px] overflow-y-auto">
-                  {!filtroAtendenteSearch && (
-                    <button
-                      onClick={() => { setAtendenteFilter('all'); setFiltrosAtendenteOpen(false) }}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                        atendenteFilter === 'all' && "font-medium text-primary"
-                      )}
-                    >
-                      <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
-                      Todos os atendentes
-                    </button>
-                  )}
                   {atendentesUnicos
                     .filter(a => !filtroAtendenteSearch || a.nome.toLowerCase().includes(filtroAtendenteSearch.toLowerCase()))
-                    .map((a) => (
-                    <button
-                      key={a.id}
-                      onClick={() => { setAtendenteFilter(a.id); setFiltrosAtendenteOpen(false) }}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                        atendenteFilter === a.id && "font-medium text-primary"
-                      )}
-                    >
-                      <Check className={cn("h-3.5 w-3.5", atendenteFilter !== a.id && "invisible")} />
-                      {a.nome}
-                    </button>
-                  ))}
+                    .map((a) => {
+                      const selected = atendenteFilter.includes(a.id)
+                      return (
+                        <button
+                          key={a.id}
+                          onClick={() => setAtendenteFilter(prev => prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id])}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
+                            selected && "font-medium text-primary"
+                          )}
+                        >
+                          <Check className={cn("h-3.5 w-3.5 shrink-0", !selected && "invisible")} />
+                          <span
+                            className={cn(
+                              "h-2 w-2 shrink-0 rounded-full",
+                              a.is_online && !a.pausa ? "bg-green-500" : a.pausa ? "bg-yellow-500" : "bg-gray-400",
+                            )}
+                            aria-hidden="true"
+                          />
+                          <span className="truncate">{a.nome}</span>
+                        </button>
+                      )
+                    })}
                   {atendentesUnicos.length === 0 && (
                     <p className="px-2 py-1.5 text-xs text-muted-foreground">Nenhum atendente ativo</p>
                   )}
@@ -1464,7 +1527,7 @@ export default function MonitoramentoPage() {
                                   Aguardando...
                                 </Badge>
                               ) : (
-                                <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '00:00:00'}</span>
+                                <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '0min'}</span>
                               )}
                             </TableCell>
                             <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
@@ -1480,12 +1543,14 @@ export default function MonitoramentoPage() {
                                 <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                               </div>
                             </TableCell>
-                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} /></TableCell>
-                            <TableCell className="text-sm text-foreground">
-                              {ticket.setor}
-                              {ticket.subsetor && (
-                                <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                              )}
+                            <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
+                            <TableCell className="text-sm text-foreground max-w-[160px]">
+                              <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
+                                {ticket.setor}
+                                {ticket.subsetor && (
+                                  <span className="text-muted-foreground"> / {ticket.subsetor}</span>
+                                )}
+                              </span>
                             </TableCell>
                             <TableCell className="text-sm text-foreground">
                               {ticket.atendente ? (
@@ -1624,18 +1689,20 @@ export default function MonitoramentoPage() {
                           <TableCell className="text-sm text-foreground">
                             {ticket.canal === 'discord' ? '—' : formatPhone(ticket.telefone)}
                           </TableCell>
-                          <TableCell className="text-sm text-foreground">
+                          <TableCell className="text-sm text-foreground max-w-[160px]">
                             <div className="flex items-center gap-1">
                               <User className="h-3 w-3 text-muted-foreground shrink-0" />
-                              {ticket.contato}
+                              <span className="truncate" title={ticket.contato}>{ticket.contato}</span>
                             </div>
                           </TableCell>
-                          <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} /></TableCell>
-                          <TableCell className="text-xs text-foreground">
-                            {ticket.setor}
-                            {ticket.subsetor && (
-                              <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                            )}
+                          <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
+                          <TableCell className="text-xs text-foreground max-w-[160px]">
+                            <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
+                              {ticket.setor}
+                              {ticket.subsetor && (
+                                <span className="text-muted-foreground"> / {ticket.subsetor}</span>
+                              )}
+                            </span>
                           </TableCell>
                           <TableCell>
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openConversation(ticket)}>
@@ -2027,7 +2094,7 @@ export default function MonitoramentoPage() {
                               tipo={msg.tipo}
                               conteudo={msg.conteudo}
                             />
-                            {msg.conteudo && <p className="break-words">{msg.conteudo}</p>}
+                            <TextoMensagem conteudo={msg.conteudo} />
                             <p className={cn(
                               "text-[10px] mt-1",
                               isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"
@@ -2130,7 +2197,7 @@ export default function MonitoramentoPage() {
                                           : "bg-primary/80 text-primary-foreground"
                                       )}
                                     >
-                                      <p className="break-words">{msg.conteudo}</p>
+                                      <TextoMensagem conteudo={msg.conteudo} />
                                       <p className="text-[9px] mt-0.5 opacity-60">
                                         {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                                       </p>
@@ -2213,7 +2280,7 @@ export default function MonitoramentoPage() {
                         tipo={msg.tipo}
                         conteudo={msg.conteudo}
                       />
-                      {msg.conteudo && <p className="break-words whitespace-pre-wrap">{msg.conteudo}</p>}
+                      <TextoMensagem conteudo={msg.conteudo} className="whitespace-pre-wrap" />
                       <div className="mt-1 flex items-center justify-between gap-2 text-[10px] opacity-70">
                         <span>{msg.remetente === NEXUS_CLIENT_REMETENTE ? 'Cliente' : 'Nexus'}</span>
                         <span>

@@ -4,6 +4,7 @@ import React from 'react'
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { CommandPalette } from '@/components/command-palette'
 import { Button } from '@/components/ui/button'
 import { User, LogOut, MessageCircle, Volume2, Play, KeyRound, Star, Info, Camera } from 'lucide-react'
 import {
@@ -27,6 +28,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { DisponibilidadePanel } from '@/components/workdesk/disponibilidade-panel'
+import { PushToggle } from '@/components/push-toggle'
 import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
 import { useAudioAlert, type TicketSoundType } from '@/hooks/use-audio-alert'
 
@@ -208,7 +210,7 @@ export default function WorkdeskLayout({
       }).catch(() => {})
     }
     await supabase.auth.signOut()
-    router.push('/workdesk/login')
+    window.location.href = '/workdesk/login'
   }
 
   // — Alterar senha
@@ -274,7 +276,7 @@ export default function WorkdeskLayout({
       }).catch(() => {})
     }
     await supabase.auth.signOut()
-    router.push('/workdesk/login')
+    window.location.href = '/workdesk/login'
   }
 
   if (loading) {
@@ -321,22 +323,17 @@ export default function WorkdeskLayout({
   }
 
   return (
-    <div className="min-h-svh bg-[#F0F1F5] dark:bg-[#0A0A12]">
-      {/* Decorative background blobs */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
-        <div className="absolute -top-40 -left-40 h-[500px] w-[500px] rounded-full bg-purple-300/20 dark:bg-purple-500/10 blur-3xl" />
-        <div className="absolute top-1/3 right-0 h-[400px] w-[400px] rounded-full bg-blue-300/20 dark:bg-blue-500/10 blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 h-[350px] w-[350px] rounded-full bg-pink-300/15 dark:bg-pink-500/10 blur-3xl" />
-      </div>
-
+    <div className="min-h-svh bg-background">
       {/* Header */}
       <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-3 sm:px-4 lg:px-6">
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary shadow-md">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
             <MessageCircle className="h-5 w-5 text-primary-foreground" />
           </div>
           {/* Title escondido em mobile (375px) pra economizar espaço com o lado direito */}
           <h1 className="hidden sm:block text-base font-bold text-foreground tracking-tight">WorkDesk</h1>
+          {/* Hint visual do command palette global (⌘K / Ctrl+K) — apenas indicativo */}
+          <kbd className="kbd hidden lg:inline-flex" aria-hidden="true">Ctrl K</kbd>
         </div>
 
         <div className="flex items-center gap-1 sm:gap-2 shrink-0">
@@ -358,7 +355,7 @@ export default function WorkdeskLayout({
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="gap-2 rounded-xl hover:bg-white/50 dark:hover:bg-white/10">
+              <Button variant="ghost" className="gap-2 rounded-md hover:bg-muted">
                 <Avatar className="h-8 w-8 ring-2 ring-primary/20">
                   {colaborador.foto_url && (
                     <AvatarImage src={colaborador.foto_url} alt={colaborador.nome} className="object-cover" />
@@ -370,17 +367,27 @@ export default function WorkdeskLayout({
                 <span className="hidden text-sm font-medium md:inline">{colaborador.nome}</span>
                 <div className="hidden md:flex items-center gap-1 group relative">
                   <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
-                  <span className="text-xs font-semibold">{avaliacaoMedia.toFixed(1)}</span>
+                  <span className="tabnums text-xs font-semibold">{avaliacaoMedia.toFixed(1)}</span>
                   <div className="absolute right-0 top-8 z-50 hidden group-hover:block w-44 rounded-lg border bg-popover px-3 py-2 text-[10px] text-popover-foreground shadow-md">
                     NPS médio dos seus atendimentos ({avaliacaoTotal} {avaliacaoTotal === 1 ? 'avaliação' : 'avaliações'})
                   </div>
                 </div>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64 glass-dropdown rounded-2xl border-0">
+            <DropdownMenuContent align="end" className="w-64 glass-dropdown rounded-lg border-0">
               <div className="px-3 py-2">
                 <p className="text-sm font-medium">{colaborador.nome}</p>
                 <p className="text-xs text-muted-foreground">{colaborador.email}</p>
+              </div>
+
+              <DropdownMenuSeparator className="mx-2" />
+
+              {/* Notificações (Web Push) */}
+              <DropdownMenuLabel className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                Notificações
+              </DropdownMenuLabel>
+              <div className="px-2 pb-1">
+                <PushToggle variant="menu" />
               </div>
 
               <DropdownMenuSeparator className="mx-2" />
@@ -395,7 +402,7 @@ export default function WorkdeskLayout({
                 {/* Opção Padrão */}
                 <button
                   onClick={() => handleSoundChange('default')}
-                  className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm transition-colors ${
+                  className={`w-full flex items-center justify-between gap-2 rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     ticketSound === 'default'
                       ? 'bg-primary/10 text-primary font-medium'
                       : 'hover:bg-black/5 dark:hover:bg-white/5 text-foreground'
@@ -413,7 +420,7 @@ export default function WorkdeskLayout({
                 {/* Opção Buh Buh */}
                 <button
                   onClick={() => handleSoundChange('buhbuh')}
-                  className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm transition-colors ${
+                  className={`w-full flex items-center justify-between gap-2 rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     ticketSound === 'buhbuh'
                       ? 'bg-primary/10 text-primary font-medium'
                       : 'hover:bg-black/5 dark:hover:bg-white/5 text-foreground'
@@ -433,7 +440,7 @@ export default function WorkdeskLayout({
 
               <DropdownMenuItem
                 onClick={() => setFotoDialogOpen(true)}
-                className="rounded-xl mx-1"
+                className="rounded-md mx-1"
               >
                 <Camera className="mr-2 h-4 w-4" />
                 Alterar foto
@@ -441,13 +448,13 @@ export default function WorkdeskLayout({
 
               <DropdownMenuItem
                 onClick={() => { resetSenhaDialog(); setSenhaDialogOpen(true) }}
-                className="rounded-xl mx-1"
+                className="rounded-md mx-1"
               >
                 <KeyRound className="mr-2 h-4 w-4" />
                 Alterar Senha
               </DropdownMenuItem>
 
-              <DropdownMenuItem onClick={handleLogout} className="text-destructive rounded-xl mx-1 mb-1">
+              <DropdownMenuItem onClick={handleLogout} className="text-destructive rounded-md mx-1 mb-1">
                 <LogOut className="mr-2 h-4 w-4" />
                 Sair
               </DropdownMenuItem>
@@ -529,6 +536,8 @@ export default function WorkdeskLayout({
           />
         </div>
       </header>
+
+      <CommandPalette />
 
       {/* Page content */}
       <main className="relative z-10">{children}</main>

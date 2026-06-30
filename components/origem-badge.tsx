@@ -11,9 +11,13 @@ import { cn } from '@/lib/utils'
 export const OrigemBadge = React.memo(function OrigemBadge({
   origem,
   setorAtualNome,
+  compact = false,
 }: {
   origem: OrigemTicket | undefined
   setorAtualNome?: string
+  /** compact = só o rótulo (Transferido/Transbordo), sem o sufixo "· xxx".
+   *  O detalhe completo continua no popover ao passar o mouse. */
+  compact?: boolean
 }) {
   if (!origem) return <span className="text-xs text-muted-foreground">—</span>
   const fmt = (iso: string) => {
@@ -31,8 +35,8 @@ export const OrigemBadge = React.memo(function OrigemBadge({
         >
           <span className="truncate">
             {origem.label}
-            {origem.transferidoPor && <span className="opacity-80"> · {origem.transferidoPor}</span>}
-            {!origem.transferidoPor && origem.setorOrigem && <span className="opacity-80"> · {origem.setorOrigem}</span>}
+            {!compact && origem.transferidoPor && <span className="opacity-80"> · {origem.transferidoPor}</span>}
+            {!compact && !origem.transferidoPor && origem.setorOrigem && <span className="opacity-80"> · {origem.setorOrigem}</span>}
           </span>
           {origem.hops > 1 && origem.tipo === 'transbordo' && (
             <span className="shrink-0 opacity-70">{origem.hops}x</span>

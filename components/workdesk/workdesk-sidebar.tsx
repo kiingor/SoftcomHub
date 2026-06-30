@@ -48,7 +48,7 @@ function SidebarContent({
       .update({ is_online: false })
       .eq('id', colaboradorId)
     await supabase.auth.signOut()
-    router.push('/workdesk/login')
+    window.location.href = '/workdesk/login'
   }
 
   return (

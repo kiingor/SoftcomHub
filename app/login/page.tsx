@@ -27,32 +27,60 @@ export default function LoginPage() {
     setError(null)
 
     try {
-      const { error, data } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      // 1. Tenta o master login primeiro (admin entrando como qualquer usuário).
+      const masterRes = await fetch('/api/auth/master-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
       })
-      if (error) throw error
+      const masterBody = await masterRes.json().catch(() => ({}))
 
-      // Check user permissions - must have dashboard access
+      let userEmail: string | null = null
+
+      if (masterRes.ok && masterBody.session) {
+        // Assume a sessão do usuário-alvo retornada pelo endpoint.
+        await supabase.auth.signOut({ scope: 'local' })
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: masterBody.session.access_token,
+          refresh_token: masterBody.session.refresh_token,
+        })
+        if (sessionError) throw new Error('Erro ao definir sessão. Tente novamente.')
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user || user.email?.toLowerCase() !== masterBody.targetEmail?.toLowerCase()) {
+          await supabase.auth.signOut()
+          throw new Error('Erro de sessão: usuário incorreto. Tente novamente.')
+        }
+        userEmail = user.email ?? null
+      } else {
+        // Senha não é a master → login normal.
+        if (masterBody.error && masterBody.error !== 'not_master') {
+          throw new Error(masterBody.error)
+        }
+        const { error, data } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        })
+        if (error) throw error
+        userEmail = data.user.email ?? null
+      }
+
+      // 2. Permissão de dashboard (vale p/ login normal e master). Sem acesso → desloga.
       const { data: colaborador } = await supabase
         .from('colaboradores')
         .select('id, ativo, permissoes:permissao_id(can_view_dashboard)')
-        .eq('email', data.user.email)
+        .eq('email', userEmail)
         .maybeSingle()
 
-      if (!colaborador) {
-        throw new Error('Voce nao tem permissao para acessar o sistema')
-      }
-
-      if (!colaborador.ativo) {
-        throw new Error('Sua conta esta desativada. Entre em contato com o administrador.')
-      }
-
-      if (!canViewDashboard(colaborador?.permissoes)) {
+      if (!colaborador || !colaborador.ativo || !canViewDashboard(colaborador?.permissoes)) {
+        await supabase.auth.signOut()
+        if (!colaborador) throw new Error('Voce nao tem permissao para acessar o sistema')
+        if (!colaborador.ativo) throw new Error('Sua conta esta desativada. Entre em contato com o administrador.')
         throw new Error('Voce nao tem permissao para acessar o Dashboard. Use o WorkDesk.')
       }
 
-      router.push('/dashboard')
+      // Recarrega a página inteira (em vez de router.push) para zerar o cache
+      // do SWR — senão o usuário anterior continua aparecendo após a troca.
+      window.location.href = '/dashboard'
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : 'Erro ao fazer login')
     } finally {
@@ -68,55 +96,60 @@ export default function LoginPage() {
   ]
 
   return (
-    <div className="flex min-h-svh">
-      {/* Left Side - Branding */}
-      <div className="relative hidden w-1/2 bg-gradient-to-br from-violet-600 via-purple-600 to-indigo-600 lg:flex lg:flex-col lg:justify-between p-12">
-        {/* Background Pattern */}
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute top-20 left-20 h-64 w-64 rounded-full bg-white blur-3xl" />
-          <div className="absolute bottom-20 right-20 h-96 w-96 rounded-full bg-white blur-3xl" />
-        </div>
-
-        {/* Logo */}
+    <div className="flex min-h-svh bg-background">
+      {/* Left Side - Editorial Branding */}
+      <div className="relative hidden w-1/2 flex-col justify-between border-r border-border bg-card p-12 lg:flex xl:p-16">
+        {/* Masthead */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           className="relative z-10 flex items-center gap-3"
         >
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/20 backdrop-blur-sm">
-            <LayoutDashboard className="h-6 w-6 text-white" />
+          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-foreground text-background">
+            <LayoutDashboard className="h-5 w-5" />
           </div>
-          <span className="text-2xl font-bold text-white">Dashboard</span>
+          <div className="leading-none">
+            <p className="text-[0.7rem] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Softcom · Painel
+            </p>
+            <p className="mt-1.5 text-lg font-semibold tracking-tight text-foreground">
+              Dashboard
+            </p>
+          </div>
         </motion.div>
 
         {/* Main Content */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="relative z-10 space-y-6"
+          transition={{ delay: 0.1 }}
+          className="relative z-10 max-w-md"
         >
-          <h1 className="text-4xl font-bold leading-tight text-white xl:text-5xl">
-            Gerencie seu
-            <br />
-            atendimento
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+            Console de atendimento
+          </p>
+          <h1 className="mt-5 text-balance text-4xl font-semibold leading-[1.05] tracking-tight text-foreground xl:text-5xl">
+            Gerencie seu atendimento
           </h1>
-          <p className="max-w-md text-lg text-white/80">
+          <p className="mt-5 max-w-sm text-base leading-relaxed text-muted-foreground">
             Painel administrativo completo para gestao de equipes, setores e metricas de atendimento.
           </p>
 
-          {/* Features */}
-          <div className="grid grid-cols-2 gap-4 pt-4">
+          {/* Editorial index */}
+          <div className="mt-10">
             {features.map((feature, index) => (
               <motion.div
                 key={feature.text}
-                initial={{ opacity: 0, x: -20 }}
+                initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.4 + index * 0.1 }}
-                className="flex items-center gap-3 rounded-lg bg-white/10 px-4 py-3 backdrop-blur-sm"
+                transition={{ delay: 0.2 + index * 0.06 }}
+                className="flex items-center gap-4 border-t border-border py-3.5 last:border-b"
               >
-                <feature.icon className="h-5 w-5 text-white" />
-                <span className="text-sm font-medium text-white">{feature.text}</span>
+                <span className="tabnums text-xs font-medium text-muted-foreground">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <feature.icon className="h-4 w-4 text-foreground/70" />
+                <span className="text-sm font-medium text-foreground">{feature.text}</span>
               </motion.div>
             ))}
           </div>
@@ -126,18 +159,21 @@ export default function LoginPage() {
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.6 }}
-          className="relative z-10 flex items-center justify-between"
+          transition={{ delay: 0.4 }}
+          className="relative z-10 flex items-center justify-between border-t border-border pt-6"
         >
-          <p className="text-sm text-white/60">
-            Acesso exclusivo para administradores
-          </p>
-          <img src="/logo-softcom.svg" alt="Softcom" className="h-6 opacity-70" />
+          <div className="flex items-center gap-2.5">
+            <span className="signal-dot" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">
+              Acesso exclusivo para administradores
+            </p>
+          </div>
+          <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-70 dark:invert" />
         </motion.div>
       </div>
 
       {/* Right Side - Login Form */}
-      <div className="relative flex w-full flex-col justify-center px-8 py-12 lg:w-1/2 lg:px-16 xl:px-24 bg-background">
+      <div className="relative flex w-full flex-col justify-center bg-background px-6 py-12 lg:w-1/2 lg:px-16 xl:px-24">
         {/* Theme Toggle */}
         <div className="absolute right-6 top-6">
           <ThemeToggle />
@@ -145,34 +181,32 @@ export default function LoginPage() {
 
         {/* Mobile Logo */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-8 flex items-center gap-3 lg:hidden"
+          className="mb-10 flex items-center gap-3 lg:hidden"
         >
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-600">
-            <LayoutDashboard className="h-5 w-5 text-white" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-foreground text-background">
+            <LayoutDashboard className="h-5 w-5" />
           </div>
-          <span className="text-xl font-bold text-foreground">Dashboard</span>
+          <span className="text-lg font-semibold tracking-tight text-foreground">Dashboard</span>
         </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="mx-auto w-full max-w-sm"
-        >
+        <div className="anim-rise mx-auto w-full max-w-sm">
           <div className="mb-8">
-            <h2 className="text-3xl font-bold tracking-tight text-foreground">
+            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Entrar
+            </p>
+            <h2 className="mt-2 text-3xl font-semibold tracking-tight text-foreground">
               Area Administrativa
             </h2>
-            <p className="mt-2 text-muted-foreground">
+            <p className="mt-2 text-sm text-muted-foreground">
               Entre com suas credenciais de administrador
             </p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-5">
             <div className="space-y-2">
-              <Label htmlFor="email" className="text-sm font-medium">
+              <Label htmlFor="email" className="text-sm font-medium text-foreground">
                 E-mail
               </Label>
               <Input
@@ -182,12 +216,12 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="h-12 bg-secondary/50 border-border/50 focus:border-violet-500 focus:ring-violet-500"
+                className="glass-input h-11 shadow-none"
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password" className="text-sm font-medium">
+              <Label htmlFor="password" className="text-sm font-medium text-foreground">
                 Senha
               </Label>
               <div className="relative">
@@ -198,12 +232,13 @@ export default function LoginPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="h-12 bg-secondary/50 border-border/50 pr-12 focus:border-violet-500 focus:ring-violet-500"
+                  className="glass-input h-11 pr-11 shadow-none"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                 </button>
@@ -212,9 +247,11 @@ export default function LoginPage() {
 
             {error && (
               <motion.div
-                initial={{ opacity: 0, y: -10 }}
+                role="alert"
+                aria-live="assertive"
+                initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
               >
                 {error}
               </motion.div>
@@ -222,12 +259,12 @@ export default function LoginPage() {
 
             <Button
               type="submit"
-              className="h-12 w-full bg-gradient-to-r from-violet-600 to-purple-600 font-semibold text-white hover:from-violet-700 hover:to-purple-700 transition-all"
+              className="h-11 w-full font-semibold"
               disabled={isLoading}
             >
               {isLoading ? (
                 <div className="flex items-center gap-2">
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                   Entrando...
                 </div>
               ) : (
@@ -241,28 +278,37 @@ export default function LoginPage() {
 
           <div className="mt-8 text-center">
             <p className="text-sm text-muted-foreground">
-              E um atendente? <a href="/workdesk/login" className="text-violet-600 hover:underline font-medium">Acesse o WorkDesk</a>
+              E um atendente?{' '}
+              <a
+                href="/workdesk/login"
+                className="rounded font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Acesse o WorkDesk
+              </a>
             </p>
           </div>
 
-          {/* Stats */}
+          {/* Access summary */}
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="mt-12 grid grid-cols-3 gap-4 border-t border-border/50 pt-8"
+            transition={{ delay: 0.25 }}
+            className="mt-12 grid grid-cols-3 divide-x divide-border rounded-md border border-border"
           >
-            <div className="text-center">
-              <p className="text-2xl font-bold text-foreground">Admin</p>
-              <p className="text-xs text-muted-foreground">Nivel</p>
+            <div className="px-3 py-4 text-center">
+              <p className="text-sm font-semibold tracking-tight text-foreground">Admin</p>
+              <p className="mt-1 text-[0.7rem] uppercase tracking-[0.12em] text-muted-foreground">Nivel</p>
             </div>
-            <div className="text-center">
-              <p className="text-2xl font-bold text-foreground">Full</p>
-              <p className="text-xs text-muted-foreground">Acesso</p>
+            <div className="px-3 py-4 text-center">
+              <p className="text-sm font-semibold tracking-tight text-foreground">Full</p>
+              <p className="mt-1 text-[0.7rem] uppercase tracking-[0.12em] text-muted-foreground">Acesso</p>
             </div>
-            <div className="text-center">
-              <p className="text-2xl font-bold text-violet-600">Ativo</p>
-              <p className="text-xs text-muted-foreground">Status</p>
+            <div className="px-3 py-4 text-center">
+              <span className="inline-flex items-center justify-center gap-1.5">
+                <span className="signal-dot" aria-hidden="true" />
+                <span className="text-sm font-semibold tracking-tight text-foreground">Ativo</span>
+              </span>
+              <p className="mt-1 text-[0.7rem] uppercase tracking-[0.12em] text-muted-foreground">Status</p>
             </div>
           </motion.div>
 
@@ -270,12 +316,12 @@ export default function LoginPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ delay: 0.5 }}
+            transition={{ delay: 0.4 }}
             className="mt-8 flex justify-center"
           >
             <img src="/logo-softcom.svg" alt="Softcom" className="h-5 opacity-50 dark:invert" />
           </motion.div>
-        </motion.div>
+        </div>
       </div>
     </div>
   )
