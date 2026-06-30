@@ -39,6 +39,7 @@ import {
   Loader2,
   History,
   Check,
+  ChevronDown,
   Layers,
   XCircle,
 } from 'lucide-react'
@@ -1132,15 +1133,17 @@ export default function MonitoramentoPage() {
                   variant="outline"
                   size="sm"
                   className={cn(
-                    "gap-2 bg-transparent",
+                    "h-9 w-44 justify-between gap-2 bg-card font-normal",
                     subsetorFilter.length > 0 && "border-primary text-primary",
                   )}
                 >
-                  <Layers className="h-4 w-4" />
-                  Subsetor
-                  {subsetorFilter.length > 0 && (
-                    <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{subsetorFilter.length}</Badge>
-                  )}
+                  <span className="flex items-center gap-2 truncate">
+                    <Layers className="h-4 w-4 shrink-0" />
+                    {subsetorFilter.length === 0
+                      ? 'Subsetor'
+                      : `${subsetorFilter.length} ${subsetorFilter.length > 1 ? 'subsetores' : 'subsetor'}`}
+                  </span>
+                  <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-56 p-3" align="end">
@@ -1184,19 +1187,21 @@ export default function MonitoramentoPage() {
                 variant="outline"
                 size="sm"
                 className={cn(
-                  "gap-2 bg-transparent",
+                  "h-9 w-44 justify-between gap-2 bg-card font-normal",
                   atendenteFilter.length > 0 && "border-primary text-primary"
                 )}
               >
-                <User className="h-4 w-4" />
-                {atendenteFilter.length === 0
-                  ? 'Atendente'
-                  : atendenteFilter.length === 1
-                    ? (atendentesUnicos.find(a => a.id === atendenteFilter[0])?.nome || 'Atendente')
-                    : 'Atendentes'}
-                {atendenteFilter.length > 0 && (
-                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{atendenteFilter.length}</Badge>
-                )}
+                <span className="flex items-center gap-2 truncate">
+                  <User className="h-4 w-4 shrink-0" />
+                  <span className="truncate">
+                    {atendenteFilter.length === 0
+                      ? 'Atendente'
+                      : atendenteFilter.length === 1
+                        ? (atendentesUnicos.find(a => a.id === atendenteFilter[0])?.nome || 'Atendente')
+                        : `${atendenteFilter.length} atendentes`}
+                  </span>
+                </span>
+                <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-64 p-3" align="end" onCloseAutoFocus={() => setFiltroAtendenteSearch('')}>
