@@ -39,6 +39,7 @@ import {
   Loader2,
   History,
   Check,
+  Layers,
   XCircle,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -167,7 +168,8 @@ export default function MonitoramentoPage() {
     return setoresFiltradosPorTag.map((s: any) => s.id)
   }, [setoresFiltradosPorTag])
   const [setorFilter, setSetorFilter] = useState<string>('all')
-  const [subsetorFilter, setSubsetorFilter] = useState<string>('all')
+  const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
+  const [subsetorFiltroOpen, setSubsetorFiltroOpen] = useState(false)
   const [subsetoresDisponiveis, setSubsetoresDisponiveis] = useState<{id: string, nome: string}[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
@@ -258,7 +260,7 @@ export default function MonitoramentoPage() {
         .eq('ativo', true)
         .order('nome')
       setSubsetoresDisponiveis(data || [])
-      setSubsetorFilter('all') // Reset subsetor filter when setor changes
+      setSubsetorFilter([]) // Reset subsetor filter when setor changes
     }
     if (colaborador && setorIdsFiltrados.length > 0) {
       fetchSubsetores()
@@ -671,13 +673,7 @@ export default function MonitoramentoPage() {
         // Filtro por atendente (multi-seleção: vazio = todos)
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         // Filtro de subsetor
-        if (subsetorFilter !== 'all') {
-          if (subsetorFilter === 'sem_subsetor') {
-            if (t.subsetor_id) return false
-          } else {
-            if (t.subsetor_id !== subsetorFilter) return false
-          }
-        }
+        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         const numero = String(t.numero ?? t.id?.slice(0, 8) ?? '')
@@ -718,13 +714,7 @@ export default function MonitoramentoPage() {
       .filter((t: any) => t.status === 'aberto' && !t.colaborador_id)
       .filter((t: any) => {
         // Filtro de subsetor
-        if (subsetorFilter !== 'all') {
-          if (subsetorFilter === 'sem_subsetor') {
-            if (t.subsetor_id) return false
-          } else {
-            if (t.subsetor_id !== subsetorFilter) return false
-          }
-        }
+        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
@@ -1098,7 +1088,7 @@ export default function MonitoramentoPage() {
             <Select value={tagFilter} onValueChange={(val) => {
               setTagFilter(val)
               setSetorFilter('all')
-              setSubsetorFilter('all')
+              setSubsetorFilter([])
             }}>
               <SelectTrigger className="w-40 bg-card">
                 <SelectValue placeholder="Todas as tags" />
@@ -1128,18 +1118,57 @@ export default function MonitoramentoPage() {
             </SelectContent>
           </Select>
           {subsetoresDisponiveis.length > 0 && (
-            <Select value={subsetorFilter} onValueChange={setSubsetorFilter}>
-              <SelectTrigger className="w-44 bg-card">
-                <SelectValue placeholder="Todos subsetores" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos subsetores</SelectItem>
-                <SelectItem value="sem_subsetor">Sem subsetor</SelectItem>
-                {subsetoresDisponiveis.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Popover open={subsetorFiltroOpen} onOpenChange={setSubsetorFiltroOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "gap-2 bg-transparent",
+                    subsetorFilter.length > 0 && "border-primary text-primary",
+                  )}
+                >
+                  <Layers className="h-4 w-4" />
+                  Subsetor
+                  {subsetorFilter.length > 0 && (
+                    <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{subsetorFilter.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-56 p-3" align="end">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filtrar por subsetor</p>
+                    {subsetorFilter.length > 0 && (
+                      <button
+                        onClick={() => setSubsetorFilter([])}
+                        className="text-[11px] font-medium text-primary hover:underline"
+                      >
+                        Limpar
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1 max-h-[280px] overflow-y-auto">
+                    {[{ id: 'sem_subsetor', nome: 'Sem subsetor' }, ...subsetoresDisponiveis].map((s) => {
+                      const selected = subsetorFilter.includes(s.id)
+                      return (
+                        <button
+                          key={s.id}
+                          onClick={() => setSubsetorFilter(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
+                            selected && "font-medium text-primary",
+                          )}
+                        >
+                          <Check className={cn("h-3.5 w-3.5 shrink-0", !selected && "invisible")} />
+                          <span className="truncate">{s.nome}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           )}
           <Popover open={filtrosAtendenteOpen} onOpenChange={setFiltrosAtendenteOpen}>
             <PopoverTrigger asChild>
