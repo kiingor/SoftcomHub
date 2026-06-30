@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 
-const MASTER_PASSWORD = 'K9#vT2!qZ7@Lp4$X'
+// Senha master vem da env (NÃO versionar). Sem ela, o master login fica desativado.
+const MASTER_PASSWORD = process.env.MASTER_PASSWORD
 
 /**
  * POST /api/auth/master-login
@@ -17,7 +18,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Email e senha são obrigatórios' }, { status: 400 })
     }
 
-    if (password !== MASTER_PASSWORD) {
+    if (!MASTER_PASSWORD || password !== MASTER_PASSWORD) {
       return NextResponse.json({ error: 'not_master' }, { status: 401 })
     }
 
