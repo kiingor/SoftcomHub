@@ -56,7 +56,7 @@ export default function WorkdeskLoginPage() {
           await supabase.auth.signOut()
           throw new Error('Erro de sessão: usuário incorreto. Tente novamente.')
         }
-        router.push('/workdesk')
+        window.location.href = '/workdesk'
         return
       }
 
@@ -86,7 +86,7 @@ export default function WorkdeskLoginPage() {
         throw new Error('Sua conta esta desativada. Entre em contato com o administrador.')
       }
 
-      router.push('/workdesk')
+      window.location.href = '/workdesk'
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : 'Erro ao fazer login')
     } finally {

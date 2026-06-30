@@ -96,13 +96,13 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
 
     // Logout para forçar novo login com nova senha
     await supabase.auth.signOut()
-    router.push('/login')
+    window.location.href = '/login'
   }
 
   const handleSignOut = async () => {
     const supabase = createClient()
     await supabase.auth.signOut()
-    router.push('/login')
+    window.location.href = '/login'
   }
 
   useEffect(() => {

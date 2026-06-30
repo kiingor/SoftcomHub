@@ -2063,7 +2063,7 @@ function SetorPageInner() {
 
 const handleLogout = async () => {
   await supabase.auth.signOut()
-  router.push('/login')
+  window.location.href = '/login'
   }
 
 // Send notification to setor or specific colaborador

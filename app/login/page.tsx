@@ -78,7 +78,9 @@ export default function LoginPage() {
         throw new Error('Voce nao tem permissao para acessar o Dashboard. Use o WorkDesk.')
       }
 
-      router.push('/dashboard')
+      // Recarrega a página inteira (em vez de router.push) para zerar o cache
+      // do SWR — senão o usuário anterior continua aparecendo após a troca.
+      window.location.href = '/dashboard'
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : 'Erro ao fazer login')
     } finally {

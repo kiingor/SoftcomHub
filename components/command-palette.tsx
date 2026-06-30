@@ -113,7 +113,7 @@ export function CommandPalette() {
     setOpen(false)
     const supabase = createClient()
     await supabase.auth.signOut()
-    router.push(pathname?.startsWith('/workdesk') ? '/workdesk/login' : '/login')
+    window.location.href = pathname?.startsWith('/workdesk') ? '/workdesk/login' : '/login'
   }
 
   // Evita mismatch de hidratação do Radix Dialog (ids gerados via useId): só

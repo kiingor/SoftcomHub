@@ -210,7 +210,7 @@ export default function WorkdeskLayout({
       }).catch(() => {})
     }
     await supabase.auth.signOut()
-    router.push('/workdesk/login')
+    window.location.href = '/workdesk/login'
   }
 
   // — Alterar senha
@@ -276,7 +276,7 @@ export default function WorkdeskLayout({
       }).catch(() => {})
     }
     await supabase.auth.signOut()
-    router.push('/workdesk/login')
+    window.location.href = '/workdesk/login'
   }
 
   if (loading) {
