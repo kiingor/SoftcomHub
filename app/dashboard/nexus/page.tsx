@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
-import { Bot, Building2, ChevronLeft, ChevronRight, CircleSlash, Headset, Layers, MessageCircle, RefreshCw, Search, Ticket, User, X } from 'lucide-react'
+import { Bot, Building2, ChevronLeft, ChevronRight, CircleSlash, Headset, Layers, MessageCircle, RefreshCw, Search, Tag, Ticket, User, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
@@ -28,6 +28,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
+import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { cn } from '@/lib/utils'
 
 const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
@@ -348,8 +349,10 @@ export default function NexusPage() {
   const supabase = createClient()
   const { data: colaborador } = useColaborador()
   const { data: setoresAcessiveis = [] } = useSetores(colaborador?.id, colaborador?.is_master)
-  const [tagFilter, setTagFilter] = useState('all')
-  const [setorFilter, setSetorFilter] = useState('all')
+  const [tagFilter, setTagFilter] = useState<string[]>([])
+  const [tagFiltroOpen, setTagFiltroOpen] = useState(false)
+  const [setorFilter, setSetorFilter] = useState<string[]>([])
+  const [setorFiltroOpen, setSetorFiltroOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [activeTab, setActiveTab] = useState<'ao-vivo' | 'atendimentos'>('ao-vivo')
   const [rangeFilter, setRangeFilter] = useState<RangeValue>('hoje')
@@ -368,20 +371,20 @@ export default function NexusPage() {
   }, [setoresAcessiveis])
 
   const setoresFiltradosPorTag = useMemo(() => {
-    if (tagFilter === 'all') return setoresAcessiveis
-    return setoresAcessiveis.filter((setor: any) => setor.tags?.id === tagFilter)
+    if (tagFilter.length === 0) return setoresAcessiveis
+    return setoresAcessiveis.filter((setor: any) => setor.tags?.id && tagFilter.includes(setor.tags.id))
   }, [setoresAcessiveis, tagFilter])
 
   const setorIdsFiltrados = useMemo(() => {
-    const setores = setorFilter === 'all'
+    const setores = setorFilter.length === 0
       ? setoresFiltradosPorTag
-      : setoresFiltradosPorTag.filter((setor: any) => setor.id === setorFilter)
+      : setoresFiltradosPorTag.filter((setor: any) => setorFilter.includes(setor.id))
     return setores.map((setor: any) => setor.id)
   }, [setorFilter, setoresFiltradosPorTag])
 
   const { data, isLoading, mutate } = useSWR(
     colaborador && setorIdsFiltrados.length > 0
-      ? ['dashboard-nexus', setorIdsFiltrados.join(','), tagFilter, setorFilter]
+      ? ['dashboard-nexus', setorIdsFiltrados.join(','), tagFilter.join(','), setorFilter.join(',')]
       : null,
     async () => {
       const activeSince = new Date(Date.now() - NEXUS_BOT_VISIBILITY_MINUTES * 60000).toISOString()
@@ -828,37 +831,30 @@ export default function NexusPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           {tagsDisponiveis.length > 0 && (
-            <Select value={tagFilter} onValueChange={(value) => {
-              setTagFilter(value)
-              setSetorFilter('all')
-            }}>
-              <SelectTrigger className="w-40 bg-card">
-                <SelectValue placeholder="Todas as tags" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas as tags</SelectItem>
-                {tagsDisponiveis.map((tag) => (
-                  <SelectItem key={tag.id} value={tag.id}>
-                    <div className="flex items-center gap-2">
-                      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.cor || '#888' }} />
-                      {tag.nome}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <MultiSelectFilter
+              icon={Tag}
+              placeholder="Todas as tags"
+              header="Tags"
+              pluralWord="tags"
+              options={tagsDisponiveis.map((t: any) => ({ id: t.id, nome: t.nome, cor: t.cor }))}
+              selected={tagFilter}
+              onChange={(next) => { setTagFilter(next); setSetorFilter([]) }}
+              open={tagFiltroOpen}
+              onOpenChange={setTagFiltroOpen}
+            />
           )}
-          <Select value={setorFilter} onValueChange={setSetorFilter}>
-            <SelectTrigger className="w-48 bg-card">
-              <SelectValue placeholder="Todos os setores" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos os setores</SelectItem>
-              {setoresFiltradosPorTag.map((setor: any) => (
-                <SelectItem key={setor.id} value={setor.id}>{setor.nome}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <MultiSelectFilter
+            icon={Building2}
+            placeholder="Todos os setores"
+            header="Setores"
+            pluralWord="setores"
+            options={setoresFiltradosPorTag.map((setor: any) => ({ id: setor.id, nome: setor.nome }))}
+            selected={setorFilter}
+            onChange={setSetorFilter}
+            open={setorFiltroOpen}
+            onOpenChange={setSetorFiltroOpen}
+            searchable
+          />
           <Button
             variant="outline"
             size="sm"
