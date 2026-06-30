@@ -22,6 +22,7 @@ import {
   CommandSeparator,
 } from '@/components/ui/command'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
+import { canViewDashboard } from '@/lib/permissions'
 
 /**
  * Command palette global (⌘K / Ctrl+K) — navegação rápida pela plataforma e
@@ -36,6 +37,11 @@ export function CommandPalette() {
     colaborador?.id,
     colaborador?.is_master,
   )
+
+  // Atendente (só WorkDesk) não tem acesso à retaguarda — esconde Dashboard,
+  // Nexus IA e a navegação por Setores. Master e quem tem can_view_dashboard veem tudo.
+  const canSeeDashboard =
+    !!colaborador?.is_master || canViewDashboard(colaborador?.permissoes as any)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -70,13 +76,15 @@ export function CommandPalette() {
         <CommandEmpty>Nada encontrado.</CommandEmpty>
 
         <CommandGroup heading="Ir para">
-          <CommandItem
-            value="dashboard inicio setores home"
-            onSelect={() => go('/dashboard')}
-          >
-            <LayoutDashboard className="text-muted-foreground" />
-            Dashboard
-          </CommandItem>
+          {canSeeDashboard && (
+            <CommandItem
+              value="dashboard inicio setores home"
+              onSelect={() => go('/dashboard')}
+            >
+              <LayoutDashboard className="text-muted-foreground" />
+              Dashboard
+            </CommandItem>
+          )}
           <CommandItem
             value="workdesk atendimento chat tickets"
             onSelect={() => go('/workdesk')}
@@ -84,13 +92,15 @@ export function CommandPalette() {
             <Headset className="text-muted-foreground" />
             WorkDesk
           </CommandItem>
-          <CommandItem
-            value="nexus ia bot inteligencia"
-            onSelect={() => go('/dashboard/nexus')}
-          >
-            <Bot className="text-muted-foreground" />
-            Nexus IA
-          </CommandItem>
+          {canSeeDashboard && (
+            <CommandItem
+              value="nexus ia bot inteligencia"
+              onSelect={() => go('/dashboard/nexus')}
+            >
+              <Bot className="text-muted-foreground" />
+              Nexus IA
+            </CommandItem>
+          )}
         </CommandGroup>
 
         <CommandSeparator />
@@ -136,7 +146,7 @@ export function CommandPalette() {
           </CommandItem>
         </CommandGroup>
 
-        {setores.length > 0 && (
+        {canSeeDashboard && setores.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Setores">
