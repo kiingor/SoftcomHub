@@ -170,7 +170,7 @@ export default function MonitoramentoPage() {
   const [subsetorFilter, setSubsetorFilter] = useState<string>('all')
   const [subsetoresDisponiveis, setSubsetoresDisponiveis] = useState<{id: string, nome: string}[]>([])
   const [searchTerm, setSearchTerm] = useState('')
-  const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
+  const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosAtendenteOpen, setFiltrosAtendenteOpen] = useState(false)
   const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
   const [activeTab, setActiveTab] = useState('em-andamento')
@@ -646,21 +646,30 @@ export default function MonitoramentoPage() {
   // Tickets em andamento
   // Lista de atendentes únicos para o filtro
   const atendentesUnicos = useMemo(() => {
-    const map = new Map<string, string>()
+    const map = new Map<string, { nome: string; is_online: boolean; pausa: boolean }>()
     tickets.forEach((t: any) => {
       if (t.colaborador_id && t.colaboradores?.nome) {
-        map.set(t.colaborador_id, t.colaboradores.nome)
+        map.set(t.colaborador_id, {
+          nome: t.colaboradores.nome,
+          is_online: !!t.colaboradores.is_online,
+          pausa: !!t.colaboradores.pausa_atual_id,
+        })
       }
     })
-    return Array.from(map.entries()).map(([id, nome]) => ({ id, nome })).sort((a, b) => a.nome.localeCompare(b.nome))
+    // Online primeiro (sem pausa) → em pausa → offline; dentro de cada grupo por nome.
+    const order = (x: { is_online: boolean; pausa: boolean }) =>
+      x.is_online && !x.pausa ? 0 : x.pausa ? 1 : 2
+    return Array.from(map.entries())
+      .map(([id, v]) => ({ id, nome: v.nome, is_online: v.is_online, pausa: v.pausa }))
+      .sort((a, b) => order(a) - order(b) || a.nome.localeCompare(b.nome))
   }, [tickets])
 
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || (t.status === 'aberto' && t.colaborador_id))
       .filter((t: any) => {
-        // Filtro por atendente
-        if (atendenteFilter !== 'all' && t.colaborador_id !== atendenteFilter) return false
+        // Filtro por atendente (multi-seleção: vazio = todos)
+        if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         // Filtro de subsetor
         if (subsetorFilter !== 'all') {
           if (subsetorFilter === 'sem_subsetor') {
@@ -1139,22 +1148,33 @@ export default function MonitoramentoPage() {
                 size="sm"
                 className={cn(
                   "gap-2 bg-transparent",
-                  atendenteFilter !== 'all' && "border-primary text-primary"
+                  atendenteFilter.length > 0 && "border-primary text-primary"
                 )}
               >
                 <User className="h-4 w-4" />
-                {atendenteFilter !== 'all'
-                  ? (atendentesUnicos.find(a => a.id === atendenteFilter)?.nome || 'Atendente')
-                  : 'Atendente'
-                }
-                {atendenteFilter !== 'all' && (
-                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">1</Badge>
+                {atendenteFilter.length === 0
+                  ? 'Atendente'
+                  : atendenteFilter.length === 1
+                    ? (atendentesUnicos.find(a => a.id === atendenteFilter[0])?.nome || 'Atendente')
+                    : 'Atendentes'}
+                {atendenteFilter.length > 0 && (
+                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{atendenteFilter.length}</Badge>
                 )}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-64 p-3" align="end" onCloseAutoFocus={() => setFiltroAtendenteSearch('')}>
               <div className="space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filtrar por atendente</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Acompanhar atendentes</p>
+                  {atendenteFilter.length > 0 && (
+                    <button
+                      onClick={() => setAtendenteFilter([])}
+                      className="text-[11px] font-medium text-primary hover:underline"
+                    >
+                      Limpar
+                    </button>
+                  )}
+                </div>
                 <input
                   type="text"
                   placeholder="Buscar atendente..."
@@ -1164,33 +1184,31 @@ export default function MonitoramentoPage() {
                   autoFocus
                 />
                 <div className="space-y-1 max-h-[280px] overflow-y-auto">
-                  {!filtroAtendenteSearch && (
-                    <button
-                      onClick={() => { setAtendenteFilter('all'); setFiltrosAtendenteOpen(false) }}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                        atendenteFilter === 'all' && "font-medium text-primary"
-                      )}
-                    >
-                      <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
-                      Todos os atendentes
-                    </button>
-                  )}
                   {atendentesUnicos
                     .filter(a => !filtroAtendenteSearch || a.nome.toLowerCase().includes(filtroAtendenteSearch.toLowerCase()))
-                    .map((a) => (
-                    <button
-                      key={a.id}
-                      onClick={() => { setAtendenteFilter(a.id); setFiltrosAtendenteOpen(false) }}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                        atendenteFilter === a.id && "font-medium text-primary"
-                      )}
-                    >
-                      <Check className={cn("h-3.5 w-3.5", atendenteFilter !== a.id && "invisible")} />
-                      {a.nome}
-                    </button>
-                  ))}
+                    .map((a) => {
+                      const selected = atendenteFilter.includes(a.id)
+                      return (
+                        <button
+                          key={a.id}
+                          onClick={() => setAtendenteFilter(prev => prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id])}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
+                            selected && "font-medium text-primary"
+                          )}
+                        >
+                          <Check className={cn("h-3.5 w-3.5 shrink-0", !selected && "invisible")} />
+                          <span
+                            className={cn(
+                              "h-2 w-2 shrink-0 rounded-full",
+                              a.is_online && !a.pausa ? "bg-green-500" : a.pausa ? "bg-yellow-500" : "bg-gray-400",
+                            )}
+                            aria-hidden="true"
+                          />
+                          <span className="truncate">{a.nome}</span>
+                        </button>
+                      )
+                    })}
                   {atendentesUnicos.length === 0 && (
                     <p className="px-2 py-1.5 text-xs text-muted-foreground">Nenhum atendente ativo</p>
                   )}
