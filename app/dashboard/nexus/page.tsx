@@ -314,23 +314,30 @@ async function loadNexusSetores(
     .eq('assistente_ia', true)
 
   const setoresIa = setoresIaData || []
+  // Mapa único de identificador de canal → setor. O identificador do canal pode
+  // estar em `phone_number_id` (WhatsApp Cloud API) OU em `instancia` (Evolution
+  // API). Na MENSAGEM, ambos os casos chegam na coluna `phone_number_id` (a tabela
+  // mensagens não tem coluna `instancia`). Por isso indexamos os dois sob a mesma
+  // chave crua — sem prefixo — pra o lookup da mensagem cruzar com qualquer um.
   const channelSetores = new Map<string, { id: string; nome: string }>()
 
   for (const setor of setoresIa as any[]) {
     for (const canal of setor.setor_canais || []) {
       if (!canal.ativo) continue
-      if (canal.phone_number_id) channelSetores.set(`phone:${canal.phone_number_id}`, setor)
-      if (canal.instancia) channelSetores.set(`instance:${canal.instancia}`, setor)
+      if (canal.phone_number_id) channelSetores.set(canal.phone_number_id, setor)
+      if (canal.instancia) channelSetores.set(canal.instancia, setor)
     }
   }
 
   const resolveSetor = (message: any): { id: string; nome: string } | null => {
-    const byPhone = message.phone_number_id ? channelSetores.get(`phone:${message.phone_number_id}`) : null
-    if (byPhone) return byPhone
-
-    const byInstance = message.instancia ? channelSetores.get(`instance:${message.instancia}`) : null
-    if (byInstance) return byInstance
-
+    const canalId = message.phone_number_id
+    if (canalId) {
+      // Tem identificador de canal: só atribui se casar com um setor carregado.
+      // Se não casar, a mensagem é de OUTRO setor — não pode cair no fallback
+      // (senão, ao filtrar por 1 setor, tudo seria atribuído a ele).
+      return channelSetores.get(canalId) ?? null
+    }
+    // Sem identificador de canal: fallback só quando há exatamente 1 setor.
     return setoresIa.length === 1 ? setoresIa[0] : null
   }
 
