@@ -287,9 +287,22 @@ const RANGE_OPTIONS = [
   { value: 'hoje', label: 'Hoje' },
   { value: '24h', label: 'Ultimas 24h' },
   { value: '7d', label: 'Ultimos 7 dias' },
+  { value: '15d', label: 'Ultimos 15 dias' },
+  { value: '30d', label: 'Ultimos 30 dias' },
+  { value: '60d', label: 'Ultimos 60 dias' },
+  { value: '90d', label: 'Ultimos 90 dias' },
 ] as const
 
 type RangeValue = (typeof RANGE_OPTIONS)[number]['value']
+
+const RANGE_DIAS: Record<Exclude<RangeValue, 'hoje'>, number> = {
+  '24h': 1,
+  '7d': 7,
+  '15d': 15,
+  '30d': 30,
+  '60d': 60,
+  '90d': 90,
+}
 
 function rangeToSince(range: RangeValue): string {
   if (range === 'hoje') {
@@ -297,8 +310,8 @@ function rangeToSince(range: RangeValue): string {
     start.setHours(0, 0, 0, 0)
     return start.toISOString()
   }
-  const hours = range === '24h' ? 24 : 24 * 7
-  return new Date(Date.now() - hours * 3600_000).toISOString()
+  const dias = RANGE_DIAS[range] ?? 7
+  return new Date(Date.now() - dias * 24 * 3600_000).toISOString()
 }
 
 // Resolve os setores com IA acessíveis e devolve um mapeador mensagem→setor
