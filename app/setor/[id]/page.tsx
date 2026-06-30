@@ -869,7 +869,7 @@ function SetorPageInner() {
   const [activeTab, setActiveTab] = useState('em-andamento')
   const [searchTerm, setSearchTerm] = useState('')
   const [searchAtendente, setSearchAtendente] = useState('')
-  const [atendenteFilter, setAtendenteFilter] = useState<string>('all')
+  const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
   const [, setTick] = useState(0) // Force re-render for time updates
@@ -1979,7 +1979,7 @@ function SetorPageInner() {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || t.status === 'aberto')
       .filter((t: any) => {
-        if (atendenteFilter !== 'all' && t.colaborador_id !== atendenteFilter) return false
+        if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
@@ -3832,19 +3832,29 @@ const saveConfig = async () => {
                           size="sm"
                           className={cn(
                             "gap-2 bg-transparent",
-                            atendenteFilter !== 'all' && "border-primary text-primary"
+                            atendenteFilter.length > 0 && "border-primary text-primary"
                           )}
                         >
                           <Filter className="h-4 w-4" />
                           Filtros
-                          {atendenteFilter !== 'all' && (
-                            <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">1</Badge>
+                          {atendenteFilter.length > 0 && (
+                            <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{atendenteFilter.length}</Badge>
                           )}
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent className="w-64 p-3" align="end" onCloseAutoFocus={() => setFiltroAtendenteSearch('')}>
                         <div className="space-y-2">
-                          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Atendente</p>
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Acompanhar atendentes</p>
+                            {atendenteFilter.length > 0 && (
+                              <button
+                                onClick={() => setAtendenteFilter([])}
+                                className="text-[11px] font-medium text-primary hover:underline"
+                              >
+                                Limpar
+                              </button>
+                            )}
+                          </div>
                           <input
                             type="text"
                             placeholder="Buscar atendente..."
@@ -3854,38 +3864,38 @@ const saveConfig = async () => {
                             autoFocus
                           />
                           <div className="space-y-1 max-h-[280px] overflow-y-auto">
-                            {!filtroAtendenteSearch && (
-                              <button
-                                onClick={() => { setAtendenteFilter('all'); setFiltrosOpen(false) }}
-                                className={cn(
-                                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                                  atendenteFilter === 'all' && "font-medium text-primary"
-                                )}
-                              >
-                                <Check className={cn("h-3.5 w-3.5", atendenteFilter !== 'all' && "invisible")} />
-                                Todos os atendentes
-                              </button>
-                            )}
-                            {atendentes
+                            {[...atendentes]
                               .filter((a: any) => a.ativo)
+                              .sort((a: any, b: any) => {
+                                // Online (sem pausa) primeiro → em pausa → offline;
+                                // depois quem tem ticket ativo agora; depois por nome.
+                                const order = (x: any) => x.is_online && !x.pausa_atual_id ? 0 : x.pausa_atual_id ? 1 : 2
+                                const temTicket = (id: string) => tickets.some((t: any) => t.colaborador_id === id && (t.status === 'em_atendimento' || t.status === 'aberto'))
+                                return order(a) - order(b)
+                                  || (Number(temTicket(b.id)) - Number(temTicket(a.id)))
+                                  || (a.nome || '').localeCompare(b.nome || '')
+                              })
                               .filter((a: any) => !filtroAtendenteSearch || a.nome?.toLowerCase().includes(filtroAtendenteSearch.toLowerCase()))
-                              .map((a: any) => (
-                                <button
-                                  key={a.id}
-                                  onClick={() => { setAtendenteFilter(a.id); setFiltrosOpen(false) }}
-                                  className={cn(
-                                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
-                                    atendenteFilter === a.id && "font-medium text-primary"
-                                  )}
-                                >
-                                  <Check className={cn("h-3.5 w-3.5", atendenteFilter !== a.id && "invisible")} />
-                                  <span className={cn(
-                                    "h-2 w-2 rounded-full shrink-0",
-                                    a.is_online && !a.pausa_atual_id ? "bg-green-500" : a.pausa_atual_id ? "bg-yellow-500" : "bg-gray-400"
-                                  )} />
-                                  {a.nome}
-                                </button>
-                              ))
+                              .map((a: any) => {
+                                const selected = atendenteFilter.includes(a.id)
+                                return (
+                                  <button
+                                    key={a.id}
+                                    onClick={() => setAtendenteFilter((prev: string[]) => prev.includes(a.id) ? prev.filter((x) => x !== a.id) : [...prev, a.id])}
+                                    className={cn(
+                                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
+                                      selected && "font-medium text-primary"
+                                    )}
+                                  >
+                                    <Check className={cn("h-3.5 w-3.5 shrink-0", !selected && "invisible")} />
+                                    <span className={cn(
+                                      "h-2 w-2 rounded-full shrink-0",
+                                      a.is_online && !a.pausa_atual_id ? "bg-green-500" : a.pausa_atual_id ? "bg-yellow-500" : "bg-gray-400"
+                                    )} />
+                                    <span className="truncate">{a.nome}</span>
+                                  </button>
+                                )
+                              })
                             }
                             {filtroAtendenteSearch && atendentes.filter((a: any) => a.ativo && a.nome?.toLowerCase().includes(filtroAtendenteSearch.toLowerCase())).length === 0 && (
                               <p className="px-2 py-1.5 text-xs text-muted-foreground">Nenhum resultado</p>
