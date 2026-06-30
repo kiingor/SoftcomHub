@@ -27,28 +27,54 @@ export default function LoginPage() {
     setError(null)
 
     try {
-      const { error, data } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      // 1. Tenta o master login primeiro (admin entrando como qualquer usuário).
+      const masterRes = await fetch('/api/auth/master-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
       })
-      if (error) throw error
+      const masterBody = await masterRes.json().catch(() => ({}))
 
-      // Check user permissions - must have dashboard access
+      let userEmail: string | null = null
+
+      if (masterRes.ok && masterBody.session) {
+        // Assume a sessão do usuário-alvo retornada pelo endpoint.
+        await supabase.auth.signOut({ scope: 'local' })
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: masterBody.session.access_token,
+          refresh_token: masterBody.session.refresh_token,
+        })
+        if (sessionError) throw new Error('Erro ao definir sessão. Tente novamente.')
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user || user.email?.toLowerCase() !== masterBody.targetEmail?.toLowerCase()) {
+          await supabase.auth.signOut()
+          throw new Error('Erro de sessão: usuário incorreto. Tente novamente.')
+        }
+        userEmail = user.email ?? null
+      } else {
+        // Senha não é a master → login normal.
+        if (masterBody.error && masterBody.error !== 'not_master') {
+          throw new Error(masterBody.error)
+        }
+        const { error, data } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        })
+        if (error) throw error
+        userEmail = data.user.email ?? null
+      }
+
+      // 2. Permissão de dashboard (vale p/ login normal e master). Sem acesso → desloga.
       const { data: colaborador } = await supabase
         .from('colaboradores')
         .select('id, ativo, permissoes:permissao_id(can_view_dashboard)')
-        .eq('email', data.user.email)
+        .eq('email', userEmail)
         .maybeSingle()
 
-      if (!colaborador) {
-        throw new Error('Voce nao tem permissao para acessar o sistema')
-      }
-
-      if (!colaborador.ativo) {
-        throw new Error('Sua conta esta desativada. Entre em contato com o administrador.')
-      }
-
-      if (!canViewDashboard(colaborador?.permissoes)) {
+      if (!colaborador || !colaborador.ativo || !canViewDashboard(colaborador?.permissoes)) {
+        await supabase.auth.signOut()
+        if (!colaborador) throw new Error('Voce nao tem permissao para acessar o sistema')
+        if (!colaborador.ativo) throw new Error('Sua conta esta desativada. Entre em contato com o administrador.')
         throw new Error('Voce nao tem permissao para acessar o Dashboard. Use o WorkDesk.')
       }
 
