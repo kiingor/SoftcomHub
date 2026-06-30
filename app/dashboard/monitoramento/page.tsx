@@ -248,7 +248,8 @@ export default function MonitoramentoPage() {
   // Fetch subsetores when setor filter changes
   useEffect(() => {
     async function fetchSubsetores() {
-      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : setorIdsFiltrados
+      // Subsetor só faz sentido com um setor específico selecionado.
+      const targetSetorIds = setorFilter !== 'all' ? [setorFilter] : []
       if (targetSetorIds.length === 0) {
         setSubsetoresDisponiveis([])
         return
@@ -648,23 +649,30 @@ export default function MonitoramentoPage() {
   // Tickets em andamento
   // Lista de atendentes únicos para o filtro
   const atendentesUnicos = useMemo(() => {
-    const map = new Map<string, { nome: string; is_online: boolean; pausa: boolean }>()
+    // Quem tem ticket ativo agora (em atendimento / aberto com atendente).
+    const comTicket = new Set<string>()
     tickets.forEach((t: any) => {
-      if (t.colaborador_id && t.colaboradores?.nome) {
-        map.set(t.colaborador_id, {
-          nome: t.colaboradores.nome,
-          is_online: !!t.colaboradores.is_online,
-          pausa: !!t.colaboradores.pausa_atual_id,
-        })
+      if (t.colaborador_id && (t.status === 'em_atendimento' || t.status === 'aberto')) {
+        comTicket.add(t.colaborador_id)
       }
     })
-    // Online primeiro (sem pausa) → em pausa → offline; dentro de cada grupo por nome.
+    // Online (sem pausa) → em pausa → offline; depois quem tem ticket agora; depois nome.
     const order = (x: { is_online: boolean; pausa: boolean }) =>
       x.is_online && !x.pausa ? 0 : x.pausa ? 1 : 2
-    return Array.from(map.entries())
-      .map(([id, v]) => ({ id, nome: v.nome, is_online: v.is_online, pausa: v.pausa }))
-      .sort((a, b) => order(a) - order(b) || a.nome.localeCompare(b.nome))
-  }, [tickets])
+    return (atendentesRaw || [])
+      .filter((a: any) => a.ativo)
+      .map((a: any) => ({
+        id: a.id,
+        nome: a.nome,
+        is_online: !!a.is_online,
+        pausa: !!a.pausa_atual_id,
+      }))
+      .sort((a, b) =>
+        order(a) - order(b)
+        || (Number(comTicket.has(b.id)) - Number(comTicket.has(a.id)))
+        || (a.nome || '').localeCompare(b.nome || ''),
+      )
+  }, [atendentesRaw, tickets])
 
   const ticketsEmAndamento = useMemo(() => {
     return tickets
@@ -1117,7 +1125,7 @@ export default function MonitoramentoPage() {
               ))}
             </SelectContent>
           </Select>
-          {subsetoresDisponiveis.length > 0 && (
+          {setorFilter !== 'all' && subsetoresDisponiveis.length > 0 && (
             <Popover open={subsetorFiltroOpen} onOpenChange={setSubsetorFiltroOpen}>
               <PopoverTrigger asChild>
                 <Button
