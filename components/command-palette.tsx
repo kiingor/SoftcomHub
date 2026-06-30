@@ -39,6 +39,7 @@ import { toast } from 'sonner'
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const [fotoOpen, setFotoOpen] = useState(false)
+  const [mounted, setMounted] = useState(false)
   const router = useRouter()
   const pathname = usePathname()
   const { theme, setTheme } = useTheme()
@@ -71,6 +72,8 @@ export function CommandPalette() {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [])
+
+  useEffect(() => setMounted(true), [])
 
   const go = (path: string) => {
     setOpen(false)
@@ -112,6 +115,11 @@ export function CommandPalette() {
     await supabase.auth.signOut()
     router.push(pathname?.startsWith('/workdesk') ? '/workdesk/login' : '/login')
   }
+
+  // Evita mismatch de hidratação do Radix Dialog (ids gerados via useId): só
+  // renderiza no cliente, após o mount. O atalho Ctrl+K continua ativo (o
+  // listener é registrado no useEffect acima, independente do retorno).
+  if (!mounted) return null
 
   return (
     <>
