@@ -480,6 +480,39 @@ const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
   { id: 'tabela', label: 'Últimos atendimentos' },
 ]
 
+// Arranjo padrão do time (ajustado à mão): posições/tamanhos exatos de cada card.
+// É o layout inicial de todos os setores enquanto o usuário não personalizar.
+// Cards ausentes aqui (ex.: 'canal') começam ocultos. Ordenado por leitura (y, x).
+const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
+  { i: 'kpiPrimeiraResposta', x: 0, y: 0, w: 4, h: 2 },
+  { i: 'kpiResolucao', x: 4, y: 0, w: 4, h: 2 },
+  { i: 'kpiRecebidos', x: 8, y: 0, w: 4, h: 2 },
+  { i: 'kpiResolvidos', x: 0, y: 2, w: 4, h: 2 },
+  { i: 'kpiTaxa', x: 4, y: 2, w: 4, h: 2 },
+  { i: 'kpiNps', x: 8, y: 2, w: 4, h: 2 },
+  { i: 'volume', x: 0, y: 4, w: 6, h: 5 },
+  { i: 'rankTipo', x: 6, y: 4, w: 3, h: 4 },
+  { i: 'nps', x: 9, y: 4, w: 3, h: 4 },
+  { i: 'heatmap', x: 6, y: 8, w: 4, h: 7 },
+  { i: 'status', x: 10, y: 8, w: 2, h: 3 },
+  { i: 'sla', x: 0, y: 9, w: 6, h: 5 },
+  { i: 'roteamento', x: 10, y: 11, w: 2, h: 4 },
+  { i: 'rankAtendente', x: 0, y: 14, w: 6, h: 7 },
+  { i: 'rankPDV', x: 6, y: 15, w: 6, h: 6 },
+  { i: 'matrizTipoTecnico', x: 0, y: 21, w: 12, h: 6 },
+  { i: 'tabela', x: 0, y: 27, w: 12, h: 7 },
+]
+// ids presentes no arranjo padrão = visíveis por padrão (os demais começam ocultos)
+const RELATORIO_DEFAULT_VISIBLE_IDS = new Set(RELATORIO_DEFAULT_LAYOUT.map((l) => l.i))
+// ordem padrão para o painel "Reordenar": ordem de leitura do arranjo + ocultos no fim
+const RELATORIO_DEFAULT_ORDER: string[] = [
+  ...RELATORIO_DEFAULT_LAYOUT.map((l) => l.i),
+  ...RELATORIO_CARD_OPTIONS.map((o) => o.id).filter((id) => !RELATORIO_DEFAULT_VISIBLE_IDS.has(id)),
+]
+function buildDefaultVisibleCards(): Record<string, boolean> {
+  return Object.fromEntries(RELATORIO_CARD_OPTIONS.map((o) => [o.id, RELATORIO_DEFAULT_VISIBLE_IDS.has(o.id)]))
+}
+
 // Wrapper de cada relatório: punho p/ arrastar + minimizar. Tamanho/posição
 // são controlados pelo react-grid-layout (arrastar pelo punho, redimensionar pelo canto).
 function ReportWidget({
@@ -1612,10 +1645,9 @@ function SetorPageInner() {
   const SLA_COLORS = ['#22C55E', '#84CC16', '#EAB308', '#EF4444', '#94A3B8']
   const PIE_COLORS = ['#F97316', '#3B82F6', '#22C55E', '#EAB308', '#A855F7', '#EF4444', '#06B6D4', '#64748B']
 
-  // Personalização: quais cards do relatório aparecem (persistido no navegador)
-  const [visibleCards, setVisibleCards] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(RELATORIO_CARD_OPTIONS.map((o) => [o.id, true]))
-  )
+  // Personalização: quais cards do relatório aparecem (persistido no navegador).
+  // Padrão = cards presentes no arranjo do time (ex.: 'Por canal' começa oculto).
+  const [visibleCards, setVisibleCards] = useState<Record<string, boolean>>(buildDefaultVisibleCards)
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(RELATORIO_CARDS_STORAGE_KEY)
@@ -1653,9 +1685,7 @@ function SetorPageInner() {
   }
 
   // Ordem dos relatórios definida pelo usuário (persistida). Base do botão "Reordenar".
-  const [relatorioOrder, setRelatorioOrder] = useState<string[]>(
-    () => RELATORIO_CARD_OPTIONS.map((o) => o.id)
-  )
+  const [relatorioOrder, setRelatorioOrder] = useState<string[]>(() => [...RELATORIO_DEFAULT_ORDER])
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(RELATORIO_ORDER_STORAGE_KEY)
@@ -1674,12 +1704,20 @@ function SetorPageInner() {
     () => relatorioOrder.filter((id) => visibleCards[id] ?? true),
     [relatorioOrder, visibleCards]
   )
-  // Layout base (lg): salvo pelo usuário (com defaults p/ cards recém-exibidos) ou gerado
+  // Layout base (lg): layout salvo pelo usuário OU o arranjo padrão do time (baked).
   const baseLgLayout = useMemo(() => {
-    const defaults = buildDefaultLayout(relatorioVisibleIds)
-    if (!savedLgLayout) return defaults
-    const byId = new Map(savedLgLayout.map((l) => [l.i, l]))
-    return relatorioVisibleIds.map((id) => byId.get(id) || defaults.find((d) => d.i === id)!)
+    const source = savedLgLayout ?? RELATORIO_DEFAULT_LAYOUT
+    const byId = new Map(source.map((l) => [l.i, l]))
+    // card visível sem posição na fonte: empilha abaixo de tudo (não sobrepõe)
+    let bottom = source.reduce((m, l) => Math.max(m, l.y + l.h), 0)
+    return relatorioVisibleIds.map((id) => {
+      const found = byId.get(id)
+      if (found) return found
+      const d = RELATORIO_DEFAULT_SIZE[id] || { w: 6, h: 4 }
+      const item = { i: id, x: 0, y: bottom, w: d.w, h: d.h }
+      bottom += d.h
+      return item
+    })
   }, [savedLgLayout, relatorioVisibleIds])
   // Aplica o colapso: cards minimizados ficam baixos e sem redimensionar
   const effectiveLgLayout = useMemo(
@@ -1723,7 +1761,20 @@ function SetorPageInner() {
     ;[next[i], next[j]] = [next[j], next[i]]
     applyRelatorioOrder(next)
   }
-  const resetRelatorioOrder = () => applyRelatorioOrder(RELATORIO_CARD_OPTIONS.map((o) => o.id))
+  // Restaurar padrão: volta ao arranjo do time (ordem, visibilidade e posições/tamanhos).
+  // Limpa o layout salvo para o baseLgLayout cair no RELATORIO_DEFAULT_LAYOUT.
+  const resetRelatorioOrder = () => {
+    const defOrder = [...RELATORIO_DEFAULT_ORDER]
+    const defVisible = buildDefaultVisibleCards()
+    setRelatorioOrder(defOrder)
+    setVisibleCards(defVisible)
+    setSavedLgLayout(null)
+    try {
+      window.localStorage.setItem(RELATORIO_ORDER_STORAGE_KEY, JSON.stringify(defOrder))
+      window.localStorage.setItem(RELATORIO_CARDS_STORAGE_KEY, JSON.stringify(defVisible))
+      window.localStorage.removeItem(RELATORIO_LAYOUT_STORAGE_KEY)
+    } catch {}
+  }
 
   const horarios = data?.horarios || []
   const atendentes = data?.atendentes || []
