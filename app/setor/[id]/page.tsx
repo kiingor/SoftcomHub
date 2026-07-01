@@ -131,6 +131,8 @@ import {
   Download,
   ArrowUp,
   ArrowDown,
+  ArrowUpDown,
+  RotateCcw,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
@@ -411,6 +413,7 @@ temposHoje: (() => {
 const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
 const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
 const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v4'
+const RELATORIO_ORDER_STORAGE_KEY = 'setor-relatorio-order-v1'
 
 // Tamanho padrão (em colunas de 12 / linhas de grid) de cada card
 const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
@@ -1640,10 +1643,27 @@ function SetorPageInner() {
     })
   }
 
-  // ids visíveis (ordem padrão usada só para gerar o layout inicial)
+  // Ordem dos relatórios definida pelo usuário (persistida). Base do botão "Reordenar".
+  const [relatorioOrder, setRelatorioOrder] = useState<string[]>(
+    () => RELATORIO_CARD_OPTIONS.map((o) => o.id)
+  )
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(RELATORIO_ORDER_STORAGE_KEY)
+      if (!saved) return
+      const parsed: string[] = JSON.parse(saved)
+      const known = RELATORIO_CARD_OPTIONS.map((o) => o.id)
+      // normaliza: mantém ids conhecidos na ordem salva + acrescenta novos no fim
+      const ordered = parsed.filter((id) => known.includes(id))
+      const missing = known.filter((id) => !ordered.includes(id))
+      setRelatorioOrder([...ordered, ...missing])
+    } catch {}
+  }, [])
+
+  // ids visíveis, já na ordem escolhida pelo usuário
   const relatorioVisibleIds = useMemo(
-    () => RELATORIO_CARD_OPTIONS.map((o) => o.id).filter((id) => visibleCards[id] ?? true),
-    [visibleCards]
+    () => relatorioOrder.filter((id) => visibleCards[id] ?? true),
+    [relatorioOrder, visibleCards]
   )
   // Layout base (lg): salvo pelo usuário (com defaults p/ cards recém-exibidos) ou gerado
   const baseLgLayout = useMemo(() => {
@@ -1670,6 +1690,31 @@ function SetorPageInner() {
     collapsed: !!collapsedCards[id],
     onToggleCollapse: () => toggleCollapse(id),
   })
+
+  // Reordenar: aplica a nova ordem e regenera um layout limpo/fixo (tamanhos
+  // canônicos) — o relatório se arruma sozinho, sem precisar arrastar. Persiste.
+  const applyRelatorioOrder = (nextOrder: string[]) => {
+    setRelatorioOrder(nextOrder)
+    try { window.localStorage.setItem(RELATORIO_ORDER_STORAGE_KEY, JSON.stringify(nextOrder)) } catch {}
+    const visibleIds = nextOrder.filter((id) => visibleCards[id] ?? true)
+    const fresh = buildDefaultLayout(visibleIds)
+    setSavedLgLayout(fresh)
+    try { window.localStorage.setItem(RELATORIO_LAYOUT_STORAGE_KEY, JSON.stringify(fresh)) } catch {}
+  }
+  // Move um card p/ cima/baixo trocando de lugar com o vizinho visível mais próximo
+  const moveRelatorioCard = (id: string, dir: -1 | 1) => {
+    const visibleIds = relatorioOrder.filter((x) => visibleCards[x] ?? true)
+    const vIdx = visibleIds.indexOf(id)
+    const vTarget = vIdx + dir
+    if (vIdx < 0 || vTarget < 0 || vTarget >= visibleIds.length) return
+    const neighbor = visibleIds[vTarget]
+    const next = [...relatorioOrder]
+    const i = next.indexOf(id)
+    const j = next.indexOf(neighbor)
+    ;[next[i], next[j]] = [next[j], next[i]]
+    applyRelatorioOrder(next)
+  }
+  const resetRelatorioOrder = () => applyRelatorioOrder(RELATORIO_CARD_OPTIONS.map((o) => o.id))
 
   const horarios = data?.horarios || []
   const atendentes = data?.atendentes || []
@@ -4304,6 +4349,67 @@ const saveConfig = async () => {
                 <h1 className="text-2xl font-semibold tracking-tight">Relatorios de Atendimento</h1>
               </div>
               <div className="flex items-center gap-2">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" size="sm" className="gap-2">
+                      <ArrowUpDown className="h-4 w-4" />
+                      Reordenar
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-80 p-2 max-h-[440px] overflow-y-auto">
+                    <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+                      <p className="text-xs font-medium text-muted-foreground">Ordem dos relatórios</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1.5 text-xs text-muted-foreground"
+                        onClick={resetRelatorioOrder}
+                        title="Voltar à ordem padrão"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Restaurar padrão
+                      </Button>
+                    </div>
+                    {relatorioVisibleIds.length === 0 ? (
+                      <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+                        Nenhum relatório visível. Ative alguns em “Personalizar”.
+                      </p>
+                    ) : (
+                      <div className="mt-1 space-y-0.5">
+                        {relatorioVisibleIds.map((id, idx) => {
+                          const opt = RELATORIO_CARD_OPTIONS.find((o) => o.id === id)
+                          if (!opt) return null
+                          return (
+                            <div key={id} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent">
+                              <span className="w-5 text-right text-xs tabular-nums text-muted-foreground">{idx + 1}</span>
+                              <span className="flex-1 truncate text-sm">{opt.label}</span>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground disabled:opacity-30"
+                                onClick={() => moveRelatorioCard(id, -1)}
+                                disabled={idx === 0}
+                                title="Subir"
+                              >
+                                <ArrowUp className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground disabled:opacity-30"
+                                onClick={() => moveRelatorioCard(id, 1)}
+                                disabled={idx === relatorioVisibleIds.length - 1}
+                                title="Descer"
+                              >
+                                <ArrowDown className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </PopoverContent>
+                </Popover>
                 {editMode ? (
                   <>
                     <Popover>
