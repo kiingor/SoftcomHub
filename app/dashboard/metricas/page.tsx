@@ -534,12 +534,12 @@ export default function MetricasPage() {
                         layout="vertical"
                         margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
                       >
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                        <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: 'var(--muted-foreground)', fontSize: 12 }} />
                         <YAxis
                           dataKey="setor"
                           type="category"
-                          tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
+                          tick={{ fill: 'var(--foreground)', fontSize: 12 }}
                           width={140}
                         />
                         <ChartTooltip content={<ChartTooltipContent />} />
@@ -637,12 +637,12 @@ export default function MetricasPage() {
                         layout="vertical"
                         margin={{ top: 10, right: 40, left: 10, bottom: 10 }}
                       >
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                        <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: 'var(--muted-foreground)', fontSize: 12 }} />
                         <YAxis
                           dataKey="colaborador"
                           type="category"
-                          tick={{ fill: 'hsl(var(--foreground))', fontSize: 12 }}
+                          tick={{ fill: 'var(--foreground)', fontSize: 12 }}
                           width={140}
                         />
                         <ChartTooltip content={<ChartTooltipContent />} />
@@ -811,12 +811,12 @@ export default function MetricasPage() {
               >
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={dailyVolume} margin={{ top: 20, right: 40, left: 20, bottom: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                     <XAxis
                       dataKey="date"
-                      tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                      tick={{ fill: 'var(--muted-foreground)', fontSize: 12 }}
                     />
-                    <YAxis tick={{ fill: 'hsl(var(--muted-foreground))' }} />
+                    <YAxis tick={{ fill: 'var(--muted-foreground)' }} />
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <Legend />
                     <Line
