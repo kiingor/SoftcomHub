@@ -412,7 +412,7 @@ temposHoje: (() => {
 // Cards selecionáveis no relatório (mostrar/ocultar via "Personalizar")
 const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
 const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
-const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v4'
+const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v5'
 const RELATORIO_ORDER_STORAGE_KEY = 'setor-relatorio-order-v1'
 
 // Tamanho padrão (em colunas de 12 / linhas de grid) de cada card
@@ -438,15 +438,24 @@ const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
 }
 const RELATORIO_COLLAPSED_H = 1
 
-// Empacota os cards visíveis da esquerda p/ direita (quebra a cada 12 colunas)
+// Empacota os cards em "masonry" (skyline): cada card vai para o vão mais alto
+// disponível, preenchendo os buracos. Evita espaços vazios entre cards de
+// alturas diferentes; as bordas ficam alinhadas. A ordem define a prioridade.
 function buildDefaultLayout(orderedIds: string[]): Layout[] {
-  let x = 0, y = 0, rowH = 0
+  const COLS = 12
+  const colHeights = new Array(COLS).fill(0)
   return orderedIds.map((id) => {
     const d = RELATORIO_DEFAULT_SIZE[id] || { w: 6, h: 4 }
-    if (x + d.w > 12) { x = 0; y += rowH; rowH = 0 }
-    const item = { i: id, x, y, w: d.w, h: d.h }
-    x += d.w
-    rowH = Math.max(rowH, d.h)
+    const w = Math.min(d.w, COLS)
+    // acha o x (0..COLS-w) cujo topo é o menor possível (preenche o vão mais alto)
+    let bestX = 0, bestY = Infinity
+    for (let x = 0; x <= COLS - w; x++) {
+      let top = 0
+      for (let k = x; k < x + w; k++) top = Math.max(top, colHeights[k])
+      if (top < bestY) { bestY = top; bestX = x }
+    }
+    const item = { i: id, x: bestX, y: bestY, w, h: d.h }
+    for (let k = bestX; k < bestX + w; k++) colHeights[k] = bestY + d.h
     return item
   })
 }
