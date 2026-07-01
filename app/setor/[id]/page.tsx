@@ -1586,12 +1586,17 @@ function SetorPageInner() {
 
   // Estilo/paletas dos gráficos do relatório
   const chartTooltipStyle = {
-    background: 'hsl(var(--popover))',
-    border: '1px solid hsl(var(--border))',
+    // Tokens do tema são oklch — usar var(--x) direto (hsl(var(--x)) era inválido
+    // e deixava o tooltip transparente/ilegível no dark).
+    background: 'var(--popover)',
+    border: '1px solid var(--border)',
     borderRadius: 8,
     fontSize: 12,
-    color: 'hsl(var(--popover-foreground))',
+    color: 'var(--popover-foreground)',
   }
+  // recharts usa a cor da série no texto do item por padrão (ilegível no dark);
+  // forçamos a cor de texto do popover, igual ao tooltip do dashboard.
+  const chartTooltipItemStyle = { color: 'var(--popover-foreground)' }
   const SLA_COLORS = ['#22C55E', '#84CC16', '#EAB308', '#EF4444', '#94A3B8']
   const PIE_COLORS = ['#F97316', '#3B82F6', '#22C55E', '#EAB308', '#A855F7', '#EF4444', '#06B6D4', '#64748B']
 
@@ -4617,10 +4622,10 @@ const saveConfig = async () => {
                                 <stop offset="95%" stopColor="#F97316" stopOpacity={0} />
                               </linearGradient>
                             </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                            <XAxis dataKey="date" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
-                            <YAxis allowDecimals={false} width={28} tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
-                            <RechartsTooltip contentStyle={chartTooltipStyle} />
+                            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                            <XAxis dataKey="date" tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} />
+                            <YAxis allowDecimals={false} width={28} tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} />
+                            <RechartsTooltip contentStyle={chartTooltipStyle} itemStyle={chartTooltipItemStyle} labelStyle={chartTooltipItemStyle} />
                             <Area type="monotone" dataKey="count" name="Atendimentos" stroke="#F97316" strokeWidth={2} fill="url(#volFill)" />
                           </AreaChart>
                         </ResponsiveContainer>
@@ -4682,7 +4687,7 @@ const saveConfig = async () => {
                                   key={b}
                                   className="flex-1 rounded-sm"
                                   title={`${dia} ${b * 2}h–${b * 2 + 2}h: ${v} atendimento(s)`}
-                                  style={{ backgroundColor: v === 0 ? 'hsl(var(--muted))' : `rgba(249, 115, 22, ${0.15 + intensity * 0.85})` }}
+                                  style={{ backgroundColor: v === 0 ? 'var(--muted)' : `rgba(249, 115, 22, ${0.15 + intensity * 0.85})` }}
                                 />
                               )
                             })}
@@ -4719,10 +4724,10 @@ const saveConfig = async () => {
                     >
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={relatorioStats.slaBuckets} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                          <XAxis dataKey="faixa" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }} />
-                          <YAxis allowDecimals={false} width={28} tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
-                          <RechartsTooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'hsl(var(--muted) / 0.3)' }} />
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                          <XAxis dataKey="faixa" tick={{ fill: 'var(--muted-foreground)', fontSize: 10 }} />
+                          <YAxis allowDecimals={false} width={28} tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} />
+                          <RechartsTooltip contentStyle={chartTooltipStyle} itemStyle={chartTooltipItemStyle} labelStyle={chartTooltipItemStyle} cursor={{ fill: 'color-mix(in oklch, var(--muted) 40%, transparent)' }} />
                           <Bar dataKey="count" name="Tickets" radius={[6, 6, 0, 0]}>
                             {relatorioStats.slaBuckets.map((_: any, i: number) => (
                               <Cell key={i} fill={SLA_COLORS[i % SLA_COLORS.length]} />
@@ -4779,7 +4784,7 @@ const saveConfig = async () => {
                                 <Cell fill="#EAB308" />
                                 <Cell fill="#EF4444" />
                               </Pie>
-                              <RechartsTooltip contentStyle={chartTooltipStyle} />
+                              <RechartsTooltip contentStyle={chartTooltipStyle} itemStyle={chartTooltipItemStyle} labelStyle={chartTooltipItemStyle} />
                             </PieChart>
                           </ResponsiveContainer>
                           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
