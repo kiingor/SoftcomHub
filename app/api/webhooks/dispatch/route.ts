@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 
+// URL padrão fixa do webhook de encerramento (Maestro / n8n). Pode ser sobrescrita
+// por setor (setores.webhook_url) ou globalmente via env MAESTRO_WEBHOOK_URL.
+const MAESTRO_WEBHOOK_URL =
+  process.env.MAESTRO_WEBHOOK_URL || 'https://n8n-webhook.services.meiup.app/webhook/Maestro'
+
 // Format milliseconds into human-readable duration
 function formatDuration(ms: number): string {
   if (ms < 0) return '—'
@@ -90,14 +95,20 @@ export async function POST(request: Request) {
       .eq('id', ticket.setor_id)
       .single()
 
-    if (!setor?.webhook_url || !setor?.webhook_eventos?.length) {
-      return NextResponse.json({ skipped: true, reason: 'Webhook nao configurado neste setor' })
+    if (!setor) {
+      return NextResponse.json({ skipped: true, reason: 'Setor nao encontrado' })
     }
 
-    // Check if this event is enabled
-    if (!setor.webhook_eventos.includes(evento)) {
-      return NextResponse.json({ skipped: true, reason: `Evento "${evento}" nao habilitado neste setor` })
+    // Webhook de encerramento é ATIVO POR PADRÃO. Só não dispara se o setor tiver
+    // desativado explicitamente (webhook_eventos = array vazio, sem o evento).
+    // webhook_eventos null/ausente = padrão ligado.
+    const webhookAtivo = setor.webhook_eventos == null || setor.webhook_eventos.includes(evento)
+    if (!webhookAtivo) {
+      return NextResponse.json({ skipped: true, reason: `Evento "${evento}" desativado neste setor` })
     }
+
+    // URL: a do setor sobrepõe (se preenchida); senão usa a Maestro (padrão fixo).
+    const webhookUrl = setor.webhook_url?.trim() || MAESTRO_WEBHOOK_URL
 
     // Fetch colaborador name if assigned
     let colaboradorNome: string | null = null
@@ -280,7 +291,7 @@ export async function POST(request: Request) {
     const timeout = setTimeout(() => controller.abort(), 10000)
 
     try {
-      const webhookResponse = await fetch(setor.webhook_url, {
+      const webhookResponse = await fetch(webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
