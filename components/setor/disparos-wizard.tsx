@@ -11,7 +11,6 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
@@ -19,13 +18,11 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import {
   Upload,
-  Users,
   Download,
   Sparkles,
   Send,
   Trash2,
   X,
-  Search,
   ChevronLeft,
   ChevronRight,
   FileSpreadsheet,
@@ -49,14 +46,6 @@ interface Destinatario {
   telefone: string
 }
 
-interface ClienteRow {
-  id: string
-  nome: string | null
-  telefone: string | null
-  CNPJ: string | null
-  Registro: string | null
-}
-
 interface Subsetor {
   id: string
   nome: string
@@ -71,8 +60,6 @@ interface Colaborador {
 
 type Step = 1 | 2 | 3
 
-const CLIENTES_PAGE_SIZE = 25
-
 export function DisparosWizard({
   setor,
   onClose,
@@ -84,7 +71,6 @@ export function DisparosWizard({
 }) {
   const supabase = createClient()
   const [step, setStep] = useState<Step>(1)
-  const [tipoOrigem, setTipoOrigem] = useState<'xls' | 'clientes_hub' | null>(null)
   const [destinatarios, setDestinatarios] = useState<Destinatario[]>([])
   const [mensagem, setMensagem] = useState('')
   const [destinoTipo, setDestinoTipo] = useState<'subsetor' | 'atendentes' | null>(null)
@@ -157,7 +143,7 @@ export function DisparosWizard({
     setSubmitting(true)
     try {
       const body = {
-        tipo_origem: tipoOrigem,
+        tipo_origem: 'xls',
         destinatarios,
         mensagem,
         destino_tipo: destinoTipo,
@@ -194,7 +180,7 @@ export function DisparosWizard({
             Novo Disparo — Passo {step} de 3
           </DialogTitle>
           <DialogDescription>
-            {step === 1 && 'Escolha como importar os destinatários.'}
+            {step === 1 && 'Importe os destinatários pela planilha.'}
             {step === 2 && 'Digite a mensagem que será enviada a todos os destinatários.'}
             {step === 3 && 'Escolha para qual destino criar os tickets.'}
           </DialogDescription>
@@ -204,8 +190,6 @@ export function DisparosWizard({
           {step === 1 && (
             <Step1Destinatarios
               setor={setor}
-              tipoOrigem={tipoOrigem}
-              setTipoOrigem={setTipoOrigem}
               destinatarios={destinatarios}
               setDestinatarios={setDestinatarios}
             />
@@ -274,14 +258,10 @@ export function DisparosWizard({
 
 function Step1Destinatarios({
   setor,
-  tipoOrigem,
-  setTipoOrigem,
   destinatarios,
   setDestinatarios,
 }: {
   setor: Setor
-  tipoOrigem: 'xls' | 'clientes_hub' | null
-  setTipoOrigem: (t: 'xls' | 'clientes_hub' | null) => void
   destinatarios: Destinatario[]
   setDestinatarios: (d: Destinatario[]) => void
 }) {
@@ -323,111 +303,59 @@ function Step1Destinatarios({
     setDestinatarios(destinatarios.filter((_, i) => i !== index))
   }
 
-  if (!tipoOrigem) {
-    return (
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <button
-          type="button"
-          onClick={() => setTipoOrigem('xls')}
-          className="p-6 rounded-xl border-2 border-dashed hover:border-primary hover:bg-accent/50 transition text-left flex flex-col items-start gap-3"
-        >
-          <FileSpreadsheet className="h-8 w-8 text-emerald-600" />
-          <div>
-            <p className="font-semibold">Importar Planilha (XLS)</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              Faça upload de uma planilha com colunas <strong>nome, cnpj, registro, telefone</strong>.
-              Clientes novos são cadastrados automaticamente.
-            </p>
-          </div>
-        </button>
-        <button
-          type="button"
-          onClick={() => setTipoOrigem('clientes_hub')}
-          className="p-6 rounded-xl border-2 border-dashed hover:border-primary hover:bg-accent/50 transition text-left flex flex-col items-start gap-3"
-        >
-          <Users className="h-8 w-8 text-blue-600" />
-          <div>
-            <p className="font-semibold">Selecionar Clientes do Hub</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              Escolha clientes já cadastrados. Use filtros por CNPJ, Registro ou Telefone.
-            </p>
-          </div>
-        </button>
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Badge variant="outline" className="text-sm">
-          {tipoOrigem === 'xls' ? 'Planilha (XLS)' : 'Clientes do Hub'}
-        </Badge>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            setTipoOrigem(null)
-            setDestinatarios([])
-            setXlsErrors([])
+      <div className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3">
+        <FileSpreadsheet className="h-6 w-6 shrink-0 text-emerald-600" />
+        <div>
+          <p className="text-sm font-semibold">Importar Planilha (XLS)</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Faça upload de uma planilha com colunas <strong>nome, cnpj, registro, telefone</strong>.
+            Clientes novos são cadastrados automaticamente.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <Button variant="outline" onClick={handleDownloadTemplate}>
+          <Download className="h-4 w-4 mr-2" />
+          Baixar modelo
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".xls,.xlsx"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) handleXlsSelected(f)
           }}
+        />
+        <Button
+          variant="default"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
         >
-          Trocar origem
+          <Upload className="h-4 w-4 mr-2" />
+          {uploading ? 'Processando...' : 'Selecionar planilha'}
         </Button>
       </div>
 
-      {tipoOrigem === 'xls' && (
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleDownloadTemplate}>
-              <Download className="h-4 w-4 mr-2" />
-              Baixar modelo
-            </Button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xls,.xlsx"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) handleXlsSelected(f)
-              }}
-            />
-            <Button
-              variant="default"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-            >
-              <Upload className="h-4 w-4 mr-2" />
-              {uploading ? 'Processando...' : 'Selecionar planilha'}
-            </Button>
-          </div>
-
-          {xlsErrors.length > 0 && (
-            <div className="p-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20">
-              <p className="text-sm font-medium text-amber-900 dark:text-amber-100 mb-1">
-                Avisos ({xlsErrors.length}):
-              </p>
-              <ul className="text-xs text-amber-800 dark:text-amber-200 list-disc pl-5 max-h-32 overflow-y-auto">
-                {xlsErrors.slice(0, 20).map((e, i) => (
-                  <li key={i}>
-                    {e.row > 0 ? `Linha ${e.row}: ` : ''}
-                    {e.message}
-                  </li>
-                ))}
-                {xlsErrors.length > 20 && <li>... e mais {xlsErrors.length - 20}</li>}
-              </ul>
-            </div>
-          )}
+      {xlsErrors.length > 0 && (
+        <div className="p-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20">
+          <p className="text-sm font-medium text-amber-900 dark:text-amber-100 mb-1">
+            Avisos ({xlsErrors.length}):
+          </p>
+          <ul className="text-xs text-amber-800 dark:text-amber-200 list-disc pl-5 max-h-32 overflow-y-auto">
+            {xlsErrors.slice(0, 20).map((e, i) => (
+              <li key={i}>
+                {e.row > 0 ? `Linha ${e.row}: ` : ''}
+                {e.message}
+              </li>
+            ))}
+            {xlsErrors.length > 20 && <li>... e mais {xlsErrors.length - 20}</li>}
+          </ul>
         </div>
-      )}
-
-      {tipoOrigem === 'clientes_hub' && (
-        <ClientesHubPicker
-          setor={setor}
-          destinatarios={destinatarios}
-          setDestinatarios={setDestinatarios}
-        />
       )}
 
       {destinatarios.length > 0 && (
@@ -457,189 +385,6 @@ function Step1Destinatarios({
                 </Button>
               </div>
             ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ClientesHubPicker({
-  setor,
-  destinatarios,
-  setDestinatarios,
-}: {
-  setor: Setor
-  destinatarios: Destinatario[]
-  setDestinatarios: (d: Destinatario[]) => void
-}) {
-  const [q, setQ] = useState('')
-  const [qDebounced, setQDebounced] = useState('')
-  const [page, setPage] = useState(1)
-  const [clientes, setClientes] = useState<ClienteRow[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-
-  useEffect(() => {
-    const h = setTimeout(() => setQDebounced(q), 400)
-    return () => clearTimeout(h)
-  }, [q])
-
-  const fetchClientes = useCallback(async () => {
-    setLoading(true)
-    try {
-      const params = new URLSearchParams({
-        page: String(page),
-        pageSize: String(CLIENTES_PAGE_SIZE),
-      })
-      if (qDebounced) params.set('q', qDebounced)
-      const res = await fetch(`/api/setores/${setor.id}/clientes?${params.toString()}`)
-      const data = await res.json()
-      if (res.ok) {
-        setClientes(data.clientes)
-        setTotal(data.total)
-      }
-    } finally {
-      setLoading(false)
-    }
-  }, [setor.id, page, qDebounced])
-
-  useEffect(() => {
-    fetchClientes()
-  }, [fetchClientes])
-
-  const totalPages = Math.max(1, Math.ceil(total / CLIENTES_PAGE_SIZE))
-
-  const toggleCliente = (c: ClienteRow) => {
-    const next = new Set(selectedIds)
-    if (next.has(c.id)) {
-      next.delete(c.id)
-    } else if (c.telefone) {
-      next.add(c.id)
-    }
-    setSelectedIds(next)
-  }
-
-  const addSelected = () => {
-    const jaIncluidos = new Set(destinatarios.map((d) => d.cliente_id).filter(Boolean))
-    const novos: Destinatario[] = []
-    for (const c of clientes) {
-      if (!selectedIds.has(c.id) || jaIncluidos.has(c.id) || !c.telefone) continue
-      novos.push({
-        cliente_id: c.id,
-        nome: c.nome,
-        cnpj: c.CNPJ,
-        registro: c.Registro,
-        telefone: c.telefone,
-      })
-    }
-    setDestinatarios([...destinatarios, ...novos])
-    setSelectedIds(new Set())
-    toast.success(`${novos.length} cliente(s) adicionados`)
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Buscar por CNPJ, Registro, telefone ou nome..."
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value)
-              setPage(1)
-            }}
-            className="pl-9"
-          />
-        </div>
-        <Button onClick={addSelected} disabled={selectedIds.size === 0}>
-          Adicionar ({selectedIds.size})
-        </Button>
-      </div>
-
-      <div className="rounded-lg border max-h-[420px] overflow-y-auto">
-        <table className="w-full text-sm table-fixed">
-          <colgroup>
-            <col className="w-10" />
-            <col />
-            <col className="w-40" />
-            <col className="w-28" />
-            <col className="w-36" />
-          </colgroup>
-          <thead className="bg-muted sticky top-0">
-            <tr>
-              <th className="p-2"></th>
-              <th className="p-2 text-left">Nome</th>
-              <th className="p-2 text-left">CNPJ</th>
-              <th className="p-2 text-left">Registro</th>
-              <th className="p-2 text-left">Telefone</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={5} className="p-4 text-center text-muted-foreground">
-                  Carregando...
-                </td>
-              </tr>
-            ) : clientes.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="p-4 text-center text-muted-foreground">
-                  Nenhum cliente encontrado.
-                </td>
-              </tr>
-            ) : (
-              clientes.map((c) => (
-                <tr
-                  key={c.id}
-                  className="border-t hover:bg-accent/30 cursor-pointer"
-                  onClick={() => toggleCliente(c)}
-                >
-                  <td className="p-2">
-                    <Checkbox
-                      checked={selectedIds.has(c.id)}
-                      disabled={!c.telefone}
-                      onCheckedChange={() => toggleCliente(c)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </td>
-                  <td className="p-2 truncate" title={c.nome || ''}>{c.nome || '—'}</td>
-                  <td className="p-2 font-mono text-xs truncate" title={c.CNPJ || ''}>{c.CNPJ || '—'}</td>
-                  <td className="p-2 font-mono text-xs truncate" title={c.Registro || ''}>{c.Registro || '—'}</td>
-                  <td className="p-2 font-mono text-xs truncate" title={c.telefone || ''}>
-                    {c.telefone || <span className="text-red-500">sem</span>}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            Página {page} de {totalPages} — {total} cliente(s)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page === 1}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
           </div>
         </div>
       )}
