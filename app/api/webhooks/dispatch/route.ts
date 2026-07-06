@@ -107,6 +107,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ skipped: true, reason: `Evento "${evento}" desativado neste setor` })
     }
 
+    // Avaliação (NPS) ativa neste setor? Mesma lógica do endpoint /api/setores/[id]/avaliacao.
+    const avaliacaoAtiva = setor.webhook_eventos == null || setor.webhook_eventos.includes('avaliacao')
+
     // URL fixa da Maestro (sem personalização por setor). Override só via env.
     const webhookUrl = MAESTRO_WEBHOOK_URL
 
@@ -225,6 +228,9 @@ export async function POST(request: Request) {
       timestamp:     new Date().toISOString(),
       timestamp_br:  formatBR(new Date().toISOString()),
 
+      // NPS: se este setor deve pedir avaliação (true) ou não (false).
+      avaliar: avaliacaoAtiva,
+
       ticket: {
         id:         ticket.id,
         numero:     ticket.numero,
@@ -235,8 +241,9 @@ export async function POST(request: Request) {
         phone_number_id: resolvedPhoneNumberId,
 
         setor: {
-          id:   setor.id,
-          nome: setor.nome,
+          id:      setor.id,
+          nome:    setor.nome,
+          avaliar: avaliacaoAtiva,
         },
         subsetor: ticket.subsetor_id
           ? { id: (ticket.subsetores as any)?.id, nome: (ticket.subsetores as any)?.nome }
