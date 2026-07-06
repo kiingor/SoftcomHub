@@ -31,7 +31,7 @@ export async function GET(
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
   if (!setor) {
-    return NextResponse.json({ setor_id: id, avaliar: false, encontrado: false }, { status: 404 })
+    return NextResponse.json({ setor_id: id, ativa: false, avaliar: false, encontrado: false }, { status: 404 })
   }
 
   const eventos = setor.webhook_eventos as string[] | null
