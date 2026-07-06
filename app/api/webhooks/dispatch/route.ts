@@ -91,7 +91,7 @@ export async function POST(request: Request) {
     // Fetch setor with webhook config
     const { data: setor } = await supabase
       .from('setores')
-      .select('id, nome, canal, webhook_url, webhook_eventos, phone_number_id')
+      .select('id, nome, canal, webhook_eventos, phone_number_id')
       .eq('id', ticket.setor_id)
       .single()
 
@@ -107,8 +107,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ skipped: true, reason: `Evento "${evento}" desativado neste setor` })
     }
 
-    // URL: a do setor sobrepõe (se preenchida); senão usa a Maestro (padrão fixo).
-    const webhookUrl = setor.webhook_url?.trim() || MAESTRO_WEBHOOK_URL
+    // URL fixa da Maestro (sem personalização por setor). Override só via env.
+    const webhookUrl = MAESTRO_WEBHOOK_URL
 
     // Fetch colaborador name if assigned
     let colaboradorNome: string | null = null

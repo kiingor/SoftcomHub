@@ -998,8 +998,8 @@ function SetorPageInner() {
   discord_guild_id: '',
   evolution_base_url: '',
   evolution_api_key: '',
-  webhook_url: '',
   webhook_ativo: true,
+  avaliacao_ativa: true,
   tempo_espera_minutos: 10,
   tag_id: '' as string,
   is_receptor: false,
@@ -1711,9 +1711,9 @@ function SetorPageInner() {
         discord_guild_id: setor.discord_guild_id || '',
         evolution_base_url: setor.evolution_base_url || '',
         evolution_api_key: setor.evolution_api_key || '',
-        webhook_url: setor.webhook_url || '',
-        // Ativo por padrão: webhook_eventos null (nunca configurado) = ligado.
+        // Ativos por padrão: webhook_eventos null (nunca configurado) = ligado.
         webhook_ativo: setor.webhook_eventos == null ? true : setor.webhook_eventos.includes('ticket_encerrado'),
+        avaliacao_ativa: setor.webhook_eventos == null ? true : setor.webhook_eventos.includes('avaliacao'),
         tempo_espera_minutos: setor.tempo_espera_minutos ?? 10,
         tag_id: setor.tag_id || '',
         is_receptor: setor.is_receptor || false,
@@ -2197,9 +2197,12 @@ const saveConfig = async () => {
   discord_guild_id: configForm.discord_guild_id || null,
   evolution_base_url: configForm.evolution_base_url || null,
   evolution_api_key: configForm.evolution_api_key || null,
-  webhook_url: configForm.webhook_url?.trim() || null,
-  // Ligado -> ['ticket_encerrado']; desligado -> [] (array vazio explícito = off)
-  webhook_eventos: configForm.webhook_ativo ? ['ticket_encerrado'] : [],
+  // webhook_eventos guarda 2 flags: 'ticket_encerrado' (envio do webhook) e
+  // 'avaliacao'. [] = ambos off; null (nunca salvo) = ambos on por padrão.
+  webhook_eventos: [
+    ...(configForm.webhook_ativo ? ['ticket_encerrado'] : []),
+    ...(configForm.avaliacao_ativa ? ['avaliacao'] : []),
+  ],
   tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
   tag_id: configForm.tag_id || null,
   is_receptor: configForm.is_receptor,
@@ -6720,18 +6723,18 @@ const saveConfig = async () => {
                   onCheckedChange={(v) => setConfigForm((prev) => ({ ...prev, webhook_ativo: v }))}
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="webhook_url">URL do Webhook</Label>
-                <Input
-                  id="webhook_url"
-                  placeholder="https://n8n-webhook.services.meiup.app/webhook/Maestro (padrão)"
-                  value={configForm.webhook_url}
-                  onChange={(e) => setConfigForm((prev) => ({ ...prev, webhook_url: e.target.value }))}
-                  disabled={!configForm.webhook_ativo}
+              <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                <div>
+                  <p className="text-sm font-medium">Avaliação (pesquisa de nota)</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Habilita a pesquisa de satisfação após o encerramento. O n8n consulta o endpoint
+                    /api/setores/[id]/avaliacao para saber se deve avaliar este setor. Ativo por padrão.
+                  </p>
+                </div>
+                <Switch
+                  checked={configForm.avaliacao_ativa}
+                  onCheckedChange={(v) => setConfigForm((prev) => ({ ...prev, avaliacao_ativa: v }))}
                 />
-                <p className="text-[11px] text-muted-foreground">
-                  Deixe em branco para usar o padrão (Maestro). Preencha para enviar a outro endpoint.
-                </p>
               </div>
             </CardContent>
           </Card>
