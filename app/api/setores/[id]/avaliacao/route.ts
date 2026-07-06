@@ -37,7 +37,12 @@ export async function GET(
   const eventos = setor.webhook_eventos as string[] | null
   // Ativo por padrão: null (nunca configurado) = avaliar. Caso contrário, só se a
   // flag 'avaliacao' estiver presente.
-  const avaliar = eventos == null || eventos.includes('avaliacao')
+  const avaliacaoAtiva = eventos == null || eventos.includes('avaliacao')
 
-  return NextResponse.json({ setor_id: setor.id, avaliar, encontrado: true })
+  return NextResponse.json({
+    setor_id: setor.id,
+    ativa: avaliacaoAtiva,   // avaliação está ativa neste setor?
+    avaliar: avaliacaoAtiva, // alias
+    encontrado: true,
+  })
 }
