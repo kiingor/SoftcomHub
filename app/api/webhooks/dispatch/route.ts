@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 
+// URL fixa do webhook de encerramento (Maestro / n8n). Sobrescrita apenas via
+// env MAESTRO_WEBHOOK_URL — não há personalização por setor.
+const MAESTRO_WEBHOOK_URL =
+  process.env.MAESTRO_WEBHOOK_URL || 'https://n8n-webhook.services.meiup.app/webhook/Maestro'
+
 // Format milliseconds into human-readable duration
 function formatDuration(ms: number): string {
   if (ms < 0) return '—'
@@ -86,18 +91,24 @@ export async function POST(request: Request) {
     // Fetch setor with webhook config
     const { data: setor } = await supabase
       .from('setores')
-      .select('id, nome, canal, webhook_url, webhook_eventos, phone_number_id')
+      .select('id, nome, canal, webhook_eventos, phone_number_id')
       .eq('id', ticket.setor_id)
       .single()
 
-    if (!setor?.webhook_url || !setor?.webhook_eventos?.length) {
-      return NextResponse.json({ skipped: true, reason: 'Webhook nao configurado neste setor' })
+    if (!setor) {
+      return NextResponse.json({ skipped: true, reason: 'Setor nao encontrado' })
     }
 
-    // Check if this event is enabled
-    if (!setor.webhook_eventos.includes(evento)) {
-      return NextResponse.json({ skipped: true, reason: `Evento "${evento}" nao habilitado neste setor` })
+    // Webhook de encerramento é ATIVO POR PADRÃO. Só não dispara se o setor tiver
+    // desativado explicitamente (webhook_eventos = array vazio, sem o evento).
+    // webhook_eventos null/ausente = padrão ligado.
+    const webhookAtivo = setor.webhook_eventos == null || setor.webhook_eventos.includes(evento)
+    if (!webhookAtivo) {
+      return NextResponse.json({ skipped: true, reason: `Evento "${evento}" desativado neste setor` })
     }
+
+    // URL fixa da Maestro (sem personalização por setor). Override só via env.
+    const webhookUrl = MAESTRO_WEBHOOK_URL
 
     // Fetch colaborador name if assigned
     let colaboradorNome: string | null = null
@@ -280,7 +291,7 @@ export async function POST(request: Request) {
     const timeout = setTimeout(() => controller.abort(), 10000)
 
     try {
-      const webhookResponse = await fetch(setor.webhook_url, {
+      const webhookResponse = await fetch(webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

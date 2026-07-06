@@ -1043,8 +1043,8 @@ function SetorPageInner() {
   discord_guild_id: '',
   evolution_base_url: '',
   evolution_api_key: '',
-  webhook_url: '',
-  webhook_eventos: [] as string[],
+  webhook_ativo: true,
+  avaliacao_ativa: true,
   tempo_espera_minutos: 10,
   tag_id: '' as string,
   is_receptor: false,
@@ -1816,8 +1816,9 @@ function SetorPageInner() {
         discord_guild_id: setor.discord_guild_id || '',
         evolution_base_url: setor.evolution_base_url || '',
         evolution_api_key: setor.evolution_api_key || '',
-        webhook_url: setor.webhook_url || '',
-        webhook_eventos: setor.webhook_eventos || [],
+        // Ativos por padrão: webhook_eventos null (nunca configurado) = ligado.
+        webhook_ativo: setor.webhook_eventos == null ? true : setor.webhook_eventos.includes('ticket_encerrado'),
+        avaliacao_ativa: setor.webhook_eventos == null ? true : setor.webhook_eventos.includes('avaliacao'),
         tempo_espera_minutos: setor.tempo_espera_minutos ?? 10,
         tag_id: setor.tag_id || '',
         is_receptor: setor.is_receptor || false,
@@ -2301,8 +2302,12 @@ const saveConfig = async () => {
   discord_guild_id: configForm.discord_guild_id || null,
   evolution_base_url: configForm.evolution_base_url || null,
   evolution_api_key: configForm.evolution_api_key || null,
-  webhook_url: configForm.webhook_url || null,
-  webhook_eventos: configForm.webhook_eventos.length > 0 ? configForm.webhook_eventos : null,
+  // webhook_eventos guarda 2 flags: 'ticket_encerrado' (envio do webhook) e
+  // 'avaliacao'. [] = ambos off; null (nunca salvo) = ambos on por padrão.
+  webhook_eventos: [
+    ...(configForm.webhook_ativo ? ['ticket_encerrado'] : []),
+    ...(configForm.avaliacao_ativa ? ['avaliacao'] : []),
+  ],
   tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
   tag_id: configForm.tag_id || null,
   is_receptor: configForm.is_receptor,
@@ -6872,49 +6877,31 @@ const saveConfig = async () => {
               <p className="text-sm text-muted-foreground">Dispare notificações para sistemas externos quando eventos ocorrerem neste setor.</p>
             </CardHeader>
             <CardContent className="space-y-4 overflow-y-auto">
-              <div className="space-y-2">
-                <Label>Eventos</Label>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-border accent-primary"
-                      checked={configForm.webhook_eventos.includes('ticket_encerrado')}
-                      onChange={(e) => {
-                        setConfigForm((prev) => ({
-                          ...prev,
-                          webhook_eventos: e.target.checked
-                            ? [...prev.webhook_eventos, 'ticket_encerrado']
-                            : prev.webhook_eventos.filter((ev) => ev !== 'ticket_encerrado'),
-                        }))
-                      }}
-                    />
-                    <div>
-                      <p className="text-sm font-medium">Ticket Encerrado</p>
-                      <p className="text-[11px] text-muted-foreground">
-                        Dispara quando um ticket é finalizado. Envia dados do ticket, cliente, canal e horários.
-                      </p>
-                    </div>
-                  </label>
+              <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                <div>
+                  <p className="text-sm font-medium">Enviar ao encerrar ticket</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Ao finalizar um ticket, envia um POST com os dados (ticket, cliente, canal, horários e histórico da conversa). Ativo por padrão.
+                  </p>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="webhook_url">URL do Webhook</Label>
-                <Input
-                  id="webhook_url"
-                  placeholder="https://exemplo.com/webhook"
-                  value={configForm.webhook_url}
-                  onChange={(e) => setConfigForm((prev) => ({ ...prev, webhook_url: e.target.value }))}
+                <Switch
+                  checked={configForm.webhook_ativo}
+                  onCheckedChange={(v) => setConfigForm((prev) => ({ ...prev, webhook_ativo: v }))}
                 />
-                <p className="text-[11px] text-muted-foreground">
-                  URL que receberá um POST com os dados do evento em JSON.
-                </p>
               </div>
-              {configForm.webhook_eventos.length > 0 && !configForm.webhook_url && (
-                <p className="text-sm text-amber-600 bg-amber-950/20 border border-amber-800/30 p-2 rounded-md">
-                  Você selecionou eventos mas não informou a URL do webhook.
-                </p>
-              )}
+              <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                <div>
+                  <p className="text-sm font-medium">Avaliação (pesquisa de nota)</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Habilita a pesquisa de satisfação após o encerramento. O n8n consulta o endpoint
+                    /api/setores/[id]/avaliacao para saber se deve avaliar este setor. Ativo por padrão.
+                  </p>
+                </div>
+                <Switch
+                  checked={configForm.avaliacao_ativa}
+                  onCheckedChange={(v) => setConfigForm((prev) => ({ ...prev, avaliacao_ativa: v }))}
+                />
+              </div>
             </CardContent>
           </Card>
         </div>
