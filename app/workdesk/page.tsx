@@ -987,6 +987,7 @@ export default function WorkdeskPage() {
   const [historicoConversa, setHistoricoConversa] = useState<TicketHistoryEntry | null>(null)
   const [historicoConversaMsgs, setHistoricoConversaMsgs] = useState<Mensagem[]>([])
   const [historicoConversaLoading, setHistoricoConversaLoading] = useState(false)
+  const historicoScrollRef = useRef<HTMLDivElement>(null)
 
   // Aba ativa da sidebar direita. Sempre inicia em "Informações" ao carregar
   // a página — não persiste entre sessões (escolha consciente do usuário).
@@ -1622,6 +1623,13 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       setHistoricoConversaLoading(false)
     }
   }
+
+  // Ao carregar a conversa do histórico, começa rolada no final (mais recente).
+  useEffect(() => {
+    if (historicoConversaLoading || historicoConversaMsgs.length === 0) return
+    const el = historicoScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [historicoConversaMsgs, historicoConversaLoading])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -5773,7 +5781,7 @@ onClick={() => {
               )}
             </DialogDescription>
           </DialogHeader>
-          <div className="flex-1 overflow-y-auto space-y-2 bg-muted/20 px-4 py-4">
+          <div ref={historicoScrollRef} className="flex-1 overflow-y-auto space-y-2 bg-muted/20 px-4 py-4">
             {historicoConversaLoading ? (
               <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> Carregando conversa…
