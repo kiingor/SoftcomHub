@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 
-// URL padrão fixa do webhook de encerramento (Maestro / n8n). Pode ser sobrescrita
-// por setor (setores.webhook_url) ou globalmente via env MAESTRO_WEBHOOK_URL.
+// URL fixa do webhook de encerramento (Maestro / n8n). Sobrescrita apenas via
+// env MAESTRO_WEBHOOK_URL — não há personalização por setor.
 const MAESTRO_WEBHOOK_URL =
   process.env.MAESTRO_WEBHOOK_URL || 'https://n8n-webhook.services.meiup.app/webhook/Maestro'
 
