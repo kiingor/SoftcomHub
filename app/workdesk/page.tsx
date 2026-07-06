@@ -983,6 +983,11 @@ export default function WorkdeskPage() {
   }
   const [ticketHistory, setTicketHistory] = useState<TicketHistoryEntry[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
+  // Conversa de um atendimento anterior aberta em modal (somente leitura).
+  const [historicoConversa, setHistoricoConversa] = useState<TicketHistoryEntry | null>(null)
+  const [historicoConversaMsgs, setHistoricoConversaMsgs] = useState<Mensagem[]>([])
+  const [historicoConversaLoading, setHistoricoConversaLoading] = useState(false)
+  const historicoScrollRef = useRef<HTMLDivElement>(null)
 
   // Aba ativa da sidebar direita. Sempre inicia em "Informações" ao carregar
   // a página — não persiste entre sessões (escolha consciente do usuário).
@@ -1599,6 +1604,32 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTicketId, selectedClienteId])
+
+  // Abre a conversa de um atendimento anterior (somente leitura) em modal.
+  const abrirHistoricoConversa = async (h: TicketHistoryEntry) => {
+    setHistoricoConversa(h)
+    setHistoricoConversaLoading(true)
+    setHistoricoConversaMsgs([])
+    try {
+      const { data } = await supabase
+        .from('mensagens')
+        .select('id, remetente, conteudo, tipo, enviado_em, url_imagem, media_type')
+        .eq('ticket_id', h.id)
+        .order('enviado_em', { ascending: true, nullsFirst: false })
+      setHistoricoConversaMsgs((data as unknown as Mensagem[]) || [])
+    } catch (err) {
+      console.warn('[workdesk] erro carregando conversa do histórico:', err)
+    } finally {
+      setHistoricoConversaLoading(false)
+    }
+  }
+
+  // Ao carregar a conversa do histórico, começa rolada no final (mais recente).
+  useEffect(() => {
+    if (historicoConversaLoading || historicoConversaMsgs.length === 0) return
+    const el = historicoScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [historicoConversaMsgs, historicoConversaLoading])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -5254,9 +5285,12 @@ const insertEmoji = (emoji: string) => {
                       const refDate = h.encerrado_em || h.criado_em
                       const isEncerrado = h.status === 'encerrado'
                       return (
-                        <div
+                        <button
                           key={h.id}
-                          className="px-2.5 py-2 flex flex-col gap-0.5"
+                          type="button"
+                          onClick={() => abrirHistoricoConversa(h)}
+                          title="Abrir conversa"
+                          className="w-full text-left px-2.5 py-2 flex flex-col gap-0.5 hover:bg-accent/60 transition-colors cursor-pointer"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="tabnums font-mono font-semibold text-foreground">#{h.numero ?? '?'}</span>
@@ -5287,7 +5321,7 @@ const insertEmoji = (emoji: string) => {
                               })}
                             </span>
                           </div>
-                        </div>
+                        </button>
                       )
                     })}
                   </div>
@@ -5731,6 +5765,71 @@ onClick={() => {
           )}
         </SheetContent>
       </Sheet>
+
+      {/* Conversa de atendimento anterior (somente leitura) */}
+      <Dialog open={!!historicoConversa} onOpenChange={(open) => { if (!open) setHistoricoConversa(null) }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="border-b px-5 py-3">
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <History className="h-4 w-4" />
+              Atendimento #{historicoConversa?.numero ?? '?'}
+            </DialogTitle>
+            <DialogDescription>
+              {historicoConversa?.colaborador_nome || 'Sem atendente'}
+              {historicoConversa && (
+                <> · {new Date(historicoConversa.encerrado_em || historicoConversa.criado_em).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div ref={historicoScrollRef} className="flex-1 overflow-y-auto space-y-2 bg-muted/20 px-4 py-4">
+            {historicoConversaLoading ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Carregando conversa…
+              </div>
+            ) : historicoConversaMsgs.length === 0 ? (
+              <div className="py-10 text-center text-sm text-muted-foreground">
+                Nenhuma mensagem nesta conversa.
+              </div>
+            ) : (
+              historicoConversaMsgs.map((m) => {
+                if (m.remetente === 'sistema') {
+                  return (
+                    <div key={m.id} className="flex justify-center">
+                      <span className="rounded-full bg-muted px-3 py-1 text-[11px] text-muted-foreground">{m.conteudo}</span>
+                    </div>
+                  )
+                }
+                const outgoing = !isClientMessage(m.remetente)
+                const isImage = !!m.url_imagem && (m.tipo === 'imagem' || (m.media_type || '').startsWith('image'))
+                return (
+                  <div key={m.id} className={cn('flex', outgoing ? 'justify-end' : 'justify-start')}>
+                    <div className={cn(
+                      'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm',
+                      outgoing ? 'bg-primary text-primary-foreground' : 'border bg-background',
+                    )}>
+                      {m.url_imagem && (
+                        isImage ? (
+                          <a href={m.url_imagem} target="_blank" rel="noopener noreferrer">
+                            <img src={m.url_imagem} alt="anexo" className="mb-1 max-h-60 rounded-lg object-contain" />
+                          </a>
+                        ) : (
+                          <a href={m.url_imagem} target="_blank" rel="noopener noreferrer" className="mb-1 flex items-center gap-1.5 underline opacity-90">📎 Anexo</a>
+                        )
+                      )}
+                      {m.conteudo && (
+                        <TextoMensagem conteudo={m.conteudo} className="whitespace-pre-wrap break-words" />
+                      )}
+                      <div className={cn('mt-1 text-right text-[10px]', outgoing ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
+                        {new Date(m.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Encerrar Dialog */}
       <AlertDialog open={encerrarDialogOpen} onOpenChange={setEncerrarDialogOpen}>
