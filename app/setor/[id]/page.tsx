@@ -131,6 +131,8 @@ import {
   Download,
   ArrowUp,
   ArrowDown,
+  ArrowUpDown,
+  RotateCcw,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
@@ -410,7 +412,8 @@ temposHoje: (() => {
 // Cards selecionáveis no relatório (mostrar/ocultar via "Personalizar")
 const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
 const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
-const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v4'
+const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v5'
+const RELATORIO_ORDER_STORAGE_KEY = 'setor-relatorio-order-v1'
 
 // Tamanho padrão (em colunas de 12 / linhas de grid) de cada card
 const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
@@ -435,15 +438,24 @@ const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
 }
 const RELATORIO_COLLAPSED_H = 1
 
-// Empacota os cards visíveis da esquerda p/ direita (quebra a cada 12 colunas)
+// Empacota os cards em "masonry" (skyline): cada card vai para o vão mais alto
+// disponível, preenchendo os buracos. Evita espaços vazios entre cards de
+// alturas diferentes; as bordas ficam alinhadas. A ordem define a prioridade.
 function buildDefaultLayout(orderedIds: string[]): Layout[] {
-  let x = 0, y = 0, rowH = 0
+  const COLS = 12
+  const colHeights = new Array(COLS).fill(0)
   return orderedIds.map((id) => {
     const d = RELATORIO_DEFAULT_SIZE[id] || { w: 6, h: 4 }
-    if (x + d.w > 12) { x = 0; y += rowH; rowH = 0 }
-    const item = { i: id, x, y, w: d.w, h: d.h }
-    x += d.w
-    rowH = Math.max(rowH, d.h)
+    const w = Math.min(d.w, COLS)
+    // acha o x (0..COLS-w) cujo topo é o menor possível (preenche o vão mais alto)
+    let bestX = 0, bestY = Infinity
+    for (let x = 0; x <= COLS - w; x++) {
+      let top = 0
+      for (let k = x; k < x + w; k++) top = Math.max(top, colHeights[k])
+      if (top < bestY) { bestY = top; bestX = x }
+    }
+    const item = { i: id, x: bestX, y: bestY, w, h: d.h }
+    for (let k = bestX; k < bestX + w; k++) colHeights[k] = bestY + d.h
     return item
   })
 }
@@ -467,6 +479,39 @@ const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
   { id: 'matrizTipoTecnico', label: 'Tipos por técnico (matriz)' },
   { id: 'tabela', label: 'Últimos atendimentos' },
 ]
+
+// Arranjo padrão do time (ajustado à mão): posições/tamanhos exatos de cada card.
+// É o layout inicial de todos os setores enquanto o usuário não personalizar.
+// Cards ausentes aqui (ex.: 'canal') começam ocultos. Ordenado por leitura (y, x).
+const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
+  { i: 'kpiPrimeiraResposta', x: 0, y: 0, w: 4, h: 2 },
+  { i: 'kpiResolucao', x: 4, y: 0, w: 4, h: 2 },
+  { i: 'kpiRecebidos', x: 8, y: 0, w: 4, h: 2 },
+  { i: 'kpiResolvidos', x: 0, y: 2, w: 4, h: 2 },
+  { i: 'kpiTaxa', x: 4, y: 2, w: 4, h: 2 },
+  { i: 'kpiNps', x: 8, y: 2, w: 4, h: 2 },
+  { i: 'volume', x: 0, y: 4, w: 6, h: 5 },
+  { i: 'rankTipo', x: 6, y: 4, w: 3, h: 4 },
+  { i: 'nps', x: 9, y: 4, w: 3, h: 4 },
+  { i: 'heatmap', x: 6, y: 8, w: 4, h: 8 },
+  { i: 'status', x: 10, y: 8, w: 2, h: 4 },
+  { i: 'sla', x: 0, y: 9, w: 6, h: 5 },
+  { i: 'roteamento', x: 10, y: 12, w: 2, h: 4 },
+  { i: 'rankAtendente', x: 0, y: 14, w: 6, h: 7 },
+  { i: 'rankPDV', x: 6, y: 16, w: 6, h: 5 },
+  { i: 'matrizTipoTecnico', x: 0, y: 21, w: 12, h: 6 },
+  { i: 'tabela', x: 0, y: 27, w: 12, h: 7 },
+]
+// ids presentes no arranjo padrão = visíveis por padrão (os demais começam ocultos)
+const RELATORIO_DEFAULT_VISIBLE_IDS = new Set(RELATORIO_DEFAULT_LAYOUT.map((l) => l.i))
+// ordem padrão para o painel "Reordenar": ordem de leitura do arranjo + ocultos no fim
+const RELATORIO_DEFAULT_ORDER: string[] = [
+  ...RELATORIO_DEFAULT_LAYOUT.map((l) => l.i),
+  ...RELATORIO_CARD_OPTIONS.map((o) => o.id).filter((id) => !RELATORIO_DEFAULT_VISIBLE_IDS.has(id)),
+]
+function buildDefaultVisibleCards(): Record<string, boolean> {
+  return Object.fromEntries(RELATORIO_CARD_OPTIONS.map((o) => [o.id, RELATORIO_DEFAULT_VISIBLE_IDS.has(o.id)]))
+}
 
 // Wrapper de cada relatório: punho p/ arrastar + minimizar. Tamanho/posição
 // são controlados pelo react-grid-layout (arrastar pelo punho, redimensionar pelo canto).
@@ -1600,10 +1645,9 @@ function SetorPageInner() {
   const SLA_COLORS = ['#22C55E', '#84CC16', '#EAB308', '#EF4444', '#94A3B8']
   const PIE_COLORS = ['#F97316', '#3B82F6', '#22C55E', '#EAB308', '#A855F7', '#EF4444', '#06B6D4', '#64748B']
 
-  // Personalização: quais cards do relatório aparecem (persistido no navegador)
-  const [visibleCards, setVisibleCards] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(RELATORIO_CARD_OPTIONS.map((o) => [o.id, true]))
-  )
+  // Personalização: quais cards do relatório aparecem (persistido no navegador).
+  // Padrão = cards presentes no arranjo do time (ex.: 'Por canal' começa oculto).
+  const [visibleCards, setVisibleCards] = useState<Record<string, boolean>>(buildDefaultVisibleCards)
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(RELATORIO_CARDS_STORAGE_KEY)
@@ -1640,17 +1684,40 @@ function SetorPageInner() {
     })
   }
 
-  // ids visíveis (ordem padrão usada só para gerar o layout inicial)
+  // Ordem dos relatórios definida pelo usuário (persistida). Base do botão "Reordenar".
+  const [relatorioOrder, setRelatorioOrder] = useState<string[]>(() => [...RELATORIO_DEFAULT_ORDER])
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(RELATORIO_ORDER_STORAGE_KEY)
+      if (!saved) return
+      const parsed: string[] = JSON.parse(saved)
+      const known = RELATORIO_CARD_OPTIONS.map((o) => o.id)
+      // normaliza: mantém ids conhecidos na ordem salva + acrescenta novos no fim
+      const ordered = parsed.filter((id) => known.includes(id))
+      const missing = known.filter((id) => !ordered.includes(id))
+      setRelatorioOrder([...ordered, ...missing])
+    } catch {}
+  }, [])
+
+  // ids visíveis, já na ordem escolhida pelo usuário
   const relatorioVisibleIds = useMemo(
-    () => RELATORIO_CARD_OPTIONS.map((o) => o.id).filter((id) => visibleCards[id] ?? true),
-    [visibleCards]
+    () => relatorioOrder.filter((id) => visibleCards[id] ?? true),
+    [relatorioOrder, visibleCards]
   )
-  // Layout base (lg): salvo pelo usuário (com defaults p/ cards recém-exibidos) ou gerado
+  // Layout base (lg): layout salvo pelo usuário OU o arranjo padrão do time (baked).
   const baseLgLayout = useMemo(() => {
-    const defaults = buildDefaultLayout(relatorioVisibleIds)
-    if (!savedLgLayout) return defaults
-    const byId = new Map(savedLgLayout.map((l) => [l.i, l]))
-    return relatorioVisibleIds.map((id) => byId.get(id) || defaults.find((d) => d.i === id)!)
+    const source = savedLgLayout ?? RELATORIO_DEFAULT_LAYOUT
+    const byId = new Map(source.map((l) => [l.i, l]))
+    // card visível sem posição na fonte: empilha abaixo de tudo (não sobrepõe)
+    let bottom = source.reduce((m, l) => Math.max(m, l.y + l.h), 0)
+    return relatorioVisibleIds.map((id) => {
+      const found = byId.get(id)
+      if (found) return found
+      const d = RELATORIO_DEFAULT_SIZE[id] || { w: 6, h: 4 }
+      const item = { i: id, x: 0, y: bottom, w: d.w, h: d.h }
+      bottom += d.h
+      return item
+    })
   }, [savedLgLayout, relatorioVisibleIds])
   // Aplica o colapso: cards minimizados ficam baixos e sem redimensionar
   const effectiveLgLayout = useMemo(
@@ -1670,6 +1737,44 @@ function SetorPageInner() {
     collapsed: !!collapsedCards[id],
     onToggleCollapse: () => toggleCollapse(id),
   })
+
+  // Reordenar: aplica a nova ordem e regenera um layout limpo/fixo (tamanhos
+  // canônicos) — o relatório se arruma sozinho, sem precisar arrastar. Persiste.
+  const applyRelatorioOrder = (nextOrder: string[]) => {
+    setRelatorioOrder(nextOrder)
+    try { window.localStorage.setItem(RELATORIO_ORDER_STORAGE_KEY, JSON.stringify(nextOrder)) } catch {}
+    const visibleIds = nextOrder.filter((id) => visibleCards[id] ?? true)
+    const fresh = buildDefaultLayout(visibleIds)
+    setSavedLgLayout(fresh)
+    try { window.localStorage.setItem(RELATORIO_LAYOUT_STORAGE_KEY, JSON.stringify(fresh)) } catch {}
+  }
+  // Move um card p/ cima/baixo trocando de lugar com o vizinho visível mais próximo
+  const moveRelatorioCard = (id: string, dir: -1 | 1) => {
+    const visibleIds = relatorioOrder.filter((x) => visibleCards[x] ?? true)
+    const vIdx = visibleIds.indexOf(id)
+    const vTarget = vIdx + dir
+    if (vIdx < 0 || vTarget < 0 || vTarget >= visibleIds.length) return
+    const neighbor = visibleIds[vTarget]
+    const next = [...relatorioOrder]
+    const i = next.indexOf(id)
+    const j = next.indexOf(neighbor)
+    ;[next[i], next[j]] = [next[j], next[i]]
+    applyRelatorioOrder(next)
+  }
+  // Restaurar padrão: volta ao arranjo do time (ordem, visibilidade e posições/tamanhos).
+  // Limpa o layout salvo para o baseLgLayout cair no RELATORIO_DEFAULT_LAYOUT.
+  const resetRelatorioOrder = () => {
+    const defOrder = [...RELATORIO_DEFAULT_ORDER]
+    const defVisible = buildDefaultVisibleCards()
+    setRelatorioOrder(defOrder)
+    setVisibleCards(defVisible)
+    setSavedLgLayout(null)
+    try {
+      window.localStorage.setItem(RELATORIO_ORDER_STORAGE_KEY, JSON.stringify(defOrder))
+      window.localStorage.setItem(RELATORIO_CARDS_STORAGE_KEY, JSON.stringify(defVisible))
+      window.localStorage.removeItem(RELATORIO_LAYOUT_STORAGE_KEY)
+    } catch {}
+  }
 
   const horarios = data?.horarios || []
   const atendentes = data?.atendentes || []
@@ -4309,6 +4414,67 @@ const saveConfig = async () => {
                 <h1 className="text-2xl font-semibold tracking-tight">Relatorios de Atendimento</h1>
               </div>
               <div className="flex items-center gap-2">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" size="sm" className="gap-2">
+                      <ArrowUpDown className="h-4 w-4" />
+                      Reordenar
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-80 p-2 max-h-[440px] overflow-y-auto">
+                    <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+                      <p className="text-xs font-medium text-muted-foreground">Ordem dos relatórios</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1.5 text-xs text-muted-foreground"
+                        onClick={resetRelatorioOrder}
+                        title="Voltar à ordem padrão"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Restaurar padrão
+                      </Button>
+                    </div>
+                    {relatorioVisibleIds.length === 0 ? (
+                      <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+                        Nenhum relatório visível. Ative alguns em “Personalizar”.
+                      </p>
+                    ) : (
+                      <div className="mt-1 space-y-0.5">
+                        {relatorioVisibleIds.map((id, idx) => {
+                          const opt = RELATORIO_CARD_OPTIONS.find((o) => o.id === id)
+                          if (!opt) return null
+                          return (
+                            <div key={id} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent">
+                              <span className="w-5 text-right text-xs tabular-nums text-muted-foreground">{idx + 1}</span>
+                              <span className="flex-1 truncate text-sm">{opt.label}</span>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground disabled:opacity-30"
+                                onClick={() => moveRelatorioCard(id, -1)}
+                                disabled={idx === 0}
+                                title="Subir"
+                              >
+                                <ArrowUp className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground disabled:opacity-30"
+                                onClick={() => moveRelatorioCard(id, 1)}
+                                disabled={idx === relatorioVisibleIds.length - 1}
+                                title="Descer"
+                              >
+                                <ArrowDown className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </PopoverContent>
+                </Popover>
                 {editMode ? (
                   <>
                     <Popover>
