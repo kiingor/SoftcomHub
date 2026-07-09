@@ -959,13 +959,15 @@ export default function WorkdeskPage() {
   const [disparoCliente, setDisparoCliente] = useState<any>(null)
   const [disparoLoading, setDisparoLoading] = useState(false)
   const [disparoSending, setDisparoSending] = useState(false)
-  const [disparoStep, setDisparoStep] = useState<'cnpj' | 'telefone' | 'canal' | 'setor_evolution' | 'mensagem_evolution'>('cnpj')
+  const [disparoStep, setDisparoStep] = useState<'cnpj' | 'telefone' | 'canal' | 'setor_evolution' | 'mensagem_evolution' | 'setor_whatsapp'>('cnpj')
   const [disparoLimitBlocked, setDisparoLimitBlocked] = useState(false)
   const [disparoLimitInfo, setDisparoLimitInfo] = useState('')
   const [disparoCanalChoice, setDisparoCanalChoice] = useState<'whatsapp' | 'evolution_api'>('whatsapp')
   const [disparoMensagemEvolution, setDisparoMensagemEvolution] = useState('')
   const [disparoSetorEvolutionId, setDisparoSetorEvolutionId] = useState<string>('')
   const [disparoSetoresEvolution, setDisparoSetoresEvolution] = useState<Array<{ id: string; nome: string; instancia: string; online: 'online' | 'offline' | 'loading' | 'unknown' }>>([])
+  const [disparoSetorWhatsappId, setDisparoSetorWhatsappId] = useState<string>('')
+  const [disparoSetoresWhatsapp, setDisparoSetoresWhatsapp] = useState<Array<{ id: string; nome: string }>>([])
   const [setorCanalConfig, setSetorCanalConfig] = useState<'whatsapp' | 'discord' | 'evolution_api'>('whatsapp')
   const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
   
@@ -2940,19 +2942,23 @@ const handleEncerrarTicket = async () => {
   }
 
   // Disparo - Send template
-  const handleEnviarDisparo = async () => {
+  // setorIdOverride vem do step de seleção de setor (handleProceedWhatsapp), usado
+  // quando o colaborador atende 2+ setores com WhatsApp oficial configurado — sem
+  // isso, cairia no fallback `[0]` do array (ordem não garantida pelo Postgrest),
+  // que pode ser um setor SEM WhatsApp oficial e quebrar o disparo com um erro
+  // enganoso de "setor não configurado".
+  const handleEnviarDisparo = async (setorIdOverride?: string) => {
     if (!disparoCliente || !disparoTelefone || !colaborador) {
       toast.error('Sessão sem dados completos. Recarregue a página.')
       return
     }
-    
-    // Get setor_id from colaborador
-    const setorId = colaborador.setor_id || colaborador.setores_vinculados?.[0]?.setor_id
+
+    const setorId = setorIdOverride || disparoSetorWhatsappId || colaborador.setor_id || colaborador.setores_vinculados?.[0]?.setor_id
     if (!setorId) {
       toast.error('Colaborador sem setor vinculado')
       return
     }
-    
+
     const phoneDigits = disparoTelefone.replace(/\D/g, '')
     // Add country code if not present
     const fullPhone = phoneDigits.length === 11 ? `55${phoneDigits}` : phoneDigits
@@ -3003,6 +3009,67 @@ const handleEncerrarTicket = async () => {
     setDisparoMensagemEvolution('')
     setDisparoSetorEvolutionId('')
     setDisparoSetoresEvolution([])
+    setDisparoSetorWhatsappId('')
+    setDisparoSetoresWhatsapp([])
+  }
+
+  // Quando o canal WhatsApp oficial é escolhido: busca, entre TODOS os setores do
+  // colab (não só o [0]), quais têm Template ID + Phone Number ID configurados —
+  // seja via setor_canais (tipo whatsapp, ativo) ou via configuração legada direto
+  // em `setores`. Mesmo raciocínio de handleProceedEvolution:
+  //   - 2+ → abre step de seleção de setor
+  //   - 1  → auto-seleciona e dispara direto
+  //   - 0  → segue com o fallback antigo; o dispatch retorna o erro claro de sempre
+  const handleProceedWhatsapp = async () => {
+    const setorIds: string[] = (colaborador?.setores_vinculados || []).map(s => s.setor_id)
+    if (colaborador?.setor_id && !setorIds.includes(colaborador.setor_id)) {
+      setorIds.push(colaborador.setor_id)
+    }
+
+    let candidatos: Array<{ id: string; nome: string }> = []
+    if (setorIds.length > 0) {
+      const [{ data: setoresLegado }, { data: canaisWhatsapp }] = await Promise.all([
+        supabase.from('setores').select('id, nome, template_id, phone_number_id').in('id', setorIds),
+        supabase
+          .from('setor_canais')
+          .select('setor_id, phone_number_id, template_id, setores(nome)')
+          .in('setor_id', setorIds)
+          .eq('tipo', 'whatsapp')
+          .eq('ativo', true)
+          .order('criado_em', { ascending: true }),
+      ])
+      const porSetor = new Map<string, { nome: string; templateId: string | null; phoneNumberId: string | null }>()
+      ;(setoresLegado || []).forEach((s: any) => {
+        porSetor.set(s.id, { nome: s.nome, templateId: s.template_id, phoneNumberId: s.phone_number_id })
+      })
+      // Se houver 2+ canais whatsapp ativos no mesmo setor, usa só o mais antigo
+      // (mesmo critério do /api/whatsapp/dispatch) — por isso ignora setor_id repetido.
+      const canalJaAplicado = new Set<string>()
+      ;(canaisWhatsapp || []).forEach((c: any) => {
+        if (canalJaAplicado.has(c.setor_id)) return
+        canalJaAplicado.add(c.setor_id)
+        const atual = porSetor.get(c.setor_id) || { nome: c.setores?.nome || 'Setor', templateId: null, phoneNumberId: null }
+        porSetor.set(c.setor_id, {
+          nome: atual.nome,
+          templateId: c.template_id || atual.templateId,
+          phoneNumberId: c.phone_number_id || atual.phoneNumberId,
+        })
+      })
+      candidatos = Array.from(porSetor.entries())
+        .filter(([, v]) => v.templateId && v.phoneNumberId)
+        .map(([id, v]) => ({ id, nome: v.nome }))
+    }
+
+    if (candidatos.length > 1) {
+      setDisparoSetoresWhatsapp(candidatos)
+      setDisparoSetorWhatsappId('')
+      setDisparoStep('setor_whatsapp')
+      return
+    }
+
+    const setorId = candidatos[0]?.id
+    if (setorId) setDisparoSetorWhatsappId(setorId)
+    handleEnviarDisparo(setorId)
   }
 
   // Quando o canal Evolution é escolhido: sempre busca os setores do colab que
@@ -3079,7 +3146,8 @@ const handleEncerrarTicket = async () => {
   //   - 2 canais (whatsapp + evolution) → step 'canal' pra atendente escolher
   //   - só Evolution → pula direto (handleProceedEvolution decide se mostra
   //     seletor de setor ou vai pra mensagem)
-  //   - só WhatsApp Cloud → dispara o template direto
+  //   - só WhatsApp Cloud → handleProceedWhatsapp decide se dispara direto ou
+  //     mostra seletor de setor (colab com 2+ setores com WhatsApp oficial)
   //   - nada → toast de erro
   const handleDisparoConfirmPhone = async () => {
     const temWhatsapp = setorCanaisAtivos.includes('whatsapp')
@@ -3091,7 +3159,7 @@ const handleEncerrarTicket = async () => {
       setDisparoCanalChoice('evolution_api')
       await handleProceedEvolution()
     } else if (temWhatsapp) {
-      handleEnviarDisparo()
+      await handleProceedWhatsapp()
     } else {
       toast.error('Nenhum canal ativo neste setor. Configure WhatsApp ou Evolution em Canais de Atendimento.')
     }
@@ -3103,8 +3171,8 @@ const handleEncerrarTicket = async () => {
     if (canal === 'evolution_api') {
       await handleProceedEvolution()
     } else {
-      // WhatsApp oficial — existing flow
-      handleEnviarDisparo()
+      // WhatsApp oficial — resolve o setor certo antes de disparar
+      await handleProceedWhatsapp()
     }
   }
 
@@ -6113,8 +6181,8 @@ onClick={() => {
             <DialogDescription>
               {disparoStep === 'canal'
                 ? 'Escolha por qual canal deseja enviar o disparo.'
-                : disparoStep === 'setor_evolution'
-                ? 'Escolha de qual setor a mensagem será enviada.'
+                : disparoStep === 'setor_evolution' || disparoStep === 'setor_whatsapp'
+                ? 'Escolha de qual setor o disparo será enviado.'
                 : disparoStep === 'mensagem_evolution'
                 ? 'Escreva a mensagem de abertura para o atendimento via WhatsApp não oficial.'
                 : 'Informe o CNPJ do cliente para iniciar um atendimento.'}
@@ -6354,6 +6422,75 @@ onClick={() => {
                   >
                     Próximo
                     <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3.5b: Seleção de setor (apenas quando colab atende 2+ setores com WhatsApp oficial configurado) */}
+            {disparoStep === 'setor_whatsapp' && (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-0.5">
+                  <p className="text-sm font-medium">{disparoCliente?.nome}</p>
+                  <p className="text-xs text-muted-foreground">{formatPhone(disparoTelefone)}</p>
+                </div>
+
+                <Label className="text-sm font-medium">De qual setor enviar?</Label>
+
+                <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+                  {disparoSetoresWhatsapp.map(s => {
+                    const isSelected = disparoSetorWhatsappId === s.id
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setDisparoSetorWhatsappId(s.id)}
+                        className={cn(
+                          'w-full flex items-center justify-between gap-3 rounded-lg border-2 p-3 text-left transition-all',
+                          isSelected
+                            ? 'border-primary bg-primary/5'
+                            : 'border-border bg-background hover:bg-muted/50',
+                        )}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium truncate">{s.nome}</p>
+                        </div>
+                      </button>
+                    )
+                  })}
+                  {disparoSetoresWhatsapp.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-4">
+                      Nenhum setor com WhatsApp oficial ativo.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setDisparoStep(setorCanaisAtivos.includes('evolution_api') ? 'canal' : 'telefone')}
+                  >
+                    ← Voltar
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="flex-1 gap-2"
+                    disabled={!disparoSetorWhatsappId || disparoSending}
+                    onClick={() => handleEnviarDisparo(disparoSetorWhatsappId)}
+                  >
+                    {disparoSending ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Enviando...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="h-4 w-4" />
+                        Enviar Disparo
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>
