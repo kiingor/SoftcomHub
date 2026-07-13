@@ -28,28 +28,19 @@ self.addEventListener('push', (event) => {
     data: { url: data.url || '/dashboard' },
   }
 
-  event.waitUntil(
-    (async () => {
-      // Notificação de mensagem: se o atendente já está com o WorkDesk em foco,
-      // não notifica — ele já vê a mensagem chegar no chat (evita spam).
-      if (data.type === 'mensagem') {
-        const clientsList = await self.clients.matchAll({
-          type: 'window',
-          includeUncontrolled: true,
-        })
-        const workdeskFocado = clientsList.some(
-          (c) => c.focused && typeof c.url === 'string' && c.url.includes('/workdesk'),
-        )
-        if (workdeskFocado) return
-      }
-      await self.registration.showNotification(title, options)
-    })(),
-  )
+  event.waitUntil(self.registration.showNotification(title, options))
 })
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const url = (event.notification.data && event.notification.data.url) || '/dashboard'
+  const requestedUrl = (event.notification.data && event.notification.data.url) || '/dashboard'
+  let url = `${self.location.origin}/dashboard`
+  try {
+    const targetUrl = new URL(requestedUrl, self.location.origin)
+    if (targetUrl.origin === self.location.origin) url = targetUrl.href
+  } catch {
+    // Mantém o fallback interno para payloads inválidos.
+  }
 
   event.waitUntil(
     self.clients

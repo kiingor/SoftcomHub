@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/command'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
 import { canViewDashboard } from '@/lib/permissions'
-import { usePushNotifications } from '@/lib/use-push-notifications'
+import { unsubscribeCurrentBrowser, usePushNotifications } from '@/lib/use-push-notifications'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { createClient } from '@/lib/supabase/client'
 import { toast } from 'sonner'
@@ -93,8 +93,12 @@ export function CommandPalette() {
         toast.success('Notificações desativadas')
       } else {
         await enablePush()
-        if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
-          toast.error('Permissão bloqueada no navegador. Libere nas configurações do site.')
+        if (typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+          toast.error(
+            Notification.permission === 'denied'
+              ? 'Permissão bloqueada no navegador. Libere nas configurações do site.'
+              : 'A permissão de notificações não foi concedida.',
+          )
         } else {
           toast.success('Notificações ativadas')
         }
@@ -112,6 +116,7 @@ export function CommandPalette() {
   const sair = async () => {
     setOpen(false)
     const supabase = createClient()
+    await unsubscribeCurrentBrowser().catch(() => {})
     await supabase.auth.signOut()
     window.location.href = pathname?.startsWith('/workdesk') ? '/workdesk/login' : '/login'
   }

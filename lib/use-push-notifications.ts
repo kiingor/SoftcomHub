@@ -2,6 +2,46 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
+const PUSH_STATE_EVENT = 'softcomhub:push-state-change'
+let subscriptionSync: Promise<Response> | null = null
+
+function syncSubscription(subscription: PushSubscription): Promise<Response> {
+  if (!subscriptionSync) {
+    subscriptionSync = fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscription: subscription.toJSON() }),
+    }).finally(() => {
+      subscriptionSync = null
+    })
+  }
+  return subscriptionSync
+}
+
+export async function unsubscribeCurrentBrowser(): Promise<void> {
+  if (
+    typeof window === 'undefined' ||
+    !('serviceWorker' in navigator) ||
+    !('PushManager' in window)
+  ) {
+    return
+  }
+
+  const registration = await navigator.serviceWorker.getRegistration()
+  const subscription = registration ? await registration.pushManager.getSubscription() : null
+  if (!subscription) return
+
+  const response = await fetch('/api/push/unsubscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  })
+  if (!response.ok) throw new Error('Falha ao remover subscription')
+
+  await subscription.unsubscribe()
+  window.dispatchEvent(new Event(PUSH_STATE_EVENT))
+}
+
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
@@ -21,6 +61,7 @@ export type PushState = 'unsupported' | 'default' | 'granted' | 'denied' | 'subs
 export function usePushNotifications() {
   const [state, setState] = useState<PushState>('default')
   const [busy, setBusy] = useState(false)
+  const [ready, setReady] = useState(false)
 
   const supported =
     typeof window !== 'undefined' &&
@@ -28,23 +69,35 @@ export function usePushNotifications() {
     'PushManager' in window &&
     'Notification' in window
 
-  useEffect(() => {
+  const refreshState = useCallback(async () => {
     if (!supported) {
       setState('unsupported')
+      setReady(true)
       return
     }
-    let cancelled = false
-    ;(async () => {
+
+    try {
       const reg = await navigator.serviceWorker.getRegistration()
       const sub = reg ? await reg.pushManager.getSubscription() : null
-      if (cancelled) return
-      if (sub) setState('subscribed')
-      else setState(Notification.permission as PushState)
-    })()
-    return () => {
-      cancelled = true
+      if (!sub) {
+        setState(Notification.permission as PushState)
+        return
+      }
+
+      const response = await syncSubscription(sub)
+      setState(response.ok ? 'subscribed' : (Notification.permission as PushState))
+    } catch {
+      setState(Notification.permission as PushState)
+    } finally {
+      setReady(true)
     }
   }, [supported])
+
+  useEffect(() => {
+    void refreshState()
+    window.addEventListener(PUSH_STATE_EVENT, refreshState)
+    return () => window.removeEventListener(PUSH_STATE_EVENT, refreshState)
+  }, [refreshState])
 
   const enable = useCallback(async () => {
     if (!supported) return
@@ -70,13 +123,10 @@ export function usePushNotifications() {
           applicationServerKey: urlBase64ToUint8Array(key) as any,
         }))
 
-      const res = await fetch('/api/push/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subscription: sub.toJSON() }),
-      })
+      const res = await syncSubscription(sub)
       if (!res.ok) throw new Error('Falha ao salvar subscription')
       setState('subscribed')
+      window.dispatchEvent(new Event(PUSH_STATE_EVENT))
     } finally {
       setBusy(false)
     }
@@ -86,21 +136,12 @@ export function usePushNotifications() {
     if (!supported) return
     setBusy(true)
     try {
-      const reg = await navigator.serviceWorker.getRegistration()
-      const sub = reg ? await reg.pushManager.getSubscription() : null
-      if (sub) {
-        await fetch('/api/push/unsubscribe', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ endpoint: sub.endpoint }),
-        })
-        await sub.unsubscribe()
-      }
+      await unsubscribeCurrentBrowser()
       setState(Notification.permission as PushState)
     } finally {
       setBusy(false)
     }
   }, [supported])
 
-  return { state, busy, supported, enable, disable }
+  return { state, busy, ready, supported, enable, disable }
 }

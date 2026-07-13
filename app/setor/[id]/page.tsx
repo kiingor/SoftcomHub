@@ -8,6 +8,7 @@ import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador } from '@/lib/hooks/use-data'
+import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 import { DateRange } from 'react-day-picker'
 import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -2173,6 +2174,7 @@ function SetorPageInner() {
   }, [tickets, searchTerm, setor])
 
 const handleLogout = async () => {
+  await unsubscribeCurrentBrowser().catch(() => {})
   await supabase.auth.signOut()
   window.location.href = '/login'
   }

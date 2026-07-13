@@ -479,7 +479,7 @@ export default function ColaboradoresPage() {
         return
       }
 
-      if (hasDashboardAccess && !isAdminPermission && formData.setores_selecionados.length > 0) {
+      if (hasDashboardAccess && formData.setores_selecionados.length > 0) {
         const dashboardRelations = formData.setores_selecionados.map((setorId) => ({
           colaborador_id: editingColaborador.id,
           setor_id: setorId,
@@ -576,7 +576,7 @@ export default function ColaboradoresPage() {
         }
       }
 
-      if (hasDashboardAccess && !isAdminPermission && formData.setores_selecionados.length > 0) {
+      if (hasDashboardAccess && formData.setores_selecionados.length > 0) {
         const dashboardRelations = formData.setores_selecionados.map((setorId) => ({
           colaborador_id: authData.user!.id,
           setor_id: setorId,

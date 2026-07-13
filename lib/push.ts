@@ -5,11 +5,14 @@ let configured = false
 
 function ensureConfigured() {
   if (configured) return
-  const publicKey = process.env.VAPID_PUBLIC_KEY
+  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || process.env.VAPID_PUBLIC_KEY
   const privateKey = process.env.VAPID_PRIVATE_KEY
   const subject = process.env.VAPID_SUBJECT || 'mailto:suporte@softcomtecnologia.com'
   if (!publicKey || !privateKey) {
     throw new Error('[push] VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY não configuradas')
+  }
+  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PUBLIC_KEY !== publicKey) {
+    throw new Error('[push] VAPID_PUBLIC_KEY e NEXT_PUBLIC_VAPID_PUBLIC_KEY precisam ser iguais')
   }
   webpush.setVapidDetails(subject, publicKey, privateKey)
   configured = true
@@ -47,10 +50,12 @@ export async function sendPushToColaboradores(
   if (colaboradorIds.length === 0) return { sent: 0, failed: 0 }
   ensureConfigured()
 
-  const { data: subs } = await service
+  const { data: subs, error: subscriptionsError } = await service
     .from('push_subscriptions')
     .select('id, endpoint, p256dh, auth')
     .in('colaborador_id', colaboradorIds)
+
+  if (subscriptionsError) throw subscriptionsError
 
   if (!subs || subs.length === 0) return { sent: 0, failed: 0 }
 
@@ -76,7 +81,11 @@ export async function sendPushToColaboradores(
   )
 
   if (deadIds.length > 0) {
-    await service.from('push_subscriptions').delete().in('id', deadIds)
+    const { error: cleanupError } = await service
+      .from('push_subscriptions')
+      .delete()
+      .in('id', deadIds)
+    if (cleanupError) console.error('[push] Falha ao limpar subscriptions expiradas:', cleanupError)
   }
 
   return { sent, failed }

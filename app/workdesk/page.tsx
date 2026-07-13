@@ -503,10 +503,8 @@ const AudioTranscriptionPlayer = React.memo(function AudioTranscriptionPlayer({ 
           </button>
         )}
         <a
-          href={url}
+          href={getFileDownloadUrl(url)}
           download={fileName}
-          target="_blank"
-          rel="noreferrer"
           className={cn(
             'shrink-0 rounded p-1 transition-colors',
             isOutgoing ? 'hover:bg-white/20 text-white' : 'hover:bg-muted text-foreground'
@@ -558,6 +556,20 @@ function getFileInfo(ext: string, mediaType?: string | null) {
   if (['cer', 'crt', 'pem', 'p12', 'pfx', 'key'].includes(e))
     return { icon: ShieldCheck, label: 'Certificado', color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-800' }
   return { icon: FileIcon, label: e.toUpperCase() || 'Arquivo', color: 'text-muted-foreground', bg: 'bg-muted/50', border: 'border-border' }
+}
+
+function getFileDownloadUrl(url: string) {
+  try {
+    const downloadUrl = new URL(url)
+
+    if (downloadUrl.hostname.endsWith('.blob.vercel-storage.com')) {
+      downloadUrl.searchParams.set('download', '1')
+    }
+
+    return downloadUrl.toString()
+  } catch {
+    return url
+  }
 }
 
 function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: MessageMediaProps) {
@@ -615,10 +627,8 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, 
           Seu navegador não suporta vídeo.
         </video>
         <a
-          href={url}
+          href={getFileDownloadUrl(url)}
           download={fileName}
-          target="_blank"
-          rel="noreferrer"
           className={cn(
             'inline-flex items-center gap-1.5 text-[11px] rounded-md px-2 py-1 transition-colors',
             isOutgoing
@@ -666,10 +676,8 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, 
   const { icon: Icon, label, color, bg, border } = getFileInfo(ext, mediaType)
   return (
     <a
-      href={url}
+      href={getFileDownloadUrl(url)}
       download={fileName}
-      target="_blank"
-      rel="noreferrer"
       className={cn(
         'mb-2 flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors hover:opacity-80',
         bg, border
@@ -753,6 +761,7 @@ export default function WorkdeskPage() {
   const colaboradorCurrentRef = useRef<Colaborador | null>(null)
   useEffect(() => { colaboradorCurrentRef.current = colaborador }, [colaborador])
   const [tickets, setTickets] = useState<Ticket[]>([])
+  const [requestedTicketId, setRequestedTicketId] = useState<string | null>(null)
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const selectedTicketIdRef = useRef<string | null>(null)
   const previousTicketIdsRef = useRef<Set<string>>(new Set())
@@ -761,6 +770,10 @@ export default function WorkdeskPage() {
   const [loadingMensagens, setLoadingMensagens] = useState(false)
   const [sendingMessage, setSendingMessage] = useState(false) // Declared sendingMessage variable
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setRequestedTicketId(new URLSearchParams(window.location.search).get('ticket'))
+  }, [])
   
   // Filters
   const [statusFilter, setStatusFilter] = useState<string>('todos')
@@ -2291,7 +2304,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   }), [tickets, statusFilter, prioridadeFilter, subsetorFilter, searchTerm])
 
   // Handle ticket selection
-  const handleSelectTicket = (ticket: Ticket) => {
+  const handleSelectTicket = useCallback((ticket: Ticket) => {
     const isSameTicket = selectedTicketIdRef.current === ticket.id
 
     // Update ref immediately so in-flight sends know the ticket changed
@@ -2335,7 +2348,23 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       newMap.delete(ticket.id)
       return newMap
     })
-  }
+  }, [fetchTemplates, initAudioContext, supabase])
+
+  useEffect(() => {
+    if (!requestedTicketId) return
+    const ticket = tickets.find((item) => item.id === requestedTicketId)
+    if (!ticket) {
+      if (!loading) {
+        toast.info('Este atendimento não está mais disponível no seu Workdesk.')
+        setRequestedTicketId(null)
+      }
+      return
+    }
+
+    handleSelectTicket(ticket)
+    setMobileDrawerOpen(window.innerWidth < 768)
+    setRequestedTicketId(null)
+  }, [handleSelectTicket, loading, requestedTicketId, tickets])
 
   // Mark as em_atendimento
   const handleMarcarEmAtendimento = async () => {
@@ -5881,7 +5910,7 @@ onClick={() => {
                             <img src={m.url_imagem} alt="anexo" className="mb-1 max-h-60 rounded-lg object-contain" />
                           </a>
                         ) : (
-                          <a href={m.url_imagem} target="_blank" rel="noopener noreferrer" className="mb-1 flex items-center gap-1.5 underline opacity-90">📎 Anexo</a>
+                          <a href={getFileDownloadUrl(m.url_imagem)} download className="mb-1 flex items-center gap-1.5 underline opacity-90">📎 Anexo</a>
                         )
                       )}
                       {m.conteudo && (

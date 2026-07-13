@@ -41,8 +41,12 @@ export function PushToggle({
         toast.success('Notificações desativadas')
       } else {
         await enable()
-        if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
-          toast.error('Permissão bloqueada no navegador. Libere nas configurações do site.')
+        if (typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+          toast.error(
+            Notification.permission === 'denied'
+              ? 'Permissão bloqueada no navegador. Libere nas configurações do site.'
+              : 'A permissão de notificações não foi concedida.',
+          )
         } else {
           toast.success('Notificações ativadas')
         }

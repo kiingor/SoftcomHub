@@ -35,17 +35,25 @@ export async function notifyAtendenteNovaMensagem(args: {
 
     if (!ticket || !ticket.colaborador_id || ticket.status === 'encerrado') return
 
+    const { data: colaborador } = await service
+      .from('colaboradores')
+      .select('ativo')
+      .eq('id', ticket.colaborador_id)
+      .single()
+    if (!colaborador?.ativo) return
+
     const clienteNome =
       (ticket.clientes as { nome?: string | null } | null)?.nome || null
 
     const tipoTxt =
       args.tipo && args.tipo !== 'texto' ? TIPO_PREVIEW[args.tipo] || 'Mensagem' : null
-    const body = tipoTxt || (args.conteudo || '').trim().slice(0, 140) || 'Enviou uma mensagem'
+    const preview = (args.conteudo || '').replace(/\s+/g, ' ').trim().slice(0, 140)
+    const body = tipoTxt || preview || 'Enviou uma mensagem'
 
     await sendPushToColaboradores(service, [ticket.colaborador_id], {
       title: clienteNome ? `💬 ${clienteNome}` : '💬 Nova mensagem',
       body,
-      url: '/workdesk',
+      url: `/workdesk?ticket=${encodeURIComponent(args.ticketId)}`,
       tag: `ticket-${args.ticketId}`,
       type: 'mensagem',
     })

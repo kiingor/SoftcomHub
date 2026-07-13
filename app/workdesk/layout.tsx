@@ -29,8 +29,10 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { DisponibilidadePanel } from '@/components/workdesk/disponibilidade-panel'
 import { PushToggle } from '@/components/push-toggle'
+import { PushPermissionPrompt } from '@/components/push-permission-prompt'
 import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
 import { useAudioAlert, type TicketSoundType } from '@/hooks/use-audio-alert'
+import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 
 interface ColaboradorSetor {
   setor_id: string
@@ -209,6 +211,7 @@ export default function WorkdeskLayout({
         body: JSON.stringify({ colaboradorId: colaborador.id, isOnline: false, pausaAtualId: null }),
       }).catch(() => {})
     }
+    await unsubscribeCurrentBrowser().catch(() => {})
     await supabase.auth.signOut()
     window.location.href = '/workdesk/login'
   }
@@ -324,6 +327,7 @@ export default function WorkdeskLayout({
 
   return (
     <div className="min-h-svh bg-background">
+      <PushPermissionPrompt />
       {/* Header */}
       <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-3 sm:px-4 lg:px-6">
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">

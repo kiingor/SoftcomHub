@@ -18,13 +18,27 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const endpoint: string | undefined = body?.endpoint
-    if (!endpoint) {
+    const endpoint = typeof body?.endpoint === 'string' ? body.endpoint : undefined
+    if (!endpoint || endpoint.length > 4096) {
       return NextResponse.json({ error: 'endpoint obrigatório' }, { status: 400 })
     }
 
     const service = createServiceClient()
-    await service.from('push_subscriptions').delete().eq('endpoint', endpoint)
+    const { data: colaborador } = await service
+      .from('colaboradores')
+      .select('id')
+      .eq('email', user.email)
+      .single()
+    if (!colaborador) {
+      return NextResponse.json({ error: 'Colaborador não encontrado' }, { status: 404 })
+    }
+
+    const { error } = await service
+      .from('push_subscriptions')
+      .delete()
+      .eq('endpoint', endpoint)
+      .eq('colaborador_id', colaborador.id)
+    if (error) throw error
 
     return NextResponse.json({ success: true })
   } catch (error) {

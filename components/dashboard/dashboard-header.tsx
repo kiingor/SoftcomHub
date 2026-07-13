@@ -28,6 +28,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { useColaborador } from '@/lib/hooks/use-data'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { PushToggle } from '@/components/push-toggle'
+import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 
 interface DashboardHeaderProps {
   user: User
@@ -95,12 +96,14 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
     }
 
     // Logout para forçar novo login com nova senha
+    await unsubscribeCurrentBrowser().catch(() => {})
     await supabase.auth.signOut()
     window.location.href = '/login'
   }
 
   const handleSignOut = async () => {
     const supabase = createClient()
+    await unsubscribeCurrentBrowser().catch(() => {})
     await supabase.auth.signOut()
     window.location.href = '/login'
   }

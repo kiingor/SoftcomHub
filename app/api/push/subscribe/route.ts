@@ -20,19 +20,36 @@ export async function POST(request: Request) {
     const service = createServiceClient()
     const { data: colaborador } = await service
       .from('colaboradores')
-      .select('id')
+      .select('id, ativo')
       .eq('email', user.email)
       .single()
     if (!colaborador) {
       return NextResponse.json({ error: 'Colaborador não encontrado' }, { status: 404 })
     }
+    if (!colaborador.ativo) {
+      return NextResponse.json({ error: 'Colaborador inativo' }, { status: 403 })
+    }
 
     const body = await request.json()
     const sub = body?.subscription
-    const endpoint: string | undefined = sub?.endpoint
-    const p256dh: string | undefined = sub?.keys?.p256dh
-    const authKey: string | undefined = sub?.keys?.auth
-    if (!endpoint || !p256dh || !authKey) {
+    const endpoint = typeof sub?.endpoint === 'string' ? sub.endpoint : undefined
+    const p256dh = typeof sub?.keys?.p256dh === 'string' ? sub.keys.p256dh : undefined
+    const authKey = typeof sub?.keys?.auth === 'string' ? sub.keys.auth : undefined
+    let endpointUrl: URL | null = null
+    try {
+      endpointUrl = endpoint ? new URL(endpoint) : null
+    } catch {
+      endpointUrl = null
+    }
+    if (
+      !endpoint ||
+      !p256dh ||
+      !authKey ||
+      endpointUrl?.protocol !== 'https:' ||
+      endpoint.length > 4096 ||
+      p256dh.length > 1024 ||
+      authKey.length > 1024
+    ) {
       return NextResponse.json({ error: 'Subscription inválida' }, { status: 400 })
     }
 
