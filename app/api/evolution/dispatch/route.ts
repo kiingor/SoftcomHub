@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { normalizeBrazilianPhone } from '@/lib/phone'
 import { createClient } from '@/lib/supabase/server'
 
 const EVOLUTION_BASE_URL = 'https://whatsapi.mensageria.softcomtecnologia.com'
@@ -64,8 +65,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Format phone number
-    const phoneDigits = telefone.replace(/\D/g, '')
-    const formattedPhone = phoneDigits.length === 11 ? `55${phoneDigits}` : phoneDigits
+    const formattedPhone = normalizeBrazilianPhone(telefone)
 
     // Find or create cliente
     const cleanCnpj = clienteCnpj?.replace(/\D/g, '') || null

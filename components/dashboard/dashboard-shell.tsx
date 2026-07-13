@@ -7,7 +7,6 @@ import { useState } from 'react'
 import { DashboardSidebar } from './dashboard-sidebar'
 import { DashboardHeader } from './dashboard-header'
 import { CommandPalette } from '@/components/command-palette'
-import { PushPermissionPrompt } from '@/components/push-permission-prompt'
 
 interface DashboardShellProps {
   children: React.ReactNode
@@ -20,7 +19,6 @@ export function DashboardShell({ children, user }: DashboardShellProps) {
   return (
     <>
       <CommandPalette />
-      <PushPermissionPrompt />
       {/* Canvas base — papel quente off-white (console editorial), fora do fluxo */}
       <div className="fixed inset-0 -z-10 bg-background" />
 

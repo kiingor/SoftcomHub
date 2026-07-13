@@ -3,6 +3,8 @@
 ## Objetivo
 Ativar Web Push ao abrir Dashboard/Workdesk e entregar alertas de instância desconectada por setor e novas mensagens de clientes com prévia.
 
+> O banner automático de ativação está temporariamente desabilitado até a configuração das chaves VAPID.
+
 ## Tarefas
 - [x] Mapear assinatura, service worker e destinatários atuais.
 - [x] Exibir solicitação de ativação no Dashboard e Workdesk.

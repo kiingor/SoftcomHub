@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { normalizeBrazilianPhone } from '@/lib/phone'
 
 export interface EvolutionCreds {
   baseUrl: string
@@ -43,9 +44,7 @@ export async function getEvolutionCreds(
 }
 
 export function normalizePhone(raw: string | null | undefined): string {
-  const digits = (raw || '').replace(/\D/g, '')
-  if (digits.length === 10 || digits.length === 11) return `55${digits}`
-  return digits
+  return normalizeBrazilianPhone(raw)
 }
 
 export async function findOrCreateCliente(

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { resolveMime } from '@/lib/whatsapp-media'
+import { normalizeBrazilianPhone } from '@/lib/phone'
 
 export async function POST(request: NextRequest) {
   try {
@@ -150,7 +151,7 @@ export async function POST(request: NextRequest) {
     // Otherwise strip non-digits for the standard number format.
     const formattedPhone = clientePhone.includes('@')
       ? clientePhone
-      : clientePhone.replace(/\D/g, '')
+      : normalizeBrazilianPhone(clientePhone)
 
     // Remove trailing slash from base URL
     const baseUrl = evolutionBaseUrl.replace(/\/+$/, '')
