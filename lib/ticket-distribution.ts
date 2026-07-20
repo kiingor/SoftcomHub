@@ -67,6 +67,46 @@ export async function criarEDistribuirTicket(
       return null
     }
 
+    // Vincula ao ticket recém-criado o histórico órfão do bot Nexus
+    // (cliente-nexus/bot-nexus, sem ticket_id) para este cliente, para que o
+    // atendente veja a conversa anterior com o bot. Agrupa por telefone porque
+    // o bot pode ter gravado a conversa em registros de cliente distintos com o
+    // mesmo número. Mesmo raciocínio de /api/nexus/abrir-ticket — aqui cobre
+    // TODOS os caminhos de criação de ticket (webhook do WhatsApp, disparo,
+    // /api/tickets/criar), não só o botão manual "abrir ticket" do painel Nexus.
+    // Best-effort: falha aqui não deve impedir a criação/distribuição do ticket.
+    try {
+      let clienteIdsMesmoTelefone = [clienteId]
+      const { data: clienteRow } = await supabase
+        .from('clientes')
+        .select('telefone')
+        .eq('id', clienteId)
+        .maybeSingle()
+      if (clienteRow?.telefone) {
+        const { data: mesmosTelefone } = await supabase
+          .from('clientes')
+          .select('id')
+          .eq('telefone', clienteRow.telefone)
+        if (mesmosTelefone && mesmosTelefone.length > 0) {
+          clienteIdsMesmoTelefone = [...new Set(mesmosTelefone.map((c) => c.id))]
+        }
+      }
+      const { error: linkNexusError, count: nexusLinkedCount } = await supabase
+        .from('mensagens')
+        .update({ ticket_id: ticket.id }, { count: 'exact' })
+        .in('cliente_id', clienteIdsMesmoTelefone)
+        .is('ticket_id', null)
+        .in('remetente', ['cliente-nexus', 'bot-nexus'])
+
+      if (linkNexusError) {
+        console.warn('[criarEDistribuirTicket] Falha ao vincular histórico do Nexus:', linkNexusError.message)
+      } else if (nexusLinkedCount) {
+        console.log(`[criarEDistribuirTicket] ${nexusLinkedCount} mensagem(ns) do Nexus vinculada(s) ao ticket ${ticket.id}`)
+      }
+    } catch (nexusLinkErr) {
+      console.warn('[criarEDistribuirTicket] Erro ao tentar vincular histórico do Nexus:', nexusLinkErr)
+    }
+
     let assignedColaboradorId: string | null = null
 
     // 3. If auto-assign is enabled, find an available collaborator
