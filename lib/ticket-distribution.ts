@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
 interface DistribuicaoResult {
@@ -111,51 +112,86 @@ export async function criarEDistribuirTicket(
 
     // 3. If auto-assign is enabled, find an available collaborator
     if (autoAssignEnabled) {
-      // Mesma lógica do ticket-queue-processor:
-      // com subsetor → busca diretamente em colaboradores_subsetores (fonte autoritativa)
-      // sem subsetor → busca em colaboradores_setores (todos do setor)
-      // Prefere heartbeat fresco (< 2 min) mas fallback para qualquer online
+      // Compatíveis primeiro; fallback só quando não existe compatível online.
       const HEARTBEAT_STALE_MS = 5 * 60 * 1000
       const now = Date.now()
       const isHBFresh = (lh: string | null): boolean => lh ? (now - new Date(lh).getTime()) < HEARTBEAT_STALE_MS : false
 
-      let rawColabs: any[] = []
+      const { data: setorLinks, error: setorLinksError } = await supabase
+        .from('colaboradores_setores')
+        .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
+        .eq('setor_id', setorId)
+      let routingLookupFailed = Boolean(setorLinksError)
+      if (setorLinksError) {
+        console.error('[Distribution] Erro ao buscar colaboradores do setor:', setorLinksError)
+      }
+      const rawSetorColabs = (setorLinks || []).map((cs: any) => cs.colaboradores)
+
+      let rawCompatibleColabs = rawSetorColabs
       if (subsetorId) {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('colaboradores_subsetores')
           .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
           .eq('setor_id', setorId)
           .eq('subsetor_id', subsetorId)
-        rawColabs = (data || []).map((sl: any) => sl.colaboradores)
-      } else {
-        const { data } = await supabase
-          .from('colaboradores_setores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
-          .eq('setor_id', setorId)
-        rawColabs = (data || []).map((cs: any) => cs.colaboradores)
+        if (error) {
+          routingLookupFailed = true
+          console.error('[Distribution] Erro ao buscar colaboradores do subsetor:', error)
+        }
+        rawCompatibleColabs = (data || []).map((sl: any) => sl.colaboradores)
       }
 
       const STALE_CLEANUP_MS = 5 * 60 * 1000 // 5 min — marcar offline automaticamente
-      const allOnline = rawColabs
-        .filter((c: any) => c && c.ativo && c.is_online && !c.pausa_atual_id)
-      // Filtra por "setores ativos na sessão" — atendente só recebe tickets dos
-      // setores que ele selecionou ao ficar online (mesmo se está vinculado a vários).
-      const allOnlineAtivos = allOnline.filter((c: any) => {
-        const setoresAtivos: string[] = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
-        return setoresAtivos.includes(setorId)
-      })
-      const ignoradosPorSetor = allOnline.length - allOnlineAtivos.length
-      if (ignoradosPorSetor > 0) {
-        console.log(`[Distribution] ${ignoradosPorSetor} atendente(s) online mas com setor ${setorId} fora dos setores_ativos_sessao — ignorados`)
+      const toFresh = (raw: any[]) => [...new Map(
+        raw
+          .filter((c: any) => {
+            if (!c?.ativo || !c.is_online || c.pausa_atual_id || !isHBFresh(c.last_heartbeat)) return false
+            const activeSetores: string[] = Array.isArray(c.setores_ativos_sessao) ? c.setores_ativos_sessao : []
+            return activeSetores.includes(setorId)
+          })
+          .map((c: any) => [c.id, {
+            id: c.id,
+            nome: c.nome,
+            last_ticket_received_at: c.last_ticket_received_at || null,
+          }]),
+      ).values()]
+
+      const fallbackColaboradores = toFresh(rawSetorColabs)
+      let compatibleColaboradores = toFresh(rawCompatibleColabs)
+      const subsetoresByColaborador = new Map<string, string[]>()
+      if (fallbackColaboradores.length > 0) {
+        const fallbackIds = fallbackColaboradores.map((c) => c.id)
+        const { data: subsetorLinks, error: subsetorLinksError } = await supabase
+          .from('colaboradores_subsetores')
+          .select('colaborador_id, subsetor_id')
+          .eq('setor_id', setorId)
+          .in('colaborador_id', fallbackIds)
+        if (subsetorLinksError) {
+          routingLookupFailed = true
+          console.error('[Distribution] Erro ao verificar especialistas do setor:', subsetorLinksError)
+        }
+        for (const link of subsetorLinks || []) {
+          const ids = subsetoresByColaborador.get(link.colaborador_id) || []
+          ids.push(link.subsetor_id)
+          subsetoresByColaborador.set(link.colaborador_id, ids)
+        }
       }
-      const fresh = allOnlineAtivos
-        .filter((c: any) => isHBFresh(c.last_heartbeat))
-        .map((c: any) => ({ id: c.id, nome: c.nome, last_ticket_received_at: c.last_ticket_received_at || null }))
+
+      if (!subsetorId && compatibleColaboradores.length > 0) {
+        compatibleColaboradores = compatibleColaboradores.filter((c) =>
+          isExactSubsetorMatch(null, subsetoresByColaborador.get(c.id) || []),
+        )
+      }
 
       // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min).
       // NÃO toca em setores_ativos_sessao — é configuração permanente do admin.
-      const veryStale = allOnline.filter((c: any) =>
-        !c.last_heartbeat || (now - new Date(c.last_heartbeat).getTime()) > STALE_CLEANUP_MS
+      const allRawColabs = [...new Map(
+        [...rawSetorColabs, ...rawCompatibleColabs]
+          .filter(Boolean)
+          .map((c: any) => [c.id, c]),
+      ).values()]
+      const veryStale = allRawColabs.filter((c: any) =>
+        c.is_online && (!c.last_heartbeat || (now - new Date(c.last_heartbeat).getTime()) > STALE_CLEANUP_MS)
       )
       if (veryStale.length > 0) {
         const staleIds = veryStale.map((c: any) => c.id)
@@ -166,10 +202,38 @@ export async function criarEDistribuirTicket(
           .in('id', staleIds)
       }
 
-      // Somente distribui para atendentes com heartbeat fresco — sem fallback para stale
-      let finalColaboradores = fresh
-      const staleCount = allOnline.length - fresh.length
-      console.log(`[Distribution] Disponíveis: ${finalColaboradores.length} fresh (${staleCount} stale ignorados) setor=${setorId} subsetor=${subsetorId || 'null'}`)
+      const hasCompatibleOnline = compatibleColaboradores.length > 0
+      let fallbackSemPrioridadePendente = fallbackColaboradores
+      if (!routingLookupFailed && !hasCompatibleOnline && fallbackColaboradores.length > 0) {
+        const { data: pendingTickets, error: pendingTicketsError } = await supabase
+          .from('tickets')
+          .select('id, subsetor_id')
+          .eq('setor_id', setorId)
+          .in('status', ['aberto', 'em_atendimento'])
+          .is('colaborador_id', null)
+          .neq('id', ticket.id)
+
+        if (pendingTicketsError) {
+          routingLookupFailed = true
+          console.error('[Distribution] Erro ao verificar prioridades pendentes:', pendingTicketsError)
+        } else {
+          fallbackSemPrioridadePendente = fallbackColaboradores.filter((colaborador) =>
+            !(pendingTickets || []).some((pendingTicket) =>
+              isExactSubsetorMatch(
+                pendingTicket.subsetor_id,
+                subsetoresByColaborador.get(colaborador.id) || [],
+              ),
+            ),
+          )
+        }
+      }
+      const finalColaboradores = routingLookupFailed
+        ? []
+        : hasCompatibleOnline
+        ? compatibleColaboradores
+        : fallbackSemPrioridadePendente
+      const fallbackReservados = fallbackColaboradores.length - fallbackSemPrioridadePendente.length
+      console.log(`[Distribution] Disponíveis: ${finalColaboradores.length}; compatíveis online: ${compatibleColaboradores.length}; fallback=${!hasCompatibleOnline}; reservados para fila compatível=${fallbackReservados}; setor=${setorId}; subsetor=${subsetorId || 'null'}`)
 
       if (finalColaboradores.length > 0) {
         // Get current ticket counts for each collaborator
@@ -359,6 +423,17 @@ async function _tentarDistribuirNoSetor(
   const HEARTBEAT_STALE_MS = 5 * 60 * 1000
   const now = Date.now()
 
+  const { data: ticket, error: ticketError } = await supabase
+    .from('tickets')
+    .select('subsetor_id')
+    .eq('id', ticketId)
+    .maybeSingle()
+  if (ticketError || !ticket) {
+    console.error('[_tentarDistribuirNoSetor] Ticket não encontrado ao resolver subsetor:', ticketError)
+    return null
+  }
+  const ticketSubsetorId = ticket.subsetor_id ?? null
+
   let maxTicketsPerAgent = 10
   try {
     const { data: config } = await supabase
@@ -392,6 +467,28 @@ async function _tentarDistribuirNoSetor(
   if (colaboradores.length === 0) return null
 
   const colaboradorIds = colaboradores.map(c => c.id)
+  const { data: subsetorLinks, error: subsetorLinksError } = await supabase
+    .from('colaboradores_subsetores')
+    .select('colaborador_id, subsetor_id')
+    .eq('setor_id', setorId)
+    .in('colaborador_id', colaboradorIds)
+  if (subsetorLinksError) {
+    console.error('[_tentarDistribuirNoSetor] Erro ao buscar vínculos de subsetor:', subsetorLinksError)
+    return null
+  }
+  const subsetoresByColaborador = new Map<string, string[]>()
+  for (const link of subsetorLinks || []) {
+    const ids = subsetoresByColaborador.get(link.colaborador_id) || []
+    ids.push(link.subsetor_id)
+    subsetoresByColaborador.set(link.colaborador_id, ids)
+  }
+  const compatibleColaboradores = colaboradores.filter((c) =>
+    isExactSubsetorMatch(ticketSubsetorId, subsetoresByColaborador.get(c.id) || []),
+  )
+  const routingColaboradores = compatibleColaboradores.length > 0
+    ? compatibleColaboradores
+    : colaboradores
+
   const { data: ticketCounts } = await supabase
     .from('tickets')
     .select('colaborador_id')
@@ -406,7 +503,7 @@ async function _tentarDistribuirNoSetor(
   })
 
   // Round-robin: desempate por last_ticket_received_at (atualizado no momento da atribuição)
-  const sorted = colaboradores
+  const sorted = routingColaboradores
     .map(c => ({
       id: c.id,
       count: countMap[c.id] || 0,
@@ -572,19 +669,22 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
 
     // Buscar todos os vínculos de subsetores para os colaboradores disponíveis
     const colaboradorIds = allColaboradores.map(c => c.id)
-    const { data: subsetorLinks } = await supabase
+    const { data: subsetorLinks, error: subsetorLinksError } = await supabase
       .from('colaboradores_subsetores')
       .select('colaborador_id, subsetor_id')
       .eq('setor_id', setorId)
       .in('colaborador_id', colaboradorIds)
 
-    // Mapa: subsetor_id → Set de colaborador_ids que atendem aquele subsetor
-    const subsetorToColabs: Record<string, Set<string>> = {}
+    if (subsetorLinksError) {
+      console.error('[redistribuirTicketsPendentes] Erro ao buscar vínculos de subsetor:', subsetorLinksError)
+      return assignedCount
+    }
+
+    const subsetoresByColaborador = new Map<string, string[]>()
     for (const link of (subsetorLinks || [])) {
-      if (!subsetorToColabs[link.subsetor_id]) {
-        subsetorToColabs[link.subsetor_id] = new Set()
-      }
-      subsetorToColabs[link.subsetor_id].add(link.colaborador_id)
+      const ids = subsetoresByColaborador.get(link.colaborador_id) || []
+      ids.push(link.subsetor_id)
+      subsetoresByColaborador.set(link.colaborador_id, ids)
     }
 
     // Get current ticket counts for all collaborators
@@ -607,22 +707,11 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       lastReceivedMap[c.id] = (c as any).last_ticket_received_at || '1970-01-01'
     })
 
-    // Distribute tickets respecting subsetor
-    for (const ticket of pendingTickets) {
-      let eligibleColaboradores = allColaboradores
-
-      if (ticket.subsetor_id) {
-        // Colaboradores que atendem este subsetor
-        const subsetorColabIds = subsetorToColabs[ticket.subsetor_id]
-        if (subsetorColabIds && subsetorColabIds.size > 0) {
-          const filtered = allColaboradores.filter(c => subsetorColabIds.has(c.id))
-          eligibleColaboradores = filtered
-        } else {
-          eligibleColaboradores = []
-        }
-      }
-
-      // Ordenar: 1) menor qtd tickets, 2) quem recebeu há mais tempo (round-robin real)
+    const assignTicket = async (
+      ticket: (typeof pendingTickets)[number],
+      eligibleColaboradores: typeof allColaboradores,
+      routingPass: 'compatible' | 'fallback',
+    ): Promise<boolean> => {
       const sorted = eligibleColaboradores
         .map(c => ({
           id: c.id,
@@ -635,7 +724,6 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
           return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
         })
 
-      // Tentar atribuir via RPC atômica percorrendo candidatos
       for (const candidate of sorted) {
         const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
           p_ticket_id: ticket.id,
@@ -657,8 +745,8 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
           assignedCount++
 
           const reason = ticket.subsetor_id
-            ? `Round-robin redistribuição (subsetor: ${ticket.subsetor_id}, ${candidate.count} tickets)`
-            : `Round-robin redistribuição (${candidate.count} tickets)`
+            ? `Round-robin redistribuição (${routingPass}, subsetor: ${ticket.subsetor_id}, ${candidate.count} tickets)`
+            : `Round-robin redistribuição (${routingPass}, ${candidate.count} tickets)`
 
           try {
             await supabase.from('ticket_assignment_logs').insert({
@@ -670,7 +758,7 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
             })
           } catch { /* tabela pode não existir */ }
 
-          break
+          return true
         }
 
         const failReason = (result as any)?.reason || 'unknown'
@@ -682,62 +770,33 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         }
 
         if (failReason === 'ticket_already_assigned') {
-          break
+          return false
         }
       }
+
+      return false
     }
 
-    // Após a distribuição normal, verificar se há tickets que permaneceram sem atribuição
-    // e se o setor tem transmissão ativa para encaminhá-los ao receptor
-    const { data: remainingTickets } = await supabase
-      .from('tickets')
-      .select('id')
-      .eq('setor_id', setorId)
-      .eq('status', 'aberto')
-      .is('colaborador_id', null)
+    const fallbackTickets: typeof pendingTickets = []
 
-    if (remainingTickets && remainingTickets.length > 0) {
-      const { data: setorData } = await supabase
-        .from('setores')
-        .select('transmissao_ativa, setor_receptor_id')
-        .eq('id', setorId)
-        .single()
+    for (const ticket of pendingTickets) {
+      const compatibleColaboradores = allColaboradores.filter((c) =>
+        isExactSubsetorMatch(
+          ticket.subsetor_id,
+          subsetoresByColaborador.get(c.id) || [],
+        ),
+      )
 
-      if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
-        const receptorId = setorData.setor_receptor_id
-
-        // Nomes dos setores pra log (busca 1× antes do loop)
-        const { data: nomesSetores } = await supabase
-          .from('setores').select('id, nome').in('id', [setorId, receptorId])
-        const nomeOrigem = nomesSetores?.find(s => s.id === setorId)?.nome || setorId
-        const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
-
-        for (const ticket of remainingTickets) {
-          // Mover ticket para o setor receptor
-          const { error: moveError } = await supabase
-            .from('tickets')
-            .update({
-              setor_id: receptorId,
-              subsetor_id: null,
-            })
-            .eq('id', ticket.id)
-
-          if (!moveError) {
-            const { error: logError } = await supabase.from('ticket_logs').insert({
-              ticket_id: ticket.id,
-              tipo: 'transferencia_automatica',
-              descricao: `Transbordo: ${nomeOrigem} → ${nomeDestino} (redistribuição sem atendentes disponíveis)`,
-            })
-            if (logError) console.warn('[Distribuição] Falha ao gravar log transferencia_automatica (redistribuição):', logError.message)
-
-            // Tentar distribuir no receptor (sem retransmitir)
-            const result = await _tentarDistribuirNoSetor(supabase, ticket.id, receptorId)
-            if (result) {
-              assignedCount++
-            }
-          }
-        }
+      if (compatibleColaboradores.length === 0) {
+        fallbackTickets.push(ticket)
+        continue
       }
+
+      await assignTicket(ticket, compatibleColaboradores, 'compatible')
+    }
+
+    for (const ticket of fallbackTickets) {
+      await assignTicket(ticket, allColaboradores, 'fallback')
     }
 
     return assignedCount

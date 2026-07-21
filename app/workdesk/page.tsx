@@ -115,6 +115,16 @@ interface Cliente {
   created_at?: string
 }
 
+interface ClienteSelecionado {
+  id: string | null
+  nome: string
+  telefone: string | null
+  email: string | null
+  CNPJ: string | null
+  Registro: string | null
+  PDV: string | null
+}
+
 interface Setor {
   id: string
   nome: string
@@ -127,6 +137,35 @@ interface Subsetor {
   id: string
   nome: string
   setor_id?: string
+}
+
+interface TransferSetor {
+  id: string
+  nome: string
+}
+
+interface TransferSubsetor {
+  id: string
+  nome: string
+  setor_id: string
+  setor_nome: string
+}
+
+interface TransferAtendente {
+  id: string
+  nome: string
+  is_online: boolean
+  ativo: boolean
+  pausa_atual_id?: string | null
+  last_heartbeat?: string | null
+  handlesSubsetor: boolean
+}
+
+type TransferTab = 'atendente' | 'setor' | 'subsetor'
+
+interface TransferDestinoRow {
+  setor_destino_id: string
+  setores: TransferSetor | TransferSetor[] | null
 }
 
 interface Ticket {
@@ -805,20 +844,29 @@ export default function WorkdeskPage() {
   })
   
   // Transfer data
-  const [setores, setSetores] = useState<any[]>([])
-  const [atendentesDisponiveis, setAtendentesDisponiveis] = useState<any[]>([])
-  const [selectedSetorTransfer, setSelectedSetorTransfer] = useState<string>('all') // Updated default value
-  const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all') // Updated default value
+  const [setores, setSetores] = useState<TransferSetor[]>([])
+  const [subsetoresTransferencia, setSubsetoresTransferencia] = useState<TransferSubsetor[]>([])
+  const [atendentesSetorAtual, setAtendentesSetorAtual] = useState<TransferAtendente[]>([])
+  const [atendentesDisponiveis, setAtendentesDisponiveis] = useState<TransferAtendente[]>([])
+  const [transferTab, setTransferTab] = useState<TransferTab>('atendente')
+  const [selectedSetorTransfer, setSelectedSetorTransfer] = useState<string>('all')
+  const [selectedSubsetorTransfer, setSelectedSubsetorTransfer] = useState('')
+  const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all')
+  const selectedTransferSubsetor = subsetoresTransferencia.find(
+    (subsetor) => subsetor.id === selectedSubsetorTransfer,
+  )
   const [transferLoading, setTransferLoading] = useState(false)
   const [transferDataLoading, setTransferDataLoading] = useState(false)
+  const transferLoadRequestIdRef = useRef(0)
+  const transferAtendentesRequestIdRef = useRef(0)
   const transferringTicketIdsRef = useRef<Set<string>>(new Set())
   // Confirmação ao transferir para atendente offline
   const [offlineConfirmOpen, setOfflineConfirmOpen] = useState(false)
   const [offlineTransferTarget, setOfflineTransferTarget] = useState<{ id: string; nome: string } | null>(null)
 
-  // Helper: verifica se atendente está online (confia no is_online do banco)
-  const isAtendenteOnline = useCallback((atendente: any): boolean => {
-    return !!(atendente?.is_online && atendente?.ativo)
+  // Helper: verifica se o atendente pode receber uma transferência agora.
+  const isAtendenteOnline = useCallback((atendente?: TransferAtendente): boolean => {
+    return !!(atendente?.is_online && atendente?.ativo && !atendente?.pausa_atual_id)
   }, [])
 
   // Message input
@@ -1049,8 +1097,10 @@ export default function WorkdeskPage() {
   // Selecionar cliente dialog
   const [selecionarClienteDialogOpen, setSelecionarClienteDialogOpen] = useState(false)
   const [selecionarClienteCnpj, setSelecionarClienteCnpj] = useState('')
-  const [selecionarClienteData, setSelecionarClienteData] = useState<any>(null)
+  const [selecionarClienteData, setSelecionarClienteData] = useState<ClienteSelecionado | null>(null)
   const [selecionarClienteLoading, setSelecionarClienteLoading] = useState(false)
+  const [vinculandoCliente, setVinculandoCliente] = useState(false)
+  const [encerrarAposVinculoCliente, setEncerrarAposVinculoCliente] = useState(false)
   const [clienteNaoInformadoDialogOpen, setClienteNaoInformadoDialogOpen] = useState(false)
 
   // Editar dados do cliente
@@ -2391,15 +2441,16 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   }
 
   // Encerrar ticket
-const handleEncerrarTicket = async () => {
-    if (!selectedTicket || !colaborador) return
+const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> => {
+    const ticketToClose = ticketOverride ?? selectedTicket
+    if (!ticketToClose || !colaborador) return false
 
     try {
       // Fetch the setor to get finalization message
       const { data: setor } = await supabase
         .from('setores')
         .select('mensagem_finalizacao')
-        .eq('id', selectedTicket.setor_id)
+        .eq('id', ticketToClose.setor_id)
         .single()
 
       // Se há mensagem de finalização, detectar o canal correto e enviar
@@ -2408,7 +2459,7 @@ const handleEncerrarTicket = async () => {
         const { data: lastMsgData } = await supabase
           .from('mensagens')
           .select('canal_envio, phone_number_id, discord_user_id')
-          .eq('ticket_id', selectedTicket.id)
+          .eq('ticket_id', ticketToClose.id)
           .neq('remetente', 'sistema')
           .order('enviado_em', { ascending: false })
           .limit(1)
@@ -2438,12 +2489,12 @@ const handleEncerrarTicket = async () => {
           } else {
             setorCanal = 'evolution_api'
           }
-        } else if (selectedTicket.setor_id) {
+        } else if (ticketToClose.setor_id) {
           // Fallback: buscar canal ativo do setor
           const { data: canalAtivo } = await supabase
-            .from('setor_canais')
-            .select('tipo, instancia, phone_number_id')
-            .eq('setor_id', selectedTicket.setor_id)
+              .from('setor_canais')
+              .select('tipo, instancia, phone_number_id')
+              .eq('setor_id', ticketToClose.setor_id)
             .eq('ativo', true)
             .order('criado_em', { ascending: true })
             .limit(1)
@@ -2458,35 +2509,35 @@ const handleEncerrarTicket = async () => {
 
         console.log('[encerrar] Canal de finalização detectado:', setorCanal, 'phoneNumberId:', phoneNumberId)
 
-        const processedMessage = processTemplateVariables(setor.mensagem_finalizacao)
+        const processedMessage = processTemplateVariables(setor.mensagem_finalizacao, ticketToClose)
 
         if (setorCanal === 'discord') {
           await fetch('/api/discord/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              ticketId: selectedTicket.id,
+              ticketId: ticketToClose.id,
               message: processedMessage,
             }),
           })
-        } else if (setorCanal === 'evolution_api' && phoneNumberId && selectedTicket.clientes.telefone) {
+        } else if (setorCanal === 'evolution_api' && phoneNumberId && ticketToClose.clientes.telefone) {
           await fetch('/api/evolution/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              ticketId: selectedTicket.id,
+              ticketId: ticketToClose.id,
               message: processedMessage,
               instanceName: phoneNumberId,
             }),
           })
-        } else if (setorCanal === 'whatsapp' && phoneNumberId && selectedTicket.clientes.telefone) {
+        } else if (setorCanal === 'whatsapp' && phoneNumberId && ticketToClose.clientes.telefone) {
           await fetch('/api/whatsapp/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              recipientPhone: selectedTicket.clientes.telefone,
+              recipientPhone: ticketToClose.clientes.telefone,
               message: processedMessage,
-              ticketId: selectedTicket.id,
+              ticketId: ticketToClose.id,
               phoneNumberId: phoneNumberId,
             }),
           })
@@ -2494,14 +2545,18 @@ const handleEncerrarTicket = async () => {
       }
 
       // Update ticket status
-      await supabase
+      const { data: closedTicket, error: closeError } = await supabase
         .from('tickets')
         .update({
           status: 'encerrado',
           encerrado_em: new Date().toISOString(),
           ...(selectedTipoEncerramento ? { tipo_atendimento_id: selectedTipoEncerramento } : {}),
         })
-.eq('id', selectedTicket.id)
+        .eq('id', ticketToClose.id)
+        .select('id')
+        .single()
+
+      if (closeError || !closedTicket) throw closeError || new Error('Ticket não encontrado')
 
       // Dispatch webhook (await to ensure it completes before UI changes)
       try {
@@ -2509,7 +2564,7 @@ const handleEncerrarTicket = async () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            ticketId: selectedTicket.id,
+            ticketId: ticketToClose.id,
             evento: 'ticket_encerrado',
           }),
         })
@@ -2528,8 +2583,11 @@ const handleEncerrarTicket = async () => {
       if (colaborador) {
         fetchTickets(colaborador)
       }
+      return true
     } catch (error) {
       console.error('Error closing ticket:', error)
+      toast.error('Não foi possível encerrar o ticket. Tente novamente.')
+      return false
     }
   }
 
@@ -2563,8 +2621,10 @@ const handleEncerrarTicket = async () => {
   const handleConfirmarEncerrar = () => {
     setEncerrarDialogOpen(false)
     if (!clienteTemCNPJ) {
+      setEncerrarAposVinculoCliente(true)
       setClienteNaoInformadoDialogOpen(true)
     } else {
+      setEncerrarAposVinculoCliente(false)
       handleEncerrarTicket()
     }
   }
@@ -2580,15 +2640,20 @@ const handleEncerrarTicket = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cnpj: selecionarClienteCnpj.replace(/\D/g, '') }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        throw new Error(data?.error || 'Não foi possível buscar o cliente')
+      }
       if (data.source === 'not_found') {
         toast.error('Cliente não encontrado com este CNPJ')
-      } else if (data.cliente) {
+      } else if (data?.cliente?.CNPJ) {
         setSelecionarClienteData(data.cliente)
         toast.success(`Cliente encontrado: ${data.cliente.nome}`)
+      } else {
+        throw new Error('O cliente encontrado não possui CNPJ válido')
       }
-    } catch {
-      toast.error('Erro ao buscar cliente')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao buscar cliente')
     } finally {
       setSelecionarClienteLoading(false)
     }
@@ -2600,40 +2665,61 @@ const handleEncerrarTicket = async () => {
   // Confirmar vínculo do cliente ao ticket
   const handleConfirmarSelecionarCliente = async () => {
     if (!selecionarClienteData || !selectedTicket) return
+    const ticketId = selectedTicket.id
+    const shouldCloseTicket = encerrarAposVinculoCliente
+    setVinculandoCliente(true)
     try {
       // Marca que estamos trocando o cliente deste ticket — o real-time não deve sobrescrever
-      clienteSwapTicketIdRef.current = selectedTicket.id
+      clienteSwapTicketIdRef.current = ticketId
 
-      const { error } = await supabase
-        .from('tickets')
-        .update({ cliente_id: selecionarClienteData.id })
-        .eq('id', selectedTicket.id)
-      if (error) throw error
+      const response = await fetch(`/api/tickets/${ticketId}/cliente`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cnpj: selecionarClienteData.CNPJ }),
+      })
+      const data = await response.json().catch(() => null)
+      if (!response.ok || !data?.cliente?.id || data?.ticket?.cliente_id !== data.cliente.id) {
+        throw new Error(data?.error || 'Não foi possível vincular o cliente ao ticket')
+      }
+
+      const clienteVinculado = data.cliente as Cliente
+      const ticketVinculado: Ticket = {
+        ...selectedTicket,
+        cliente_id: clienteVinculado.id,
+        clientes: clienteVinculado,
+      }
 
       // Atualiza o estado local com o novo cliente
       // NÃO preserva o telefone antigo — o telefone do ticket é do contato WhatsApp,
       // e o cliente vinculado é a empresa (CNPJ). São dados diferentes.
-      setSelectedTicket((prev) =>
-        prev ? { ...prev, cliente_id: selecionarClienteData.id, clientes: selecionarClienteData } : null
-      )
+      setSelectedTicket(ticketVinculado)
       setTickets((prev) =>
         prev.map((t) =>
-          t.id === selectedTicket.id
-            ? { ...t, cliente_id: selecionarClienteData.id, clientes: selecionarClienteData }
+          t.id === ticketId
+            ? { ...t, cliente_id: clienteVinculado.id, clientes: clienteVinculado }
             : t
         )
       )
 
-      toast.success('Cliente vinculado ao ticket!')
       setSelecionarClienteDialogOpen(false)
       setSelecionarClienteCnpj('')
       setSelecionarClienteData(null)
+      setEncerrarAposVinculoCliente(false)
 
       // Libera o bloqueio do real-time após 3s (tempo suficiente para o evento passar)
       setTimeout(() => { clienteSwapTicketIdRef.current = null }, 3000)
-    } catch {
+
+      if (shouldCloseTicket) {
+        toast.success('Cliente vinculado. Encerrando ticket...')
+        await handleEncerrarTicket(ticketVinculado)
+      } else {
+        toast.success('Cliente vinculado ao ticket!')
+      }
+    } catch (error) {
       clienteSwapTicketIdRef.current = null
-      toast.error('Erro ao vincular cliente')
+      toast.error(error instanceof Error ? error.message : 'Erro ao vincular cliente')
+    } finally {
+      setVinculandoCliente(false)
     }
   }
 
@@ -2716,113 +2802,210 @@ const handleEncerrarTicket = async () => {
     setTogglingSubsetor(false)
   }
 
-  // Open transfer dialog and fetch data
-  const openTransferDialog = async () => {
-    setTransferDialogOpen(true)
-    setSelectedSetorTransfer('all')
-    setSelectedAtendenteTransfer('all')
-    setAtendentesDisponiveis([])
-    setSetores([])
-    setTransferDataLoading(true)
-
-    try {
-      const currentSetorId = selectedTicket?.setor_id
-      if (currentSetorId) {
-        const { data: destinosData } = await supabase
-          .from('setor_destinos_transferencia')
-          .select('setor_destino_id, setores:setor_destino_id(id, nome)')
-          .eq('setor_origem_id', currentSetorId)
-
-        if (destinosData && destinosData.length > 0) {
-          const setoresDestino = destinosData
-            .map((d: any) => d.setores)
-            .filter(Boolean)
-            .sort((a: any, b: any) => a.nome.localeCompare(b.nome))
-          setSetores(setoresDestino)
-        }
-      }
-
-      if (selectedTicket?.setor_id) {
-        const { data: colaboradoresSetores } = await supabase
-          .from('colaboradores_setores')
-          .select('colaborador_id')
-          .eq('setor_id', selectedTicket.setor_id)
-
-        if (colaboradoresSetores && colaboradoresSetores.length > 0) {
-          const colaboradorIds = colaboradoresSetores.map((cs) => cs.colaborador_id)
-          const { data: colaboradoresData } = await supabase
-            .from('colaboradores')
-            .select('id, nome, is_online, ativo, last_heartbeat')
-            .in('id', colaboradorIds)
-            .eq('ativo', true)
-            .neq('id', colaborador?.id || '')
-
-          if (colaboradoresData) {
-            let finalAtendentes: any[] = colaboradoresData.map((a: any) => ({ ...a, handlesSubsetor: false }))
-            if (selectedTicket?.subsetor_id) {
-              const { data: subColab } = await supabase
-                .from('colaboradores_subsetores')
-                .select('colaborador_id')
-                .eq('subsetor_id', selectedTicket.subsetor_id)
-              const subColabIds = new Set(subColab?.map((s: any) => s.colaborador_id) || [])
-              finalAtendentes = finalAtendentes.map((a: any) => ({ ...a, handlesSubsetor: subColabIds.has(a.id) }))
-              finalAtendentes.sort((a: any, b: any) => Number(b.handlesSubsetor) - Number(a.handlesSubsetor))
-            }
-            setAtendentesDisponiveis(finalAtendentes)
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Error loading transfer data:', err)
-    } finally {
-      setTransferDataLoading(false)
-    }
-  }
-
-  // Fetch atendentes when setor changes
-  const handleSetorChange = async (setorId: string) => {
-    setSelectedSetorTransfer(setorId)
-    setSelectedAtendenteTransfer('all')
-
-    // First get all colaborador_ids for this setor
+  const fetchAtendentesTransfer = useCallback(async (
+    setorId: string,
+    excludeColaboradorId?: string,
+  ): Promise<TransferAtendente[]> => {
     const { data: colaboradoresSetores } = await supabase
       .from('colaboradores_setores')
       .select('colaborador_id')
       .eq('setor_id', setorId)
 
-    if (colaboradoresSetores && colaboradoresSetores.length > 0) {
-      const colaboradorIds = colaboradoresSetores.map((cs) => cs.colaborador_id)
+    if (!colaboradoresSetores?.length) return []
 
-      // Then fetch the actual colaboradores
-      const { data: colaboradoresData } = await supabase
-        .from('colaboradores')
-        .select('id, nome, is_online, ativo, last_heartbeat')
-        .in('id', colaboradorIds)
-        .eq('ativo', true)
+    const colaboradorIds = colaboradoresSetores.map((item) => item.colaborador_id)
+    let colaboradoresQuery = supabase
+      .from('colaboradores')
+      .select('id, nome, is_online, ativo, pausa_atual_id, last_heartbeat')
+      .in('id', colaboradorIds)
+      .eq('ativo', true)
 
-      if (colaboradoresData) {
-        let finalAtendentes: any[] = colaboradoresData.map((a: any) => ({ ...a, handlesSubsetor: false }))
-        if (selectedTicket?.subsetor_id) {
-          const { data: subColab } = await supabase
-            .from('colaboradores_subsetores')
-            .select('colaborador_id')
-            .eq('subsetor_id', selectedTicket.subsetor_id)
-          const subColabIds = new Set(subColab?.map((s: any) => s.colaborador_id) || [])
-          finalAtendentes = finalAtendentes.map((a: any) => ({ ...a, handlesSubsetor: subColabIds.has(a.id) }))
-          finalAtendentes.sort((a: any, b: any) => Number(b.handlesSubsetor) - Number(a.handlesSubsetor))
-        }
-        setAtendentesDisponiveis(finalAtendentes)
-      }
-    } else {
-      setAtendentesDisponiveis([])
+    if (excludeColaboradorId) {
+      colaboradoresQuery = colaboradoresQuery.neq('id', excludeColaboradorId)
     }
+
+    const { data: colaboradoresData } = await colaboradoresQuery
+    let atendentes: TransferAtendente[] = (colaboradoresData ?? []).map((atendente) => ({
+      ...atendente,
+      handlesSubsetor: false,
+    }))
+
+    if (selectedTicket?.subsetor_id && atendentes.length > 0) {
+      const { data: subsetorColaboradores } = await supabase
+        .from('colaboradores_subsetores')
+        .select('colaborador_id')
+        .eq('subsetor_id', selectedTicket.subsetor_id)
+      const subsetorColaboradorIds = new Set(
+        subsetorColaboradores?.map((item) => item.colaborador_id) ?? [],
+      )
+      atendentes = atendentes.map((atendente) => ({
+        ...atendente,
+        handlesSubsetor: subsetorColaboradorIds.has(atendente.id),
+      }))
+    }
+
+    return atendentes.sort((a, b) =>
+      Number(b.handlesSubsetor) - Number(a.handlesSubsetor) || a.nome.localeCompare(b.nome),
+    )
+  }, [selectedTicket?.subsetor_id, supabase])
+
+  const resetTransferForm = useCallback(() => {
+    transferAtendentesRequestIdRef.current += 1
+    setTransferTab('atendente')
+    setSelectedSetorTransfer('all')
+    setSelectedSubsetorTransfer('')
+    setSelectedAtendenteTransfer('all')
+    setAtendentesSetorAtual([])
+    setAtendentesDisponiveis([])
+    setSetores([])
+    setSubsetoresTransferencia([])
+    setOfflineConfirmOpen(false)
+    setOfflineTransferTarget(null)
+  }, [])
+
+  // Open transfer dialog and fetch data
+  const openTransferDialog = async () => {
+    const ticket = selectedTicket
+    if (!ticket?.setor_id) return
+
+    const requestId = ++transferLoadRequestIdRef.current
+    resetTransferForm()
+    setTransferDialogOpen(true)
+    setTransferLoading(false)
+    setTransferDataLoading(true)
+
+    try {
+      const { data: destinosData, error: destinosError } = await supabase
+        .from('setor_destinos_transferencia')
+        .select('setor_destino_id, setores:setor_destino_id(id, nome)')
+        .eq('setor_origem_id', ticket.setor_id)
+
+      if (destinosError) throw destinosError
+
+      const destinosRows = (destinosData ?? []) as unknown as TransferDestinoRow[]
+      const setoresDestinoMap = new Map<string, TransferSetor>()
+      destinosRows.forEach((destino) => {
+        const setorItems = Array.isArray(destino.setores) ? destino.setores : [destino.setores]
+        setorItems.filter((setor): setor is TransferSetor => Boolean(setor)).forEach((setor) => {
+          setoresDestinoMap.set(setor.id, setor)
+        })
+      })
+      const setoresDestino = [...setoresDestinoMap.values()].sort((a, b) =>
+        a.nome.localeCompare(b.nome),
+      )
+      const setorIdsComSubsetores = [...new Set([
+        ticket.setor_id,
+        ...setoresDestino.map((setor) => setor.id),
+      ])]
+
+      const [subsetoresResult, atendentesAtuais] = await Promise.all([
+        supabase
+          .from('subsetores')
+          .select('id, nome, setor_id')
+          .in('setor_id', setorIdsComSubsetores)
+          .eq('ativo', true)
+          .order('nome'),
+        fetchAtendentesTransfer(ticket.setor_id, colaborador?.id),
+      ])
+
+      if (subsetoresResult.error) throw subsetoresResult.error
+      if (requestId !== transferLoadRequestIdRef.current) return
+
+      const setorNomePorId = new Map<string, string>([
+        [ticket.setor_id, ticket.setores?.nome || 'Setor atual'],
+        ...setoresDestino.map((setor) => [setor.id, setor.nome] as [string, string]),
+      ])
+      const subsetores = (subsetoresResult.data ?? [])
+        .map((subsetor) => ({
+          ...subsetor,
+          setor_nome: setorNomePorId.get(subsetor.setor_id) || 'Setor',
+        }))
+        .sort((a, b) =>
+          a.setor_nome.localeCompare(b.setor_nome) || a.nome.localeCompare(b.nome),
+        )
+
+      setSetores(setoresDestino)
+      setSubsetoresTransferencia(subsetores)
+      setAtendentesSetorAtual(atendentesAtuais)
+      setAtendentesDisponiveis(atendentesAtuais)
+    } catch (err) {
+      if (requestId === transferLoadRequestIdRef.current) {
+        console.error('Error loading transfer data:', err)
+        toast.error('Não foi possível carregar os destinos de transferência')
+      }
+    } finally {
+      if (requestId === transferLoadRequestIdRef.current) {
+        setTransferDataLoading(false)
+      }
+    }
+  }
+
+  // Fetch atendentes when setor changes
+  const handleSetorChange = async (setorId: string) => {
+    const requestId = ++transferAtendentesRequestIdRef.current
+    setSelectedSetorTransfer(setorId)
+    setSelectedSubsetorTransfer('')
+    setSelectedAtendenteTransfer('all')
+    if (setorId === 'all') {
+      setAtendentesDisponiveis([])
+      return
+    }
+
+    const atendentes = await fetchAtendentesTransfer(setorId)
+    if (requestId === transferAtendentesRequestIdRef.current) {
+      setAtendentesDisponiveis(atendentes)
+    }
+  }
+
+  const handleTransferTabChange = (value: string) => {
+    const nextTab = value as TransferTab
+    transferAtendentesRequestIdRef.current += 1
+    setTransferTab(nextTab)
+    setSelectedSetorTransfer('all')
+    setSelectedSubsetorTransfer('')
+    setSelectedAtendenteTransfer('all')
+    setAtendentesDisponiveis(nextTab === 'atendente' ? atendentesSetorAtual : [])
+    setOfflineConfirmOpen(false)
+    setOfflineTransferTarget(null)
+  }
+
+  const handleTransferDialogOpenChange = (open: boolean) => {
+    setTransferDialogOpen(open)
+    if (open) return
+
+    transferLoadRequestIdRef.current += 1
+    resetTransferForm()
+    setTransferDataLoading(false)
+    setTransferLoading(false)
   }
 
   // Transfer ticket
   const handleTransferTicket = async () => {
     if (!selectedTicket) return
 
-    const ticketId = selectedTicket.id
+    const ticket = selectedTicket
+    const subsetorDestino = transferTab === 'subsetor' ? selectedTransferSubsetor : undefined
+    const setorDestinoId = subsetorDestino?.setor_id
+      || (selectedSetorTransfer !== 'all' ? selectedSetorTransfer : undefined)
+    const subsetorDestinoId = subsetorDestino?.id
+    const atendenteDestinoId = transferTab === 'subsetor'
+      ? null
+      : selectedAtendenteTransfer !== 'all' ? selectedAtendenteTransfer : null
+
+    if (transferTab === 'subsetor' && !subsetorDestino) {
+      toast.error('Selecione um subsetor de destino')
+      return
+    }
+    if (transferTab === 'setor' && !setorDestinoId) {
+      toast.error('Selecione um setor de destino')
+      return
+    }
+    if (transferTab === 'atendente' && !atendenteDestinoId) {
+      toast.error('Selecione um atendente de destino')
+      return
+    }
+
+    const ticketId = ticket.id
     setTransferLoading(true)
 
     // Mark as transferring BEFORE the API call to prevent realtime from bringing it back
@@ -2835,6 +3018,9 @@ const handleEncerrarTicket = async () => {
     setMobileDrawerOpen(false)
     setMensagens([])
     setTransferDialogOpen(false)
+    transferLoadRequestIdRef.current += 1
+    resetTransferForm()
+    setTransferDataLoading(false)
 
     try {
       const controller = new AbortController()
@@ -2845,10 +3031,11 @@ const handleEncerrarTicket = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ticket_id: ticketId,
-          setor_id: selectedSetorTransfer !== 'all' ? selectedSetorTransfer : undefined,
-          colaborador_id: selectedAtendenteTransfer !== 'all' ? selectedAtendenteTransfer : null,
+          setor_id: setorDestinoId,
+          subsetor_id: subsetorDestinoId,
+          colaborador_id: atendenteDestinoId,
           from_colaborador_nome: colaborador?.nome || 'Desconhecido',
-          from_setor_nome: selectedTicket.setores?.nome || 'Desconhecido',
+          from_setor_nome: ticket.setores?.nome || 'Desconhecido',
         }),
         signal: controller.signal,
       })
@@ -2871,14 +3058,16 @@ const handleEncerrarTicket = async () => {
         return
       }
 
-      if (result.queued) {
+      if (subsetorDestino) {
+        toast.success(`Ticket enviado para a fila do subsetor ${result.subsetor_nome || subsetorDestino.nome}`)
+      } else if (result.queued) {
         toast.info('Ticket transferido para a fila de espera')
       } else {
         toast.success('Ticket transferido com sucesso')
       }
 
       // Se o ticket foi para a fila, acionar distribuição automática
-      if (selectedAtendenteTransfer === 'all' || result.queued) {
+      if (!atendenteDestinoId || result.queued) {
         fetch('/api/tickets/auto-assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2917,6 +3106,10 @@ const handleEncerrarTicket = async () => {
       selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all'
         ? atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)
         : null
+    if (target?.pausa_atual_id) {
+      toast.error('Este atendente está em pausa. Selecione outro atendente.')
+      return
+    }
     if (target && !isAtendenteOnline(target)) {
       setOfflineTransferTarget({ id: target.id, nome: target.nome })
       setOfflineConfirmOpen(true)
@@ -2941,11 +3134,18 @@ const handleEncerrarTicket = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cnpj: disparoCnpj.replace(/\D/g, '') }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        throw new Error(data?.error || 'Não foi possível buscar o cliente')
+      }
       if (data.source === 'not_found') {
         toast.error('Cliente nao encontrado com este CNPJ')
       } else if (data.cliente) {
-        setDisparoCliente(data.cliente)
+        setDisparoCliente({
+          ...data.cliente,
+          cnpj: data.cliente.CNPJ,
+          registro: data.cliente.Registro,
+        })
         if (data.cliente.telefone) {
           setDisparoTelefone(data.cliente.telefone)
         }
@@ -3300,17 +3500,18 @@ const insertEmoji = (emoji: string) => {
   }
 
   // Process template variables
-  const processTemplateVariables = (message: string) => {
-    if (!selectedTicket || !colaborador) return message
+  const processTemplateVariables = (message: string, ticketOverride?: Ticket) => {
+    const templateTicket = ticketOverride ?? selectedTicket
+    if (!templateTicket || !colaborador) return message
 
     const now = new Date()
     return message
-      .replace(/\{\{cliente_nome\}\}/g, selectedTicket.clientes.nome || '')
-      .replace(/\{\{cliente_telefone\}\}/g, selectedTicket.clientes.telefone || '')
-      .replace(/\{\{cliente_cnpj\}\}/g, selectedTicket.clientes.CNPJ || '')
+      .replace(/\{\{cliente_nome\}\}/g, templateTicket.clientes.nome || '')
+      .replace(/\{\{cliente_telefone\}\}/g, templateTicket.clientes.telefone || '')
+      .replace(/\{\{cliente_cnpj\}\}/g, templateTicket.clientes.CNPJ || '')
       .replace(/\{\{atendente_nome\}\}/g, colaborador.nome || '')
-      .replace(/\{\{setor_nome\}\}/g, selectedTicket.setores?.nome || '')
-      .replace(/\{\{ticket_id\}\}/g, `#${selectedTicket.numero}`)
+      .replace(/\{\{setor_nome\}\}/g, templateTicket.setores?.nome || '')
+      .replace(/\{\{ticket_id\}\}/g, `#${templateTicket.numero}`)
       .replace(/\{\{data_atual\}\}/g, now.toLocaleDateString('pt-BR'))
       .replace(/\{\{hora_atual\}\}/g, now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
   }
@@ -5154,6 +5355,7 @@ const insertEmoji = (emoji: string) => {
                     size="sm"
                     className="h-6 text-[10px] px-2 gap-1 border-primary/40 text-primary hover:bg-primary/10"
                     onClick={() => {
+                      setEncerrarAposVinculoCliente(false)
                       setSelecionarClienteCnpj('')
                       setSelecionarClienteData(null)
                       setSelecionarClienteDialogOpen(true)
@@ -5980,38 +6182,49 @@ onClick={() => {
       </AlertDialog>
 
       {/* Transfer Dialog */}
-      <Dialog open={transferDialogOpen} onOpenChange={(open) => { setTransferDialogOpen(open); if (!open) setTransferLoading(false) }}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog open={transferDialogOpen} onOpenChange={handleTransferDialogOpenChange}>
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <ArrowRightLeft className="h-5 w-5" />
+              <ArrowRightLeft className="h-5 w-5" aria-hidden="true" />
               Transferir Ticket
             </DialogTitle>
             <DialogDescription>
-              Transfira este ticket para outro setor ou atendente.
+              Escolha se o ticket deve ir para um atendente, setor ou fila de subsetor.
             </DialogDescription>
           </DialogHeader>
           
           {transferDataLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground" role="status">
+              <Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+              Carregando destinos…
             </div>
           ) : (
-          <Tabs defaultValue="atendente" className="w-full">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="atendente">👤 Atendente</TabsTrigger>
-              <TabsTrigger value="setor">🏢 Setor</TabsTrigger>
+          <Tabs value={transferTab} onValueChange={handleTransferTabChange} className="w-full">
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="atendente" className="gap-1.5">
+                <User className="h-4 w-4" aria-hidden="true" />
+                Atendente
+              </TabsTrigger>
+              <TabsTrigger value="setor" className="gap-1.5">
+                <Users className="h-4 w-4" aria-hidden="true" />
+                Setor
+              </TabsTrigger>
+              <TabsTrigger value="subsetor" className="gap-1.5">
+                <Layers className="h-4 w-4" aria-hidden="true" />
+                Subsetor
+              </TabsTrigger>
             </TabsList>
 
 <TabsContent value="atendente" className="space-y-4 pt-4">
                     <div className="space-y-2">
-                      <Label>Selecione um atendente do setor atual</Label>
+                      <Label htmlFor="transfer-atendente">Selecione um atendente do setor atual</Label>
                       <Select
                         value={selectedAtendenteTransfer}
                         onValueChange={setSelectedAtendenteTransfer}
                       >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Escolha um atendente..." />
+                        <SelectTrigger id="transfer-atendente">
+                          <SelectValue placeholder="Escolha um atendente…" />
                         </SelectTrigger>
                         <SelectContent>
                           {atendentesDisponiveis.map((atendente) => {
@@ -6020,6 +6233,7 @@ onClick={() => {
                               <SelectItem
                                 key={atendente.id}
                                 value={atendente.id}
+                                disabled={Boolean(atendente.pausa_atual_id)}
                               >
                                 <div className="flex items-center gap-2 w-full">
                                   <span
@@ -6037,7 +6251,9 @@ onClick={() => {
                                     </Badge>
                                   )}
                                   {!online && (
-                                    <span className="text-xs text-muted-foreground">(Offline)</span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {atendente.pausa_atual_id ? '(Em pausa)' : '(Offline)'}
+                                    </span>
                                   )}
                                 </div>
                               </SelectItem>
@@ -6053,7 +6269,7 @@ onClick={() => {
                       {atendentesDisponiveis.length > 0 &&
                         !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
                           <p className="text-sm text-amber-600">
-                            Todos os atendentes estao offline.
+                            Nenhum atendente está disponível no momento.
                           </p>
                         )}
                     </div>
@@ -6067,7 +6283,7 @@ onClick={() => {
   }
   className="w-full"
   >
-  {transferLoading ? 'Transferindo...' : 'Transferir para Atendente'}
+  {transferLoading ? 'Transferindo…' : 'Transferir para Atendente'}
   </Button>
   {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)) && (
   <p className="text-sm text-amber-600">
@@ -6078,10 +6294,10 @@ onClick={() => {
   
   <TabsContent value="setor" className="space-y-4 pt-4">
                     <div className="space-y-2">
-                      <Label>Selecione o setor de destino</Label>
+                      <Label htmlFor="transfer-setor">Selecione o setor de destino</Label>
                       <Select value={selectedSetorTransfer} onValueChange={handleSetorChange}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Escolha um setor..." />
+                        <SelectTrigger id="transfer-setor">
+                          <SelectValue placeholder="Escolha um setor…" />
                         </SelectTrigger>
                         <SelectContent>
                           {setores.length === 0 ? (
@@ -6106,13 +6322,13 @@ onClick={() => {
 
                     {selectedSetorTransfer !== 'all' && (
                       <div className="space-y-2">
-                        <Label>Atribuir a um atendente (opcional)</Label>
+                        <Label htmlFor="transfer-setor-atendente">Atribuir a um atendente (opcional)</Label>
                         <Select
                           value={selectedAtendenteTransfer}
                           onValueChange={setSelectedAtendenteTransfer}
                         >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Deixar na fila do setor..." />
+                          <SelectTrigger id="transfer-setor-atendente">
+                            <SelectValue placeholder="Deixar na fila do setor…" />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">
@@ -6127,6 +6343,7 @@ onClick={() => {
                                 <SelectItem
                                   key={atendente.id}
                                   value={atendente.id}
+                                  disabled={Boolean(atendente.pausa_atual_id)}
                                 >
                                   <div className="flex items-center gap-2">
                                     <span
@@ -6139,7 +6356,9 @@ onClick={() => {
                                       {atendente.nome}
                                     </span>
                                     {!online && (
-                                      <span className="text-xs text-muted-foreground">(Offline)</span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {atendente.pausa_atual_id ? '(Em pausa)' : '(Offline)'}
+                                      </span>
                                     )}
                                   </div>
                                 </SelectItem>
@@ -6154,8 +6373,8 @@ onClick={() => {
                       atendentesDisponiveis.length > 0 &&
                       !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
                         <p className="text-sm text-blue-600 bg-blue-50 p-2 rounded-md">
-                          Nenhum atendente online neste setor. O ticket ira para a fila e sera
-                          atribuido automaticamente quando alguem ficar online.
+                          Nenhum atendente disponível neste setor. O ticket irá para a fila e será
+                          atribuído automaticamente quando alguém estiver disponível.
                         </p>
                       )}
 
@@ -6166,7 +6385,64 @@ onClick={() => {
                       }
                       className="w-full"
                     >
-                      {transferLoading ? 'Transferindo...' : 'Transferir para Setor'}
+                      {transferLoading ? 'Transferindo…' : 'Transferir para Setor'}
+                    </Button>
+                  </TabsContent>
+
+                  <TabsContent value="subsetor" className="space-y-4 pt-4">
+                    <div className="flex gap-3 rounded-lg border border-border bg-muted/40 p-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                        <Layers className="h-4 w-4" aria-hidden="true" />
+                      </div>
+                      <div className="min-w-0 space-y-0.5">
+                        <p className="text-sm font-medium text-foreground">Enviar para a fila do subsetor</p>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          O ticket ficará aberto e sem atendente até a distribuição automática.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="transfer-subsetor">Subsetor de destino</Label>
+                      <Select
+                        value={selectedSubsetorTransfer}
+                        onValueChange={setSelectedSubsetorTransfer}
+                        disabled={subsetoresTransferencia.length === 0}
+                      >
+                        <SelectTrigger id="transfer-subsetor" className="w-full">
+                          <SelectValue placeholder="Escolha um subsetor…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {subsetoresTransferencia.map((subsetor) => (
+                            <SelectItem key={subsetor.id} value={subsetor.id}>
+                              {subsetor.nome} · {subsetor.setor_nome}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {subsetoresTransferencia.length === 0 && (
+                        <p className="text-sm text-muted-foreground">
+                          Nenhum subsetor ativo no setor atual ou nos destinos habilitados.
+                        </p>
+                      )}
+                    </div>
+
+                    {selectedTransferSubsetor && (
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
+                        <span className="text-muted-foreground">Setor responsável</span>
+                        <span className="truncate font-medium text-foreground">
+                          {selectedTransferSubsetor.setor_nome}
+                        </span>
+                      </div>
+                    )}
+
+                    <Button
+                      onClick={attemptTransfer}
+                      disabled={!selectedSubsetorTransfer || transferLoading}
+                      className="w-full gap-2"
+                    >
+                      {transferLoading && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+                      {transferLoading ? 'Transferindo…' : 'Enviar para a fila do subsetor'}
                     </Button>
                   </TabsContent>
           </Tabs>
@@ -6616,6 +6892,7 @@ onClick={() => {
             <AlertDialogCancel
               onClick={() => {
                 setClienteNaoInformadoDialogOpen(false)
+                setEncerrarAposVinculoCliente(false)
                 handleEncerrarTicket()
               }}
             >
@@ -6624,6 +6901,7 @@ onClick={() => {
             <AlertDialogAction
               onClick={() => {
                 setClienteNaoInformadoDialogOpen(false)
+                setEncerrarAposVinculoCliente(true)
                 setSelecionarClienteCnpj('')
                 setSelecionarClienteData(null)
                 setSelecionarClienteDialogOpen(true)
@@ -6641,7 +6919,11 @@ onClick={() => {
         open={selecionarClienteDialogOpen}
         onOpenChange={(open) => {
           setSelecionarClienteDialogOpen(open)
-          if (!open) { setSelecionarClienteCnpj(''); setSelecionarClienteData(null) }
+          if (!open) {
+            setSelecionarClienteCnpj('')
+            setSelecionarClienteData(null)
+            setEncerrarAposVinculoCliente(false)
+          }
         }}
       >
         <DialogContent className="sm:max-w-md">
@@ -6658,18 +6940,23 @@ onClick={() => {
           <div className="space-y-4 py-2">
             {/* CNPJ Input */}
             <div className="space-y-2">
-              <Label>CNPJ do Cliente</Label>
+              <Label htmlFor="selecionar-cliente-cnpj">CNPJ do Cliente</Label>
               <div className="flex gap-2">
                 <Input
-                  placeholder="00.000.000/0000-00"
+                  id="selecionar-cliente-cnpj"
+                  name="cliente-cnpj"
+                  placeholder="00.000.000/0000-00…"
                   value={selecionarClienteCnpj}
                   onChange={(e) => setSelecionarClienteCnpj(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSelecionarClienteCnpjLookup()}
-                  disabled={selecionarClienteLoading || !!selecionarClienteData}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={selecionarClienteLoading || vinculandoCliente || !!selecionarClienteData}
                 />
                 <Button
                   onClick={handleSelecionarClienteCnpjLookup}
-                  disabled={!selecionarClienteCnpj.trim() || selecionarClienteLoading || !!selecionarClienteData}
+                  disabled={!selecionarClienteCnpj.trim() || selecionarClienteLoading || vinculandoCliente || !!selecionarClienteData}
                   size="sm"
                   className="shrink-0"
                 >
@@ -6686,11 +6973,11 @@ onClick={() => {
             {selecionarClienteData && (
               <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-1.5">
                 <p className="text-sm font-semibold text-foreground">{selecionarClienteData.nome}</p>
-                {selecionarClienteData.cnpj && (
-                  <p className="text-xs text-muted-foreground">CNPJ: {formatCNPJ(selecionarClienteData.cnpj)}</p>
+                {selecionarClienteData.CNPJ && (
+                  <p className="text-xs text-muted-foreground">CNPJ: {formatCNPJ(selecionarClienteData.CNPJ)}</p>
                 )}
-                {selecionarClienteData.registro && (
-                  <p className="text-xs text-muted-foreground">Registro: {selecionarClienteData.registro}</p>
+                {selecionarClienteData.Registro && (
+                  <p className="text-xs text-muted-foreground">Registro: {selecionarClienteData.Registro}</p>
                 )}
                 {selecionarClienteData.telefone && (
                   <p className="text-xs text-muted-foreground">Telefone: {formatPhone(selecionarClienteData.telefone)}</p>
@@ -6699,6 +6986,7 @@ onClick={() => {
                   variant="ghost"
                   size="sm"
                   className="h-6 text-[10px] px-2 mt-1"
+                  disabled={vinculandoCliente}
                   onClick={() => { setSelecionarClienteData(null); setSelecionarClienteCnpj('') }}
                 >
                   Trocar cliente
@@ -6717,10 +7005,15 @@ onClick={() => {
               </Button>
               <Button
                 className="flex-1"
-                disabled={!selecionarClienteData}
+                disabled={!selecionarClienteData || vinculandoCliente}
                 onClick={handleConfirmarSelecionarCliente}
               >
-                Vincular Cliente
+                {vinculandoCliente ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Vinculando…
+                  </>
+                ) : 'Vincular Cliente'}
               </Button>
             </div>
           </div>
