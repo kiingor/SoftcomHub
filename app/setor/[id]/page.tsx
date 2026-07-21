@@ -137,6 +137,7 @@ import {
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
+import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { OrigemBadge } from '@/components/origem-badge'
@@ -171,6 +172,58 @@ import 'react-resizable/css/styles.css'
 const ResponsiveReactGridLayout = WidthProvider(Responsive)
 
 const supabase = createClient()
+
+const WORKLOAD_OS_TONES: Record<WorkloadOsLevel, { value: string; badge: string }> = {
+  critical: {
+    value: 'text-destructive',
+    badge: 'border-destructive/30 bg-destructive/10 text-destructive',
+  },
+  attention: {
+    value: 'text-orange-600 dark:text-orange-400',
+    badge: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300',
+  },
+  light: {
+    value: 'text-amber-600 dark:text-amber-400',
+    badge: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  },
+  'very-light': {
+    value: 'text-emerald-600 dark:text-emerald-400',
+    badge: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  },
+  uncovered: {
+    value: 'text-destructive',
+    badge: 'border-destructive/30 bg-destructive/10 text-destructive',
+  },
+  unavailable: {
+    value: 'text-muted-foreground',
+    badge: 'border-border bg-muted text-muted-foreground',
+  },
+}
+
+const SEM_SUBSETOR_ID = 'sem_subsetor'
+
+function matchesSubsetorFilter(selectedSubsetorIds: string[], subsetorId?: string | null) {
+  return selectedSubsetorIds.length === 0
+    || selectedSubsetorIds.includes(subsetorId || SEM_SUBSETOR_ID)
+}
+
+function matchesAtendenteSubsetorFilter(
+  selectedSubsetorIds: string[],
+  assignedSubsetorIds?: string[] | null,
+) {
+  if (selectedSubsetorIds.length === 0) return true
+
+  const subsetorIds = assignedSubsetorIds || []
+  return (selectedSubsetorIds.includes(SEM_SUBSETOR_ID) && subsetorIds.length === 0)
+    || subsetorIds.some((id) => selectedSubsetorIds.includes(id))
+}
+
+function formatMonitoringTime(ms: number) {
+  const hours = Math.floor(ms / 3_600_000)
+  const minutes = Math.floor((ms % 3_600_000) / 60_000)
+  const seconds = Math.floor((ms % 60_000) / 1000)
+  return [hours, minutes, seconds].map((value) => value.toString().padStart(2, '0')).join(':')
+}
 
 // Available icons for sectors
 const AVAILABLE_ICONS = [
@@ -251,7 +304,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
     // Tickets de hoje (para estatisticas)
-    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em').eq('setor_id', setorId).gte('criado_em', startOfDay),
+    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
     supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
@@ -339,6 +392,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
   return {
     setor: setorRes.data,
     tickets: ticketsAtivos,
+    ticketsMonitoramentoHoje: ticketsHoje,
     atendentes,
     todosSetores: todosSetoresRes.data || [],
     permissoes: permissoesRes.data || [],
@@ -919,8 +973,8 @@ function SetorPageInner() {
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
-  const [subsetorFiltroOpen, setSubsetorFiltroOpen] = useState(false)
-  const [, setTick] = useState(0) // Force re-render for time updates
+  const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
+  const [monitoringTick, setTick] = useState(0) // Force re-render for time updates
   // Filtros do relatório inicializados a partir da querystring (link
   // compartilhável). A escrita de volta na URL acontece num effect mais abaixo.
   const [dateFilter, setDateFilter] = useState(() => searchParams.get('periodo') || 'today')
@@ -1455,11 +1509,11 @@ function SetorPageInner() {
   }, [setorId])
 
   const setor = data?.setor
-  const stats = data?.stats || { total: 0, naFila: 0, emAtendimento: 0, finalizadosHoje: 0, tempoMaximoFila: '00:00:00', tempoMaximoResposta: '00:00:00', mediaTicketsPorAtendente: 0 }
   const atendentesStats = data?.atendentesStats || { online: 0, pausa: 0, invisivel: 0 }
   const ticketsHoje = data?.ticketsHoje || { perdidos: 0, abandonados: 0, finalizados: 0, fechados: 0 }
   const temposHoje = data?.temposHoje || { tempoMedioEspera: '00:00:00', tempoMedioResposta: '00:00:00', tempoMedioPrimeiraResposta: '00:00:00', tempoMedioAtendimento: '00:00:00' }
   const tickets = data?.tickets || []
+  const ticketsMonitoramentoHoje = data?.ticketsMonitoramentoHoje || []
   const ticketsRelatorioRaw = relatorioData || []
 
   // Lookup global de setores — usado pra reescrever descrições antigas de
@@ -2094,7 +2148,7 @@ function SetorPageInner() {
       .filter((t: any) => t.status === 'em_atendimento' || t.status === 'aberto')
       .filter((t: any) => {
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
-        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
+        if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
@@ -2145,16 +2199,55 @@ function SetorPageInner() {
 
   const subsetorFiltroOptions = useMemo(
     () => [
-      { id: 'sem_subsetor', nome: 'Sem subsetor' },
+      { id: SEM_SUBSETOR_ID, nome: 'Sem subsetor' },
       ...subsetores.filter((s: any) => s.ativo).map((s: any) => ({ id: s.id, nome: s.nome })),
     ],
     [subsetores],
   )
 
+  const realtimeStats = useMemo(() => {
+    const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
+      matchesSubsetorFilter(subsetorFilter, item.subsetor_id)
+    )
+    const activeTickets = tickets.filter(isSelectedSubsetor)
+    const queuedTickets = activeTickets.filter((ticket: any) => ticket.status === 'aberto')
+    const assignedTickets = activeTickets.filter((ticket: any) => ticket.status === 'em_atendimento')
+    const finalizedToday = ticketsMonitoramentoHoje.filter(
+      (ticket: any) => ticket.status === 'encerrado' && isSelectedSubsetor(ticket),
+    )
+    const onlineAttendants = atendentes.filter((attendant: any) => (
+      isAtendenteOnline(attendant)
+      && matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
+    ))
+    const now = Date.now()
+    const maxQueueMs = queuedTickets.reduce((max: number, ticket: any) => (
+      ticket.criado_em ? Math.max(max, now - new Date(ticket.criado_em).getTime()) : max
+    ), 0)
+    const maxResponseMs = assignedTickets.reduce((max: number, ticket: any) => (
+      ticket.criado_em && !ticket.primeira_resposta_em
+        ? Math.max(max, now - new Date(ticket.criado_em).getTime())
+        : max
+    ), 0)
+
+    return {
+      total: activeTickets.length,
+      naFila: queuedTickets.length,
+      emAtendimento: assignedTickets.length,
+      finalizadosHoje: finalizedToday.length,
+      tempoMaximoFila: formatMonitoringTime(maxQueueMs),
+      tempoMaximoResposta: formatMonitoringTime(maxResponseMs),
+      onlineAttendants: onlineAttendants.length,
+      workload: calculateWorkloadOs(activeTickets.length, onlineAttendants.length),
+    }
+  }, [atendentes, monitoringTick, subsetorFilter, tickets, ticketsMonitoramentoHoje])
+
+  const workloadTone = WORKLOAD_OS_TONES[realtimeStats.workload.level]
+
   const ticketsAguardando = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'aberto' && !t.colaborador_id)
       .filter((t: any) => {
+        if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
@@ -2171,7 +2264,7 @@ function SetorPageInner() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor])
+  }, [tickets, searchTerm, setor, subsetorFilter])
 
 const handleLogout = async () => {
   await unsubscribeCurrentBrowser().catch(() => {})
@@ -3798,64 +3891,135 @@ const saveConfig = async () => {
                     <span className="text-xs font-medium text-muted-foreground">Ao vivo</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => mutate()} className="gap-2 bg-transparent">
-                    <RefreshCw className="h-4 w-4" />
-                  </Button>
-                  <Button variant="outline" size="sm" className="gap-2 bg-transparent">
-                    <Filter className="h-4 w-4" />
-                    Filtros
-                  </Button>
-                </div>
               </div>
 
               {/* Quick Filters */}
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Filtros rápidos:</span>
-                <Badge variant="secondary" className="cursor-pointer hover:bg-primary/20">Filas</Badge>
-              </div>
+              {subsetorFiltroOptions.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Filtros rápidos:</span>
+                  <MultiSelectFilter
+                    icon={Layers}
+                    placeholder="Subsetores"
+                    header="Filtrar monitoramento por subsetor"
+                    pluralWord="subsetores"
+                    options={subsetorFiltroOptions}
+                    selected={subsetorFilter}
+                    onChange={setSubsetorFilter}
+                    open={quickSubsetorFiltroOpen}
+                    onOpenChange={setQuickSubsetorFiltroOpen}
+                  />
+                </div>
+              )}
 
               {/* Stats Cards Row 1 */}
               <div className="grid gap-4 grid-cols-1 lg:grid-cols-[2fr_1fr]">
                 {/* Atendimentos em tempo real */}
                 <Card className="glass-card-elevated rounded-lg border-l-4 border-l-primary">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <Activity className="h-4 w-4 text-primary" aria-hidden="true" />
                       Atendimentos em tempo real
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-6 gap-3 text-center">
-                      <div className="space-y-1">
-                        <p className="text-2xl font-bold text-foreground tabular-nums">{stats.total}</p>
-                        <p className="text-xs text-muted-foreground">Total</p>
+                  <CardContent className="space-y-3">
+                    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/80 bg-border/80 sm:grid-cols-4">
+                      <div className="min-w-0 bg-background/60 px-3 py-3">
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Activity className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          <span>Total ativos</span>
+                        </div>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground tabular-nums">
+                          {realtimeStats.total}
+                        </p>
                       </div>
-                      <div className="space-y-1">
-                        <p className="text-2xl font-bold text-orange-500 tabular-nums">{stats.naFila}</p>
-                        <p className="text-xs text-muted-foreground">Na fila</p>
+                      <div className="min-w-0 bg-background/60 px-3 py-3">
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Inbox className="h-3.5 w-3.5 shrink-0 text-orange-500" aria-hidden="true" />
+                          <span>Na fila</span>
+                        </div>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight text-orange-500 tabular-nums">
+                          {realtimeStats.naFila}
+                        </p>
                       </div>
-                      <div className="space-y-1">
-                        <p className="text-2xl font-bold text-primary tabular-nums">{stats.emAtendimento}</p>
-                        <p className="text-xs text-muted-foreground">Em atend.</p>
+                      <div className="min-w-0 bg-background/60 px-3 py-3">
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <Headphones className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
+                          <span>Em atendimento</span>
+                        </div>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight text-primary tabular-nums">
+                          {realtimeStats.emAtendimento}
+                        </p>
                       </div>
-                      <div className="space-y-1">
-                        <p className="text-2xl font-bold text-green-500 tabular-nums">{stats.finalizadosHoje}</p>
-                        <p className="text-xs text-muted-foreground">Finalizados</p>
+                      <div className="min-w-0 bg-background/60 px-3 py-3">
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <CheckCircle className="h-3.5 w-3.5 shrink-0 text-green-500" aria-hidden="true" />
+                          <span>Finalizados hoje</span>
+                        </div>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight text-green-500 tabular-nums">
+                          {realtimeStats.finalizadosHoje}
+                        </p>
                       </div>
-                      <div className="space-y-1">
-                        <p className="text-xl font-bold text-foreground tabular-nums whitespace-nowrap">{stats.tempoMaximoFila}</p>
-                        <p className="text-xs text-muted-foreground">Max. fila</p>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-xl font-bold text-foreground tabular-nums whitespace-nowrap">{stats.tempoMaximoResposta}</p>
-                        <p className="text-xs text-muted-foreground">Max. resp.</p>
-                      </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(190px,0.8fr)]">
+                      <section
+                        className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3"
+                        aria-label="Maiores esperas atuais"
+                      >
+                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                          <Timer className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Maiores esperas atuais</span>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 divide-x divide-border/70">
+                          <div className="min-w-0 pr-3">
+                            <p className="whitespace-nowrap text-lg font-semibold tracking-tight text-foreground tabular-nums">
+                              {realtimeStats.tempoMaximoFila}
+                            </p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">Na fila</p>
+                          </div>
+                          <div className="min-w-0 pl-3">
+                            <p className="whitespace-nowrap text-lg font-semibold tracking-tight text-foreground tabular-nums">
+                              {realtimeStats.tempoMaximoResposta}
+                            </p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">Sem 1ª resposta</p>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section
+                        className={cn('rounded-lg border px-4 py-3', workloadTone.badge)}
+                        title={`${realtimeStats.total} tickets ativos ÷ ${realtimeStats.onlineAttendants} atendentes online compatíveis`}
+                        aria-label={realtimeStats.workload.ratio === null
+                          ? `${realtimeStats.workload.label}: ${realtimeStats.total} tickets ativos e nenhum atendente online compatível`
+                          : `${realtimeStats.workload.formattedRatio} tickets por atendente online: ${realtimeStats.workload.label}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                            <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span>Carga por atendente</span>
+                          </div>
+                          <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', workloadTone.badge)}>
+                            {realtimeStats.workload.label}
+                          </Badge>
+                        </div>
+                        <div className="mt-2 flex items-end justify-between gap-3">
+                          <div>
+                            <p className={cn('text-2xl font-semibold tracking-tight tabular-nums', workloadTone.value)}>
+                              {realtimeStats.workload.formattedRatio}
+                            </p>
+                            <p className="text-xs text-muted-foreground">Média/OS</p>
+                          </div>
+                          <p className="pb-0.5 text-right text-[11px] leading-tight text-muted-foreground tabular-nums">
+                            {realtimeStats.onlineAttendants} online
+                          </p>
+                        </div>
+                      </section>
                     </div>
                   </CardContent>
                 </Card>
 
                 {/* Status dos atendentes */}
-                <Card className="glass-card-elevated rounded-lg">
+                <Card className="glass-card-elevated flex flex-col rounded-lg">
                   <CardHeader className="pb-2 flex flex-row items-center justify-between">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
                       Status dos atendentes
@@ -3869,8 +4033,8 @@ const saveConfig = async () => {
                       Ver detalhes
                     </Button>
                   </CardHeader>
-                  <CardContent>
-                    <div className="flex justify-around text-center gap-2">
+                  <CardContent className="flex flex-1 items-center">
+                    <div className="flex w-full justify-around gap-2 text-center">
                       <div className="space-y-1">
                         <p className="text-2xl font-bold text-green-500 tabular-nums">{atendentesStats.online}</p>
                         <div className="flex items-center justify-center gap-1">
@@ -3958,33 +4122,12 @@ const saveConfig = async () => {
               </Card>
             </div>
 
-            {/* Quick Filters 2 */}
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">Filtros rápidos:</span>
-              <Badge variant="outline" className="cursor-pointer hover:bg-primary/10 transition-colors">Atendentes</Badge>
-              <Badge variant="outline" className="cursor-pointer hover:bg-primary/10 transition-colors">Contato</Badge>
-              <Badge variant="outline" className="cursor-pointer hover:bg-primary/10 transition-colors">Status do atendente</Badge>
-            </div>
-
             {/* Monitoramento Detalhado - Blip Style */}
             <Card className="glass-card-elevated rounded-lg">
               <CardHeader className="pb-0">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg">Monitoramento detalhado</CardTitle>
                   <div className="flex items-center gap-2">
-                    {subsetorFiltroOptions.length > 1 && (
-                      <MultiSelectFilter
-                        icon={Layers}
-                        placeholder="Subsetor"
-                        header="Filtrar por subsetor"
-                        pluralWord="subsetores"
-                        options={subsetorFiltroOptions}
-                        selected={subsetorFilter}
-                        onChange={setSubsetorFilter}
-                        open={subsetorFiltroOpen}
-                        onOpenChange={setSubsetorFiltroOpen}
-                      />
-                    )}
                     <MultiSelectFilter
                       icon={User}
                       placeholder="Atendente"

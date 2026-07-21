@@ -1,104 +1,87 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { lookupSoftcomClientByCnpj } from '@/lib/softcom-client'
 import { createClient } from '@/lib/supabase/server'
-import { request as undiciRequest } from 'undici'
+
+const CLIENT_SELECT = 'id, nome, telefone, email, CNPJ, Registro, PDV'
+
+function normalizeCnpj(value: unknown) {
+  return typeof value === 'string' ? value.replace(/\D/g, '') : ''
+}
+
+function cnpjVariants(cnpj: string) {
+  const formatted = cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')
+  return formatted === cnpj ? [cnpj] : [cnpj, formatted]
+}
+
+function toClientResponse(cliente: Record<string, any>) {
+  const cnpj = cliente.CNPJ ?? cliente.cnpj ?? null
+  const registro = cliente.Registro ?? cliente.registro ?? null
+  const pdv = cliente.PDV ?? cliente.pdv ?? null
+
+  return {
+    id: cliente.id ?? null,
+    nome: cliente.nome || 'Cliente sem nome',
+    telefone: cliente.telefone ?? null,
+    email: cliente.email ?? null,
+    CNPJ: cnpj,
+    Registro: registro,
+    PDV: pdv,
+    cnpj,
+    registro,
+    pdv,
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
-
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
     }
 
-    const { cnpj } = await request.json()
-
-    if (!cnpj) {
-      return NextResponse.json({ error: 'CNPJ obrigatorio' }, { status: 400 })
+    const body = await request.json().catch(() => null)
+    const normalizedCnpj = normalizeCnpj(body?.cnpj)
+    if (normalizedCnpj.length !== 14) {
+      return NextResponse.json({ error: 'Informe um CNPJ válido' }, { status: 400 })
     }
 
-    // Clean CNPJ - remove non-digits
-    const cleanCnpj = cnpj.replace(/\D/g, '')
-
-    console.log('[v0] CNPJ Lookup - searching for:', cleanCnpj)
-
-    // 1. First check in local database - use limit(1) to handle duplicates
-    const { data: localClientes } = await supabase
+    const { data: localClientes, error: localError } = await supabase
       .from('clientes')
-      .select('*')
-      .eq('CNPJ', cleanCnpj)
+      .select(CLIENT_SELECT)
+      .in('CNPJ', cnpjVariants(normalizedCnpj))
       .limit(1)
 
-    let localCliente = localClientes?.[0] || null
-
-    // Fallback: try ilike in case CNPJ is stored with formatting
-    if (!localCliente) {
-      const { data: localClientesFormatted } = await supabase
-        .from('clientes')
-        .select('*')
-        .ilike('CNPJ', `%${cleanCnpj}%`)
-        .limit(1)
-
-      localCliente = localClientesFormatted?.[0] || null
+    if (localError) {
+      console.error('[clientes/lookup] Erro ao buscar cliente local:', localError)
+      return NextResponse.json({ error: 'Não foi possível buscar o cliente' }, { status: 500 })
     }
 
+    const localCliente = localClientes?.[0]
     if (localCliente) {
-      return NextResponse.json({
-        source: 'local',
-        cliente: {
-          id: localCliente.id,
-          nome: localCliente.nome,
-          cnpj: localCliente.CNPJ,
-          telefone: localCliente.telefone,
-          registro: localCliente.Registro,
-        },
-      })
+      return NextResponse.json({ source: 'local', cliente: toClientResponse(localCliente) })
     }
 
-    // 2. If not found locally, call external API
-    console.log('[v0] CNPJ Lookup - not found locally, calling external API for:', cleanCnpj)
-    
-    const { statusCode, body: responseBody } = await undiciRequest(
-      'https://n8n-webhook.mensageria.softcomtecnologia.com/webhook/getcliente',
-      {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([{ cnpj: cleanCnpj }]),
-      }
-    )
-    
-    const externalResponseText = await responseBody.text()
-    console.log('[v0] CNPJ Lookup - external response status:', statusCode, 'body:', externalResponseText)
-    
-    if (statusCode !== 200) {
-      return NextResponse.json({
-        source: 'not_found',
-        message: 'Cliente nao encontrado',
-      })
+    if (!process.env.SOFTCOM_API_KEY) {
+      console.error('[clientes/lookup] SOFTCOM_API_KEY não configurada')
+      return NextResponse.json({ error: 'Busca externa indisponível' }, { status: 503 })
     }
 
-    const externalData = JSON.parse(externalResponseText)
-
-    console.log('[v0] CNPJ Lookup - external data:', externalData)
-
-    if (externalData.message) {
-      return NextResponse.json({
-        source: 'not_found',
-        message: 'Cliente nao encontrado',
-      })
+    const externalCliente = await lookupSoftcomClientByCnpj(normalizedCnpj)
+    if (!externalCliente) {
+      return NextResponse.json({ source: 'not_found', message: 'Cliente não encontrado' })
     }
 
-    // Return external data
     return NextResponse.json({
       source: 'external',
-      cliente: {
-        nome: externalData.nome_cliente,
-        cnpj: externalData.cnpj,
-        registro: externalData.id,
-      },
+      cliente: toClientResponse({
+        id: null,
+        email: null,
+        ...externalCliente,
+      }),
     })
   } catch (error) {
-    console.error('[v0] CNPJ Lookup Error:', error)
-    return NextResponse.json({ error: 'Erro interno' }, { status: 500 })
+    console.error('[clientes/lookup] Erro:', error)
+    return NextResponse.json({ error: 'Erro interno ao buscar o cliente' }, { status: 500 })
   }
 }

@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
 // Configuration defaults
@@ -16,7 +17,10 @@ interface AssignmentResult {
   colaboradorId: string | null
   success: boolean
   reason: string
+  fallbackEligible?: boolean
 }
+
+type RoutingPass = 'compatible' | 'fallback'
 
 interface ProcessorStats {
   processedAt: string
@@ -65,7 +69,8 @@ function logAssignment(
 //   → busca em colaboradores_setores (todos do setor, sem filtro de subsetor)
 async function getAvailableColaboradores(
   setorId: string,
-  subsetorId: string | null = null
+  subsetorId: string | null = null,
+  routingPass: RoutingPass = 'compatible',
 ): Promise<Array<{
   id: string
   nome: string
@@ -73,7 +78,7 @@ async function getAvailableColaboradores(
 }>> {
   const supabase = createServiceClient()
 
-  console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}`)
+  console.log(`[TicketQueue] getAvailableColaboradores - setorId: ${setorId}, subsetorId: ${subsetorId}, pass: ${routingPass}`)
 
   // Coleta colaboradores online com heartbeat fresco (< 5 min).
   // Browsers throttleiam timers em tabs background (heartbeat de 30s pode virar 60s+),
@@ -90,7 +95,7 @@ async function getAvailableColaboradores(
 
   let rawLinks: any[] = []
 
-  if (subsetorId) {
+  if (routingPass === 'compatible' && subsetorId) {
     const { data, error } = await supabase
       .from('colaboradores_subsetores')
       .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
@@ -98,6 +103,7 @@ async function getAvailableColaboradores(
       .eq('subsetor_id', subsetorId)
     rawLinks = data || []
     console.log(`[TicketQueue] colaboradores_subsetores: ${rawLinks.length} registros, error: ${error?.message || 'none'}`)
+    if (error) throw new Error(`Erro ao buscar colaboradores do subsetor: ${error.message}`)
   } else {
     const { data, error } = await supabase
       .from('colaboradores_setores')
@@ -105,6 +111,7 @@ async function getAvailableColaboradores(
       .eq('setor_id', setorId)
     rawLinks = data || []
     console.log(`[TicketQueue] colaboradores_setores: ${rawLinks.length} registros, error: ${error?.message || 'none'}`)
+    if (error) throw new Error(`Erro ao buscar colaboradores do setor: ${error.message}`)
   }
 
   const STALE_CLEANUP_MS = 5 * 60 * 1000 // 5 min — marcar offline automaticamente
@@ -156,7 +163,31 @@ async function getAvailableColaboradores(
 
   if (colaboradoresMap.size === 0) return []
 
-  const eligibleIds = [...colaboradoresMap.keys()]
+  let eligibleIds = [...colaboradoresMap.keys()]
+
+  if (routingPass === 'compatible' && !subsetorId) {
+    const { data: subsetorLinks, error: subsetorLinksError } = await supabase
+      .from('colaboradores_subsetores')
+      .select('colaborador_id, subsetor_id')
+      .eq('setor_id', setorId)
+      .in('colaborador_id', eligibleIds)
+
+    if (subsetorLinksError) {
+      throw new Error(`Erro ao verificar especialistas do setor: ${subsetorLinksError.message}`)
+    }
+
+    const subsetoresByColaborador = new Map<string, string[]>()
+    for (const link of subsetorLinks || []) {
+      const current = subsetoresByColaborador.get(link.colaborador_id) || []
+      current.push(link.subsetor_id)
+      subsetoresByColaborador.set(link.colaborador_id, current)
+    }
+    eligibleIds = eligibleIds.filter((id) =>
+      isExactSubsetorMatch(null, subsetoresByColaborador.get(id) || []),
+    )
+  }
+
+  if (eligibleIds.length === 0) return []
 
   // Contar tickets ativos por colaborador
   const { data: ticketCounts } = await supabase
@@ -174,7 +205,9 @@ async function getAvailableColaboradores(
   })
 
   // Round-robin: desempate por last_ticket_received_at (atualizado no momento real da atribuição)
+  const eligibleIdSet = new Set(eligibleIds)
   return [...colaboradoresMap.values()]
+    .filter((c) => eligibleIdSet.has(c.id))
     .map(c => ({
       ...c,
       ticketCount: countMap.get(c.id) || 0,
@@ -191,11 +224,12 @@ async function getAvailableColaboradores(
 async function tryAssignTicket(
   ticketId: string,
   setorId: string,
-  subsetorId: string | null = null
+  subsetorId: string | null = null,
+  routingPass: RoutingPass = 'compatible',
 ): Promise<AssignmentResult> {
   const supabase = createServiceClient()
 
-  console.log(`[TicketQueue] tryAssignTicket - ticketId: ${ticketId}, setorId: ${setorId}, subsetorId: ${subsetorId}`)
+  console.log(`[TicketQueue] tryAssignTicket - ticketId: ${ticketId}, setorId: ${setorId}, subsetorId: ${subsetorId}, pass: ${routingPass}`)
 
   // First, verify the ticket is still unassigned (prevent race conditions)
   const { data: ticket } = await supabase
@@ -226,20 +260,28 @@ async function tryAssignTicket(
   const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
 
   // Use the ticket's subsetor_id if available
-  const ticketSubsetorId = subsetorId || ticket.subsetor_id
+  const ticketSubsetorId = subsetorId ?? ticket.subsetor_id
 
-  let colaboradores: Array<{ id: string; nome: string; ticketCount: number }> = []
+  let effectivePass = routingPass
+  let colaboradores = await getAvailableColaboradores(
+    setorId,
+    ticketSubsetorId,
+    'compatible',
+  )
 
-  if (ticketSubsetorId) {
-    // Primeiro tenta colaboradores do subsetor específico
-    colaboradores = await getAvailableColaboradores(setorId, ticketSubsetorId)
-    if (colaboradores.length === 0) {
-      // Fallback: se ninguém disponível no subsetor, tenta qualquer colaborador do setor
-      console.log(`[TicketQueue] No colaboradores in subsetor ${ticketSubsetorId}, falling back to setor-level`)
-      colaboradores = await getAvailableColaboradores(setorId, null)
+  if (routingPass === 'compatible' && colaboradores.length === 0) {
+    return {
+      ticketId,
+      colaboradorId: null,
+      success: false,
+      reason: 'No compatible online colaboradores',
+      fallbackEligible: true,
     }
-  } else {
-    colaboradores = await getAvailableColaboradores(setorId, null)
+  }
+
+  if (routingPass === 'fallback' && colaboradores.length === 0) {
+    effectivePass = 'fallback'
+    colaboradores = await getAvailableColaboradores(setorId, ticketSubsetorId, 'fallback')
   }
 
   // Filtrar colaboradores que já atingiram o limite de tickets
@@ -250,7 +292,7 @@ async function tryAssignTicket(
   if (eligibleColaboradores.length === 0) {
     const reason = colaboradores.length === 0
       ? 'No online colaboradores in setor'
-      : `All ${colaboradores.length} colaboradores at max ticket limit (${maxTicketsPerAgent})`
+      : `All ${colaboradores.length} ${effectivePass} colaboradores at max ticket limit (${maxTicketsPerAgent})`
     return { ticketId, colaboradorId: null, success: false, reason }
   }
 
@@ -363,14 +405,15 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
     console.log(`[TicketQueue] Queued ticket: id=${t.id}, setor_id=${t.setor_id}, subsetor_id=${t.subsetor_id}`)
   })
   
-  // Process each ticket
-  // Track tickets that failed assignment by setor for transmission check
+  // A primeira passagem reserva cada especialista para tickets compatíveis.
+  // Somente tickets sem nenhum compatível online entram na passagem de fallback.
   const failedBySetor: Record<string, string[]> = {}
+  const resultsByTicket = new Map<string, AssignmentResult>()
+  const fallbackTickets: typeof queuedTickets = []
 
   for (const ticket of queuedTickets) {
     if (!ticket.setor_id) {
-      stats.ticketsSkipped++
-      stats.assignments.push({
+      resultsByTicket.set(ticket.id, {
         ticketId: ticket.id,
         colaboradorId: null,
         success: false,
@@ -378,33 +421,62 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
       })
       continue
     }
-    
+
     try {
-      const result = await tryAssignTicket(ticket.id, ticket.setor_id, ticket.subsetor_id)
-      stats.assignments.push(result)
-      
-      if (result.success) {
-        stats.ticketsAssigned++
-      } else {
-        stats.ticketsSkipped++
-        // Track failed tickets for potential transmission
-        if (result.reason === 'No online colaboradores in setor') {
-          if (!failedBySetor[ticket.setor_id]) {
-            failedBySetor[ticket.setor_id] = []
-          }
-          failedBySetor[ticket.setor_id].push(ticket.id)
-        }
+      const result = await tryAssignTicket(
+        ticket.id,
+        ticket.setor_id,
+        ticket.subsetor_id,
+        'compatible',
+      )
+      resultsByTicket.set(ticket.id, result)
+      if (result.fallbackEligible) {
+        fallbackTickets.push(ticket)
       }
     } catch (error) {
-      stats.ticketsSkipped++
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
       stats.errors.push(`Error processing ticket ${ticket.id}: ${errorMessage}`)
-      stats.assignments.push({
+      resultsByTicket.set(ticket.id, {
         ticketId: ticket.id,
         colaboradorId: null,
         success: false,
         reason: errorMessage,
       })
+    }
+  }
+
+  for (const ticket of fallbackTickets) {
+    try {
+      resultsByTicket.set(
+        ticket.id,
+        await tryAssignTicket(ticket.id, ticket.setor_id, ticket.subsetor_id, 'fallback'),
+      )
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      stats.errors.push(`Error processing fallback ticket ${ticket.id}: ${errorMessage}`)
+      resultsByTicket.set(ticket.id, {
+        ticketId: ticket.id,
+        colaboradorId: null,
+        success: false,
+        reason: errorMessage,
+      })
+    }
+  }
+
+  for (const ticket of queuedTickets) {
+    const result = resultsByTicket.get(ticket.id)
+    if (!result) continue
+
+    stats.assignments.push(result)
+    if (result.success) {
+      stats.ticketsAssigned++
+      continue
+    }
+
+    stats.ticketsSkipped++
+    if (ticket.setor_id && result.reason === 'No online colaboradores in setor') {
+      if (!failedBySetor[ticket.setor_id]) failedBySetor[ticket.setor_id] = []
+      failedBySetor[ticket.setor_id].push(ticket.id)
     }
   }
 
@@ -512,7 +584,15 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
             if (logError) console.warn('[TicketQueue] Falha ao gravar log transferencia_automatica:', logError.message)
 
             // Tentar atribuir no setor receptor
-            const receptorResult = await tryAssignTicket(ticketId, receptorId)
+            let receptorResult = await tryAssignTicket(ticketId, receptorId)
+            if (receptorResult.fallbackEligible) {
+              receptorResult = await tryAssignTicket(
+                ticketId,
+                receptorId,
+                null,
+                'fallback',
+              )
+            }
             if (receptorResult.success) {
               stats.ticketsAssigned++
               stats.ticketsSkipped--
@@ -602,20 +682,57 @@ export async function onColaboradorOnline(colaboradorId: string): Promise<Proces
     return stats
   }
 
+  const onlineResults = new Map<string, AssignmentResult>()
+  const fallbackTickets: typeof queuedTickets = []
+
   for (const ticket of queuedTickets) {
     try {
-      const result = await tryAssignTicket(ticket.id, ticket.setor_id, ticket.subsetor_id)
-      stats.assignments.push(result)
-      if (result.success) {
-        stats.ticketsAssigned++
-      } else {
-        stats.ticketsSkipped++
+      const result = await tryAssignTicket(
+        ticket.id,
+        ticket.setor_id,
+        ticket.subsetor_id,
+        'compatible',
+      )
+      onlineResults.set(ticket.id, result)
+      if (result.fallbackEligible) {
+        fallbackTickets.push(ticket)
       }
     } catch (error) {
-      stats.ticketsSkipped++
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
       stats.errors.push(`Error processing ticket ${ticket.id}: ${errorMessage}`)
+      onlineResults.set(ticket.id, {
+        ticketId: ticket.id,
+        colaboradorId: null,
+        success: false,
+        reason: errorMessage,
+      })
     }
+  }
+
+  for (const ticket of fallbackTickets) {
+    try {
+      onlineResults.set(
+        ticket.id,
+        await tryAssignTicket(ticket.id, ticket.setor_id, ticket.subsetor_id, 'fallback'),
+      )
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      stats.errors.push(`Error processing fallback ticket ${ticket.id}: ${errorMessage}`)
+      onlineResults.set(ticket.id, {
+        ticketId: ticket.id,
+        colaboradorId: null,
+        success: false,
+        reason: errorMessage,
+      })
+    }
+  }
+
+  for (const ticket of queuedTickets) {
+    const result = onlineResults.get(ticket.id)
+    if (!result) continue
+    stats.assignments.push(result)
+    if (result.success) stats.ticketsAssigned++
+    else stats.ticketsSkipped++
   }
 
   console.log(`[TicketQueue] onColaboradorOnline() concluído em ${Date.now() - _onlineStart}ms — assigned ${stats.ticketsAssigned}/${stats.ticketsInQueue}`)

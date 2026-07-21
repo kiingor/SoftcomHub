@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { createClient as createServerClient } from '@/lib/supabase/server'
+import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 
 /**
  * POST /api/tickets/pull-next
@@ -20,6 +22,12 @@ import { createServiceClient } from '@/lib/supabase/service'
  */
 export async function POST(request: Request) {
   try {
+    const authClient = await createServerClient()
+    const { data: { user } } = await authClient.auth.getUser()
+    if (!user?.email) {
+      return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+    }
+
     const body = await request.json().catch(() => ({}))
     const { colaboradorId } = body
 
@@ -34,10 +42,11 @@ export async function POST(request: Request) {
       .from('colaboradores')
       .select('id, nome, is_online, ativo, pausa_atual_id, setores_ativos_sessao')
       .eq('id', colaboradorId)
-      .single()
+      .eq('email', user.email)
+      .maybeSingle()
 
     if (colabError || !colab) {
-      return NextResponse.json({ error: 'Colaborador não encontrado' }, { status: 404 })
+      return NextResponse.json({ error: 'Você só pode puxar tickets para o seu próprio atendimento' }, { status: 403 })
     }
 
     if (!colab.ativo) {
@@ -83,15 +92,31 @@ export async function POST(request: Request) {
       )
     }
 
+    const { data: callerSubsetorLinks, error: callerSubsetorError } = await supabase
+      .from('colaboradores_subsetores')
+      .select('setor_id, subsetor_id')
+      .eq('colaborador_id', colaboradorId)
+      .in('setor_id', setorIds)
+
+    if (callerSubsetorError) {
+      return NextResponse.json({ error: 'Erro ao verificar subsetores do colaborador' }, { status: 500 })
+    }
+
+    const callerSubsetoresBySetor = new Map<string, string[]>()
+    for (const link of callerSubsetorLinks || []) {
+      const subsetorIds = callerSubsetoresBySetor.get(link.setor_id) || []
+      subsetorIds.push(link.subsetor_id)
+      callerSubsetoresBySetor.set(link.setor_id, subsetorIds)
+    }
+
     // 3. Buscar tickets em fila (mais antigos primeiro) nos setores do colaborador
     const { data: queuedTickets, error: fetchError } = await supabase
       .from('tickets')
-      .select('id, setor_id')
+      .select('id, setor_id, subsetor_id, criado_em')
       .eq('status', 'aberto')
       .is('colaborador_id', null)
       .in('setor_id', setorIds)
       .order('criado_em', { ascending: true })
-      .limit(10)
 
     if (fetchError) {
       return NextResponse.json(
@@ -104,11 +129,88 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Nenhum ticket na fila' }, { status: 404 })
     }
 
+    const [setorLinksResult, subsetorLinksResult] = await Promise.all([
+      supabase
+        .from('colaboradores_setores')
+        .select('setor_id, colaborador_id, colaboradores(id, is_online, ativo, pausa_atual_id, last_heartbeat, setores_ativos_sessao)')
+        .in('setor_id', setorIds),
+      supabase
+        .from('colaboradores_subsetores')
+        .select('setor_id, subsetor_id, colaborador_id, colaboradores(id, is_online, ativo, pausa_atual_id, last_heartbeat, setores_ativos_sessao)')
+        .in('setor_id', setorIds),
+    ])
+
+    if (setorLinksResult.error || subsetorLinksResult.error) {
+      return NextResponse.json({ error: 'Erro ao verificar disponibilidade por subsetor' }, { status: 500 })
+    }
+
+    const onlineIdsBySetor = new Map<string, Set<string>>()
+    const subsetoresBySetorColaborador = new Map<string, string[]>()
+    const heartbeatFreshAfter = Date.now() - 5 * 60 * 1000
+    const isAvailableInSetor = (row: any): boolean => {
+      const c = row.colaboradores
+      const activeSetores: string[] = Array.isArray(c?.setores_ativos_sessao)
+        ? c.setores_ativos_sessao
+        : []
+      const lastHeartbeat = c?.last_heartbeat ? new Date(c.last_heartbeat).getTime() : 0
+      return Boolean(
+        c?.is_online
+        && c?.ativo
+        && !c?.pausa_atual_id
+        && lastHeartbeat >= heartbeatFreshAfter
+        && activeSetores.includes(row.setor_id),
+      )
+    }
+    const addOnline = (setorId: string, colaboradorId: string) => {
+      const ids = onlineIdsBySetor.get(setorId) || new Set<string>()
+      ids.add(colaboradorId)
+      onlineIdsBySetor.set(setorId, ids)
+    }
+
+    for (const row of setorLinksResult.data || []) {
+      if (isAvailableInSetor(row)) addOnline(row.setor_id, row.colaborador_id)
+    }
+    for (const row of subsetorLinksResult.data || []) {
+      const key = `${row.setor_id}:${row.colaborador_id}`
+      const ids = subsetoresBySetorColaborador.get(key) || []
+      ids.push(row.subsetor_id)
+      subsetoresBySetorColaborador.set(key, ids)
+      if (isAvailableInSetor(row)) addOnline(row.setor_id, row.colaborador_id)
+    }
+
+    const compatibleTickets = queuedTickets.filter((ticket) =>
+      isExactSubsetorMatch(
+        ticket.subsetor_id,
+        callerSubsetoresBySetor.get(ticket.setor_id) || [],
+      ),
+    )
+    const compatibleTicketIds = new Set(compatibleTickets.map((ticket) => ticket.id))
+    const fallbackTickets = queuedTickets.filter((ticket) => {
+      if (compatibleTicketIds.has(ticket.id)) return false
+
+      const hasCompatibleOnline = [...(onlineIdsBySetor.get(ticket.setor_id) || [])].some(
+        (id) => isExactSubsetorMatch(
+          ticket.subsetor_id,
+          subsetoresBySetorColaborador.get(`${ticket.setor_id}:${id}`) || [],
+        ),
+      )
+      return !hasCompatibleOnline
+    })
+    const prioritizedTickets = [...compatibleTickets, ...fallbackTickets]
+
+    if (prioritizedTickets.length === 0) {
+      return NextResponse.json(
+        { error: 'Há tickets na fila, mas eles possuem atendentes compatíveis online.' },
+        { status: 409 },
+      )
+    }
+
     // 4. Tentar atribuir o primeiro disponível via RPC atômica.
     // p_max_tickets alto (999999) efetivamente desabilita o gate de limite — este endpoint
     // é a porta de saída controlada para atendente puxar manualmente acima do max.
     const UNLIMITED = 999999
-    for (const ticket of queuedTickets) {
+    for (const ticket of prioritizedTickets) {
+      const isFallback = !compatibleTicketIds.has(ticket.id)
       const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
         p_ticket_id: ticket.id,
         p_colaborador_id: colaboradorId,
@@ -126,7 +228,7 @@ export async function POST(request: Request) {
         await supabase.from('ticket_logs').insert({
           ticket_id: ticket.id,
           tipo: 'pull_manual',
-          descricao: `${colab.nome} puxou ticket manualmente (${r.current_count} ticket(s) ativos, bypass do limite do setor)`,
+          descricao: `${colab.nome} puxou ticket manualmente${isFallback ? ' por fallback de subsetor' : ''} (${r.current_count} ticket(s) ativos, bypass do limite do setor)`,
         }).then(({ error }) => {
           if (error) console.warn('[pull-next] Falha ao gravar log:', error.message)
         })
@@ -135,6 +237,7 @@ export async function POST(request: Request) {
           success: true,
           ticketId: ticket.id,
           currentCount: r.current_count,
+          fallback: isFallback,
         })
       }
 

@@ -938,8 +938,9 @@ export default function NexusPage() {
         <Card className="glass-card-elevated rounded-lg shadow-none">
           <CardContent className="pt-6">
             <div className="space-y-1 text-center">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Conversas ativas</p>
-              <p className="text-3xl font-semibold tracking-tight tabular-nums text-primary">{conversations.length}</p>
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">OS Claudio (ao vivo)</p>
+              <p className="text-3xl font-semibold tracking-tight tabular-nums text-primary">{conversationsRaw.length}</p>
+              <p className="text-[10px] text-muted-foreground">Conversas ativas</p>
             </div>
           </CardContent>
         </Card>
