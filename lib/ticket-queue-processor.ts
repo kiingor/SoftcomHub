@@ -250,6 +250,10 @@ async function tryAssignTicket(
     return { ticketId, colaboradorId: null, success: false, reason: `Invalid status: ${ticket.status}` }
   }
 
+  if (ticket.setor_id !== setorId || ticket.subsetor_id !== subsetorId) {
+    return { ticketId, colaboradorId: null, success: false, reason: 'Ticket routing context changed' }
+  }
+
   // Buscar limite max_tickets_per_agent do setor
   const { data: config } = await supabase
     .from('ticket_distribution_config')
@@ -259,8 +263,7 @@ async function tryAssignTicket(
 
   const maxTicketsPerAgent = config?.max_tickets_per_agent ?? 10
 
-  // Use the ticket's subsetor_id if available
-  const ticketSubsetorId = subsetorId ?? ticket.subsetor_id
+  const ticketSubsetorId = subsetorId
 
   let effectivePass = routingPass
   let colaboradores = await getAvailableColaboradores(
@@ -408,6 +411,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
   // A primeira passagem reserva cada especialista para tickets compatíveis.
   // Somente tickets sem nenhum compatível online entram na passagem de fallback.
   const failedBySetor: Record<string, string[]> = {}
+  const queuedTicketById = new Map(queuedTickets.map((ticket) => [ticket.id, ticket]))
   const resultsByTicket = new Map<string, AssignmentResult>()
   const fallbackTickets: typeof queuedTickets = []
 
@@ -549,6 +553,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
 
         for (const ticketId of ticketIds) {
           const currentHops = hopsById.get(ticketId) ?? 0
+          const expectedSubsetorId = queuedTicketById.get(ticketId)?.subsetor_id ?? null
 
           // Proteção contra loop: se o ticket já bateu no teto, NÃO move.
           // Ele fica parado no setor atual pra ser revisado manualmente.
@@ -564,7 +569,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
           }
 
           // Mover ticket para o setor receptor + incrementar hops
-          const { error: moveError } = await supabase
+          let moveQuery = supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
@@ -572,38 +577,56 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
               transbordo_hops: currentHops + 1,
             })
             .eq('id', ticketId)
+            .eq('setor_id', setorId)
             .is('colaborador_id', null)
             .eq('status', 'aberto')
 
-          if (!moveError) {
-            const { error: logError } = await supabase.from('ticket_logs').insert({
-              ticket_id: ticketId,
-              tipo: 'transferencia_automatica',
-              descricao: `Transbordo: ${nomeOrigem} → ${nomeDestino} (hop ${currentHops + 1}/${MAX_TRANSBORDO_HOPS}, fila sem atendentes)`,
-            })
-            if (logError) console.warn('[TicketQueue] Falha ao gravar log transferencia_automatica:', logError.message)
+          moveQuery = expectedSubsetorId == null
+            ? moveQuery.is('subsetor_id', null)
+            : moveQuery.eq('subsetor_id', expectedSubsetorId)
 
-            // Tentar atribuir no setor receptor
-            let receptorResult = await tryAssignTicket(ticketId, receptorId)
-            if (receptorResult.fallbackEligible) {
-              receptorResult = await tryAssignTicket(
-                ticketId,
-                receptorId,
-                null,
-                'fallback',
-              )
-            }
-            if (receptorResult.success) {
-              stats.ticketsAssigned++
-              stats.ticketsSkipped--
-            }
-            stats.assignments.push({
-              ...receptorResult,
-              reason: `Transmitido para receptor (hop ${currentHops + 1}): ${receptorResult.reason}`,
-            })
+          const { data: movedTicket, error: moveError } = await moveQuery
+            .select('id')
+            .maybeSingle()
 
-            console.log(`[TicketQueue] Ticket ${ticketId} transmitido para receptor ${receptorId} (hop ${currentHops + 1}): ${receptorResult.success ? 'atribuído' : 'aguardando'}`)
+          if (moveError) {
+            const errorMessage = `Falha ao mover ticket ${ticketId}: ${moveError.message}`
+            console.error(`[TicketQueue] ${errorMessage}`)
+            stats.errors.push(errorMessage)
+            continue
           }
+          if (!movedTicket) {
+            console.log(`[TicketQueue] Ticket ${ticketId} mudou durante o transbordo; movimento ignorado.`)
+            continue
+          }
+
+          const { error: logError } = await supabase.from('ticket_logs').insert({
+            ticket_id: ticketId,
+            tipo: 'transferencia_automatica',
+            descricao: `Transbordo: ${nomeOrigem} → ${nomeDestino} (hop ${currentHops + 1}/${MAX_TRANSBORDO_HOPS}, fila sem atendentes)`,
+          })
+          if (logError) console.warn('[TicketQueue] Falha ao gravar log transferencia_automatica:', logError.message)
+
+          // Tentar atribuir no setor receptor
+          let receptorResult = await tryAssignTicket(ticketId, receptorId, null)
+          if (receptorResult.fallbackEligible) {
+            receptorResult = await tryAssignTicket(
+              ticketId,
+              receptorId,
+              null,
+              'fallback',
+            )
+          }
+          if (receptorResult.success) {
+            stats.ticketsAssigned++
+            stats.ticketsSkipped--
+          }
+          stats.assignments.push({
+            ...receptorResult,
+            reason: `Transmitido para receptor (hop ${currentHops + 1}): ${receptorResult.reason}`,
+          })
+
+          console.log(`[TicketQueue] Ticket ${ticketId} transmitido para receptor ${receptorId} (hop ${currentHops + 1}): ${receptorResult.success ? 'atribuído' : 'aguardando'}`)
         }
       }
     } catch (error) {

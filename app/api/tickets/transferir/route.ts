@@ -1,21 +1,57 @@
 import { NextResponse } from 'next/server'
+import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
+import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { processTicketQueue } from '@/lib/ticket-queue-processor'
+
+const transferRequestSchema = z.object({
+  ticket_id: z.string().uuid('ticket_id inválido'),
+  setor_id: z.string().uuid('setor_id inválido').optional(),
+  subsetor_id: z.string().uuid('subsetor_id inválido').nullable().optional(),
+  colaborador_id: z.string().uuid('colaborador_id inválido').nullable().optional(),
+  from_colaborador_nome: z.string().max(200).optional(),
+  from_setor_nome: z.string().max(200).optional(),
+})
+
+const TRANSFER_ERRORS = {
+  TRANSFER_NOT_ALLOWED: {
+    error: 'O setor de destino não está habilitado para transferências a partir do setor atual.',
+    status: 422,
+  },
+  INVALID_SUBSETOR: {
+    error: 'Subsetor não encontrado, inativo ou não pertence ao setor de destino.',
+    status: 422,
+  },
+  INVALID_COLLABORATOR: { error: 'Atendente não encontrado ou inativo.', status: 422 },
+  COLLABORATOR_NOT_LINKED: {
+    error: 'O atendente não está vinculado ao setor de destino.',
+    status: 422,
+  },
+  COLLABORATOR_SUBSETOR_MISMATCH: {
+    error: 'O atendente selecionado não é compatível com este subsetor.',
+    status: 422,
+  },
+  COLLABORATOR_ONLINE_PAUSED: {
+    error: 'Este atendente está em pausa. Selecione outro atendente.',
+    status: 422,
+  },
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function getSetorName(relation: unknown): string | null {
+  const setor = Array.isArray(relation) ? relation[0] : relation
+  return isRecord(setor) && typeof setor.nome === 'string' ? setor.nome : null
+}
 
 /**
  * POST /api/tickets/transferir
  *
- * Transfere um ticket respeitando o limite max_tickets_per_agent do setor destino.
- * Se o atendente alvo estiver no limite, o ticket vai para a fila (colaborador_id = null).
- *
- * Body params:
- * - ticket_id: string (obrigatório)
- * - setor_id: string (opcional) — novo setor destino
- * - subsetor_id: string (opcional) — fila do subsetor no setor destino
- * - colaborador_id: string | null (opcional) — atendente destino; null = fila
- * - from_colaborador_nome: string (opcional) — nome de quem transferiu (para mensagem do sistema)
- * - from_setor_nome: string (opcional) — nome do setor de origem (para mensagem do sistema)
+ * Transfers an active ticket to a compatible queue or attendant. The final
+ * ticket state is committed by one conditional database update.
  */
 export async function POST(request: Request) {
   try {
@@ -25,265 +61,289 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
     }
 
-    const body = await request.json().catch(() => null)
-    if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Corpo da requisição inválido' }, { status: 400 })
+    const rawBody: unknown = await request.json().catch(() => null)
+    const parsedBody = transferRequestSchema.safeParse(rawBody)
+    if (!parsedBody.success) {
+      return NextResponse.json(
+        { error: parsedBody.error.issues[0]?.message ?? 'Corpo da requisição inválido' },
+        { status: 400 },
+      )
     }
 
-    const {
-      ticket_id,
-      setor_id,
-      subsetor_id,
-      colaborador_id,
-    } = body
-
-    if (!ticket_id) {
-      return NextResponse.json({ error: 'ticket_id é obrigatório' }, { status: 400 })
-    }
-
+    const body = parsedBody.data
+    const rawBodyRecord = isRecord(rawBody) ? rawBody : {}
+    const hasExplicitSetor = Object.prototype.hasOwnProperty.call(rawBodyRecord, 'setor_id')
+    const hasExplicitSubsetor = Object.prototype.hasOwnProperty.call(rawBodyRecord, 'subsetor_id')
     const supabase = createServiceClient()
+
     const { data: actor, error: actorError } = await supabase
       .from('colaboradores')
       .select('id, nome, ativo, is_master')
       .eq('email', user.email)
       .maybeSingle()
 
-    if (actorError || !actor?.ativo) {
+    if (actorError) {
+      console.error('[Transferir] Erro ao buscar colaborador:', actorError)
+      return NextResponse.json({ error: 'Erro ao validar colaborador' }, { status: 500 })
+    }
+    if (!actor?.ativo) {
       return NextResponse.json({ error: 'Colaborador não autorizado' }, { status: 403 })
     }
 
-    // 1. Buscar ticket atual
     const { data: ticket, error: ticketError } = await supabase
       .from('tickets')
-      .select('id, setor_id, subsetor_id, colaborador_id, cliente_id, status, setores!tickets_setor_id_fkey(nome)')
-      .eq('id', ticket_id)
-      .single()
+      .select(
+        'id, setor_id, subsetor_id, colaborador_id, cliente_id, status, setores!tickets_setor_id_fkey(nome)',
+      )
+      .eq('id', body.ticket_id)
+      .maybeSingle()
 
-    if (ticketError || !ticket) {
+    if (ticketError) {
+      console.error('[Transferir] Erro ao buscar ticket:', ticketError)
+      return NextResponse.json({ error: 'Erro ao buscar ticket' }, { status: 500 })
+    }
+    if (!ticket) {
       return NextResponse.json({ error: 'Ticket não encontrado' }, { status: 404 })
     }
-
-    const canTransferAnyTicket = actor.is_master === true
-    if (ticket.colaborador_id !== actor.id && !canTransferAnyTicket) {
+    if (ticket.colaborador_id !== actor.id && actor.is_master !== true) {
       return NextResponse.json({ error: 'Você não pode transferir este ticket' }, { status: 403 })
     }
     if (!['aberto', 'em_atendimento'].includes(ticket.status)) {
-      return NextResponse.json({ error: 'Somente tickets ativos podem ser transferidos' }, { status: 409 })
+      return NextResponse.json(
+        { error: 'Somente tickets ativos podem ser transferidos' },
+        { status: 409 },
+      )
     }
 
-    const targetSetorId = setor_id || ticket.setor_id
+    const targetSetorId = hasExplicitSetor ? body.setor_id! : ticket.setor_id
+    const isChangingSetor = targetSetorId !== ticket.setor_id
+    const targetSubsetorId = !isChangingSetor && !hasExplicitSubsetor
+      ? ticket.subsetor_id
+      : body.subsetor_id ?? null
+
+    const { data: targetSetor, error: targetSetorError } = await supabase
+      .from('setores')
+      .select('id, nome')
+      .eq('id', targetSetorId)
+      .maybeSingle()
+
+    if (targetSetorError) {
+      console.error('[Transferir] Erro ao buscar setor de destino:', targetSetorError)
+      return NextResponse.json({ error: 'Erro ao validar setor de destino' }, { status: 500 })
+    }
+    if (!targetSetor) {
+      return NextResponse.json({ error: 'Setor de destino não encontrado' }, { status: 422 })
+    }
+
+    if (targetSetorId !== ticket.setor_id) {
+      const { data: allowedDestination, error: allowlistError } = await supabase
+        .from('setor_destinos_transferencia')
+        .select('setor_destino_id')
+        .eq('setor_origem_id', ticket.setor_id)
+        .eq('setor_destino_id', targetSetorId)
+        .maybeSingle()
+
+      if (allowlistError) {
+        console.error('[Transferir] Erro ao validar destino permitido:', allowlistError)
+        return NextResponse.json(
+          { error: 'Erro ao validar o setor de destino' },
+          { status: 500 },
+        )
+      }
+      if (!allowedDestination) {
+        return NextResponse.json(
+          { error: TRANSFER_ERRORS.TRANSFER_NOT_ALLOWED.error },
+          { status: 422 },
+        )
+      }
+    }
 
     let targetSubsetor: { id: string; nome: string } | null = null
-    if (subsetor_id) {
+    if (targetSubsetorId) {
       const { data: subsetor, error: subsetorError } = await supabase
         .from('subsetores')
         .select('id, nome, setor_id, ativo')
-        .eq('id', subsetor_id)
+        .eq('id', targetSubsetorId)
         .maybeSingle()
 
-      if (subsetorError || !subsetor || !subsetor.ativo || subsetor.setor_id !== targetSetorId) {
+      if (subsetorError) {
+        console.error('[Transferir] Erro ao validar subsetor:', subsetorError)
+        return NextResponse.json({ error: 'Erro ao validar subsetor' }, { status: 500 })
+      }
+      if (!subsetor || !subsetor.ativo || subsetor.setor_id !== targetSetorId) {
+        return NextResponse.json({ error: TRANSFER_ERRORS.INVALID_SUBSETOR.error }, { status: 422 })
+      }
+      targetSubsetor = { id: subsetor.id, nome: subsetor.nome }
+    }
+
+    let targetColaborador: { id: string; nome: string } | null = null
+    if (body.colaborador_id) {
+      const [colaboradorResult, setorLinkResult, subsetorLinksResult] = await Promise.all([
+        supabase
+          .from('colaboradores')
+          .select('id, nome, is_online, ativo, pausa_atual_id')
+          .eq('id', body.colaborador_id)
+          .maybeSingle(),
+        supabase
+          .from('colaboradores_setores')
+          .select('colaborador_id')
+          .eq('colaborador_id', body.colaborador_id)
+          .eq('setor_id', targetSetorId)
+          .maybeSingle(),
+        supabase
+          .from('colaboradores_subsetores')
+          .select('subsetor_id')
+          .eq('colaborador_id', body.colaborador_id)
+          .eq('setor_id', targetSetorId),
+      ])
+
+      if (colaboradorResult.error || setorLinkResult.error || subsetorLinksResult.error) {
+        console.error('[Transferir] Erro ao validar atendente:', {
+          colaborador: colaboradorResult.error,
+          setor: setorLinkResult.error,
+          subsetor: subsetorLinksResult.error,
+        })
+        return NextResponse.json({ error: 'Erro ao validar atendente' }, { status: 500 })
+      }
+
+      const colaborador = colaboradorResult.data
+      if (!colaborador?.ativo) {
         return NextResponse.json(
-          { error: 'Subsetor não encontrado, inativo ou não pertence ao setor de destino.' },
+          { error: TRANSFER_ERRORS.INVALID_COLLABORATOR.error },
+          { status: 422 },
+        )
+      }
+      if (!setorLinkResult.data) {
+        return NextResponse.json(
+          { error: TRANSFER_ERRORS.COLLABORATOR_NOT_LINKED.error },
           { status: 422 },
         )
       }
 
-      targetSubsetor = { id: subsetor.id, nome: subsetor.nome }
-    }
+      const subsetorIds = (subsetorLinksResult.data ?? [])
+        .map((link: unknown) => (
+          isRecord(link) && typeof link.subsetor_id === 'string' ? link.subsetor_id : null
+        ))
+        .filter((subsetorId): subsetorId is string => subsetorId !== null)
 
-    let queued = false
-    let toColabNome = 'Aguardando atendente'
-    let finalColaboradorId: string | null = null
-
-    // Validar atendente destino antes de liberar o ticket.
-    // Atendente OFFLINE é permitido: o operador pode transferir deliberadamente
-    // (confirmado na UI). A atribuição é FORÇADA — ignora o limite de tickets — e o
-    // ticket fica na lista (chat) do atendente, que o vê mesmo em status offline.
-    let colabDestino: { id: string; nome: string } | null = null
-    let forceOffline = false
-    if (colaborador_id && !targetSubsetor) {
-      const [{ data: colab }, { data: setorLink }] = await Promise.all([
-        supabase
-        .from('colaboradores')
-        .select('id, nome, is_online, ativo, pausa_atual_id')
-        .eq('id', colaborador_id)
-        .maybeSingle(),
-        supabase
-          .from('colaboradores_setores')
-          .select('colaborador_id')
-          .eq('colaborador_id', colaborador_id)
-          .eq('setor_id', targetSetorId)
-          .maybeSingle(),
-      ])
-
-      if (!colab || !colab.ativo || !setorLink) {
+      const mustValidateSubsetor = hasExplicitSubsetor || !isChangingSetor
+      if (mustValidateSubsetor && !isExactSubsetorMatch(targetSubsetorId, subsetorIds)) {
         return NextResponse.json(
-          { error: 'Atendente não encontrado, inativo ou fora do setor de destino.' },
-          { status: 422 }
+          { error: TRANSFER_ERRORS.COLLABORATOR_SUBSETOR_MISMATCH.error },
+          { status: 422 },
+        )
+      }
+      if (colaborador.is_online === true && colaborador.pausa_atual_id) {
+        return NextResponse.json(
+          { error: TRANSFER_ERRORS.COLLABORATOR_ONLINE_PAUSED.error },
+          { status: 422 },
         )
       }
 
-      forceOffline = !colab.is_online
-
-      // Pausa só bloqueia atendente ONLINE. Offline é permitido (atribuição forçada).
-      if (!forceOffline && colab.pausa_atual_id) {
-        return NextResponse.json(
-          { error: 'Este atendente está em pausa. Selecione outro atendente.' },
-          { status: 422 }
-        )
-      }
-
-      // Nota: heartbeat NÃO é verificado em transferências manuais.
-      // A verificação de heartbeat é reservada para distribuição automática.
-
-      colabDestino = { id: colab.id, nome: colab.nome }
+      targetColaborador = { id: colaborador.id, nome: colaborador.nome }
     }
 
-    // Etapa 1: liberar o ticket (colaborador_id = null, status = aberto) e, se houver,
-    // trocar setor/subsetor. Isso deixa o ticket em estado "disponível" para a RPC
-    // atômica atribuí-lo a seguir. Se não houver atendente destino, o ticket já fica
-    // pronto na fila.
-    const releaseData: Record<string, unknown> = {
-      colaborador_id: null,
-      status: 'aberto',
-    }
-    if (setor_id || targetSubsetor) {
-      releaseData.setor_id = targetSetorId
-    }
-    if (targetSubsetor) {
-      releaseData.subsetor_id = targetSubsetor.id
-    } else if (setor_id) {
-      // Limpar subsetor ao transferir entre setores — o subsetor antigo não existe no novo setor.
-      releaseData.subsetor_id = null
-    }
-
-    let releaseQuery = supabase
+    let updateQuery = supabase
       .from('tickets')
-      .update(releaseData)
-      .eq('id', ticket_id)
-    releaseQuery = ticket.colaborador_id
-      ? releaseQuery.eq('colaborador_id', ticket.colaborador_id)
-      : releaseQuery.is('colaborador_id', null)
+      .update({
+        setor_id: targetSetorId,
+        subsetor_id: targetSubsetorId,
+        colaborador_id: targetColaborador?.id ?? null,
+        status: targetColaborador ? 'em_atendimento' : 'aberto',
+      })
+      .eq('id', ticket.id)
+      .eq('setor_id', ticket.setor_id)
+      .eq('status', ticket.status)
 
-    const { data: releasedTicket, error: releaseError } = await releaseQuery
+    updateQuery = ticket.subsetor_id == null
+      ? updateQuery.is('subsetor_id', null)
+      : updateQuery.eq('subsetor_id', ticket.subsetor_id)
+    updateQuery = ticket.colaborador_id == null
+      ? updateQuery.is('colaborador_id', null)
+      : updateQuery.eq('colaborador_id', ticket.colaborador_id)
+
+    const { data: updatedTicket, error: updateError } = await updateQuery
       .select('id')
       .maybeSingle()
 
-    if (releaseError || !releasedTicket) {
-      console.error('[Transferir] Erro ao atualizar ticket:', releaseError)
+    if (updateError) {
+      console.error('[Transferir] Erro ao atualizar ticket:', updateError)
+      return NextResponse.json({ error: 'Erro ao transferir ticket' }, { status: 500 })
+    }
+    if (!updatedTicket) {
       return NextResponse.json(
-        { error: releaseError ? 'Erro ao transferir ticket' : 'O ticket foi alterado por outro processo' },
-        { status: releaseError ? 500 : 409 },
+        { error: 'O ticket foi alterado por outro processo' },
+        { status: 409 },
       )
     }
 
-    // Etapa 2: havendo atendente destino, atribuição atômica via RPC.
-    // Transferência direta FORÇA a atribuição (ignora o limite). A RPC só recusa
-    // em caso de corrida (ticket já atribuído por outro processo) → cai na fila.
-    if (colabDestino) {
-      // Transferência manual direta: atribuição FORÇADA ao atendente escolhido,
-      // ignorando o limite de tickets — vale tanto para atendente online no limite
-      // quanto para offline. O ticket aguarda na lista (chat) dele.
-      const maxTicketsPerAgent = 1_000_000
-
-      const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
-        p_ticket_id: ticket_id,
-        p_colaborador_id: colabDestino.id,
-        p_max_tickets: maxTicketsPerAgent,
-      })
-
-      if (rpcError) {
-        console.error('[Transferir] RPC try_atomic_assign_ticket falhou:', rpcError)
-        queued = true
-        toColabNome = 'Fila de espera'
-      } else if ((result as any)?.assigned === true) {
-        finalColaboradorId = colabDestino.id
-        toColabNome = colabDestino.nome
-      } else {
-        // Atendente no limite ou conflito → fica em fila
-        queued = true
-        toColabNome = 'Fila de espera'
-        console.log(
-          `[Transferir] Atendente ${colabDestino.nome} recusado (${(result as any)?.reason}, count=${(result as any)?.current_count}/${maxTicketsPerAgent}) — ticket ${ticket_id} vai para fila`
-        )
-      }
-    } else {
-      queued = true
-      if (targetSubsetor) {
-        toColabNome = `Fila do subsetor ${targetSubsetor.nome}`
+    if (targetColaborador) {
+      const { error: receivedAtError } = await supabase
+        .from('colaboradores')
+        .update({ last_ticket_received_at: new Date().toISOString() })
+        .eq('id', targetColaborador.id)
+      if (receivedAtError) {
+        console.warn('[Transferir] Falha ao atualizar ordem de distribuição:', receivedAtError.message)
       }
     }
 
-    // 6. Buscar nome do setor destino para a mensagem
-    let toSetorNome = (ticket.setores as any)?.nome || 'Desconhecido'
-    if (setor_id) {
-      const { data: setor } = await supabase
-        .from('setores')
-        .select('nome')
-        .eq('id', setor_id)
-        .single()
-      toSetorNome = setor?.nome || toSetorNome
-    } else {
-      toSetorNome = (ticket.setores as any)?.nome || toSetorNome
-    }
-
-    // 7. Inserir mensagem de sistema com log de transferência
+    const queued = targetColaborador === null
     const fromNome = actor.nome || 'Desconhecido'
-    const fromSetor = (ticket.setores as any)?.nome || 'Desconhecido'
+    const fromSetor = getSetorName(ticket.setores) || 'Desconhecido'
     const destinoNome = targetSubsetor
-      ? `${toSetorNome} / ${targetSubsetor.nome}`
-      : toSetorNome
-    const conteudo = `Transferido de ${fromNome} - ${fromSetor} >> ${toColabNome} - ${destinoNome}`
+      ? `${targetSetor.nome} / ${targetSubsetor.nome}`
+      : targetSetor.nome
+    const toColaboradorNome = targetColaborador?.nome
+      ?? (targetSubsetor ? `Fila do subsetor ${targetSubsetor.nome}` : 'Fila de espera')
+    const conteudo = `Transferido de ${fromNome} - ${fromSetor} >> ${toColaboradorNome} - ${destinoNome}`
 
-    await supabase.from('mensagens').insert({
-      ticket_id,
+    const { error: messageError } = await supabase.from('mensagens').insert({
+      ticket_id: body.ticket_id,
       cliente_id: ticket.cliente_id,
       remetente: 'sistema',
       conteudo,
       tipo: 'texto',
       enviado_em: new Date().toISOString(),
     })
-
-    // 7b. Registrar em ticket_logs pra aparecer no histórico de "origem".
-    // Formato padronizado pro helper lib/ticket-origem.ts parsear:
-    //   "Transferido por <NOME>: <SETOR_ORIGEM> → <SETOR_DESTINO>"
-    const descricaoLog = `Transferido por ${fromNome}: ${fromSetor} → ${destinoNome}${
-      colabDestino ? ` (para ${colabDestino.nome})` : queued ? ' (fila)' : ''
-    }`
-    const { error: logTransfError } = await supabase.from('ticket_logs').insert({
-      ticket_id,
-      tipo: 'transferencia',
-      descricao: descricaoLog,
-    })
-    if (logTransfError) {
-      console.warn('[Transferir] Falha ao gravar log de transferência:', logTransfError.message)
+    if (messageError) {
+      console.warn('[Transferir] Falha ao gravar mensagem de transferência:', messageError.message)
     }
 
-    // 8. Se o ticket foi para a fila, acionar distribuição automática
+    const destinationLogSuffix = targetColaborador
+      ? ` (para ${targetColaborador.nome})`
+      : ' (fila)'
+    const { error: logError } = await supabase.from('ticket_logs').insert({
+      ticket_id: body.ticket_id,
+      tipo: 'transferencia',
+      descricao: `Transferido por ${fromNome}: ${fromSetor} → ${destinoNome}${destinationLogSuffix}`,
+    })
+    if (logError) {
+      console.warn('[Transferir] Falha ao gravar log de transferência:', logError.message)
+    }
+
     if (queued) {
-      processTicketQueue().catch((err) => {
-        console.error('[Transferir] Erro ao processar fila após transferência:', err)
+      processTicketQueue().catch((error: unknown) => {
+        console.error('[Transferir] Erro ao processar fila após transferência:', error)
       })
     }
+
+    const message = targetColaborador
+      ? `Ticket transferido para ${targetColaborador.nome}`
+      : targetSubsetor
+        ? `Ticket transferido para a fila do subsetor ${targetSubsetor.nome}`
+        : 'Ticket transferido para a fila do setor'
 
     return NextResponse.json({
       success: true,
       queued,
-      message: targetSubsetor
-        ? `Ticket transferido para a fila do subsetor ${targetSubsetor.nome}`
-        : queued
-        ? 'Ticket transferido para a fila — atendente no limite de tickets'
-        : 'Ticket transferido com sucesso',
-      colaborador_id: finalColaboradorId,
+      message,
+      colaborador_id: targetColaborador?.id ?? null,
       setor_id: targetSetorId,
-      subsetor_id: targetSubsetor?.id ?? (setor_id ? null : ticket.subsetor_id),
+      subsetor_id: targetSubsetorId,
       subsetor_nome: targetSubsetor?.nome ?? null,
     })
   } catch (error) {
     console.error('[Transferir] Erro inesperado:', error)
-    return NextResponse.json(
-      { error: 'Erro interno', details: error instanceof Error ? error.message : 'Unknown' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Erro interno' }, { status: 500 })
   }
 }

@@ -363,15 +363,28 @@ export async function criarEDistribuirTicket(
           const nomeOrigem = nomesSetores?.find(s => s.id === setorId)?.nome || setorId
           const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
 
-          const { error: moveError } = await supabase
+          let moveQuery = supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
               subsetor_id: null,
             })
             .eq('id', ticket.id)
+            .eq('setor_id', setorId)
+            .eq('status', 'aberto')
+            .is('colaborador_id', null)
 
-          if (!moveError) {
+          moveQuery = subsetorId == null
+            ? moveQuery.is('subsetor_id', null)
+            : moveQuery.eq('subsetor_id', subsetorId)
+
+          const { data: movedTicket, error: moveError } = await moveQuery
+            .select('id')
+            .maybeSingle()
+
+          if (moveError) {
+            console.error(`[Distribuição] Falha ao mover ticket ${ticket.id}:`, moveError)
+          } else if (movedTicket) {
             const { error: logError } = await supabase.from('ticket_logs').insert({
               ticket_id: ticket.id,
               tipo: 'transferencia_automatica',
@@ -640,15 +653,28 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
 
         for (const ticket of pendingTickets) {
-          const { error: moveError } = await supabase
+          let moveQuery = supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
               subsetor_id: null,
             })
             .eq('id', ticket.id)
+            .eq('setor_id', setorId)
+            .eq('status', 'aberto')
+            .is('colaborador_id', null)
 
-          if (!moveError) {
+          moveQuery = ticket.subsetor_id == null
+            ? moveQuery.is('subsetor_id', null)
+            : moveQuery.eq('subsetor_id', ticket.subsetor_id)
+
+          const { data: movedTicket, error: moveError } = await moveQuery
+            .select('id')
+            .maybeSingle()
+
+          if (moveError) {
+            console.error(`[Redistribuição] Falha ao mover ticket ${ticket.id}:`, moveError)
+          } else if (movedTicket) {
             const { error: logError } = await supabase.from('ticket_logs').insert({
               ticket_id: ticket.id,
               tipo: 'transferencia_automatica',
