@@ -225,6 +225,117 @@ function formatMonitoringTime(ms: number) {
   return [hours, minutes, seconds].map((value) => value.toString().padStart(2, '0')).join(':')
 }
 
+type SortDirection = 'asc' | 'desc'
+type SortValue = string | number | null | undefined
+type ActiveTicketSortKey = 'queueTime' | 'firstResponse' | 'serviceTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'attendant'
+type WaitingTicketSortKey = 'queueTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'priority'
+type AttendantSortKey = 'attendant' | 'status' | 'activeTickets' | 'finalizedToday'
+
+interface SortState<Key extends string> {
+  key: Key
+  direction: SortDirection
+}
+
+const PT_BR_COLLATOR = new Intl.Collator('pt-BR', { numeric: true, sensitivity: 'base' })
+const PRIORITY_ORDER: Record<string, number> = {
+  baixa: 1,
+  normal: 2,
+  media: 3,
+  alta: 4,
+  urgente: 5,
+}
+
+function getDurationMs(startDate: string | null, endDate: string | Date | null) {
+  if (!startDate) return 0
+  const start = new Date(startDate).getTime()
+  const end = endDate ? new Date(endDate).getTime() : Date.now()
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0
+  return Math.max(0, end - start)
+}
+
+function toSortableNumber(value: unknown) {
+  if (value == null || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function formatDuration(startDate: string | null, endDate: string | Date | null) {
+  const totalMin = Math.floor(getDurationMs(startDate, endDate) / 60_000)
+  const hours = Math.floor(totalMin / 60)
+  const minutes = totalMin % 60
+  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}min`
+  if (hours > 0) return `${hours}h`
+  return `${minutes}min`
+}
+
+function compareSortValues(first: SortValue, second: SortValue, direction: SortDirection) {
+  const firstMissing = first == null || first === ''
+  const secondMissing = second == null || second === ''
+  if (firstMissing || secondMissing) {
+    if (firstMissing && secondMissing) return 0
+    return firstMissing ? 1 : -1
+  }
+
+  const comparison = typeof first === 'number' && typeof second === 'number'
+    ? first - second
+    : PT_BR_COLLATOR.compare(String(first), String(second))
+  return direction === 'asc' ? comparison : -comparison
+}
+
+function getNextSort<Key extends string>(current: SortState<Key>, key: Key): SortState<Key> {
+  return {
+    key,
+    direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+  }
+}
+
+function getOriginSortValue(origin: OrigemTicket | undefined) {
+  if (!origin) return null
+  return [origin.label, origin.setorOrigem, origin.transferidoPor].filter(Boolean).join(' ')
+}
+
+function SortableTableHead({
+  label,
+  active,
+  direction,
+  onSort,
+  align = 'left',
+}: {
+  label: string
+  active: boolean
+  direction: SortDirection
+  onSort: () => void
+  align?: 'left' | 'center'
+}) {
+  const SortIcon = active ? (direction === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown
+  return (
+    <TableHead
+      scope="col"
+      aria-sort={active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className={cn(
+        'text-xs font-semibold uppercase tracking-wide text-muted-foreground',
+        align === 'center' && 'text-center',
+      )}
+    >
+      <button
+        type="button"
+        onClick={onSort}
+        className={cn(
+          'group inline-flex w-full items-center gap-1.5 rounded-sm py-2 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          align === 'center' && 'justify-center text-center',
+        )}
+        title={`Ordenar por ${label}`}
+      >
+        <span>{label}</span>
+        <SortIcon
+          aria-hidden="true"
+          className={cn('h-3.5 w-3.5 shrink-0', active ? 'text-primary' : 'opacity-40 group-hover:opacity-70')}
+        />
+      </button>
+    </TableHead>
+  )
+}
+
 // Available icons for sectors
 const AVAILABLE_ICONS = [
   { name: 'MessageCircle', icon: MessageCircle },
@@ -304,7 +415,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
     // Tickets de hoje (para estatisticas)
-    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id').eq('setor_id', setorId).gte('criado_em', startOfDay),
+    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id, colaborador_id').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
     supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
@@ -968,6 +1079,18 @@ function SetorPageInner() {
   const [isNavigatingBack, setIsNavigatingBack] = useState(false)
   const [activeSection, setActiveSection] = useState('monitoramento')
   const [activeTab, setActiveTab] = useState('em-andamento')
+  const [activeTicketsSort, setActiveTicketsSort] = useState<SortState<ActiveTicketSortKey>>({
+    key: 'ticket',
+    direction: 'asc',
+  })
+  const [waitingTicketsSort, setWaitingTicketsSort] = useState<SortState<WaitingTicketSortKey>>({
+    key: 'ticket',
+    direction: 'asc',
+  })
+  const [attendantsSort, setAttendantsSort] = useState<SortState<AttendantSortKey>>({
+    key: 'attendant',
+    direction: 'asc',
+  })
   const [searchTerm, setSearchTerm] = useState('')
   const [searchAtendente, setSearchAtendente] = useState('')
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
@@ -2128,21 +2251,6 @@ function SetorPageInner() {
 
   
 
-  // Helper function to format time duration
-  const formatDuration = (startDate: string | null, endDate: string | Date | null) => {
-    if (!startDate) return '0min'
-    const start = new Date(startDate).getTime()
-    const end = endDate ? new Date(endDate).getTime() : Date.now()
-    const diffMs = Math.max(0, end - start)
-    const totalMin = Math.floor(diffMs / 60000)
-    const h = Math.floor(totalMin / 60)
-    const m = totalMin % 60
-    // Curto e legível: "1h 30min", "30min", "2h", "0min"
-    if (h > 0 && m > 0) return `${h}h ${m}min`
-    if (h > 0) return `${h}h`
-    return `${m}min`
-  }
-
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || t.status === 'aberto')
@@ -2162,9 +2270,20 @@ function SetorPageInner() {
           : t.colaborador_id
             ? '—'  // atribuído mas sem registro de atribuido_em
             : formatDuration(t.criado_em, null), // ainda na fila
+        tempoNaFilaMs: t.atribuido_em
+          ? getDurationMs(t.criado_em, t.atribuido_em)
+          : t.colaborador_id
+            ? null
+            : getDurationMs(t.criado_em, null),
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
+        tempoPrimeiraRespostaMs: t.primeira_resposta_em
+          ? getDurationMs(t.criado_em, t.primeira_resposta_em)
+          : null,
         // Tempo de atendimento = atribuido_em → agora (ou criado_em como fallback)
         tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
+        tempoAtendimentoMs: t.colaborador_id
+          ? getDurationMs(t.atribuido_em || t.criado_em, null)
+          : 0,
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         fila: setor?.nome || '',
         atendente: t.colaboradores?.nome || null,
@@ -2176,7 +2295,7 @@ function SetorPageInner() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter])
+  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter, monitoringTick])
 
   const atendenteFiltroOptions = useMemo(() => {
     const order = (x: any) => (x.is_online && !x.pausa_atual_id ? 0 : x.pausa_atual_id ? 1 : 2)
@@ -2255,8 +2374,10 @@ function SetorPageInner() {
       .map((t: any) => ({
         id: t.id,
         numero: t.numero ?? null,
+        tempoNaFila: formatDuration(t.criado_em, null),
+        tempoNaFilaMs: getDurationMs(t.criado_em, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: setor?.cor || '',
+        fila: setor?.nome || '',
         prioridade: t.prioridade,
         status: t.status,
         criado_em: t.criado_em,
@@ -2264,7 +2385,100 @@ function SetorPageInner() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor, subsetorFilter])
+  }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick])
+
+  const activeTicketCountByAttendant = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const ticket of tickets) {
+      if (ticket.status !== 'em_atendimento' || !ticket.colaborador_id) continue
+      counts.set(ticket.colaborador_id, (counts.get(ticket.colaborador_id) || 0) + 1)
+    }
+    return counts
+  }, [tickets])
+
+  const finalizedTodayCountByAttendant = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const ticket of ticketsMonitoramentoHoje) {
+      if (ticket.status !== 'encerrado' || !ticket.colaborador_id) continue
+      counts.set(ticket.colaborador_id, (counts.get(ticket.colaborador_id) || 0) + 1)
+    }
+    return counts
+  }, [ticketsMonitoramentoHoje])
+
+  const sortedTicketsEmAndamento = useMemo(() => {
+    const getValue = (ticket: any): SortValue => {
+      switch (activeTicketsSort.key) {
+        case 'queueTime': return ticket.tempoNaFilaMs
+        case 'firstResponse': return ticket.tempoPrimeiraRespostaMs
+        case 'serviceTime': return ticket.tempoAtendimentoMs
+        case 'ticket': return toSortableNumber(ticket.numero)
+        case 'contact': return ticket.contato
+        case 'origin': return getOriginSortValue(origensMap.get(ticket.id))
+        case 'queue': return ticket.fila
+        case 'attendant': return ticket.atendente
+      }
+    }
+
+    return [...ticketsEmAndamento].sort((first, second) => {
+      const comparison = compareSortValues(
+        getValue(first),
+        getValue(second),
+        activeTicketsSort.direction,
+      )
+      return comparison || compareSortValues(first.numero, second.numero, 'asc')
+    })
+  }, [activeTicketsSort, origensMap, ticketsEmAndamento])
+
+  const sortedTicketsAguardando = useMemo(() => {
+    const getValue = (ticket: any): SortValue => {
+      switch (waitingTicketsSort.key) {
+        case 'queueTime': return ticket.tempoNaFilaMs
+        case 'ticket': return toSortableNumber(ticket.numero)
+        case 'contact': return ticket.contato
+        case 'origin': return getOriginSortValue(origensMap.get(ticket.id))
+        case 'queue': return ticket.fila
+        case 'priority': return PRIORITY_ORDER[ticket.prioridade] ?? null
+      }
+    }
+
+    return [...ticketsAguardando].sort((first, second) => {
+      const comparison = compareSortValues(
+        getValue(first),
+        getValue(second),
+        waitingTicketsSort.direction,
+      )
+      return comparison || compareSortValues(first.numero, second.numero, 'asc')
+    })
+  }, [origensMap, ticketsAguardando, waitingTicketsSort])
+
+  const sortedMonitoringAttendants = useMemo(() => {
+    const getStatus = (attendant: any) => {
+      if (attendant.pausa_atual_id) return 'Ausente'
+      return attendant.is_online ? 'Online' : 'Offline'
+    }
+    const getValue = (attendant: any): SortValue => {
+      switch (attendantsSort.key) {
+        case 'attendant': return attendant.nome
+        case 'status': return getStatus(attendant)
+        case 'activeTickets': return activeTicketCountByAttendant.get(attendant.id) || 0
+        case 'finalizedToday': return finalizedTodayCountByAttendant.get(attendant.id) || 0
+      }
+    }
+
+    return [...atendentes].sort((first, second) => {
+      const comparison = compareSortValues(
+        getValue(first),
+        getValue(second),
+        attendantsSort.direction,
+      )
+      return comparison || compareSortValues(first.nome, second.nome, 'asc')
+    })
+  }, [
+    activeTicketCountByAttendant,
+    atendentes,
+    attendantsSort,
+    finalizedTodayCountByAttendant,
+  ])
 
 const handleLogout = async () => {
   await unsubscribeCurrentBrowser().catch(() => {})
@@ -4216,14 +4430,54 @@ const saveConfig = async () => {
                       <Table>
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo na fila</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">1ª Resposta</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo atend.</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
+                            <SortableTableHead
+                              label="Tempo na fila"
+                              active={activeTicketsSort.key === 'queueTime'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'queueTime'))}
+                            />
+                            <SortableTableHead
+                              label="1ª Resposta"
+                              active={activeTicketsSort.key === 'firstResponse'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'firstResponse'))}
+                            />
+                            <SortableTableHead
+                              label="Tempo atend."
+                              active={activeTicketsSort.key === 'serviceTime'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'serviceTime'))}
+                            />
+                            <SortableTableHead
+                              label="Ticket"
+                              active={activeTicketsSort.key === 'ticket'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'ticket'))}
+                            />
+                            <SortableTableHead
+                              label="Contato"
+                              active={activeTicketsSort.key === 'contact'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'contact'))}
+                            />
+                            <SortableTableHead
+                              label="Origem"
+                              active={activeTicketsSort.key === 'origin'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'origin'))}
+                            />
+                            <SortableTableHead
+                              label="Fila"
+                              active={activeTicketsSort.key === 'queue'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'queue'))}
+                            />
+                            <SortableTableHead
+                              label="Atendente"
+                              active={activeTicketsSort.key === 'attendant'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'attendant'))}
+                            />
                             <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
@@ -4253,7 +4507,7 @@ const saveConfig = async () => {
                               </TableCell>
                             </TableRow>
                           ) : (
-                            ticketsEmAndamento.map((ticket: any) => {
+                            sortedTicketsEmAndamento.map((ticket: any) => {
                               const aguardandoResposta = ticket.status === 'em_atendimento' && !ticket.primeira_resposta_em
                               return (
                                 <TableRow 
@@ -4313,12 +4567,42 @@ const saveConfig = async () => {
                       <Table>
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo na fila</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Prioridade</TableHead>
+                            <SortableTableHead
+                              label="Tempo na fila"
+                              active={waitingTicketsSort.key === 'queueTime'}
+                              direction={waitingTicketsSort.direction}
+                              onSort={() => setWaitingTicketsSort((current) => getNextSort(current, 'queueTime'))}
+                            />
+                            <SortableTableHead
+                              label="Ticket"
+                              active={waitingTicketsSort.key === 'ticket'}
+                              direction={waitingTicketsSort.direction}
+                              onSort={() => setWaitingTicketsSort((current) => getNextSort(current, 'ticket'))}
+                            />
+                            <SortableTableHead
+                              label="Contato"
+                              active={waitingTicketsSort.key === 'contact'}
+                              direction={waitingTicketsSort.direction}
+                              onSort={() => setWaitingTicketsSort((current) => getNextSort(current, 'contact'))}
+                            />
+                            <SortableTableHead
+                              label="Origem"
+                              active={waitingTicketsSort.key === 'origin'}
+                              direction={waitingTicketsSort.direction}
+                              onSort={() => setWaitingTicketsSort((current) => getNextSort(current, 'origin'))}
+                            />
+                            <SortableTableHead
+                              label="Fila"
+                              active={waitingTicketsSort.key === 'queue'}
+                              direction={waitingTicketsSort.direction}
+                              onSort={() => setWaitingTicketsSort((current) => getNextSort(current, 'queue'))}
+                            />
+                            <SortableTableHead
+                              label="Prioridade"
+                              active={waitingTicketsSort.key === 'priority'}
+                              direction={waitingTicketsSort.direction}
+                              onSort={() => setWaitingTicketsSort((current) => getNextSort(current, 'priority'))}
+                            />
                             <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
@@ -4346,12 +4630,12 @@ const saveConfig = async () => {
                               </TableCell>
                             </TableRow>
                           ) : (
-                            ticketsAguardando.map((ticket: any) => (
+                            sortedTicketsAguardando.map((ticket: any) => (
                               <TableRow key={ticket.id} className="bg-yellow-50/50 dark:bg-yellow-950/20">
                                 <TableCell>
                                   <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
                                     <Clock className="mr-1 h-3 w-3" />
-                                    Aguardando...
+                                    {ticket.tempoNaFila}
                                   </Badge>
                                 </TableCell>
                                 <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
@@ -4399,10 +4683,32 @@ const saveConfig = async () => {
                       <Table>
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-center">Em atendimento</TableHead>
-                            <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground text-center">Finalizados hoje</TableHead>
+                            <SortableTableHead
+                              label="Atendente"
+                              active={attendantsSort.key === 'attendant'}
+                              direction={attendantsSort.direction}
+                              onSort={() => setAttendantsSort((current) => getNextSort(current, 'attendant'))}
+                            />
+                            <SortableTableHead
+                              label="Status"
+                              active={attendantsSort.key === 'status'}
+                              direction={attendantsSort.direction}
+                              onSort={() => setAttendantsSort((current) => getNextSort(current, 'status'))}
+                            />
+                            <SortableTableHead
+                              label="Em atendimento"
+                              active={attendantsSort.key === 'activeTickets'}
+                              direction={attendantsSort.direction}
+                              onSort={() => setAttendantsSort((current) => getNextSort(current, 'activeTickets'))}
+                              align="center"
+                            />
+                            <SortableTableHead
+                              label="Finalizados hoje"
+                              active={attendantsSort.key === 'finalizedToday'}
+                              direction={attendantsSort.direction}
+                              onSort={() => setAttendantsSort((current) => getNextSort(current, 'finalizedToday'))}
+                              align="center"
+                            />
                             <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
@@ -4428,10 +4734,9 @@ const saveConfig = async () => {
                               </TableCell>
                             </TableRow>
                           ) : (
-                            atendentes.map((atendente: any) => {
-                              const ticketsDoAtendente = tickets.filter(
-                                (t: any) => t.colaborador_id === atendente.id && t.status === 'em_atendimento'
-                              ).length
+                            sortedMonitoringAttendants.map((atendente: any) => {
+                              const ticketsDoAtendente = activeTicketCountByAttendant.get(atendente.id) || 0
+                              const finalizadosHojeDoAtendente = finalizedTodayCountByAttendant.get(atendente.id) || 0
                               const isOnPause = !!atendente.pausa_atual_id
                               const isOnline = atendente.is_online
                               const statusDisplay = isOnPause
@@ -4450,7 +4755,7 @@ const saveConfig = async () => {
                                     </div>
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-center font-medium">{ticketsDoAtendente}</TableCell>
-                                  <TableCell className="text-sm tabular-nums text-center font-medium">0</TableCell>
+                                  <TableCell className="text-sm tabular-nums text-center font-medium">{finalizadosHojeDoAtendente}</TableCell>
                                   <TableCell className="text-center">
                                     <DropdownMenu>
                                       <DropdownMenuTrigger asChild>
