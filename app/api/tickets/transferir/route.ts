@@ -2,8 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
-import { isExactSubsetorMatch, shouldRouteTransferToSupport } from '@/lib/subsetor-routing'
-import { findActiveSupportSubsetor } from '@/lib/support-subsetor'
+import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { processTicketQueue } from '@/lib/ticket-queue-processor'
 
 const transferRequestSchema = z.object({
@@ -15,12 +14,7 @@ const transferRequestSchema = z.object({
   from_setor_nome: z.string().max(200).optional(),
 })
 
-const RPC_FAILURES: Record<string, { error: string; status: number }> = {
-  TICKET_NOT_FOUND: { error: 'Ticket não encontrado', status: 404 },
-  ACTOR_NOT_AUTHORIZED: { error: 'Colaborador não autorizado', status: 403 },
-  TICKET_FORBIDDEN: { error: 'Você não pode transferir este ticket', status: 403 },
-  TICKET_INACTIVE: { error: 'Somente tickets ativos podem ser transferidos', status: 409 },
-  TARGET_SECTOR_NOT_FOUND: { error: 'Setor de destino não encontrado', status: 422 },
+const TRANSFER_ERRORS = {
   TRANSFER_NOT_ALLOWED: {
     error: 'O setor de destino não está habilitado para transferências a partir do setor atual.',
     status: 422,
@@ -44,11 +38,6 @@ const RPC_FAILURES: Record<string, { error: string; status: number }> = {
   },
 }
 
-interface AtomicTransferResult {
-  success: boolean
-  code?: string
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -58,20 +47,11 @@ function getSetorName(relation: unknown): string | null {
   return isRecord(setor) && typeof setor.nome === 'string' ? setor.nome : null
 }
 
-function parseAtomicTransferResult(value: unknown): AtomicTransferResult | null {
-  if (!isRecord(value) || typeof value.success !== 'boolean') return null
-
-  return {
-    success: value.success,
-    code: typeof value.code === 'string' ? value.code : undefined,
-  }
-}
-
 /**
  * POST /api/tickets/transferir
  *
  * Transfers an active ticket to a compatible queue or attendant. The final
- * ticket state is committed by one database transaction.
+ * ticket state is committed by one conditional database update.
  */
 export async function POST(request: Request) {
   try {
@@ -137,7 +117,7 @@ export async function POST(request: Request) {
 
     const targetSetorId = hasExplicitSetor ? body.setor_id! : ticket.setor_id
     const isChangingSetor = targetSetorId !== ticket.setor_id
-    let targetSubsetorId = !isChangingSetor && !hasExplicitSubsetor
+    const targetSubsetorId = !isChangingSetor && !hasExplicitSubsetor
       ? ticket.subsetor_id
       : body.subsetor_id ?? null
 
@@ -172,41 +152,14 @@ export async function POST(request: Request) {
       }
       if (!allowedDestination) {
         return NextResponse.json(
-          { error: RPC_FAILURES.TRANSFER_NOT_ALLOWED.error },
+          { error: TRANSFER_ERRORS.TRANSFER_NOT_ALLOWED.error },
           { status: 422 },
         )
       }
     }
 
     let targetSubsetor: { id: string; nome: string } | null = null
-    const shouldUseSupportQueue = shouldRouteTransferToSupport({
-      destinationSetorId: isChangingSetor ? targetSetorId : null,
-      destinationSubsetorId: targetSubsetorId,
-      destinationColaboradorId: body.colaborador_id ?? null,
-      currentSubsetorId: !isChangingSetor && !hasExplicitSubsetor
-        ? ticket.subsetor_id
-        : null,
-    })
-
-    if (shouldUseSupportQueue) {
-      try {
-        targetSubsetor = await findActiveSupportSubsetor(supabase, targetSetorId)
-      } catch (error) {
-        console.error('[Transferir] Erro ao buscar subsetor Suporte:', error)
-        return NextResponse.json(
-          { error: 'Não foi possível localizar a fila de Suporte.' },
-          { status: 500 },
-        )
-      }
-
-      if (!targetSubsetor) {
-        return NextResponse.json(
-          { error: 'O setor de destino não possui um subsetor Suporte ativo.' },
-          { status: 422 },
-        )
-      }
-      targetSubsetorId = targetSubsetor.id
-    } else if (targetSubsetorId) {
+    if (targetSubsetorId) {
       const { data: subsetor, error: subsetorError } = await supabase
         .from('subsetores')
         .select('id, nome, setor_id, ativo')
@@ -218,7 +171,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Erro ao validar subsetor' }, { status: 500 })
       }
       if (!subsetor || !subsetor.ativo || subsetor.setor_id !== targetSetorId) {
-        return NextResponse.json({ error: RPC_FAILURES.INVALID_SUBSETOR.error }, { status: 422 })
+        return NextResponse.json({ error: TRANSFER_ERRORS.INVALID_SUBSETOR.error }, { status: 422 })
       }
       targetSubsetor = { id: subsetor.id, nome: subsetor.nome }
     }
@@ -256,13 +209,13 @@ export async function POST(request: Request) {
       const colaborador = colaboradorResult.data
       if (!colaborador?.ativo) {
         return NextResponse.json(
-          { error: RPC_FAILURES.INVALID_COLLABORATOR.error },
+          { error: TRANSFER_ERRORS.INVALID_COLLABORATOR.error },
           { status: 422 },
         )
       }
       if (!setorLinkResult.data) {
         return NextResponse.json(
-          { error: RPC_FAILURES.COLLABORATOR_NOT_LINKED.error },
+          { error: TRANSFER_ERRORS.COLLABORATOR_NOT_LINKED.error },
           { status: 422 },
         )
       }
@@ -273,15 +226,16 @@ export async function POST(request: Request) {
         ))
         .filter((subsetorId): subsetorId is string => subsetorId !== null)
 
-      if (!isExactSubsetorMatch(targetSubsetorId, subsetorIds)) {
+      const mustValidateSubsetor = hasExplicitSubsetor || !isChangingSetor
+      if (mustValidateSubsetor && !isExactSubsetorMatch(targetSubsetorId, subsetorIds)) {
         return NextResponse.json(
-          { error: RPC_FAILURES.COLLABORATOR_SUBSETOR_MISMATCH.error },
+          { error: TRANSFER_ERRORS.COLLABORATOR_SUBSETOR_MISMATCH.error },
           { status: 422 },
         )
       }
       if (colaborador.is_online === true && colaborador.pausa_atual_id) {
         return NextResponse.json(
-          { error: RPC_FAILURES.COLLABORATOR_ONLINE_PAUSED.error },
+          { error: TRANSFER_ERRORS.COLLABORATOR_ONLINE_PAUSED.error },
           { status: 422 },
         )
       }
@@ -289,30 +243,48 @@ export async function POST(request: Request) {
       targetColaborador = { id: colaborador.id, nome: colaborador.nome }
     }
 
-    const { data: rpcData, error: rpcError } = await supabase.rpc('transfer_ticket_atomic', {
-      p_ticket_id: body.ticket_id,
-      p_actor_id: actor.id,
-      p_setor_id: targetSetorId,
-      p_subsetor_id: targetSubsetorId,
-      p_colaborador_id: targetColaborador?.id ?? null,
-    })
+    let updateQuery = supabase
+      .from('tickets')
+      .update({
+        setor_id: targetSetorId,
+        subsetor_id: targetSubsetorId,
+        colaborador_id: targetColaborador?.id ?? null,
+        status: targetColaborador ? 'em_atendimento' : 'aberto',
+      })
+      .eq('id', ticket.id)
+      .eq('setor_id', ticket.setor_id)
+      .eq('status', ticket.status)
 
-    if (rpcError) {
-      console.error('[Transferir] RPC transfer_ticket_atomic falhou:', rpcError)
+    updateQuery = ticket.subsetor_id == null
+      ? updateQuery.is('subsetor_id', null)
+      : updateQuery.eq('subsetor_id', ticket.subsetor_id)
+    updateQuery = ticket.colaborador_id == null
+      ? updateQuery.is('colaborador_id', null)
+      : updateQuery.eq('colaborador_id', ticket.colaborador_id)
+
+    const { data: updatedTicket, error: updateError } = await updateQuery
+      .select('id')
+      .maybeSingle()
+
+    if (updateError) {
+      console.error('[Transferir] Erro ao atualizar ticket:', updateError)
       return NextResponse.json({ error: 'Erro ao transferir ticket' }, { status: 500 })
     }
-
-    const rpcResult = parseAtomicTransferResult(rpcData)
-    if (!rpcResult) {
-      console.error('[Transferir] Resposta inválida da RPC transfer_ticket_atomic:', rpcData)
-      return NextResponse.json({ error: 'Erro ao transferir ticket' }, { status: 500 })
-    }
-    if (!rpcResult.success) {
-      const failure = rpcResult.code ? RPC_FAILURES[rpcResult.code] : undefined
+    if (!updatedTicket) {
       return NextResponse.json(
-        { error: failure?.error ?? 'O ticket foi alterado por outro processo' },
-        { status: failure?.status ?? 409 },
+        { error: 'O ticket foi alterado por outro processo' },
+        { status: 409 },
       )
+    }
+
+    if (targetColaborador) {
+      const { error: receivedAtError } = await supabase
+        .from('colaboradores')
+        .update({ last_ticket_received_at: new Date().toISOString() })
+        .eq('id', targetColaborador.id)
+      if (receivedAtError) {
+        console.warn('[Transferir] Falha ao atualizar ordem de distribuição:', receivedAtError.message)
+      }
     }
 
     const queued = targetColaborador === null

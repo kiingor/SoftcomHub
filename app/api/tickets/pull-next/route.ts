@@ -9,7 +9,7 @@ import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
  * Puxa MANUALMENTE o próximo ticket da fila para o colaborador, ignorando o limite
  * max_tickets_per_agent do setor. Usado para o botão "Puxar próximo" do workdesk.
  *
- * Estratégia: usa a RPC try_atomic_assign_ticket_in_context com p_max_tickets bem alto, mantendo
+ * Estratégia: usa a RPC try_atomic_assign_ticket com p_max_tickets bem alto, mantendo
  * a atomicidade contra race com o auto-assign mas pulando o gate de limite.
  *
  * Body:
@@ -211,12 +211,10 @@ export async function POST(request: Request) {
     const UNLIMITED = 999999
     for (const ticket of prioritizedTickets) {
       const isFallback = !compatibleTicketIds.has(ticket.id)
-      const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket_in_context', {
+      const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
         p_ticket_id: ticket.id,
         p_colaborador_id: colaboradorId,
         p_max_tickets: UNLIMITED,
-        p_expected_setor_id: ticket.setor_id,
-        p_expected_subsetor_id: ticket.subsetor_id ?? null,
       })
 
       if (rpcError) {

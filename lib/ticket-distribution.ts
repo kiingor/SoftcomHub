@@ -1,6 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
-import { findActiveSupportSubsetor } from '@/lib/support-subsetor'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
 interface DistribuicaoResult {
@@ -276,16 +275,14 @@ export async function criarEDistribuirTicket(
         // já saturou (race), tenta o próximo. Garante que max_tickets_per_agent é
         // respeitado mesmo sob distribuições concorrentes.
         for (const candidate of sorted) {
-          const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket_in_context', {
+          const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
             p_ticket_id: ticket.id,
             p_colaborador_id: candidate.id,
             p_max_tickets: maxTicketsPerAgent,
-            p_expected_setor_id: setorId,
-            p_expected_subsetor_id: subsetorId,
           })
 
           if (rpcError) {
-            console.error(`[Distribution] RPC try_atomic_assign_ticket_in_context falhou para ${candidate.nome}:`, rpcError)
+            console.error(`[Distribution] RPC try_atomic_assign_ticket falhou para ${candidate.nome}:`, rpcError)
             continue
           }
 
@@ -360,27 +357,28 @@ export async function criarEDistribuirTicket(
           const receptorId = setorData.setor_receptor_id
           console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
 
-          const supportSubsetor = await findActiveSupportSubsetor(supabase, receptorId)
-          if (!supportSubsetor) {
-            throw new Error(`Setor receptor ${receptorId} não possui subsetor Suporte ativo; transbordo cancelado.`)
-          }
-
           // Nomes dos setores pra log (origem + destino)
           const { data: nomesSetores } = await supabase
             .from('setores').select('id, nome').in('id', [setorId, receptorId])
           const nomeOrigem = nomesSetores?.find(s => s.id === setorId)?.nome || setorId
           const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
 
-          const { data: movedTicket, error: moveError } = await supabase
+          let moveQuery = supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
-              subsetor_id: supportSubsetor.id,
+              subsetor_id: null,
             })
             .eq('id', ticket.id)
             .eq('setor_id', setorId)
             .eq('status', 'aberto')
             .is('colaborador_id', null)
+
+          moveQuery = subsetorId == null
+            ? moveQuery.is('subsetor_id', null)
+            : moveQuery.eq('subsetor_id', subsetorId)
+
+          const { data: movedTicket, error: moveError } = await moveQuery
             .select('id')
             .maybeSingle()
 
@@ -535,12 +533,10 @@ async function _tentarDistribuirNoSetor(
   // Tentar atribuir via RPC atômica percorrendo candidatos. Se o primeiro saturou
   // por concorrência, tenta o próximo.
   for (const candidate of sorted) {
-    const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket_in_context', {
+    const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
       p_ticket_id: ticketId,
       p_colaborador_id: candidate.id,
       p_max_tickets: maxTicketsPerAgent,
-      p_expected_setor_id: setorId,
-      p_expected_subsetor_id: ticketSubsetorId,
     })
 
     if (rpcError) {
@@ -650,12 +646,6 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const receptorId = setorData.setor_receptor_id
         console.log(`[Redistribuição] Sem atendentes em ${setorId} — transmitindo ${pendingTickets.length} tickets para receptor ${receptorId}`)
 
-        const supportSubsetor = await findActiveSupportSubsetor(supabase, receptorId)
-        if (!supportSubsetor) {
-          console.error(`[Redistribuição] Setor receptor ${receptorId} não possui subsetor Suporte ativo; transbordo cancelado.`)
-          return assignedCount
-        }
-
         // Nomes dos setores pra log (busca 1× antes do loop)
         const { data: nomesSetores } = await supabase
           .from('setores').select('id, nome').in('id', [setorId, receptorId])
@@ -663,16 +653,22 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
 
         for (const ticket of pendingTickets) {
-          const { data: movedTicket, error: moveError } = await supabase
+          let moveQuery = supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
-              subsetor_id: supportSubsetor.id,
+              subsetor_id: null,
             })
             .eq('id', ticket.id)
             .eq('setor_id', setorId)
             .eq('status', 'aberto')
             .is('colaborador_id', null)
+
+          moveQuery = ticket.subsetor_id == null
+            ? moveQuery.is('subsetor_id', null)
+            : moveQuery.eq('subsetor_id', ticket.subsetor_id)
+
+          const { data: movedTicket, error: moveError } = await moveQuery
             .select('id')
             .maybeSingle()
 
@@ -755,12 +751,10 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         })
 
       for (const candidate of sorted) {
-        const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket_in_context', {
+        const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
           p_ticket_id: ticket.id,
           p_colaborador_id: candidate.id,
           p_max_tickets: maxTicketsPerAgent,
-          p_expected_setor_id: setorId,
-          p_expected_subsetor_id: ticket.subsetor_id ?? null,
         })
 
         if (rpcError) {

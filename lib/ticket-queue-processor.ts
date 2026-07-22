@@ -1,6 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
-import { findActiveSupportSubsetor } from '@/lib/support-subsetor'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
 // Configuration defaults
@@ -304,16 +303,14 @@ async function tryAssignTicket(
   // saturou (race), tenta o próximo. A RPC garante serialização por atendente e
   // que o count é conferido dentro do lock.
   for (const candidate of eligibleColaboradores) {
-    const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket_in_context', {
+    const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
       p_ticket_id: ticketId,
       p_colaborador_id: candidate.id,
       p_max_tickets: maxTicketsPerAgent,
-      p_expected_setor_id: setorId,
-      p_expected_subsetor_id: ticketSubsetorId,
     })
 
     if (rpcError) {
-      console.error(`[TicketQueue] RPC try_atomic_assign_ticket_in_context falhou para ${candidate.nome}:`, rpcError)
+      console.error(`[TicketQueue] RPC try_atomic_assign_ticket falhou para ${candidate.nome}:`, rpcError)
       continue
     }
 
@@ -414,6 +411,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
   // A primeira passagem reserva cada especialista para tickets compatíveis.
   // Somente tickets sem nenhum compatível online entram na passagem de fallback.
   const failedBySetor: Record<string, string[]> = {}
+  const queuedTicketById = new Map(queuedTickets.map((ticket) => [ticket.id, ticket]))
   const resultsByTicket = new Map<string, AssignmentResult>()
   const fallbackTickets: typeof queuedTickets = []
 
@@ -537,15 +535,6 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
         const receptorId = setorData.setor_receptor_id
         console.log(`[TicketQueue] Transmissão ativa no setor ${setorId} → receptor ${receptorId}. Encaminhando ${ticketIds.length} tickets.`)
 
-        const supportSubsetor = await findActiveSupportSubsetor(supabase, receptorId)
-        if (!supportSubsetor) {
-          const errorMessage = `Setor receptor ${receptorId} não possui subsetor Suporte ativo; transbordo cancelado.`
-          console.error(`[TicketQueue] ${errorMessage}`)
-          stats.errors.push(errorMessage)
-          continue
-        }
-        const receptorSubsetorId = supportSubsetor.id
-
         // Busca os hops atuais dos tickets envolvidos pra decidir quem ainda
         // pode ser transbordado e quem já estourou o limite.
         const { data: ticketHops } = await supabase
@@ -564,6 +553,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
 
         for (const ticketId of ticketIds) {
           const currentHops = hopsById.get(ticketId) ?? 0
+          const expectedSubsetorId = queuedTicketById.get(ticketId)?.subsetor_id ?? null
 
           // Proteção contra loop: se o ticket já bateu no teto, NÃO move.
           // Ele fica parado no setor atual pra ser revisado manualmente.
@@ -579,17 +569,23 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
           }
 
           // Mover ticket para o setor receptor + incrementar hops
-          const { data: movedTicket, error: moveError } = await supabase
+          let moveQuery = supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
-              subsetor_id: receptorSubsetorId,
+              subsetor_id: null,
               transbordo_hops: currentHops + 1,
             })
             .eq('id', ticketId)
             .eq('setor_id', setorId)
             .is('colaborador_id', null)
             .eq('status', 'aberto')
+
+          moveQuery = expectedSubsetorId == null
+            ? moveQuery.is('subsetor_id', null)
+            : moveQuery.eq('subsetor_id', expectedSubsetorId)
+
+          const { data: movedTicket, error: moveError } = await moveQuery
             .select('id')
             .maybeSingle()
 
@@ -612,12 +608,12 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
           if (logError) console.warn('[TicketQueue] Falha ao gravar log transferencia_automatica:', logError.message)
 
           // Tentar atribuir no setor receptor
-          let receptorResult = await tryAssignTicket(ticketId, receptorId, receptorSubsetorId)
+          let receptorResult = await tryAssignTicket(ticketId, receptorId, null)
           if (receptorResult.fallbackEligible) {
             receptorResult = await tryAssignTicket(
               ticketId,
               receptorId,
-              receptorSubsetorId,
+              null,
               'fallback',
             )
           }
