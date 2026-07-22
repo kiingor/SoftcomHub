@@ -3220,8 +3220,8 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
         setDisparoStep('telefone')
         toast.success(`Cliente encontrado: ${data.cliente.nome}`)
       }
-    } catch {
-      toast.error('Erro ao buscar cliente')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao buscar cliente')
     }
     setDisparoLoading(false)
   }
