@@ -12,6 +12,7 @@ import {
   shouldStartNewNexusSession,
   summarizeNexusAttendances,
 } from '@/lib/nexus-monitoring'
+import { resolveSharedChannelOwnerId } from '@/lib/nexus-channel-resolution'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 
 export type NexusHistoryRange = 'hoje' | '24h' | '7d'
@@ -471,12 +472,12 @@ async function resolveUnambiguousSectorChannels(
     const owners = activeIdentifierOwners?.size
       ? activeIdentifierOwners
       : legacyOwners.get(identifier)
-    if (owners?.size !== 1) {
+    const sectorId = resolveSharedChannelOwnerId(owners || [])
+    if (!sectorId) {
       collisionCount += 1
       continue
     }
 
-    const sectorId = [...owners][0]
     const sector = sectorsById.get(sectorId)
     if (!sector) {
       collisionCount += 1
@@ -485,11 +486,14 @@ async function resolveUnambiguousSectorChannels(
     let channelKey = `legacy:${sectorId}`
     if (activeIdentifierOwners?.size) {
       const matchingRows = activeRowsByIdentifier.get(identifier)
-      if (matchingRows?.size !== 1) {
+      const preferredRows = matchingRows
+        ? [...matchingRows.values()].filter((row) => row.setor_id === sectorId)
+        : []
+      if (preferredRows.length !== 1) {
         collisionCount += 1
         continue
       }
-      channelKey = `channel:${[...matchingRows.keys()][0]}`
+      channelKey = `channel:${preferredRows[0].id}`
     }
     sectorsByChannel.set(identifier, { ...sector, channelKey })
   }

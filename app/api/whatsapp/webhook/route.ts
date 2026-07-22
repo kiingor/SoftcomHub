@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
+import { resolveSharedChannelOwnerId } from '@/lib/nexus-channel-resolution'
 import {
   criarEDistribuirTicket,
   TicketIdempotencyConflictError,
@@ -32,6 +33,11 @@ type ActiveChannelRow = {
   tipo: string | null
   phone_number_id: string | null
   instancia: string | null
+}
+
+type ActiveChannelResolution = {
+  channel: ActiveChannelRow
+  isNexus: boolean
 }
 
 class WebhookChannelAmbiguityError extends Error {
@@ -68,17 +74,6 @@ function parseProviderTimestampMs(value: unknown) {
     : undefined
 }
 
-async function loadSectorNexusFlag(supabase: ServiceClient, setorId: string) {
-  const { data: sector, error } = await supabase
-    .from('setores')
-    .select('assistente_ia')
-    .eq('id', setorId)
-    .maybeSingle()
-  if (error) throw error
-  if (!sector) throw new Error('Setor do canal não encontrado.')
-  return Boolean(sector.assistente_ia)
-}
-
 async function loadActiveChannelMatches(
   supabase: ServiceClient,
   sourceIdentifier: string,
@@ -89,13 +84,15 @@ async function loadActiveChannelMatches(
       .select('id, setor_id, tipo, phone_number_id, instancia')
       .eq('phone_number_id', sourceIdentifier)
       .eq('ativo', true)
-      .limit(2),
+      .order('id', { ascending: true })
+      .limit(1000),
     supabase
       .from('setor_canais')
       .select('id, setor_id, tipo, phone_number_id, instancia')
       .eq('instancia', sourceIdentifier)
       .eq('ativo', true)
-      .limit(2),
+      .order('id', { ascending: true })
+      .limit(1000),
   ])
   if (phoneResult.error) throw phoneResult.error
   if (instanceResult.error) throw instanceResult.error
@@ -107,6 +104,42 @@ async function loadActiveChannelMatches(
   return activeChannels
 }
 
+async function resolvePrimaryActiveChannel(
+  supabase: ServiceClient,
+  activeChannels: ReadonlyMap<string, ActiveChannelRow>,
+): Promise<ActiveChannelResolution | null> {
+  if (activeChannels.size === 0) return null
+
+  const sectorIds = [...new Set(
+    [...activeChannels.values()].map((channel) => channel.setor_id),
+  )]
+  const { data: sectors, error } = await supabase
+    .from('setores')
+    .select('id, assistente_ia')
+    .in('id', sectorIds)
+  if (error) throw error
+  if ((sectors || []).length !== sectorIds.length) {
+    throw new Error('Setor do canal não encontrado.')
+  }
+
+  const nexusSectorIds = new Set(
+    (sectors || [])
+      .filter((sector) => sector.assistente_ia)
+      .map((sector) => sector.id),
+  )
+  const primarySectorId = resolveSharedChannelOwnerId(sectorIds)
+  if (!primarySectorId) throw new WebhookChannelAmbiguityError()
+
+  const primaryChannels = [...activeChannels.values()]
+    .filter((channel) => channel.setor_id === primarySectorId)
+  if (primaryChannels.length !== 1) throw new WebhookChannelAmbiguityError()
+
+  return {
+    channel: primaryChannels[0],
+    isNexus: nexusSectorIds.has(primarySectorId),
+  }
+}
+
 async function resolveConfiguredWebhookChannel(
   supabase: ServiceClient,
   sourceIdentifier: string | null,
@@ -114,17 +147,17 @@ async function resolveConfiguredWebhookChannel(
   if (!sourceIdentifier) return null
 
   const activeChannels = await loadActiveChannelMatches(supabase, sourceIdentifier)
-  if (activeChannels.size > 1) throw new WebhookChannelAmbiguityError()
-
-  const activeChannel = [...activeChannels.values()][0]
-  if (activeChannel) {
+  const activeResolution = await resolvePrimaryActiveChannel(supabase, activeChannels)
+  if (activeResolution) {
+    const { channel: activeChannel } = activeResolution
     const identifiers = [...new Set([
       activeChannel.phone_number_id,
       activeChannel.instancia,
     ].filter((identifier): identifier is string => Boolean(identifier)))]
     for (const identifier of identifiers) {
       const aliasMatches = await loadActiveChannelMatches(supabase, identifier)
-      if (aliasMatches.size !== 1 || !aliasMatches.has(activeChannel.id)) {
+      const aliasResolution = await resolvePrimaryActiveChannel(supabase, aliasMatches)
+      if (aliasResolution?.channel.id !== activeChannel.id) {
         throw new WebhookChannelAmbiguityError()
       }
     }
@@ -133,7 +166,7 @@ async function resolveConfiguredWebhookChannel(
       setorId: activeChannel.setor_id,
       canalEnvio: normalizeCanalEnvio(activeChannel.tipo),
       identifiers,
-      isNexus: await loadSectorNexusFlag(supabase, activeChannel.setor_id),
+      isNexus: activeResolution.isNexus,
     }
   }
 
@@ -142,11 +175,17 @@ async function resolveConfiguredWebhookChannel(
     .select('id, assistente_ia')
     .eq('phone_number_id', sourceIdentifier)
     .order('id', { ascending: true })
-    .limit(2)
+    .limit(1000)
   if (legacyError) throw legacyError
-  if ((legacySectors || []).length > 1) throw new WebhookChannelAmbiguityError()
+  const primaryLegacySectorId = resolveSharedChannelOwnerId(
+    (legacySectors || []).map((sector) => sector.id),
+  )
+  if ((legacySectors || []).length > 0 && !primaryLegacySectorId) {
+    throw new WebhookChannelAmbiguityError()
+  }
 
-  const legacySector = legacySectors?.[0]
+  const legacySector = (legacySectors || [])
+    .find((sector) => sector.id === primaryLegacySectorId)
   return legacySector
     ? {
         setorId: legacySector.id,

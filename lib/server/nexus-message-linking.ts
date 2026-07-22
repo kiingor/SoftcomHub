@@ -1,6 +1,7 @@
 import 'server-only'
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { resolveSharedChannelOwnerId } from '@/lib/nexus-channel-resolution'
 import { NEXUS_NO_TICKET_IDLE_MS } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 
@@ -163,11 +164,16 @@ function getUnambiguousChannelIdentifiers(
     const matchingChannels = allChannels.filter((channel) => (
       getChannelIdentifiers(channel).includes(identifier)
     ))
-    const ownerSectorIds = new Set(matchingChannels.map((channel) => channel.setor_id))
-    const channelKeys = new Set(matchingChannels.map(getCanonicalChannelKey))
+    const primarySectorId = resolveSharedChannelOwnerId(
+      matchingChannels.map((channel) => channel.setor_id),
+    )
+    const channelKeys = new Set(
+      matchingChannels
+        .filter((channel) => channel.setor_id === sourceSectorId)
+        .map(getCanonicalChannelKey),
+    )
     if (
-      ownerSectorIds.size === 1
-      && ownerSectorIds.has(sourceSectorId)
+      primarySectorId === sourceSectorId
       && channelKeys.size === 1
     ) {
       resolved.set(identifier, [...channelKeys][0])
@@ -189,10 +195,13 @@ async function resolveSafeNexusSourceChannel(
   const sourceSectorIds = new Set(
     matchingChannels.filter((channel) => channel.isNexusSector).map((channel) => channel.setor_id),
   )
+  const sourceSectorId = resolveSharedChannelOwnerId(
+    matchingChannels.map((channel) => channel.setor_id),
+  )
 
   if (
-    sourceSectorIds.size !== 1
-    || matchingChannels.some((channel) => !channel.isNexusSector)
+    !sourceSectorId
+    || !sourceSectorIds.has(sourceSectorId)
   ) {
     throw new NexusSessionLinkValidationError(
       sourceSectorIds.size === 0
@@ -201,8 +210,11 @@ async function resolveSafeNexusSourceChannel(
     )
   }
 
-  const sourceSectorId = [...sourceSectorIds][0]
-  const sourceChannelIds = new Set(matchingChannels.flatMap(getChannelIdentifiers))
+  const sourceChannelIds = new Set(
+    matchingChannels
+      .filter((channel) => channel.setor_id === sourceSectorId)
+      .flatMap(getChannelIdentifiers),
+  )
   const safeSourceChannelIds = getUnambiguousChannelIdentifiers(
     allChannels,
     sourceSectorId,
