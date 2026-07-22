@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
-import { Activity, Bot, Building2, ChevronLeft, ChevronRight, CircleSlash, Headset, Layers, MessageCircle, RefreshCw, Search, Tag, Ticket, TrendingUp, User, Users, X } from 'lucide-react'
+import { Activity, AlertTriangle, Bot, Building2, ChevronLeft, ChevronRight, CircleSlash, Headset, Layers, MessageCircle, RefreshCw, Search, Tag, Ticket, TrendingUp, User, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
@@ -32,30 +32,24 @@ import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import {
-  formatNexusAttendanceType,
   getNexusConversationScopeKey,
+  getLatestNexusSessionMessages,
   getNexusMessageActorLabel,
   getNexusMessagePhase,
-  isMissingSupabaseRelation,
-  matchesNexusTicketConversationFilter,
   mergeNexusTicketTimeline,
-  shouldStartNewNexusSession,
+  NEXUS_NO_TICKET_IDLE_MS,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 import { cn, isClientMessage } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
+import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
 
-const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
 const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE]
 const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, 'cliente', 'colaborador']
-// Intervalo sem mensagens que separa um atendimento do próximo (novo contato).
-const NEXUS_SESSION_GAP_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_SESSION_GAP_MINUTES || 40)
-const NEXUS_ATENDIMENTOS_PAGE_SIZE = 12
 const POSTGREST_IN_CHUNK_SIZE = 200
-let nexusOccurrencesAvailability: boolean | null = null
 
 const WORKLOAD_OS_TONES: Record<WorkloadOsLevel, { value: string; badge: string }> = {
   critical: {
@@ -150,6 +144,25 @@ type NexusAtendimento = NexusConversation & {
     atendente: string | null
     tipoAtendimento: string | null
   } | null
+}
+
+type NexusHistoryResponse = {
+  items: NexusAtendimento[]
+  page: number
+  pageSize: number
+  totalItems: number
+  totalPages: number
+  kpis: {
+    total: number
+    finalizadosSemTicket: number
+    comTicket: number
+    conversionRate: number
+  }
+  period: { since: string; until: string }
+  warnings: Array<{
+    code: 'AMBIGUOUS_CHANNELS_OMITTED'
+    count: number
+  }>
 }
 
 // O drawer é compartilhado entre as abas: aceita uma conversa ao vivo ou um
@@ -336,32 +349,9 @@ const RANGE_OPTIONS = [
   { value: 'hoje', label: 'Hoje' },
   { value: '24h', label: 'Últimas 24h' },
   { value: '7d', label: 'Últimos 7 dias' },
-  { value: '15d', label: 'Últimos 15 dias' },
-  { value: '30d', label: 'Últimos 30 dias' },
-  { value: '60d', label: 'Últimos 60 dias' },
-  { value: '90d', label: 'Últimos 90 dias' },
 ] as const
 
 type RangeValue = (typeof RANGE_OPTIONS)[number]['value']
-
-const RANGE_DIAS: Record<Exclude<RangeValue, 'hoje'>, number> = {
-  '24h': 1,
-  '7d': 7,
-  '15d': 15,
-  '30d': 30,
-  '60d': 60,
-  '90d': 90,
-}
-
-function rangeToSince(range: RangeValue): string {
-  if (range === 'hoje') {
-    const start = new Date()
-    start.setHours(0, 0, 0, 0)
-    return start.toISOString()
-  }
-  const dias = RANGE_DIAS[range] ?? 7
-  return new Date(Date.now() - dias * 24 * 3600_000).toISOString()
-}
 
 function chunkValues<T>(values: readonly T[], size = POSTGREST_IN_CHUNK_SIZE): T[][] {
   const chunks: T[][] = []
@@ -390,15 +380,6 @@ async function loadRowsByValues(
   return rows
 }
 
-async function loadRowsByIds(
-  supabase: ReturnType<typeof createClient>,
-  table: string,
-  columns: string,
-  ids: readonly string[],
-) {
-  return loadRowsByValues(supabase, table, columns, 'id', ids)
-}
-
 async function loadRowsByPages(
   createQuery: () => any,
   pageSize = 1000,
@@ -414,86 +395,28 @@ async function loadRowsByPages(
   return rows
 }
 
-async function loadOptionalNexusOccurrences(loader: () => Promise<any[]>) {
-  if (nexusOccurrencesAvailability === false) {
-    return { rows: [] as any[], available: false }
-  }
-
-  try {
-    const rows = await loader()
-    nexusOccurrencesAvailability = true
-    return { rows, available: true }
-  } catch (error) {
-    if (isMissingSupabaseRelation(error, 'nexus_ocorrencias')) {
-      nexusOccurrencesAvailability = false
-      return { rows: [] as any[], available: false }
-    }
-    throw error
-  }
-}
-
-async function loadNexusTicketsByIds(
-  supabase: ReturnType<typeof createClient>,
-  ticketIds: readonly string[],
-) {
-  const rows: any[] = []
-
-  for (const idsChunk of chunkValues(ticketIds)) {
-    let result: any = await supabase
-      .from('tickets')
-      .select('id, numero, status, colaborador_id, tipo_atendimento, tipo_atendimento_id')
-      .in('id', idsChunk)
-
-    const missingClassifierColumn = result.error
-      && ['42703', 'PGRST204'].includes(result.error.code || '')
-      && result.error.message.includes('tipo_atendimento')
-
-    if (missingClassifierColumn) {
-      result = await supabase
-        .from('tickets')
-        .select('id, numero, status, colaborador_id, tipo_atendimento_id')
-        .in('id', idsChunk)
-    }
-
-    if (result.error) throw result.error
-    rows.push(...(result.data || []))
-  }
-
-  return rows
-}
-
 // Resolve os setores com IA acessíveis e devolve um mapeador mensagem→setor
 // pelo canal (phone_number_id / instancia). Compartilhado pelos fetchers
 // "ao vivo" e "atendimentos" para não duplicar a resolução.
 async function loadNexusSetores(
-  supabase: ReturnType<typeof createClient>,
   setorIds: string[],
 ) {
-  const { data: setoresIaData, error } = await supabase
-    .from('setores')
-    .select('id, nome, assistente_ia, setor_canais(tipo, ativo, instancia, phone_number_id)')
-    .in('id', setorIds)
-    .eq('assistente_ia', true)
+  const configuration = await loadSafeNexusChannelConfiguration(setorIds)
+  const setoresIa = configuration.sectors
+  const channelSetores = new Map(configuration.channels.map((channel) => [
+    channel.identifier,
+    {
+      id: channel.sectorId,
+      nome: channel.sectorName,
+      channelKey: channel.channelKey,
+    },
+  ]))
 
-  if (error) throw error
-
-  const setoresIa = setoresIaData || []
-  // Mapa único de identificador de canal → setor. O identificador do canal pode
-  // estar em `phone_number_id` (WhatsApp Cloud API) OU em `instancia` (Evolution
-  // API). Na MENSAGEM, ambos os casos chegam na coluna `phone_number_id` (a tabela
-  // mensagens não tem coluna `instancia`). Por isso indexamos os dois sob a mesma
-  // chave crua — sem prefixo — pra o lookup da mensagem cruzar com qualquer um.
-  const channelSetores = new Map<string, { id: string; nome: string }>()
-
-  for (const setor of setoresIa as any[]) {
-    for (const canal of setor.setor_canais || []) {
-      if (!canal.ativo) continue
-      if (canal.phone_number_id) channelSetores.set(canal.phone_number_id, setor)
-      if (canal.instancia) channelSetores.set(canal.instancia, setor)
-    }
-  }
-
-  const resolveSetor = (message: any): { id: string; nome: string } | null => {
+  const resolveSetor = (message: any): {
+    id: string
+    nome: string
+    channelKey: string
+  } | null => {
     const canalId = message.phone_number_id
     if (canalId) {
       // Tem identificador de canal: só atribui se casar com um setor carregado.
@@ -505,7 +428,12 @@ async function loadNexusSetores(
     return null
   }
 
-  return { setoresIa, resolveSetor, channelIds: [...channelSetores.keys()] }
+  return {
+    setoresIa,
+    resolveSetor,
+    channelIds: [...channelSetores.keys()],
+    nexusChannelWarnings: configuration.warnings,
+  }
 }
 
 export default function NexusPage() {
@@ -522,9 +450,17 @@ export default function NexusPage() {
   const [atendimentoSituationFilters, setAtendimentoSituationFilters] = useState<AtendimentoSituation[]>([])
   const [atendimentoSituationFilterOpen, setAtendimentoSituationFilterOpen] = useState(false)
   const [atendimentosPage, setAtendimentosPage] = useState(0)
+  const [debouncedHistorySearch, setDebouncedHistorySearch] = useState('')
   const [selectedConversation, setSelectedConversation] = useState<SelectedConversation | null>(null)
   const [openingKey, setOpeningKey] = useState<string | null>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
+  const historyFilterKeyRef = useRef('')
+  const historyRefreshTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedHistorySearch(searchTerm.trim()), 300)
+    return () => window.clearTimeout(timeout)
+  }, [searchTerm])
 
   const tagsDisponiveis = useMemo(() => {
     const tags = new Map<string, { id: string; nome: string; cor: string }>()
@@ -552,12 +488,17 @@ export default function NexusPage() {
       : null,
     async () => {
       const until = new Date().toISOString()
-      const activeSince = new Date(Date.now() - NEXUS_BOT_VISIBILITY_MINUTES * 60000).toISOString()
+      const activeSince = new Date(Date.now() - NEXUS_NO_TICKET_IDLE_MS).toISOString()
       const lookbackSince = new Date(
-        Date.now() - Math.max(NEXUS_MESSAGE_LOOKBACK_MINUTES, NEXUS_BOT_VISIBILITY_MINUTES) * 60000,
+        Date.now() - Math.max(NEXUS_MESSAGE_LOOKBACK_MINUTES * 60000, NEXUS_NO_TICKET_IDLE_MS),
       ).toISOString()
 
-      const { setoresIa, resolveSetor, channelIds } = await loadNexusSetores(supabase, setorIdsFiltrados)
+      const {
+        setoresIa,
+        resolveSetor,
+        channelIds,
+        nexusChannelWarnings,
+      } = await loadNexusSetores(setorIdsFiltrados)
       const setorIaIds = setoresIa.map((setor: any) => setor.id)
 
       const [nexusMessagesDesc, activeTicketsData, attendantLinksData] = setoresIa.length > 0
@@ -632,63 +573,47 @@ export default function NexusPage() {
         ? await loadRowsByValues(
             supabase,
             'tickets',
-            'cliente_id, setor_id',
+            'id, cliente_id, setor_id',
             'cliente_id',
             Array.from(clienteIds),
             (query) => query.in('setor_id', setorIaIds).in('status', ['aberto', 'em_atendimento']),
           )
         : []
 
+      const ticketIds = ticketsAtivos.map((ticket: any) => ticket.id).filter(Boolean)
+      const ticketChannelMessages = ticketIds.length > 0 && channelIds.length > 0
+        ? await loadRowsByValues(
+            supabase,
+            'mensagens',
+            'ticket_id, phone_number_id',
+            'ticket_id',
+            ticketIds,
+            (query) => query.in('phone_number_id', channelIds),
+          )
+        : []
+
+      const channelKeysByTicket = new Map<string, Set<string>>()
+      for (const message of ticketChannelMessages) {
+        if (!message.ticket_id) continue
+        const setor = resolveSetor(message)
+        if (!setor) continue
+        const channelKeys = channelKeysByTicket.get(message.ticket_id) || new Set<string>()
+        channelKeys.add(setor.channelKey)
+        channelKeysByTicket.set(message.ticket_id, channelKeys)
+      }
+
       const clientesComTicketAtivo = new Set<string>()
       const telefonesComTicketAtivo = new Set<string>()
       for (const ticket of ticketsAtivos) {
-        if (!ticket.cliente_id || !ticket.setor_id) continue
-        clientesComTicketAtivo.add(`${ticket.setor_id}::${ticket.cliente_id}`)
+        if (!ticket.id || !ticket.cliente_id) continue
+        const channelKeys = channelKeysByTicket.get(ticket.id)
+        // Without one canonical channel, keep every conversation visible
+        // instead of hiding an unrelated channel.
+        if (channelKeys?.size !== 1) continue
+        const channelKey = [...channelKeys][0]
+        clientesComTicketAtivo.add(`${channelKey}::${ticket.cliente_id}`)
         const telefone = telefonePorClienteId.get(ticket.cliente_id)
-        if (telefone) telefonesComTicketAtivo.add(`${ticket.setor_id}::${telefone}`)
-      }
-
-      const [ocorrenciasPorCliente, ocorrenciasPorTelefone] = await Promise.all([
-        clienteIds.size > 0
-          ? loadOptionalNexusOccurrences(() => loadRowsByValues(
-                supabase,
-                'nexus_ocorrencias',
-                'id, cliente_id, telefone, setor_id',
-                'cliente_id',
-                Array.from(clienteIds),
-                (query) => query.eq('status', 'aberta').gte('criado_em', lookbackSince),
-              ))
-          : Promise.resolve({ rows: [] as any[], available: false }),
-        telefones.size > 0
-          ? loadOptionalNexusOccurrences(() => loadRowsByValues(
-                supabase,
-                'nexus_ocorrencias',
-                'id, cliente_id, telefone, setor_id',
-                'telefone',
-                Array.from(telefones),
-                (query) => query.eq('status', 'aberta').gte('criado_em', lookbackSince),
-              ))
-          : Promise.resolve({ rows: [] as any[], available: false }),
-      ])
-      const nexusOccurrencesAvailable = ocorrenciasPorCliente.available || ocorrenciasPorTelefone.available
-
-      const clientesComOcorrencia = new Set<string>()
-      const telefonesComOcorrencia = new Set<string>()
-      const clientesComOcorrenciaSemSetor = new Set<string>()
-      const telefonesComOcorrenciaSemSetor = new Set<string>()
-      const ocorrenciasRecentes = Array.from(new Map(
-        [...ocorrenciasPorCliente.rows, ...ocorrenciasPorTelefone.rows]
-          .map((ocorrencia: any) => [ocorrencia.id, ocorrencia]),
-      ).values())
-      for (const ocorrencia of ocorrenciasRecentes) {
-        const telefoneNormalizado = normalizeBrazilianPhone(ocorrencia.telefone)
-        if (ocorrencia.setor_id) {
-          if (ocorrencia.cliente_id) clientesComOcorrencia.add(`${ocorrencia.setor_id}::${ocorrencia.cliente_id}`)
-          if (telefoneNormalizado) telefonesComOcorrencia.add(`${ocorrencia.setor_id}::${telefoneNormalizado}`)
-          continue
-        }
-        if (ocorrencia.cliente_id) clientesComOcorrenciaSemSetor.add(ocorrencia.cliente_id)
-        if (telefoneNormalizado) telefonesComOcorrenciaSemSetor.add(telefoneNormalizado)
+        if (telefone) telefonesComTicketAtivo.add(`${channelKey}::${telefone}`)
       }
 
       const groups = new Map<string, Omit<NexusConversation, 'lastBotMessageAt'>>()
@@ -698,18 +623,21 @@ export default function NexusPage() {
 
         const cliente = (message as any).clientes
         const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
-        const clienteKey = telefoneNormalizado || message.cliente_id || message.id
-        const scopedClientId = message.cliente_id ? `${setor.id}::${message.cliente_id}` : null
-        const scopedPhone = telefoneNormalizado ? `${setor.id}::${telefoneNormalizado}` : null
+        if (!message.cliente_id && !telefoneNormalizado) continue
+        const clienteKey = `${setor.channelKey}::${telefoneNormalizado || message.cliente_id || message.id}`
+        const scopedClientId = message.cliente_id ? `${setor.channelKey}::${message.cliente_id}` : null
+        const scopedPhone = telefoneNormalizado ? `${setor.channelKey}::${telefoneNormalizado}` : null
 
         if (scopedClientId && clientesComTicketAtivo.has(scopedClientId)) continue
         if (scopedPhone && telefonesComTicketAtivo.has(scopedPhone)) continue
-        if (message.cliente_id && clientesComOcorrenciaSemSetor.has(message.cliente_id)) continue
-        if (telefoneNormalizado && telefonesComOcorrenciaSemSetor.has(telefoneNormalizado)) continue
-        if (scopedClientId && clientesComOcorrencia.has(scopedClientId)) continue
-        if (scopedPhone && telefonesComOcorrencia.has(scopedPhone)) continue
 
-        const groupKey = getNexusConversationScopeKey(setor.id, message.cliente_id, telefoneNormalizado, message.id)
+        const groupKey = getNexusConversationScopeKey(
+          setor.id,
+          message.cliente_id,
+          telefoneNormalizado,
+          message.id,
+          setor.channelKey,
+        )
         const current = groups.get(groupKey)
 
         groups.set(groupKey, {
@@ -727,19 +655,30 @@ export default function NexusPage() {
 
       const conversations = Array.from(groups.values())
         .map((conversation): NexusConversation => {
-          const lastBotMessage = [...conversation.messages].reverse().find((message) => message.remetente === NEXUS_BOT_REMETENTE)
+          const messages = getLatestNexusSessionMessages(
+            conversation.messages,
+            NEXUS_NO_TICKET_IDLE_MS,
+          )
+          const lastMessage = messages[messages.length - 1]
+          const lastBotMessage = [...messages].reverse().find((message) => message.remetente === NEXUS_BOT_REMETENTE)
           return {
             ...conversation,
+            lastMessageAt: lastMessage?.enviado_em || conversation.lastMessageAt,
+            lastRemetente: lastMessage?.remetente || conversation.lastRemetente,
+            messages,
             lastBotMessageAt: lastBotMessage?.enviado_em || '',
           }
         })
-        .filter((conversation) => conversation.lastBotMessageAt >= activeSince)
+        .filter((conversation) => (
+          conversation.lastMessageAt >= activeSince || !conversation.lastBotMessageAt
+        ))
         .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
 
       return {
         conversations,
         setoresIa,
-        nexusOccurrencesAvailable,
+        channelIds,
+        nexusChannelWarnings,
         monitoring: {
           activeTickets: activeTicketIds.length,
           onlineAttendants: onlineAttendants.length,
@@ -750,292 +689,87 @@ export default function NexusPage() {
     { revalidateOnFocus: false, refreshInterval: 30000 },
   )
 
-  // "Atendimentos": histórico concluído do bot no período, com desfecho
-  // (virou ticket / encerrada sem ticket). Conversas ativas ficam em Ao vivo. Só busca
-  // quando a aba está ativa para não pesar a tela ao vivo.
+  const historyFilterKey = useMemo(() => [
+    activeTab,
+    atendimentoSituationFilters.slice().sort().join(','),
+    debouncedHistorySearch,
+    rangeFilter,
+    setorIdsFiltrados.slice().sort().join(','),
+  ].join('|'), [
+    activeTab,
+    atendimentoSituationFilters,
+    debouncedHistorySearch,
+    rangeFilter,
+    setorIdsFiltrados,
+  ])
+  const historyRequestPage = historyFilterKeyRef.current === historyFilterKey
+    ? atendimentosPage
+    : 0
+
+  const historyQuery = useMemo(() => {
+    if (activeTab !== 'atendimentos' || !colaborador || setorIdsFiltrados.length === 0) return null
+
+    const params = new URLSearchParams({
+      range: rangeFilter,
+      page: String(historyRequestPage),
+      timezoneOffset: String(new Date().getTimezoneOffset()),
+      setorIds: setorIdsFiltrados.join(','),
+    })
+    if (atendimentoSituationFilters.length > 0) {
+      params.set('situations', atendimentoSituationFilters.join(','))
+    }
+    if (debouncedHistorySearch) params.set('q', debouncedHistorySearch)
+
+    return `/api/nexus/atendimentos?${params.toString()}`
+  }, [
+    activeTab,
+    atendimentoSituationFilters,
+    colaborador,
+    debouncedHistorySearch,
+    historyRequestPage,
+    rangeFilter,
+    setorIdsFiltrados,
+  ])
+
   const {
     data: atendimentosData,
     error: atendimentosError,
     isLoading: atendimentosLoading,
+    isValidating: atendimentosValidating,
     mutate: mutateAtendimentos,
-  } = useSWR(
-    activeTab === 'atendimentos' && colaborador && setorIdsFiltrados.length > 0
-      ? ['dashboard-nexus-atendimentos', setorIdsFiltrados.join(','), rangeFilter]
-      : null,
-    async () => {
-      const since = rangeToSince(rangeFilter)
-      const until = new Date().toISOString()
-      const activeSince = new Date(Date.now() - NEXUS_BOT_VISIBILITY_MINUTES * 60000).toISOString()
-      const { setoresIa, resolveSetor, channelIds } = await loadNexusSetores(supabase, setorIdsFiltrados)
-
-      if (setoresIa.length === 0) return { atendimentos: [] as NexusAtendimento[] }
-
-      const ocorrenciasDoSetorPromise = loadOptionalNexusOccurrences(() => loadRowsByPages(() => supabase
-          .from('nexus_ocorrencias')
-          .select('id, cliente_id, telefone, setor_id, criado_em')
-          .in('setor_id', setoresIa.map((setor: any) => setor.id))
-          .eq('status', 'aberta')
-          .gte('criado_em', since)
-          .lte('criado_em', until)
-          .order('criado_em', { ascending: true })
-          .order('id', { ascending: true })))
-      const ocorrenciasSemSetorPromise = loadOptionalNexusOccurrences(() => loadRowsByPages(() => supabase
-          .from('nexus_ocorrencias')
-          .select('id, cliente_id, telefone, setor_id, criado_em')
-          .is('setor_id', null)
-          .eq('status', 'aberta')
-          .gte('criado_em', since)
-          .lte('criado_em', until)
-          .order('criado_em', { ascending: true })
-          .order('id', { ascending: true })))
-
-      // Mensagens do bot no período — SEM filtro de ticket_id (as que viraram
-      // ticket já têm ticket_id e continuam sendo do bot).
-      // Paginação real: percorre TODAS as mensagens Nexus do período em lotes
-      // (o PostgREST devolve no máx. ~1000 por request). Carrega da mais recente
-      // para a mais antiga e, no fim, reordena ascendente para o agrupamento.
-      // Sem isso, com volume alto (milhares/dia) o período era cortado e os
-      // atendimentos de hoje sumiam.
-      const CHUNK = 1000
-      const lotesDesc: any[] = []
-      const canResolveMessages = channelIds.length > 0
-      for (let i = 0; canResolveMessages; i += 1) {
-        let query = supabase
-          .from('mensagens')
-          .select('id, ticket_id, cliente_id, remetente, conteudo, tipo, enviado_em, url_imagem, media_type, phone_number_id, clientes(id, nome, telefone)')
-          .in('remetente', NEXUS_REMETENTES)
-          .gte('enviado_em', since)
-          .lte('enviado_em', until)
-          .order('enviado_em', { ascending: false })
-          .order('id', { ascending: false })
-          .range(i * CHUNK, i * CHUNK + CHUNK - 1)
-
-        if (channelIds.length > 0) {
-          query = query.in('phone_number_id', channelIds)
-        }
-
-        const { data: lote, error } = await query
-        if (error) throw error
-        if (!lote || lote.length === 0) break
-        lotesDesc.push(...lote)
-        if (lote.length < CHUNK) break
+  } = useSWR<NexusHistoryResponse>(
+    historyQuery,
+    async (url: string) => {
+      const response = await fetch(url, { cache: 'no-store' })
+      const payload = await response.json().catch(() => ({})) as NexusHistoryResponse | { error?: string }
+      if (!response.ok) {
+        throw new Error('error' in payload && payload.error
+          ? payload.error
+          : 'Não foi possível carregar o histórico do Nexus.')
       }
-      const nexusMessages = lotesDesc.reverse()
-
-      const [ocorrenciasDoSetor, ocorrenciasSemSetor] = await Promise.all([
-        ocorrenciasDoSetorPromise,
-        ocorrenciasSemSetorPromise,
-      ])
-      const ocorrenciasDoPeriodo = [...ocorrenciasDoSetor.rows, ...ocorrenciasSemSetor.rows]
-      const ocorrenciasPorReferencia = new Map<string, { criadoEm: string; setorId: string | null }[]>()
-      for (const ocorrencia of ocorrenciasDoPeriodo) {
-        const referencias = [
-          ocorrencia.cliente_id,
-          normalizeBrazilianPhone(ocorrencia.telefone),
-        ].filter((referencia): referencia is string => Boolean(referencia))
-        for (const referencia of referencias) {
-          const atuais = ocorrenciasPorReferencia.get(referencia) || []
-          atuais.push({ criadoEm: ocorrencia.criado_em, setorId: ocorrencia.setor_id || null })
-          ocorrenciasPorReferencia.set(referencia, atuais)
-        }
-      }
-
-      // 1. Agrupa as mensagens por cliente (já vêm ordenadas asc).
-      const porCliente = new Map<string, {
-        clienteId: string | null
-        contato: string
-        telefone: string | null
-        setorId: string
-        setorNome: string
-        messages: any[]
-      }>()
-      for (const message of nexusMessages) {
-        const setor = resolveSetor(message)
-        if (!setor) continue
-
-        const cliente = (message as any).clientes
-        const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
-        const ref = getNexusConversationScopeKey(setor.id, message.cliente_id, telefoneNormalizado, message.id)
-        const atual = porCliente.get(ref)
-        if (atual) {
-          atual.messages.push(message)
-          if (!atual.clienteId && message.cliente_id) atual.clienteId = message.cliente_id
-        } else {
-          porCliente.set(ref, {
-            clienteId: message.cliente_id,
-            contato: cliente?.nome || cliente?.telefone || 'Cliente sem nome',
-            telefone: cliente?.telefone || null,
-            setorId: setor.id,
-            setorNome: setor.nome,
-            messages: [message],
-          })
-        }
-      }
-
-      // 2. Divide cada cliente em sessões (atendimentos distintos): nova sessão
-      //    quando muda o ticket_id ou há um intervalo grande entre mensagens.
-      //    Resolve o caso de "mesmo cliente entrou em contato 2x" (uma virou
-      //    ticket, outra foi resolvida pelo bot) aparecer como um só.
-      type Sessao = {
-        clienteKey: string
-        clienteId: string | null
-        contato: string
-        telefone: string | null
-        setorId: string
-        setorNome: string
-        ticketId: string | null
-        messages: any[]
-      }
-      const gapMs = NEXUS_SESSION_GAP_MINUTES * 60000
-      const sessoes: Sessao[] = []
-      for (const cliente of porCliente.values()) {
-        let atual: Sessao | null = null
-        for (const message of cliente.messages) {
-          const ticketId = message.ticket_id || null
-          const anterior = atual ? atual.messages[atual.messages.length - 1] : null
-          const gap = anterior ? new Date(message.enviado_em).getTime() - new Date(anterior.enviado_em).getTime() : 0
-          if (shouldStartNewNexusSession({
-            hasCurrentSession: Boolean(atual),
-            currentTicketId: atual?.ticketId || null,
-            incomingTicketId: ticketId,
-            gapMs: gap,
-            maxGapMs: gapMs,
-          })) {
-            atual = {
-              clienteKey: `${cliente.clienteId || cliente.telefone || 'x'}::${message.id}`,
-              clienteId: cliente.clienteId,
-              contato: cliente.contato,
-              telefone: cliente.telefone,
-              setorId: cliente.setorId,
-              setorNome: cliente.setorNome,
-              ticketId,
-              messages: [],
-            }
-            sessoes.push(atual)
-          }
-          if (!atual) continue
-          if (!atual.ticketId && ticketId) atual.ticketId = ticketId
-          atual.messages.push(message)
-        }
-      }
-
-      const ticketIds = new Set<string>()
-      for (const sessao of sessoes) {
-        if (sessao.ticketId) ticketIds.add(sessao.ticketId)
-      }
-
-      // 3. Tickets das sessões (pelo ticket_id das próprias mensagens) + atendentes.
-      const ticketsData = ticketIds.size > 0
-        ? await loadNexusTicketsByIds(supabase, Array.from(ticketIds))
-        : []
-
-      const ticketsById = new Map<string, any>()
-      const colaboradorIds = new Set<string>()
-      const tipoAtendimentoIds = new Set<string>()
-      for (const ticket of ticketsData) {
-        ticketsById.set(ticket.id, ticket)
-        if (ticket.colaborador_id) colaboradorIds.add(ticket.colaborador_id)
-        if (ticket.tipo_atendimento_id) tipoAtendimentoIds.add(ticket.tipo_atendimento_id)
-      }
-
-      const colaboradorNomes = new Map<string, string>()
-      const tiposAtendimentoNomes = new Map<string, string>()
-      const [colaboradoresData, tiposAtendimentoData] = await Promise.all([
-        colaboradorIds.size > 0
-          ? loadRowsByIds(supabase, 'colaboradores', 'id, nome', Array.from(colaboradorIds))
-          : Promise.resolve([]),
-        tipoAtendimentoIds.size > 0
-          ? loadRowsByIds(supabase, 'tipos_atendimento', 'id, nome', Array.from(tipoAtendimentoIds))
-          : Promise.resolve([]),
-      ])
-      for (const colab of colaboradoresData) colaboradorNomes.set(colab.id, colab.nome)
-      for (const tipo of tiposAtendimentoData) tiposAtendimentoNomes.set(tipo.id, tipo.nome)
-
-      // 4. Classifica cada sessão pelo desfecho.
-      const atendimentos = sessoes
-        .map((sessao): NexusAtendimento | null => {
-          const lastBotMessage = [...sessao.messages].reverse().find((m) => m.remetente === NEXUS_BOT_REMETENTE)
-          const lastBotMessageAt = lastBotMessage?.enviado_em || ''
-          const lastMessageAt = sessao.messages[sessao.messages.length - 1]?.enviado_em || ''
-          const lastRemetente = sessao.messages[sessao.messages.length - 1]?.remetente || ''
-
-          const ticket = sessao.ticketId ? ticketsById.get(sessao.ticketId) : null
-          const firstMessageAt = sessao.messages[0]?.enviado_em || lastMessageAt
-          const ocorrenciaRefs = [
-            sessao.clienteId,
-            normalizeBrazilianPhone(sessao.telefone),
-          ].filter((referencia): referencia is string => Boolean(referencia))
-          const ocorrenciaConcluiuSessao = ocorrenciaRefs.some((referencia) => (
-            (ocorrenciasPorReferencia.get(referencia) || []).some((ocorrencia) => {
-              if (ocorrencia.setorId && ocorrencia.setorId !== sessao.setorId) return false
-              const ocorrenciaTime = new Date(ocorrencia.criadoEm).getTime()
-              return ocorrenciaTime >= new Date(firstMessageAt).getTime()
-                && ocorrenciaTime <= new Date(lastMessageAt).getTime() + gapMs
-            })
-          ))
-
-          // Conversas recentes sem ticket ficam apenas em Ao vivo. O registro
-          // de ocorrência encerra a sessão imediatamente, sem esperar a janela.
-          if (!ticket && !ocorrenciaConcluiuSessao && lastMessageAt && lastMessageAt >= activeSince) return null
-          const desfecho: AtendimentoDesfecho = ticket ? 'ticket' : 'encerrada'
-          const tipoAtendimento = ticket
-            ? formatNexusAttendanceType(ticket.tipo_atendimento)
-              || (ticket.tipo_atendimento_id ? tiposAtendimentoNomes.get(ticket.tipo_atendimento_id) || null : null)
-            : null
-
-          return {
-            clienteKey: sessao.clienteKey,
-            clienteId: sessao.clienteId,
-            contato: sessao.contato,
-            telefone: sessao.telefone,
-            setorId: sessao.setorId,
-            setorNome: sessao.setorNome,
-            lastMessageAt,
-            lastRemetente,
-            lastBotMessageAt,
-            messages: sessao.messages,
-            desfecho,
-            ticket: ticket
-              ? {
-                  id: ticket.id,
-                  numero: ticket.numero ?? null,
-                  status: ticket.status,
-                  atendente: ticket.colaborador_id ? colaboradorNomes.get(ticket.colaborador_id) || null : null,
-                  tipoAtendimento,
-                }
-              : null,
-          }
-        })
-        .filter((atendimento): atendimento is NexusAtendimento => Boolean(atendimento))
-        .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
-
-      const ticketIdsExibidos = new Set<string>()
-      const atendimentosUnicos = atendimentos.filter((atendimento) => {
-        const ticketId = atendimento.ticket?.id
-        if (!ticketId) return true
-        if (ticketIdsExibidos.has(ticketId)) return false
-        ticketIdsExibidos.add(ticketId)
-        return true
-      })
-
-      return { atendimentos: atendimentosUnicos }
+      return payload as NexusHistoryResponse
     },
-    { revalidateOnFocus: false },
+    {
+      keepPreviousData: true,
+      revalidateOnFocus: false,
+      refreshInterval: 30000,
+      shouldRetryOnError: false,
+    },
   )
-
+  const scheduleAtendimentosRefresh = useCallback(() => {
+    if (historyRefreshTimerRef.current !== null) {
+      window.clearTimeout(historyRefreshTimerRef.current)
+    }
+    historyRefreshTimerRef.current = window.setTimeout(() => {
+      historyRefreshTimerRef.current = null
+      void mutateAtendimentos()
+    }, 2000)
+  }, [mutateAtendimentos])
   const conversationsRaw: NexusConversation[] = data?.conversations || []
   const monitoredSectorIds = useMemo(() => new Set(setorIdsFiltrados), [setorIdsFiltrados])
   const monitoredChannelIds = useMemo(() => {
-    const ids = new Set<string>()
-    for (const setor of data?.setoresIa || []) {
-      for (const canal of setor.setor_canais || []) {
-        if (!canal.ativo) continue
-        if (canal.phone_number_id) ids.add(canal.phone_number_id)
-        if (canal.instancia) ids.add(canal.instancia)
-      }
-    }
-    return ids
-  }, [data?.setoresIa])
+    return new Set<string>(data?.channelIds || [])
+  }, [data?.channelIds])
   const selectedConversationKey = selectedConversation
     ? `${selectedConversation.setorId}-${selectedConversation.clienteKey}`
     : null
@@ -1102,6 +836,10 @@ export default function NexusPage() {
           clienteId: conversation.clienteId,
           telefone: conversation.telefone,
           setorId: destino?.setorId || conversation.setorId,
+          sourceSectorId: conversation.setorId,
+          sourceMessageIds: conversation.messages
+            .map((message) => message.id)
+            .filter(Boolean),
           subsetorId: destino?.subsetorId ?? null,
         }),
       })
@@ -1138,39 +876,17 @@ export default function NexusPage() {
     ))
   }, [conversationsRaw, searchTerm])
 
-  const atendimentosRaw: NexusAtendimento[] = atendimentosData?.atendimentos || []
-  const atendimentosFiltrados = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase()
-    return atendimentosRaw.filter((atendimento) => {
-      const matchesSituation = atendimentoSituationFilters.length === 0
-        || atendimentoSituationFilters.some((situation) => (
-          situation === 'encerrada_sem_ticket'
-            ? atendimento.desfecho === 'encerrada'
-            : matchesNexusTicketConversationFilter(atendimento.ticket?.status, situation)
-        ))
-      if (!matchesSituation) return false
-      if (!query) return true
-      return (
-        atendimento.contato.toLowerCase().includes(query) ||
-        formatPhone(atendimento.telefone).toLowerCase().includes(query) ||
-        atendimento.setorNome.toLowerCase().includes(query) ||
-        (atendimento.ticket?.tipoAtendimento || '').toLowerCase().includes(query) ||
-        String(atendimento.ticket?.numero || '').includes(query)
-      )
-    })
-  }, [atendimentosRaw, searchTerm, atendimentoSituationFilters])
-
-  const atendimentosStats = useMemo(() => {
-    const tickets = atendimentosRaw.filter((atendimento) => atendimento.desfecho === 'ticket').length
-    const encerradosSemTicket = atendimentosRaw.filter((atendimento) => atendimento.desfecho === 'encerrada').length
-    const total = tickets + encerradosSemTicket
-    return {
-      total,
-      tickets,
-      encerradosSemTicket,
-      conversionRate: total > 0 ? Math.round((tickets / total) * 100) : 0,
-    }
-  }, [atendimentosRaw])
+  const atendimentosRaw: NexusAtendimento[] = atendimentosData?.items || []
+  const atendimentos = atendimentosRaw
+  const atendimentosStats = {
+    total: atendimentosData?.kpis.total || 0,
+    tickets: atendimentosData?.kpis.comTicket || 0,
+    encerradosSemTicket: atendimentosData?.kpis.finalizadosSemTicket || 0,
+    conversionRate: atendimentosData?.kpis.conversionRate || 0,
+  }
+  const totalAtendimentosFiltrados = atendimentosData?.totalItems || 0
+  const totalPaginasAtendimentos = Math.max(1, atendimentosData?.totalPages || 1)
+  const paginaAtendimentos = atendimentosData?.page ?? atendimentosPage
 
   const monitoring = data?.monitoring || {
     activeTickets: 0,
@@ -1190,20 +906,25 @@ export default function NexusPage() {
     setSearchTerm('')
   }
 
-  const totalPaginasAtendimentos = Math.max(1, Math.ceil(atendimentosFiltrados.length / NEXUS_ATENDIMENTOS_PAGE_SIZE))
-  const paginaAtendimentos = Math.min(atendimentosPage, totalPaginasAtendimentos - 1)
-  const atendimentos = atendimentosFiltrados.slice(
-    paginaAtendimentos * NEXUS_ATENDIMENTOS_PAGE_SIZE,
-    paginaAtendimentos * NEXUS_ATENDIMENTOS_PAGE_SIZE + NEXUS_ATENDIMENTOS_PAGE_SIZE,
-  )
-
-  // Volta para a primeira página quando os filtros mudam.
   useEffect(() => {
+    historyFilterKeyRef.current = historyFilterKey
     setAtendimentosPage(0)
-  }, [searchTerm, atendimentoSituationFilters, rangeFilter, setorFilter, tagFilter, activeTab])
+  }, [historyFilterKey])
+
+  useEffect(() => () => {
+    if (historyRefreshTimerRef.current !== null) {
+      window.clearTimeout(historyRefreshTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
-    let channel = supabase
+    if (!atendimentosValidating && !atendimentosError && atendimentosData && atendimentosData.page !== atendimentosPage) {
+      setAtendimentosPage(atendimentosData.page)
+    }
+  }, [atendimentosData, atendimentosError, atendimentosPage, atendimentosValidating])
+
+  useEffect(() => {
+    const channel = supabase
       .channel('dashboard-nexus-mensagens')
       .on(
         'postgres_changes',
@@ -1218,10 +939,10 @@ export default function NexusPage() {
 
           if (selectedTicketId && row.ticket_id === selectedTicketId) mutateSelectedTicketMessages()
           if (!NEXUS_REMETENTES.includes(row.remetente)) return
-          if (row.phone_number_id && monitoredChannelIds.size > 0 && !monitoredChannelIds.has(row.phone_number_id)) return
+          if (!row.phone_number_id || !monitoredChannelIds.has(row.phone_number_id)) return
 
           mutate()
-          if (activeTab === 'atendimentos') mutateAtendimentos()
+          if (activeTab === 'atendimentos') scheduleAtendimentosRefresh()
         },
       )
       .on(
@@ -1231,29 +952,16 @@ export default function NexusPage() {
           const row = (payload.new || payload.old) as { setor_id?: string | null } | null
           if (row?.setor_id && !monitoredSectorIds.has(row.setor_id)) return
           mutate()
-          if (activeTab === 'atendimentos') mutateAtendimentos()
+          if (activeTab === 'atendimentos') scheduleAtendimentosRefresh()
         },
       )
-
-    if (data?.nexusOccurrencesAvailable) {
-      channel = channel.on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'nexus_ocorrencias' },
-        (payload) => {
-          const row = (payload.new || payload.old) as { setor_id?: string | null } | null
-          if (row?.setor_id && !monitoredSectorIds.has(row.setor_id)) return
-          mutate()
-          if (activeTab === 'atendimentos') mutateAtendimentos()
-        },
-      )
-    }
 
     channel.subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [activeTab, data?.nexusOccurrencesAvailable, monitoredChannelIds, monitoredSectorIds, mutate, mutateAtendimentos, mutateSelectedTicketMessages, selectedTicketId, supabase])
+  }, [activeTab, monitoredChannelIds, monitoredSectorIds, mutate, mutateSelectedTicketMessages, scheduleAtendimentosRefresh, selectedTicketId, supabase])
 
   useEffect(() => {
     // Mantém o drawer sincronizado com os dados ao vivo. Na aba de atendimentos
@@ -1372,6 +1080,12 @@ export default function NexusPage() {
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive" role="alert">
           <span>Não foi possível atualizar a monitoria. Verifique a conexão e tente novamente.</span>
           <Button variant="outline" size="sm" onClick={() => mutate()}>Tentar novamente</Button>
+        </div>
+      )}
+      {!liveError && (data?.nexusChannelWarnings?.length ?? 0) > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300" role="status">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Canais com configuração duplicada foram ignorados na monitoria ao vivo.</span>
         </div>
       )}
       <Card className="anim-rise glass-card-elevated rounded-lg shadow-none">
@@ -1698,14 +1412,31 @@ export default function NexusPage() {
               </div>
             </CardHeader>
             <CardContent className="pt-0">
+              <span className="sr-only" aria-live="polite">
+                {atendimentosValidating && !atendimentosLoading ? 'Atualizando atendimentos.' : ''}
+              </span>
               {atendimentosError && (
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive" role="alert">
-                  <span>Não foi possível carregar o histórico. Verifique a conexão e tente novamente.</span>
+                  <span>
+                    {atendimentosError instanceof Error
+                      ? atendimentosError.message
+                      : 'Não foi possível carregar o histórico. Verifique a conexão e tente novamente.'}
+                  </span>
                   <Button variant="outline" size="sm" onClick={() => mutateAtendimentos()}>Tentar novamente</Button>
                 </div>
               )}
+              {!atendimentosError && atendimentosData?.warnings?.some(
+                (warning) => warning.code === 'AMBIGUOUS_CHANNELS_OMITTED',
+              ) && (
+                <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300" role="status">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    Um canal com configuração duplicada foi ignorado para evitar atribuir atendimentos ao setor errado.
+                  </span>
+                </div>
+              )}
               <div className="overflow-x-auto">
-                <Table aria-busy={atendimentosLoading}>
+                <Table aria-busy={atendimentosLoading || atendimentosValidating}>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo de atendimento</TableHead>
@@ -1811,10 +1542,10 @@ export default function NexusPage() {
               </Table>
             </div>
 
-            {!atendimentosLoading && atendimentosFiltrados.length > 0 && (
+            {!atendimentosLoading && totalAtendimentosFiltrados > 0 && (
               <div className="flex flex-col gap-2 pt-4 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-xs tabular-nums text-muted-foreground">
-                  {atendimentosFiltrados.length} atendimento{atendimentosFiltrados.length > 1 ? 's' : ''}
+                  {totalAtendimentosFiltrados} atendimento{totalAtendimentosFiltrados > 1 ? 's' : ''}
                   {' · '}página {paginaAtendimentos + 1} de {totalPaginasAtendimentos}
                 </p>
                 <div className="flex items-center gap-2">
@@ -1822,7 +1553,7 @@ export default function NexusPage() {
                     variant="outline"
                     size="sm"
                     className="h-8 gap-1"
-                    disabled={paginaAtendimentos === 0}
+                    disabled={atendimentosValidating || paginaAtendimentos === 0}
                     onClick={() => setAtendimentosPage((p) => Math.max(0, p - 1))}
                   >
                     <ChevronLeft className="h-4 w-4" aria-hidden="true" />
@@ -1832,7 +1563,7 @@ export default function NexusPage() {
                     variant="outline"
                     size="sm"
                     className="h-8 gap-1"
-                    disabled={paginaAtendimentos >= totalPaginasAtendimentos - 1}
+                    disabled={atendimentosValidating || paginaAtendimentos >= totalPaginasAtendimentos - 1}
                     onClick={() => setAtendimentosPage((p) => Math.min(totalPaginasAtendimentos - 1, p + 1))}
                   >
                     Próxima

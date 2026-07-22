@@ -1,137 +1,258 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
+import { resolveNexusDashboardAccess } from '@/lib/server/nexus-dashboard-access'
+import {
+  linkPreparedNexusSessionToTicket,
+  loadNexusClientScope,
+  logNexusSectorTransfer,
+  NexusSessionLinkValidationError,
+  NexusSessionTicketClaimConflictError,
+  prepareNexusSessionLink,
+  prepareNexusSessionLinkWithActiveTicket,
+} from '@/lib/server/nexus-message-linking'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
-import { criarEDistribuirTicket } from '@/lib/ticket-distribution'
+import { createNexusSessionTicketId } from '@/lib/server/nexus-ticket-id'
+import {
+  criarEDistribuirTicket,
+  TicketIdempotencyConflictError,
+} from '@/lib/ticket-distribution'
 
-const NEXUS_REMETENTES = ['cliente-nexus', 'bot-nexus']
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
 
-/**
- * POST /api/nexus/abrir-ticket
- *
- * Abre um ticket "na marra" para uma conversa que está presa no bot do Nexus.
- * Cria e distribui o ticket (service role, bypassa RLS) e vincula o histórico
- * do bot (mensagens cliente-nexus/bot-nexus sem ticket) ao ticket criado, para
- * que o atendente veja a conversa anterior. Se já houver ticket aberto para o
- * cliente no setor, reutiliza em vez de duplicar.
- *
- * Body: { clienteId?: string, telefone?: string, setorId: string }
- */
+const PRIVATE_HEADERS = {
+  'Cache-Control': 'private, no-store',
+  Vary: 'Cookie',
+}
+
+const bodySchema = z.object({
+  clienteId: z.string().uuid().nullish(),
+  telefone: z.string().trim().max(64).nullish(),
+  setorId: z.string().uuid(),
+  sourceSectorId: z.string().uuid(),
+  subsetorId: z.string().uuid().nullish(),
+  sourceMessageIds: z.array(z.string().uuid()).min(1).max(10_000),
+})
+
+function privateJson(body: unknown, status = 200) {
+  return NextResponse.json(body, { status, headers: PRIVATE_HEADERS })
+}
+
 export async function POST(request: NextRequest) {
   try {
-    // Só atendente autenticado pode forçar abertura de ticket.
+    const requestBody = await request.json().catch(() => null)
+    const parsedBody = bodySchema.safeParse(requestBody)
+    if (!parsedBody.success) {
+      return privateJson({
+        error: 'Dados inválidos para abrir o ticket.',
+        details: parsedBody.error.issues[0]?.message,
+      }, 400)
+    }
+
     const authClient = await createServerClient()
-    const { data: { user } } = await authClient.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Não autenticado' }, { status: 401 })
+    const { data: { user }, error: authError } = await authClient.auth.getUser()
+    if (authError || !user?.email) {
+      return privateJson({ error: 'Não autenticado' }, 401)
     }
 
     const supabase = createServiceClient()
-    const body = await request.json()
-    const { clienteId, telefone, setorId, subsetorId } = body as {
-      clienteId?: string | null
-      telefone?: string | null
-      setorId?: string
-      subsetorId?: string | null
+    const {
+      clienteId,
+      telefone,
+      setorId,
+      sourceSectorId,
+      subsetorId,
+      sourceMessageIds,
+    } = parsedBody.data
+    const access = await resolveNexusDashboardAccess(supabase, user.email)
+
+    if (!access) return privateJson({ error: 'Acesso negado' }, 403)
+    if (!access.sectorIds.includes(sourceSectorId)) {
+      return privateJson({ error: 'Setor de origem não autorizado' }, 403)
     }
 
-    if (!setorId) {
-      return NextResponse.json({ error: 'setorId é obrigatório' }, { status: 400 })
-    }
-
-    // Resolve o cliente: usa clienteId direto, senão acha pelo telefone.
-    let resolvedClienteId = clienteId || null
-    if (!resolvedClienteId && telefone) {
-      const { data: clientePorTelefone } = await supabase
-        .from('clientes')
-        .select('id')
-        .eq('telefone', telefone)
-        .limit(1)
+    if (setorId !== sourceSectorId) {
+      const { data: allowedDestination, error } = await supabase
+        .from('setor_destinos_transferencia')
+        .select('setor_destino_id')
+        .eq('setor_origem_id', sourceSectorId)
+        .eq('setor_destino_id', setorId)
         .maybeSingle()
-      resolvedClienteId = clientePorTelefone?.id || null
-    }
 
-    if (!resolvedClienteId) {
-      return NextResponse.json({ error: 'clienteId ou telefone válido é obrigatório' }, { status: 400 })
-    }
-
-    // Agrupa todos os cliente_ids com o mesmo telefone — o bot pode ter gravado
-    // a conversa em registros de cliente distintos com o mesmo número.
-    let clienteIds = [resolvedClienteId]
-    const { data: clienteData } = await supabase
-      .from('clientes')
-      .select('telefone')
-      .eq('id', resolvedClienteId)
-      .single()
-
-    if (clienteData?.telefone) {
-      const { data: mesmosTelefone } = await supabase
-        .from('clientes')
-        .select('id')
-        .eq('telefone', clienteData.telefone)
-      if (mesmosTelefone && mesmosTelefone.length > 0) {
-        clienteIds = [...new Set(mesmosTelefone.map((c) => c.id))]
+      if (error) throw error
+      if (!allowedDestination) {
+        return privateJson({ error: 'Setor de destino não autorizado' }, 403)
       }
     }
 
-    // Evita duplicar: reusa ticket aberto/em atendimento do cliente neste setor.
-    const { data: ticketExistente } = await supabase
-      .from('tickets')
-      .select('id, colaborador_id')
-      .in('cliente_id', clienteIds)
-      .eq('setor_id', setorId)
-      .in('status', ['aberto', 'em_atendimento'])
-      .order('criado_em', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    if (subsetorId) {
+      const { data: subsetor, error } = await supabase
+        .from('subsetores')
+        .select('id, ativo')
+        .eq('id', subsetorId)
+        .eq('setor_id', setorId)
+        .maybeSingle()
+
+      if (error) throw error
+      if (!subsetor?.ativo) {
+        return privateJson(
+          { error: 'O subsetor não pertence ao setor de destino ou está inativo' },
+          400,
+        )
+      }
+    }
+
+    let resolvedClient: { id: string; telefone: string | null } | null = null
+    if (clienteId) {
+      const { data, error } = await supabase
+        .from('clientes')
+        .select('id, telefone')
+        .eq('id', clienteId)
+        .maybeSingle()
+      if (error) throw error
+      resolvedClient = data
+    } else if (telefone) {
+      const { data, error } = await supabase
+        .from('clientes')
+        .select('id, telefone')
+        .eq('telefone', telefone)
+        .order('id', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      if (error) throw error
+      resolvedClient = data
+    }
+
+    if (!resolvedClient) {
+      return privateJson({ error: 'Cliente não encontrado' }, 400)
+    }
+
+    const clientScope = await loadNexusClientScope(supabase, resolvedClient.id)
+    if (!clientScope) return privateJson({ error: 'Cliente não encontrado' }, 400)
+
+    const {
+      preparedSession,
+      activeTicket: linkedSessionTicket,
+    } = await prepareNexusSessionLinkWithActiveTicket({
+      supabase,
+      messageIds: sourceMessageIds,
+      sourceSectorId,
+      allowedClientIds: clientScope.clientIds,
+      clientPhone: clientScope.clientPhone,
+    })
+
+    const existingTicket: {
+      id: string
+      setor_id: string
+      colaborador_id: string | null
+    } | null = linkedSessionTicket
 
     let ticketId: string
     let colaboradorId: string | null
-    const jaExistia = Boolean(ticketExistente)
+    let jaExistia = Boolean(existingTicket)
+    let shouldLogRequestedTransfer = true
+    let actualTicketSectorId = existingTicket?.setor_id || setorId
 
-    if (ticketExistente) {
-      ticketId = ticketExistente.id
-      colaboradorId = ticketExistente.colaborador_id
+    if (existingTicket) {
+      ticketId = existingTicket.id
+      colaboradorId = existingTicket.colaborador_id
     } else {
-      const result = await criarEDistribuirTicket(resolvedClienteId, setorId, 'whatsapp', subsetorId || null)
+      const result = await criarEDistribuirTicket(
+        resolvedClient.id,
+        setorId,
+        'whatsapp',
+        subsetorId || null,
+        {
+          idempotency: {
+            ticketId: createNexusSessionTicketId(
+              preparedSession.sourceSectorId,
+              preparedSession.messageIds,
+            ),
+            acceptedClientIds: clientScope.clientIds,
+          },
+        },
+      )
       if (!result) {
-        return NextResponse.json({ error: 'Falha ao criar o ticket' }, { status: 500 })
+        return privateJson({ error: 'Falha ao criar o ticket' }, 500)
       }
       ticketId = result.ticketId
       colaboradorId = result.colaboradorId
+      jaExistia = !result.created
+      shouldLogRequestedTransfer = result.created
+      actualTicketSectorId = result.setorId
     }
 
-    // Vincula o histórico do bot ao ticket para o atendente ver a conversa.
-    const { error: linkError, count } = await supabase
-      .from('mensagens')
-      .update({ ticket_id: ticketId }, { count: 'exact' })
-      .in('cliente_id', clienteIds)
-      .is('ticket_id', null)
-      .in('remetente', NEXUS_REMETENTES)
+    const currentSession = await prepareNexusSessionLink({
+      supabase,
+      messageIds: preparedSession.messageIds,
+      sourceSectorId,
+      allowedClientIds: clientScope.clientIds,
+      clientPhone: clientScope.clientPhone,
+      targetTicketId: ticketId,
+    })
 
-    if (linkError) {
-      console.error('[nexus/abrir-ticket] Falha ao vincular mensagens do bot:', linkError.message)
+    if (shouldLogRequestedTransfer) {
+      try {
+        await logNexusSectorTransfer({
+          supabase,
+          ticketId,
+          sourceSectorId,
+          targetSectorId: actualTicketSectorId,
+        })
+      } catch (error) {
+        console.warn('[nexus/abrir-ticket] Ticket criado, mas log de transferência não registrado:', error)
+      }
+    }
+    const mensagensVinculadas = await linkPreparedNexusSessionToTicket({
+      supabase,
+      messageIds: currentSession.messageIds,
+      ticketId,
+    })
+
+    if (mensagensVinculadas !== currentSession.messageIds.length) {
+      throw new Error('Não foi possível vincular toda a sessão Nexus ao ticket.')
     }
 
-    // Nome do atendente atribuído (se houver) para feedback na UI.
     let colaboradorNome: string | null = null
     if (colaboradorId) {
-      const { data: colab } = await supabase
+      const { data, error } = await supabase
         .from('colaboradores')
         .select('nome')
         .eq('id', colaboradorId)
         .maybeSingle()
-      colaboradorNome = colab?.nome || null
+      if (error) throw error
+      colaboradorNome = data?.nome || null
     }
 
-    return NextResponse.json({
+    return privateJson({
       success: true,
       ticketId,
       colaboradorId,
       colaboradorNome,
       jaExistia,
-      mensagensVinculadas: count ?? 0,
+      mensagensVinculadas,
     })
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message || 'Erro interno' }, { status: 500 })
+  } catch (error) {
+    if (error instanceof NexusSessionTicketClaimConflictError) {
+      return privateJson({
+        error: error.message,
+        ticketId: error.winnerTicketId,
+      }, 409)
+    }
+
+    if (error instanceof TicketIdempotencyConflictError) {
+      return privateJson({
+        error: 'Esta conversa Nexus já foi convertida em outro setor ou subsetor.',
+        ticketId: error.winner.ticketId,
+      }, 409)
+    }
+
+    if (error instanceof NexusSessionLinkValidationError) {
+      return privateJson({ error: error.message }, 409)
+    }
+
+    console.error('[nexus/abrir-ticket] Erro inesperado:', error)
+    return privateJson({ error: 'Erro interno ao abrir o ticket' }, 500)
   }
 }

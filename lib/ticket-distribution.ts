@@ -5,6 +5,33 @@ import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 interface DistribuicaoResult {
   ticketId: string
   colaboradorId: string | null
+  created: boolean
+  setorId: string
+}
+
+type IdempotencyWinner = {
+  ticketId: string
+  clienteId: string
+  setorId: string
+  subsetorId: string | null
+  canal: string
+  status: string
+  colaboradorId: string | null
+}
+
+export class TicketIdempotencyConflictError extends Error {
+  constructor(readonly winner: IdempotencyWinner) {
+    super('A sessão Nexus já foi convertida em outro contexto de atendimento.')
+    this.name = 'TicketIdempotencyConflictError'
+  }
+}
+
+interface TicketCreationMetadata {
+  tipoAtendimento?: string | null
+  idempotency?: {
+    ticketId: string
+    acceptedClientIds?: readonly string[]
+  }
 }
 
 /**
@@ -17,7 +44,8 @@ export async function criarEDistribuirTicket(
   clienteId: string,
   setorId: string,
   canal: string = 'whatsapp',
-  subsetorId: string | null = null
+  subsetorId: string | null = null,
+  metadata: TicketCreationMetadata = {},
 ): Promise<DistribuicaoResult | null> {
   // Use service role client to bypass RLS — this function is called both from
   // authenticated user sessions and from bots/n8n without a user session.
@@ -53,59 +81,104 @@ export async function criarEDistribuirTicket(
       prioridade: 'normal',
     }
 
+    if (metadata.idempotency?.ticketId) {
+      ticketData.id = metadata.idempotency.ticketId
+    }
+
     if (subsetorId) {
       ticketData.subsetor_id = subsetorId
     }
+    const tipoAtendimento = metadata.tipoAtendimento?.trim()
+    if (tipoAtendimento) {
+      ticketData.tipo_atendimento = tipoAtendimento
+    }
 
-    const { data: ticket, error: ticketError } = await supabase
+    let insertResult = await supabase
       .from('tickets')
       .insert(ticketData)
       .select('id')
       .single()
+    const missingClassifierColumn = insertResult.error
+      && ['42703', 'PGRST204'].includes(insertResult.error.code || '')
+      && insertResult.error.message.includes('tipo_atendimento')
+
+    if (missingClassifierColumn && ticketData.tipo_atendimento) {
+      const compatibleTicketData = { ...ticketData }
+      delete compatibleTicketData.tipo_atendimento
+      insertResult = await supabase
+        .from('tickets')
+        .insert(compatibleTicketData)
+        .select('id')
+        .single()
+    }
+
+    let ticket = insertResult.data
+    let ticketError = insertResult.error
+
+    const duplicateIdempotentTicket = ticketError?.code === '23505'
+      && Boolean(metadata.idempotency?.ticketId)
+
+    if (duplicateIdempotentTicket) {
+      const acceptedClientIds = new Set(
+        metadata.idempotency?.acceptedClientIds?.length
+          ? metadata.idempotency.acceptedClientIds
+          : [clienteId],
+      )
+      const { data: existingTicket, error: existingTicketError } = await supabase
+        .from('tickets')
+        .select('id, cliente_id, setor_id, subsetor_id, canal, status, colaborador_id')
+        .eq('id', metadata.idempotency!.ticketId)
+        .maybeSingle()
+
+      if (existingTicketError) {
+        console.error('[criarEDistribuirTicket] Falha ao recuperar ticket idempotente:', existingTicketError)
+        return null
+      }
+      if (!existingTicket || !acceptedClientIds.has(existingTicket.cliente_id)) {
+        console.error('[criarEDistribuirTicket] Conflito inesperado no identificador idempotente do ticket')
+        return null
+      }
+
+      const winner: IdempotencyWinner = {
+        ticketId: existingTicket.id,
+        clienteId: existingTicket.cliente_id,
+        setorId: existingTicket.setor_id,
+        subsetorId: existingTicket.subsetor_id,
+        canal: existingTicket.canal,
+        status: existingTicket.status,
+        colaboradorId: existingTicket.colaborador_id,
+      }
+      if (!['aberto', 'em_atendimento'].includes(winner.status)) {
+        throw new TicketIdempotencyConflictError(winner)
+      }
+
+      if (tipoAtendimento) {
+        const { error: classifierUpdateError } = await supabase
+          .from('tickets')
+          .update({ tipo_atendimento: tipoAtendimento })
+          .eq('id', existingTicket.id)
+        if (
+          classifierUpdateError
+          && !(
+            ['42703', 'PGRST204'].includes(classifierUpdateError.code || '')
+            && classifierUpdateError.message.includes('tipo_atendimento')
+          )
+        ) {
+          throw classifierUpdateError
+        }
+      }
+
+      return {
+        ticketId: existingTicket.id,
+        colaboradorId: existingTicket.colaborador_id,
+        created: false,
+        setorId: existingTicket.setor_id,
+      }
+    }
 
     if (ticketError || !ticket) {
       console.error('[criarEDistribuirTicket] Erro ao inserir ticket:', JSON.stringify(ticketError), 'Data:', JSON.stringify(ticketData))
       return null
-    }
-
-    // Vincula ao ticket recém-criado o histórico órfão do bot Nexus
-    // (cliente-nexus/bot-nexus, sem ticket_id) para este cliente, para que o
-    // atendente veja a conversa anterior com o bot. Agrupa por telefone porque
-    // o bot pode ter gravado a conversa em registros de cliente distintos com o
-    // mesmo número. Mesmo raciocínio de /api/nexus/abrir-ticket — aqui cobre
-    // TODOS os caminhos de criação de ticket (webhook do WhatsApp, disparo,
-    // /api/tickets/criar), não só o botão manual "abrir ticket" do painel Nexus.
-    // Best-effort: falha aqui não deve impedir a criação/distribuição do ticket.
-    try {
-      let clienteIdsMesmoTelefone = [clienteId]
-      const { data: clienteRow } = await supabase
-        .from('clientes')
-        .select('telefone')
-        .eq('id', clienteId)
-        .maybeSingle()
-      if (clienteRow?.telefone) {
-        const { data: mesmosTelefone } = await supabase
-          .from('clientes')
-          .select('id')
-          .eq('telefone', clienteRow.telefone)
-        if (mesmosTelefone && mesmosTelefone.length > 0) {
-          clienteIdsMesmoTelefone = [...new Set(mesmosTelefone.map((c) => c.id))]
-        }
-      }
-      const { error: linkNexusError, count: nexusLinkedCount } = await supabase
-        .from('mensagens')
-        .update({ ticket_id: ticket.id }, { count: 'exact' })
-        .in('cliente_id', clienteIdsMesmoTelefone)
-        .is('ticket_id', null)
-        .in('remetente', ['cliente-nexus', 'bot-nexus'])
-
-      if (linkNexusError) {
-        console.warn('[criarEDistribuirTicket] Falha ao vincular histórico do Nexus:', linkNexusError.message)
-      } else if (nexusLinkedCount) {
-        console.log(`[criarEDistribuirTicket] ${nexusLinkedCount} mensagem(ns) do Nexus vinculada(s) ao ticket ${ticket.id}`)
-      }
-    } catch (nexusLinkErr) {
-      console.warn('[criarEDistribuirTicket] Erro ao tentar vincular histórico do Nexus:', nexusLinkErr)
     }
 
     let assignedColaboradorId: string | null = null
@@ -413,11 +486,20 @@ export async function criarEDistribuirTicket(
     })
     if (criacaoLogError) console.warn('[Distribuição] Falha ao gravar log criacao:', criacaoLogError.message)
 
+    const { data: finalTicket } = await supabase
+      .from('tickets')
+      .select('setor_id')
+      .eq('id', ticket.id)
+      .maybeSingle()
+
     return {
       ticketId: ticket.id,
       colaboradorId: assignedColaboradorId,
+      created: true,
+      setorId: finalTicket?.setor_id || setorId,
     }
   } catch (error) {
+    if (error instanceof TicketIdempotencyConflictError) throw error
     console.error('Error in criarEDistribuirTicket:', error)
     return null
   }

@@ -6,6 +6,43 @@ export type NexusTimelineMessage = {
   enviado_em: string
 }
 
+export type NexusSessionMessage = {
+  remetente: string | null | undefined
+  enviado_em: string | null | undefined
+}
+
+export type NexusTimestampedMessage = {
+  enviado_em: string | null | undefined
+}
+
+export type NexusSessionOutcome = 'ticket' | 'encerrada_sem_ticket' | null
+
+export type NexusSessionOutcomeInput = {
+  messages: readonly NexusSessionMessage[]
+  ticketId: string | null | undefined
+  nowMs: number
+  noTicketIdleMs?: number
+}
+
+export type NexusAttendanceSummaryItem = {
+  desfecho: 'ticket' | 'encerrada' | 'encerrada_sem_ticket'
+}
+
+export type NexusAttendanceSummary = {
+  total: number
+  tickets: number
+  encerradosSemTicket: number
+  conversionRate: number
+}
+
+export type NexusAggregatesPage<T> = {
+  items: T[]
+  pageIndex: number
+  pageSize: number
+  totalItems: number
+  totalPages: number
+}
+
 type NexusSessionBoundaryInput = {
   hasCurrentSession: boolean
   currentTicketId: string | null
@@ -15,6 +52,10 @@ type NexusSessionBoundaryInput = {
 }
 
 const NEXUS_REMETENTES = new Set(['cliente-nexus', 'bot-nexus'])
+const NEXUS_BOT_REMETENTE = 'bot-nexus'
+
+export const NEXUS_NO_TICKET_IDLE_MS = 25 * 60 * 1000
+export const NEXUS_ATENDIMENTOS_PAGE_SIZE = 12
 
 const ACTOR_LABELS: Record<string, string> = {
   'cliente-nexus': 'Cliente · Nexus',
@@ -68,10 +109,102 @@ export function formatNexusAttendanceType(value: string | null | undefined): str
 export function matchesNexusTicketConversationFilter(
   status: string | null | undefined,
   filter: NexusTicketConversationFilter,
+  hasAssignedAttendant = false,
 ): boolean {
   if (filter === 'all') return true
   if (filter === 'finalizado') return status === 'encerrado'
-  return status === 'em_atendimento'
+  return hasAssignedAttendant && (status === 'aberto' || status === 'em_atendimento')
+}
+
+export function hasNexusBotResponse(messages: readonly NexusSessionMessage[]): boolean {
+  return messages.some((message) => (
+    message.remetente?.trim().toLocaleLowerCase('pt-BR') === NEXUS_BOT_REMETENTE
+  ))
+}
+
+export function classifyNexusSessionOutcome({
+  messages,
+  ticketId,
+  nowMs,
+  noTicketIdleMs = NEXUS_NO_TICKET_IDLE_MS,
+}: NexusSessionOutcomeInput): NexusSessionOutcome {
+  if (ticketId) return 'ticket'
+  if (!hasNexusBotResponse(messages)) return null
+
+  const lastMessageAt = messages[messages.length - 1]?.enviado_em
+  const lastMessageMs = lastMessageAt ? Date.parse(lastMessageAt) : Number.NaN
+  const idleMs = nowMs - lastMessageMs
+
+  if (!Number.isFinite(nowMs) || !Number.isFinite(lastMessageMs)) return null
+  if (!Number.isFinite(noTicketIdleMs) || noTicketIdleMs < 0) return null
+  return idleMs >= noTicketIdleMs ? 'encerrada_sem_ticket' : null
+}
+
+export function getLatestNexusSessionMessages<T extends NexusTimestampedMessage>(
+  messages: readonly T[],
+  maxGapMs = NEXUS_NO_TICKET_IDLE_MS,
+): T[] {
+  if (messages.length < 2) return [...messages]
+
+  const normalizedMaxGapMs = Number.isFinite(maxGapMs) && maxGapMs > 0
+    ? maxGapMs
+    : NEXUS_NO_TICKET_IDLE_MS
+  let sessionStartIndex = 0
+
+  for (let index = 1; index < messages.length; index += 1) {
+    const previousTimestamp = Date.parse(messages[index - 1]?.enviado_em || '')
+    const currentTimestamp = Date.parse(messages[index]?.enviado_em || '')
+    const gapMs = currentTimestamp - previousTimestamp
+
+    if (!Number.isFinite(gapMs) || gapMs >= normalizedMaxGapMs) {
+      sessionStartIndex = index
+    }
+  }
+
+  return messages.slice(sessionStartIndex)
+}
+
+export function summarizeNexusAttendances(
+  attendances: readonly NexusAttendanceSummaryItem[],
+): NexusAttendanceSummary {
+  let tickets = 0
+  let encerradosSemTicket = 0
+
+  for (const attendance of attendances) {
+    if (attendance.desfecho === 'ticket') tickets += 1
+    else encerradosSemTicket += 1
+  }
+
+  const total = tickets + encerradosSemTicket
+  return {
+    total,
+    tickets,
+    encerradosSemTicket,
+    conversionRate: total > 0 ? Math.round((tickets / total) * 100) : 0,
+  }
+}
+
+export function paginateNexusAggregates<T>(
+  items: readonly T[],
+  pageIndex: number,
+  pageSize = NEXUS_ATENDIMENTOS_PAGE_SIZE,
+): NexusAggregatesPage<T> {
+  const requestedPageSize = Number.isFinite(pageSize) ? Math.floor(pageSize) : 0
+  const normalizedPageSize = requestedPageSize > 0
+    ? requestedPageSize
+    : NEXUS_ATENDIMENTOS_PAGE_SIZE
+  const totalPages = Math.max(1, Math.ceil(items.length / normalizedPageSize))
+  const requestedPage = Number.isFinite(pageIndex) ? Math.floor(pageIndex) : 0
+  const normalizedPageIndex = Math.min(Math.max(0, requestedPage), totalPages - 1)
+  const start = normalizedPageIndex * normalizedPageSize
+
+  return {
+    items: items.slice(start, start + normalizedPageSize),
+    pageIndex: normalizedPageIndex,
+    pageSize: normalizedPageSize,
+    totalItems: items.length,
+    totalPages,
+  }
 }
 
 export function getNexusConversationScopeKey(
@@ -79,8 +212,12 @@ export function getNexusConversationScopeKey(
   clientId: string | null | undefined,
   normalizedPhone: string | null | undefined,
   fallbackId: string,
+  channelKey?: string | null,
 ): string {
-  return `${sectorId}::${normalizedPhone || clientId || fallbackId}`
+  const clientKey = normalizedPhone || clientId || fallbackId
+  return channelKey
+    ? `${sectorId}::${channelKey}::${clientKey}`
+    : `${sectorId}::${clientKey}`
 }
 
 export function shouldStartNewNexusSession({
@@ -90,19 +227,12 @@ export function shouldStartNewNexusSession({
   gapMs,
   maxGapMs,
 }: NexusSessionBoundaryInput): boolean {
-  if (!hasCurrentSession || gapMs > maxGapMs) return true
+  if (!hasCurrentSession || gapMs >= maxGapMs) return true
 
   // null -> ticket is the same conversation being converted. Once a session
   // already belongs to a ticket, however, a different ticket or a new null
   // message starts another contact and must not be attached to the old ticket.
   return Boolean(currentTicketId && incomingTicketId !== currentTicketId)
-}
-
-export function isMissingSupabaseRelation(error: unknown, relation: string): boolean {
-  if (!error || typeof error !== 'object') return false
-  const databaseError = error as { code?: string; message?: string }
-  return databaseError.code === 'PGRST205'
-    && Boolean(databaseError.message?.includes(relation))
 }
 
 export function mergeNexusTicketTimeline<
