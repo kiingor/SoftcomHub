@@ -62,7 +62,7 @@ export function MultiSelectFilter({
           size="sm"
           className={cn('gap-2 bg-transparent', selected.length > 0 && 'border-primary text-primary')}
         >
-          <Icon className="h-4 w-4" />
+          <Icon className="h-4 w-4" aria-hidden="true" />
           <span className="max-w-[150px] truncate">{triggerLabel}</span>
           {selected.length > 0 && (
             <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{selected.length}</Badge>
@@ -75,6 +75,7 @@ export function MultiSelectFilter({
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{header}</p>
             {selected.length > 0 && (
               <button
+                type="button"
                 onClick={() => onChange([])}
                 className="text-[11px] font-medium text-primary hover:underline"
               >
@@ -85,7 +86,10 @@ export function MultiSelectFilter({
           {searchable && (
             <input
               type="text"
-              placeholder="Buscar..."
+              name="multi-select-search"
+              aria-label={`Buscar ${pluralWord}`}
+              autoComplete="off"
+              placeholder="Buscar…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
@@ -97,13 +101,15 @@ export function MultiSelectFilter({
               return (
                 <button
                   key={o.id}
+                  type="button"
+                  aria-pressed={sel}
                   onClick={() => toggle(o.id)}
                   className={cn(
                     'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted',
                     sel && 'font-medium text-primary',
                   )}
                 >
-                  <Check className={cn('h-3.5 w-3.5 shrink-0', !sel && 'invisible')} />
+                  <Check className={cn('h-3.5 w-3.5 shrink-0', !sel && 'invisible')} aria-hidden="true" />
                   {o.cor && (
                     <span
                       className="h-2.5 w-2.5 shrink-0 rounded-full"
