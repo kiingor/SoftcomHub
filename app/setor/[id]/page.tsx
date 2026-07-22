@@ -139,6 +139,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
+import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
@@ -1355,6 +1356,15 @@ function SetorPageInner() {
     ativo: boolean
     criado_em: string
   }
+  interface TransferAtendente {
+    id: string
+    nome: string
+    is_online: boolean
+    ativo: boolean
+    pausa_atual_id: string | null
+    last_heartbeat: string | null
+    subsetor_ids: string[]
+  }
   const [subsetores, setSubsetores] = useState<Subsetor[]>([])
   const [isSubsetorModalOpen, setIsSubsetorModalOpen] = useState(false)
   const [editingSubsetor, setEditingSubsetor] = useState<Subsetor | null>(null)
@@ -1475,8 +1485,13 @@ function SetorPageInner() {
   }, [conversationTab, loadingMessages, conversationMessages])
   const [transferringTo, setTransferringTo] = useState<string>('')
   const [transferSetorDestino, setTransferSetorDestino] = useState<string>('')
-  const [transferAtendentesDestino, setTransferAtendentesDestino] = useState<any[]>([])
-  const [loadingTransferAtendentes, setLoadingTransferAtendentes] = useState(false)
+  const [transferSubsetorDestino, setTransferSubsetorDestino] = useState<string>('')
+  const [transferSubsetoresDestino, setTransferSubsetoresDestino] = useState<Subsetor[]>([])
+  const [transferAtendentesDestino, setTransferAtendentesDestino] = useState<TransferAtendente[]>([])
+  const [loadingTransferDestination, setLoadingTransferDestination] = useState(false)
+  const [transferDestinationError, setTransferDestinationError] = useState<string | null>(null)
+  const [transferSubmitting, setTransferSubmitting] = useState(false)
+  const transferDestinationRequestIdRef = useRef(0)
 
   const { data, isLoading, mutate } = useSWR(
     setorId ? ['setor-detail', setorId] : null,
@@ -3777,7 +3792,19 @@ const saveConfig = async () => {
   }
 
   // Open conversation slide-out — inclui histórico pré-ticket (bot/orphans)
+  const resetTransferDestination = () => {
+    transferDestinationRequestIdRef.current += 1
+    setTransferringTo('')
+    setTransferSetorDestino('')
+    setTransferSubsetorDestino('')
+    setTransferSubsetoresDestino([])
+    setTransferAtendentesDestino([])
+    setLoadingTransferDestination(false)
+    setTransferDestinationError(null)
+  }
+
   const openConversation = async (ticket: any) => {
+    resetTransferDestination()
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)
@@ -3839,6 +3866,7 @@ const saveConfig = async () => {
 
   // Close conversation
   const closeConversation = () => {
+    resetTransferDestination()
     setSelectedTicket(null)
     setConversationMessages([])
     setNotaInterna('')
@@ -3879,58 +3907,131 @@ const saveConfig = async () => {
   // Transfer ticket to another attendant
 
   // Buscar atendentes do setor destino para transferência
-  const fetchTransferAtendentes = async (targetSetorId: string) => {
-    setLoadingTransferAtendentes(true)
-    setTransferringTo('')
+  const fetchTransferDestination = async (targetSetorId: string, requestId: number) => {
+    setLoadingTransferDestination(true)
+    setTransferDestinationError(null)
+
     try {
-      const { data: csData } = await supabase
-        .from('colaboradores_setores')
-        .select('colaborador_id')
-        .eq('setor_id', targetSetorId)
-      if (csData && csData.length > 0) {
-        const ids = csData.map((cs: any) => cs.colaborador_id)
-        const { data: colabData } = await supabase
-          .from('colaboradores')
-          .select('id, nome, is_online, ativo, last_heartbeat')
-          .in('id', ids)
+      const [subsetoresResult, atendentesResult, subsetorLinksResult] = await Promise.all([
+        supabase
+          .from('subsetores')
+          .select('id, setor_id, nome, descricao, ativo, criado_em')
+          .eq('setor_id', targetSetorId)
           .eq('ativo', true)
-        setTransferAtendentesDestino(colabData || [])
-      } else {
-        setTransferAtendentesDestino([])
+          .order('nome'),
+        supabase
+          .from('colaboradores_setores')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+          .eq('setor_id', targetSetorId),
+        supabase
+          .from('colaboradores_subsetores')
+          .select('colaborador_id, subsetor_id')
+          .eq('setor_id', targetSetorId),
+      ])
+
+      if (subsetoresResult.error) throw subsetoresResult.error
+      if (atendentesResult.error) throw atendentesResult.error
+      if (subsetorLinksResult.error) throw subsetorLinksResult.error
+      if (requestId !== transferDestinationRequestIdRef.current) return
+
+      const subsetorIdsByAtendente = new Map<string, string[]>()
+      for (const link of subsetorLinksResult.data ?? []) {
+        const ids = subsetorIdsByAtendente.get(link.colaborador_id) ?? []
+        ids.push(link.subsetor_id)
+        subsetorIdsByAtendente.set(link.colaborador_id, ids)
       }
-    } catch {
+
+      const atendentesMap = new Map<string, TransferAtendente>()
+      for (const row of atendentesResult.data ?? []) {
+        const relation = Array.isArray(row.colaboradores)
+          ? row.colaboradores[0]
+          : row.colaboradores
+        if (!relation?.ativo) continue
+
+        atendentesMap.set(relation.id, {
+          ...relation,
+          subsetor_ids: subsetorIdsByAtendente.get(relation.id) ?? [],
+        })
+      }
+
+      setTransferSubsetoresDestino(subsetoresResult.data ?? [])
+      setTransferAtendentesDestino([...atendentesMap.values()])
+    } catch (error) {
+      if (requestId !== transferDestinationRequestIdRef.current) return
+      console.error('Erro ao carregar destino da transferência:', error)
+      setTransferDestinationError('Não foi possível carregar os dados deste setor.')
+      setTransferSubsetoresDestino([])
       setTransferAtendentesDestino([])
     } finally {
-      setLoadingTransferAtendentes(false)
+      if (requestId === transferDestinationRequestIdRef.current) {
+        setLoadingTransferDestination(false)
+      }
     }
   }
 
   const handleTransferSetorChange = (val: string) => {
+    const requestId = ++transferDestinationRequestIdRef.current
     setTransferSetorDestino(val)
-    if (val && val !== setorId) {
-      fetchTransferAtendentes(val)
-    } else if (val === setorId) {
-      // Mesmo setor: usar atendentes locais
-      setTransferAtendentesDestino([])
-    }
+    setTransferSubsetorDestino('')
+    setTransferSubsetoresDestino([])
+    setTransferAtendentesDestino([])
+    setTransferringTo('')
+    setTransferDestinationError(null)
+
+    if (val) void fetchTransferDestination(val, requestId)
+  }
+
+  const handleTransferSubsetorChange = (val: string) => {
+    setTransferSubsetorDestino(val)
+    setTransferringTo('')
   }
 
   const HEARTBEAT_STALE_MS_TRANSFER = 2 * 60 * 1000
   const isTransferAtendenteOnline = (a: any) => {
-    if (!a?.is_online || !a?.ativo) return false
+    if (!a?.is_online || !a?.ativo || a?.pausa_atual_id) return false
     if (!a.last_heartbeat) return false
     return (Date.now() - new Date(a.last_heartbeat).getTime()) < HEARTBEAT_STALE_MS_TRANSFER
   }
 
+  const transferSetorTemSubsetores = transferSubsetoresDestino.length > 0
+  const transferSubsetorSelecionado = transferSubsetoresDestino.find(
+    (subsetor) => subsetor.id === transferSubsetorDestino,
+  )
+  const transferDestinoPronto = Boolean(
+    transferSetorDestino
+    && !loadingTransferDestination
+    && !transferDestinationError
+    && (!transferSetorTemSubsetores || transferSubsetorSelecionado),
+  )
+  const transferAtendentesCompativeis = transferAtendentesDestino
+    .filter((atendente) => isExactSubsetorMatch(
+      transferSubsetorSelecionado?.id ?? null,
+      atendente.subsetor_ids,
+    ))
+    .filter((atendente) => (
+      transferSetorDestino !== setorId || atendente.id !== selectedTicket?.colaborador_id
+    ))
+    .sort((first, second) => PT_BR_COLLATOR.compare(first.nome, second.nome))
+
   const transferTicket = async () => {
     if (!selectedTicket) return
+    if (!transferSetorDestino) {
+      toast.error('Selecione o setor de destino')
+      return
+    }
+    if (transferSetorTemSubsetores && !transferSubsetorSelecionado) {
+      toast.error('Selecione o subsetor de destino')
+      return
+    }
+    if (!transferringTo) {
+      toast.error('Selecione a fila ou um atendente compatível')
+      return
+    }
 
-    const isOutroSetor = transferSetorDestino && transferSetorDestino !== setorId
     const hasAtendente = !!transferringTo && transferringTo !== '__fila__'
+    const targetSubsetorId = transferSubsetorSelecionado?.id ?? null
 
-    // Precisa de pelo menos um setor diferente ou um atendente selecionado
-    if (!isOutroSetor && !hasAtendente) return
-
+    setTransferSubmitting(true)
     try {
       const fromColabName = atendentes.find((a: any) => a.id === selectedTicket.colaborador_id)?.nome || 'Sem atendente'
       const fromSetorNome = data?.setor?.nome || 'Setor'
@@ -3940,7 +4041,8 @@ const saveConfig = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ticket_id: selectedTicket.id,
-          setor_id: isOutroSetor ? transferSetorDestino : undefined,
+          setor_id: transferSetorDestino,
+          subsetor_id: targetSubsetorId,
           colaborador_id: hasAtendente ? transferringTo : null,
           from_colaborador_nome: fromColabName,
           from_setor_nome: fromSetorNome,
@@ -3954,18 +4056,13 @@ const saveConfig = async () => {
         return
       }
 
-      if (result.queued) {
-        toast.info('Atendente no limite de tickets — ticket adicionado à fila de espera')
-      } else {
-        toast.success('Ticket transferido com sucesso!')
-      }
-      setTransferringTo('')
-      setTransferSetorDestino('')
-      setTransferAtendentesDestino([])
+      toast.success(result.message || 'Ticket transferido com sucesso!')
       closeConversation()
       mutate()
-    } catch (error) {
+    } catch {
       toast.error('Erro ao transferir ticket')
+    } finally {
+      setTransferSubmitting(false)
     }
   }
 
@@ -8836,7 +8933,9 @@ const saveConfig = async () => {
                         </SelectItem>
                         {/* Outros setores */}
                         {todosSetores
-                          .filter(s => s.id !== setorId)
+                          .filter((s) => (
+                            s.id !== setorId && setoresDestinoTransferencia.includes(s.id)
+                          ))
                           .map(s => (
                             <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
                           ))}
@@ -8844,69 +8943,99 @@ const saveConfig = async () => {
                     </Select>
                   </div>
 
-                  {/* Atendente destino */}
+                  {/* Subsetor destino */}
                   {transferSetorDestino && (
-                    <div>
-                      <Label>Transferir para</Label>
-                      <p className="text-xs text-muted-foreground mb-2">
-                        Selecione um atendente ou deixe na fila para distribuição automática
-                      </p>
-                      {loadingTransferAtendentes ? (
-                        <div className="flex items-center justify-center py-4">
-                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                    <div className="space-y-2">
+                      <Label>Subsetor destino</Label>
+                      {loadingTransferDestination ? (
+                        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Carregando subsetores e atendentes...
                         </div>
-                      ) : (
-                        <Select value={transferringTo} onValueChange={setTransferringTo}>
+                      ) : transferDestinationError ? (
+                        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                          <AlertCircle className="mr-2 inline-block h-4 w-4" />
+                          {transferDestinationError}
+                        </div>
+                      ) : transferSetorTemSubsetores ? (
+                        <Select
+                          value={transferSubsetorDestino}
+                          onValueChange={handleTransferSubsetorChange}
+                        >
                           <SelectTrigger>
-                            <SelectValue placeholder="Selecione um atendente" />
+                            <SelectValue placeholder="Selecione o subsetor" />
                           </SelectTrigger>
                           <SelectContent>
-                            {/* Opção para enviar à fila */}
-                            {transferSetorDestino !== setorId && (
-                              <SelectItem value="__fila__">
-                                <div className="flex items-center gap-2">
-                                  <Clock className="h-3.5 w-3.5 text-amber-500" />
-                                  <span>Deixar na fila (distribuição automática)</span>
-                                </div>
+                            {transferSubsetoresDestino.map((subsetor) => (
+                              <SelectItem key={subsetor.id} value={subsetor.id}>
+                                {subsetor.nome}
                               </SelectItem>
-                            )}
-                            {/* Lista de atendentes */}
-                            {(transferSetorDestino === setorId ? atendentes : transferAtendentesDestino)
-                              .filter((a: any) => {
-                                if (transferSetorDestino === setorId) {
-                                  return a.id !== selectedTicket?.colaborador_id
-                                }
-                                return true
-                              })
-                              .map((a: any) => {
-                                const online = isTransferAtendenteOnline(a)
-                                return (
-                                  <SelectItem key={a.id} value={a.id}>
-                                    <div className="flex items-center gap-2">
-                                      <span className={`h-2 w-2 rounded-full ${online ? 'bg-green-500' : 'bg-gray-300'}`} />
-                                      {a.nome}
-                                      {!online && <span className="text-xs text-muted-foreground">(offline)</span>}
-                                    </div>
-                                  </SelectItem>
-                                )
-                              })}
+                            ))}
                           </SelectContent>
                         </Select>
-                      )}
-
-                      {/* Aviso se nenhum atendente disponível no setor destino */}
-                      {!loadingTransferAtendentes && transferSetorDestino !== setorId && transferAtendentesDestino.length === 0 && (
-                        <div className="mt-2 rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
-                          <AlertCircle className="inline-block mr-2 h-4 w-4" />
-                          Nenhum atendente neste setor. O ticket ficará na fila.
+                      ) : (
+                        <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                          Este setor não possui subsetores ativos. A transferência poderá ser feita para a fila geral.
                         </div>
                       )}
+                    </div>
+                  )}
 
-                      {!loadingTransferAtendentes && transferSetorDestino === setorId &&
-                        atendentes.filter((a: any) => a.id !== selectedTicket?.colaborador_id).length === 0 && (
-                        <div className="mt-2 rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
-                          <AlertCircle className="inline-block mr-2 h-4 w-4" />
-                          Nenhum outro atendente disponível neste setor.
+                  {/* Fila ou atendente compatível */}
+                  {transferDestinoPronto && (
+                    <div className="space-y-2">
+                      <Label>Destino final</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Selecione a fila ou um atendente compatível com o subsetor.
+                      </p>
+                      <Select value={transferringTo} onValueChange={setTransferringTo}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selecione o destino" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__fila__">
+                            <div className="flex items-center gap-2">
+                              <Clock className="h-3.5 w-3.5 text-amber-500" />
+                              <span>
+                                {transferSubsetorSelecionado
+                                  ? `Fila do subsetor ${transferSubsetorSelecionado.nome}`
+                                  : 'Fila geral do setor'}
+                              </span>
+                            </div>
+                          </SelectItem>
+                          {transferAtendentesCompativeis.map((atendente) => {
+                            const online = isTransferAtendenteOnline(atendente)
+                            const emPausa = Boolean(atendente.pausa_atual_id)
+                            return (
+                              <SelectItem
+                                key={atendente.id}
+                                value={atendente.id}
+                                disabled={emPausa}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className={cn(
+                                    'h-2 w-2 rounded-full',
+                                    emPausa
+                                      ? 'bg-amber-500'
+                                      : online ? 'bg-green-500' : 'bg-gray-300',
+                                  )} />
+                                  {atendente.nome}
+                                  {emPausa ? (
+                                    <span className="text-xs text-muted-foreground">(em pausa)</span>
+                                  ) : !online ? (
+                                    <span className="text-xs text-muted-foreground">(offline)</span>
+                                  ) : null}
+                                </div>
+                              </SelectItem>
+                            )
+                          })}
+                        </SelectContent>
+                      </Select>
+
+                      {transferAtendentesCompativeis.length === 0 && (
+                        <div className="rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
+                          <AlertCircle className="mr-2 inline-block h-4 w-4" />
+                          Nenhum atendente compatível. O ticket pode permanecer na fila selecionada.
                         </div>
                       )}
                     </div>
@@ -8915,10 +9044,14 @@ const saveConfig = async () => {
                   <Button
                     className="w-full"
                     onClick={transferTicket}
-                    disabled={!transferSetorDestino || (transferSetorDestino === setorId && !transferringTo)}
+                    disabled={!transferDestinoPronto || !transferringTo || transferSubmitting}
                   >
-                    <ArrowRightLeft className="mr-2 h-4 w-4" />
-                    Confirmar Transferência
+                    {transferSubmitting ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <ArrowRightLeft className="mr-2 h-4 w-4" />
+                    )}
+                    {transferSubmitting ? 'Transferindo...' : 'Confirmar Transferência'}
                   </Button>
                 </div>
               )}
