@@ -62,11 +62,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ source: 'local', cliente: toClientResponse(localCliente) })
     }
 
-    if (!process.env.SOFTCOM_API_KEY) {
-      console.error('[clientes/lookup] SOFTCOM_API_KEY não configurada')
-      return NextResponse.json({ error: 'Busca externa indisponível' }, { status: 503 })
-    }
-
     const externalCliente = await lookupSoftcomClientByCnpj(normalizedCnpj)
     if (!externalCliente) {
       return NextResponse.json({ source: 'not_found', message: 'Cliente não encontrado' })

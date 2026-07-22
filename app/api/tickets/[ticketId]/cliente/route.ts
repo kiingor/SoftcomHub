@@ -108,11 +108,6 @@ export async function PATCH(
     let createdClienteId: string | null = null
     let previousClienteData: ClienteSnapshot | null = null
     if (!cliente) {
-      if (!process.env.SOFTCOM_API_KEY) {
-        console.error('[tickets/cliente] SOFTCOM_API_KEY não configurada')
-        return NextResponse.json({ error: 'Busca externa indisponível' }, { status: 503 })
-      }
-
       const externalCliente = await lookupSoftcomClientByCnpj(normalizedCnpj)
       if (!externalCliente) {
         return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
