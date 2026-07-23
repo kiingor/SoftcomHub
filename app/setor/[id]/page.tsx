@@ -8,6 +8,7 @@ import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador } from '@/lib/hooks/use-data'
+import { computePausaElapsedMs, isPausaEstourada, formatPausaLabel } from '@/lib/pausa-status'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 import { DateRange } from 'react-day-picker'
 import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
@@ -137,6 +138,7 @@ import {
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
+import { DEFAULT_CUSTOM_AI_CHAT_MODEL } from '@/lib/ai-provider'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
@@ -459,11 +461,33 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     const subsetor = Array.isArray(cs.subsetores) ? cs.subsetores[0] : cs.subsetores
     if (subsetor) colabSubsetoresMap[cs.colaborador_id].push(subsetor as { id: string; nome: string })
   }
-  const atendentes = atendentesSetor.map((as: any) => ({
+  const atendentesBase = atendentesSetor.map((as: any) => ({
     ...as.colaboradores,
     subsetor_ids: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.id),
     subsetor_nomes: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.nome),
   })).filter(Boolean)
+
+  // Dados da pausa ativa (nome + início + tempo máximo configurado) — mesmo padrão
+  // isolado usado em app/dashboard/monitoramento/page.tsx (evita ambiguidade de FK).
+  const pausaIds = atendentesBase.filter((a: any) => a.pausa_atual_id).map((a: any) => a.pausa_atual_id)
+  const pausaInfoMap = new Map<string, { nome: string; inicio: string; tempoMaximoMinutos: number | null }>()
+  if (pausaIds.length > 0) {
+    const { data: pausasAtivas } = await supabase
+      .from('pausas_colaboradores')
+      .select('id, inicio, pausas(nome, tempo_maximo_minutos)')
+      .in('id', pausaIds)
+    for (const p of pausasAtivas || []) {
+      const pausaInfo = (p as any).pausas
+      pausaInfoMap.set(p.id, {
+        nome: pausaInfo?.nome || 'Pausa',
+        inicio: p.inicio,
+        tempoMaximoMinutos: pausaInfo?.tempo_maximo_minutos ?? null,
+      })
+    }
+  }
+  const atendentes = atendentesBase.map((a: any) => (
+    a.pausa_atual_id ? { ...a, pausaInfo: pausaInfoMap.get(a.pausa_atual_id) || null } : a
+  ))
 
   // Calculate stats
   const ticketsNaFila = ticketsAtivos.filter((t: any) => t.status === 'aberto')
@@ -1113,6 +1137,9 @@ function SetorPageInner() {
   })
   const [saving, setSaving] = useState(false)
   const [hasUnsavedConfig, setHasUnsavedConfig] = useState(false)
+  // Vira true se detectarmos que a coluna setores.travar_ordenacao_chat ainda não existe
+  // no banco (rollout de migration pendente) — usado só pra avisar na UI, não bloqueia o resto.
+  const [travarOrdenacaoChatIndisponivel, setTravarOrdenacaoChatIndisponivel] = useState(false)
   const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
   // Dirty tracking das outras seções da página Configurações — alimenta a
   // FloatingSaveBar para unificar os múltiplos saves em um único CTA.
@@ -1238,6 +1265,7 @@ function SetorPageInner() {
   assinatura_ativa: false,
   encerramento_auto_ativo: false,
   encerramento_auto_minutos: 30,
+  travar_ordenacao_chat: false,
   })
 
 // Templates state
@@ -1380,11 +1408,12 @@ function SetorPageInner() {
     ativo: boolean
     setor_id: string
     criado_em: string
+    tempo_maximo_minutos: number | null
   }
   const [pausas, setPausas] = useState<Pausa[]>([])
   const [isPausaModalOpen, setIsPausaModalOpen] = useState(false)
   const [editingPausa, setEditingPausa] = useState<Pausa | null>(null)
-  const [pausaForm, setPausaForm] = useState({ nome: '', descricao: '' })
+  const [pausaForm, setPausaForm] = useState({ nome: '', descricao: '', tempo_maximo_minutos: '' })
   const [deletingPausaId, setDeletingPausaId] = useState<string | null>(null)
 
   // Available template variables
@@ -2026,6 +2055,7 @@ function SetorPageInner() {
         assinatura_ativa: setor.assinatura_ativa || false,
         encerramento_auto_ativo: setor.encerramento_auto_ativo || false,
         encerramento_auto_minutos: setor.encerramento_auto_minutos ?? 30,
+        travar_ordenacao_chat: setor.travar_ordenacao_chat || false,
       })
       fetchTemplates()
       fetchCanais()
@@ -2264,7 +2294,14 @@ function SetorPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [horariosLength, setorId])
 
-  
+
+
+  // Nome do subsetor do ticket é mais específico que o setor (fixo nesta tela) para a coluna "Fila".
+  const subsetorNomeById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const s of subsetores as any[]) m.set(s.id, s.nome)
+    return m
+  }, [subsetores])
 
   const ticketsEmAndamento = useMemo(() => {
     return tickets
@@ -2300,7 +2337,7 @@ function SetorPageInner() {
           ? getDurationMs(t.atribuido_em || t.criado_em, null)
           : 0,
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: setor?.nome || '',
+        fila: subsetorNomeById.get(t.subsetor_id) || 'Suporte',
         atendente: t.colaboradores?.nome || null,
         prioridade: t.prioridade,
         status: t.status,
@@ -2310,7 +2347,7 @@ function SetorPageInner() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter, monitoringTick])
+  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter, monitoringTick, subsetorNomeById])
 
   const atendenteFiltroOptions = useMemo(() => {
     const order = (x: any) => (x.is_online && !x.pausa_atual_id ? 0 : x.pausa_atual_id ? 1 : 2)
@@ -2392,7 +2429,7 @@ function SetorPageInner() {
         tempoNaFila: formatDuration(t.criado_em, null),
         tempoNaFilaMs: getDurationMs(t.criado_em, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: setor?.nome || '',
+        fila: subsetorNomeById.get(t.subsetor_id) || 'Suporte',
         prioridade: t.prioridade,
         status: t.status,
         criado_em: t.criado_em,
@@ -2400,7 +2437,7 @@ function SetorPageInner() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick])
+  }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
 
   const activeTicketCountByAttendant = useMemo(() => {
     const counts = new Map<string, number>()
@@ -2480,7 +2517,11 @@ function SetorPageInner() {
       }
     }
 
-    return [...atendentes].sort((first, second) => {
+    const filtered = atendenteFilter.length > 0
+      ? atendentes.filter((a: any) => atendenteFilter.includes(a.id))
+      : atendentes
+
+    return [...filtered].sort((first, second) => {
       const comparison = compareSortValues(
         getValue(first),
         getValue(second),
@@ -2491,6 +2532,7 @@ function SetorPageInner() {
   }, [
     activeTicketCountByAttendant,
     atendentes,
+    atendenteFilter,
     attendantsSort,
     finalizedTodayCountByAttendant,
   ])
@@ -2608,49 +2650,65 @@ const handleLogout = async () => {
 const saveConfig = async () => {
     setSaving(true)
     try {
-      const { error } = await supabase
+      const basePayload: Record<string, unknown> = {
+        nome: configForm.nome,
+        descricao: configForm.descricao,
+        icon_url: configForm.icon_url,
+        cor: configForm.cor,
+        mensagem_finalizacao: configForm.mensagem_finalizacao,
+        canal: configForm.canal || 'whatsapp',
+        template_id: configForm.template_id || null,
+        phone_number_id: configForm.phone_number_id || null,
+        template_language: configForm.template_language || 'pt_BR',
+        whatsapp_token: configForm.whatsapp_token || null,
+        max_disparos_dia: configForm.max_disparos_dia || 0,
+        discord_bot_token: configForm.discord_bot_token || null,
+        discord_guild_id: configForm.discord_guild_id || null,
+        evolution_base_url: configForm.evolution_base_url || null,
+        evolution_api_key: configForm.evolution_api_key || null,
+        // webhook_eventos guarda 2 flags: 'ticket_encerrado' (envio do webhook) e
+        // 'avaliacao'. [] = ambos off; null (nunca salvo) = ambos on por padrão.
+        webhook_eventos: [
+          ...(configForm.webhook_ativo ? ['ticket_encerrado'] : []),
+          ...(configForm.avaliacao_ativa ? ['avaliacao'] : []),
+        ],
+        tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
+        tag_id: configForm.tag_id || null,
+        is_receptor: configForm.is_receptor,
+        transmissao_ativa: configForm.transmissao_ativa,
+        setor_receptor_id: configForm.setor_receptor_id || null,
+        openai_api_key: configForm.openai_api_key || null,
+        openai_ativo: configForm.openai_ativo || false,
+        openai_url_personalizada: configForm.openai_url_personalizada || false,
+        openai_base_url: configForm.openai_url_personalizada ? (configForm.openai_base_url || null) : null,
+        nexus_ativo: configForm.nexus_ativo || false,
+        assistente_ia: configForm.assistente_ia || false,
+        assinatura_ativa: configForm.assinatura_ativa || false,
+        encerramento_auto_ativo: configForm.encerramento_auto_ativo,
+        encerramento_auto_minutos: configForm.encerramento_auto_minutos,
+      }
+
+      // travar_ordenacao_chat pode ainda não existir em produção (rollout de coluna
+      // pendente). Tenta com o campo; se a coluna não existir (42703), refaz sem ele
+      // pra não derrubar o salvamento do resto das configurações do setor.
+      let { error } = await supabase
         .from('setores')
-  .update({
-  nome: configForm.nome,
-  descricao: configForm.descricao,
-  icon_url: configForm.icon_url,
-  cor: configForm.cor,
-  mensagem_finalizacao: configForm.mensagem_finalizacao,
-  canal: configForm.canal || 'whatsapp',
-  template_id: configForm.template_id || null,
-  phone_number_id: configForm.phone_number_id || null,
-  template_language: configForm.template_language || 'pt_BR',
-  whatsapp_token: configForm.whatsapp_token || null,
-  max_disparos_dia: configForm.max_disparos_dia || 0,
-  discord_bot_token: configForm.discord_bot_token || null,
-  discord_guild_id: configForm.discord_guild_id || null,
-  evolution_base_url: configForm.evolution_base_url || null,
-  evolution_api_key: configForm.evolution_api_key || null,
-  // webhook_eventos guarda 2 flags: 'ticket_encerrado' (envio do webhook) e
-  // 'avaliacao'. [] = ambos off; null (nunca salvo) = ambos on por padrão.
-  webhook_eventos: [
-    ...(configForm.webhook_ativo ? ['ticket_encerrado'] : []),
-    ...(configForm.avaliacao_ativa ? ['avaliacao'] : []),
-  ],
-  tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
-  tag_id: configForm.tag_id || null,
-  is_receptor: configForm.is_receptor,
-  transmissao_ativa: configForm.transmissao_ativa,
-  setor_receptor_id: configForm.setor_receptor_id || null,
-  openai_api_key: configForm.openai_api_key || null,
-  openai_ativo: configForm.openai_ativo || false,
-  openai_url_personalizada: configForm.openai_url_personalizada || false,
-  openai_base_url: configForm.openai_url_personalizada ? (configForm.openai_base_url || null) : null,
-  nexus_ativo: configForm.nexus_ativo || false,
-  assistente_ia: configForm.assistente_ia || false,
-  assinatura_ativa: configForm.assinatura_ativa || false,
-  encerramento_auto_ativo: configForm.encerramento_auto_ativo,
-  encerramento_auto_minutos: configForm.encerramento_auto_minutos,
-  })
+        .update({ ...basePayload, travar_ordenacao_chat: configForm.travar_ordenacao_chat })
         .eq('id', setorId)
 
+      let travarOrdenacaoIndisponivel = false
+      if (error?.code === '42703') {
+        travarOrdenacaoIndisponivel = true
+        setTravarOrdenacaoChatIndisponivel(true)
+        ;({ error } = await supabase.from('setores').update(basePayload).eq('id', setorId))
+      }
+
       if (error) throw error
-      toast.success('Configurações salvas com sucesso!')
+      toast.success(
+        travarOrdenacaoIndisponivel
+          ? 'Configurações salvas! (Trava de ordenação ainda não disponível neste ambiente — fale com o suporte técnico.)'
+          : 'Configurações salvas com sucesso!',
+      )
       setHasUnsavedConfig(false)
       mutate()
     } catch (error) {
@@ -3356,6 +3414,16 @@ const saveConfig = async () => {
       return
     }
 
+    let tempoMaximoMinutos: number | null = null
+    if (pausaForm.tempo_maximo_minutos.trim()) {
+      const parsed = Number(pausaForm.tempo_maximo_minutos)
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        toast.error('Tempo máximo deve ser um número inteiro de minutos, 0 ou maior')
+        return
+      }
+      tempoMaximoMinutos = parsed
+    }
+
     try {
       if (editingPausa) {
         const { error } = await supabase
@@ -3363,6 +3431,7 @@ const saveConfig = async () => {
           .update({
             nome: pausaForm.nome.trim(),
             descricao: pausaForm.descricao.trim() || null,
+            tempo_maximo_minutos: tempoMaximoMinutos,
           })
           .eq('id', editingPausa.id)
         if (error) throw error
@@ -3372,6 +3441,7 @@ const saveConfig = async () => {
           setor_id: setorId,
           nome: pausaForm.nome.trim(),
           descricao: pausaForm.descricao.trim() || null,
+          tempo_maximo_minutos: tempoMaximoMinutos,
         })
         if (error) throw error
         toast.success('Pausa criada!')
@@ -3379,7 +3449,7 @@ const saveConfig = async () => {
 
       setIsPausaModalOpen(false)
       setEditingPausa(null)
-      setPausaForm({ nome: '', descricao: '' })
+      setPausaForm({ nome: '', descricao: '', tempo_maximo_minutos: '' })
       fetchPausas()
       mutate()
     } catch (error) {
@@ -3430,13 +3500,17 @@ const saveConfig = async () => {
 
   const openEditPausa = (pausa: Pausa) => {
     setEditingPausa(pausa)
-    setPausaForm({ nome: pausa.nome, descricao: pausa.descricao || '' })
+    setPausaForm({
+      nome: pausa.nome,
+      descricao: pausa.descricao || '',
+      tempo_maximo_minutos: pausa.tempo_maximo_minutos != null ? String(pausa.tempo_maximo_minutos) : '',
+    })
     setIsPausaModalOpen(true)
   }
 
   const openNewPausa = () => {
     setEditingPausa(null)
-    setPausaForm({ nome: '', descricao: '' })
+    setPausaForm({ nome: '', descricao: '', tempo_maximo_minutos: '' })
     setIsPausaModalOpen(true)
   }
 
@@ -4505,17 +4579,6 @@ const saveConfig = async () => {
                     >
                       Atendentes
                     </button>
-                    <button
-                      onClick={() => setActiveTab('filas')}
-                      className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
-                        activeTab === 'filas'
-                          ? "border-primary text-primary"
-                          : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
-                      )}
-                    >
-                      Filas
-                    </button>
                   </div>
                 </div>
 
@@ -4636,7 +4699,7 @@ const saveConfig = async () => {
                                   </TableCell>
                                   <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
                                   <TableCell className="text-sm text-foreground max-w-[160px]">
-                                    <span className="block truncate" title={ticket.fila || setor?.nome}>{ticket.fila || setor?.nome}</span>
+                                    <span className="block truncate" title={ticket.fila && ticket.fila !== setor?.nome ? `${setor?.nome} / ${ticket.fila}` : setor?.nome}>{ticket.fila || setor?.nome}</span>
                                   </TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
@@ -4746,7 +4809,7 @@ const saveConfig = async () => {
                                 </TableCell>
                                 <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
                                 <TableCell className="text-sm text-foreground max-w-[160px]">
-                                  <span className="block truncate" title={setor?.nome}>{setor?.nome}</span>
+                                  <span className="block truncate" title={ticket.fila && ticket.fila !== setor?.nome ? `${setor?.nome} / ${ticket.fila}` : setor?.nome}>{ticket.fila || setor?.nome}</span>
                                 </TableCell>
                                 <TableCell>
                                   <Badge variant={
@@ -4836,8 +4899,14 @@ const saveConfig = async () => {
                               const finalizadosHojeDoAtendente = finalizedTodayCountByAttendant.get(atendente.id) || 0
                               const isOnPause = !!atendente.pausa_atual_id
                               const isOnline = atendente.is_online
+                              const pausaInfo = atendente.pausaInfo as { nome: string; inicio: string; tempoMaximoMinutos: number | null } | null | undefined
+                              const pausaElapsedMs = isOnPause ? computePausaElapsedMs(pausaInfo, Date.now()) : 0
+                              const pausaEstourada = isOnPause && isPausaEstourada(pausaInfo, pausaElapsedMs)
+                              const pausaLabel = formatPausaLabel(pausaInfo, pausaElapsedMs)
                               const statusDisplay = isOnPause
-                                ? { color: 'bg-amber-500', textColor: 'text-amber-600 dark:text-amber-400', label: 'Ausente' }
+                                ? pausaEstourada
+                                  ? { color: 'bg-red-500', textColor: 'text-red-600 dark:text-red-400 font-medium', label: pausaLabel }
+                                  : { color: 'bg-amber-500', textColor: 'text-amber-600 dark:text-amber-400', label: pausaLabel }
                                 : isOnline
                                   ? { color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Online' }
                                   : { color: 'bg-gray-400', textColor: 'text-muted-foreground', label: 'Offline' }
@@ -4897,13 +4966,6 @@ const saveConfig = async () => {
                     </div>
                   )}
 
-                  {/* Filas Tab */}
-                  {activeTab === 'filas' && (
-                    <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                      <AlertCircle className="mb-2 h-8 w-8" />
-                      <p>Configuração de filas em desenvolvimento</p>
-                    </div>
-                  )}
                 </div>
 
                 {/* Pagination */}
@@ -4943,13 +5005,6 @@ const saveConfig = async () => {
               </CardContent>
             </Card>
 
-            {/* Warning Note */}
-            {ticketsEmAndamento.some((t: any) => t.status === 'em_atendimento' && !t.primeira_resposta_em) && (
-              <div className="flex items-center gap-2 rounded-lg bg-yellow-100 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-3 text-sm text-yellow-800 dark:text-yellow-200">
-                <AlertCircle className="h-4 w-4 flex-shrink-0" />
-                <span>O destaque amarelo sinaliza que um ticket foi atribuído a um atendente, mas o contato ainda não recebeu a primeira resposta.</span>
-              </div>
-            )}
           </div>
         )}
 
@@ -6040,6 +6095,7 @@ const saveConfig = async () => {
             ) : (
               atendentes
                 .filter((atendente: any) => {
+                  if (atendenteFilter.length > 0 && !atendenteFilter.includes(atendente.id)) return false
                   if (!searchAtendente) return true
                   const term = searchAtendente.toLowerCase()
                   return (
@@ -7249,7 +7305,7 @@ const saveConfig = async () => {
                     setHasUnsavedConfig(true)
                   }}
                 />
-                <p className="text-xs text-muted-foreground">A chave será usada para chamar a OpenAI ao melhorar mensagens. Modelo utilizado: GPT-4o mini.</p>
+                <p className="text-xs text-muted-foreground">A chave será usada para chamar a IA ao melhorar mensagens.</p>
               </div>
             )}
             {configForm.openai_ativo && (
@@ -7283,7 +7339,10 @@ const saveConfig = async () => {
                       }}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Informe a URL base (sem barra final). Os endpoints <span className="font-mono">/chat/completions</span> e <span className="font-mono">/audio/transcriptions</span> serão anexados automaticamente.
+                      Informe a URL base ou o endpoint <span className="font-mono">/chat/completions</span>. O endereço necessário será ajustado automaticamente.
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Modelo padrão: <span className="font-mono text-foreground">{DEFAULT_CUSTOM_AI_CHAT_MODEL}</span>
                     </p>
                   </div>
                 )}
@@ -7337,6 +7396,39 @@ const saveConfig = async () => {
                 checked={configForm.assinatura_ativa}
                 onCheckedChange={(checked) => {
                   setConfigForm((prev) => ({ ...prev, assinatura_ativa: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Ordenação de Conversas */}
+        <Card className="glass-card-elevated rounded-lg">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ArrowUpDown className="h-5 w-5" />
+              Ordenação de Conversas
+            </CardTitle>
+            <CardDescription>Controla se a lista de chats do WorkDesk sobe automaticamente conversas com mensagens novas</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="travar-ordenacao-chat" className="text-sm font-medium">Travar ordenação da lista de chats</Label>
+                <p className="text-xs text-muted-foreground">Quando ativado, a lista de conversas do WorkDesk não reordena automaticamente ao receber ou enviar mensagens — a ordem fica fixa para todos os atendentes deste setor</p>
+                {travarOrdenacaoChatIndisponivel && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Este recurso ainda não está disponível neste ambiente (falta uma atualização de banco de dados). A opção acima não será salva até isso ser resolvido.
+                  </p>
+                )}
+              </div>
+              <Switch
+                id="travar-ordenacao-chat"
+                aria-label="Travar ordenação da lista de chats"
+                checked={configForm.travar_ordenacao_chat}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, travar_ordenacao_chat: checked }))
                   setHasUnsavedConfig(true)
                 }}
               />
@@ -8358,6 +8450,22 @@ const saveConfig = async () => {
                 placeholder="Descreva quando esta pausa deve ser usada..."
                 rows={3}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="pausa-tempo-maximo">Tempo máximo (minutos, opcional)</Label>
+              <Input
+                id="pausa-tempo-maximo"
+                type="number"
+                min={0}
+                step={1}
+                value={pausaForm.tempo_maximo_minutos}
+                onChange={(e) => setPausaForm((prev) => ({ ...prev, tempo_maximo_minutos: e.target.value }))}
+                placeholder="Ex: 90 (1h30)"
+              />
+              <p className="text-xs text-muted-foreground">
+                Se definido, o supervisor verá um alerta quando o atendente ultrapassar esse tempo nesta pausa.
+              </p>
             </div>
           </div>
 

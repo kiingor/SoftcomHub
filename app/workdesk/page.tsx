@@ -5,6 +5,9 @@ import React from "react"
 import { useEffect, useState, useCallback, useRef, useMemo, startTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { logError } from '@/lib/error-logger'
+import { stripBrazilCountryCode } from '@/lib/phone'
+import { computeSendOutcome } from '@/lib/message-send-status'
+import { ticketSortKey as computeTicketSortKey } from '@/lib/ticket-sort'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
@@ -16,6 +19,7 @@ import {
   MessageCircle,
   Clock,
   AlertTriangle,
+  HelpCircle,
   CheckCircle,
   X,
   Filter,
@@ -97,7 +101,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Checkbox } from '@/components/ui/checkbox'
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { isConteudoProtocolo } from '@/lib/mensagem-conteudo'
 import { toast } from 'sonner'
@@ -207,6 +210,8 @@ interface Mensagem {
   phone_number_id?: string | null
   canal_envio?: string | null
   whatsapp_message_id?: string
+  status_envio?: 'pendente' | 'enviado' | 'falhou' | 'indeterminado' | null
+  erro_envio?: string | null
   discord_user_id?: string | null
   url_imagem?: string | null
   media_type?: string | null
@@ -221,6 +226,19 @@ interface Mensagem {
     criado_em: string
     encerrado_em: string | null
   }
+}
+
+// Monta a URL da "Ocorrência rápida" (Service Desk) pro ticket selecionado — usada
+// como href de um <a target="_blank"> nativo (não window.open), pra abrir a guia
+// respeitando bloqueadores de pop-up e navegação normal do navegador (abrir em nova
+// guia/janela, cmd/ctrl+click, etc.).
+function buildOcorrenciaRapidaUrl(ticket: Ticket | null): string {
+  if (!ticket) return '#'
+  const cnpjDigits = (ticket.clientes?.CNPJ || '').replace(/\D/g, '')
+  const registroDigits = (ticket.clientes?.Registro || '').replace(/\D/g, '')
+  const tel = stripBrazilCountryCode(ticket.clientes?.telefone)
+  const q = cnpjDigits || tel || registroDigits
+  return `https://agenda.softcomtecnologia.com/service-desk/ocorrencia-rapida?q=${encodeURIComponent(q)}&ticket=${encodeURIComponent(String(ticket.numero))}&tel=${encodeURIComponent(tel)}`
 }
 
 // Converte payload de erro dos endpoints /api/evolution/send e /api/whatsapp/send
@@ -865,7 +883,7 @@ export default function WorkdeskPage() {
   const transferringTicketIdsRef = useRef<Set<string>>(new Set())
   // Confirmação ao transferir para atendente offline.
   const [offlineConfirmOpen, setOfflineConfirmOpen] = useState(false)
-  const [offlineTransferTarget, setOfflineTransferTarget] = useState<{ id: string; nome: string } | null>(null)
+  const [offlineTransferTarget, setOfflineTransferTarget] = useState<{ id: string; nome: string; pausa?: boolean } | null>(null)
 
   // Helper: verifica se o atendente pode receber uma transferência agora.
   const isAtendenteOnline = useCallback((atendente?: TransferAtendente): boolean => {
@@ -908,7 +926,7 @@ export default function WorkdeskPage() {
   const onlineCompatibleAttendants = compatibleTransferAttendants.filter(isAtendenteOnline)
   const isTransferDestinationReady = hasSelectedTransferSubsetor && (
     transferDestinationMode === 'queue'
-    || Boolean(selectedTransferAttendant && !selectedTransferAttendant.pausa_atual_id)
+    || Boolean(selectedTransferAttendant)
   )
 
   // Message input
@@ -1004,6 +1022,8 @@ export default function WorkdeskPage() {
   const [pendingMessages, setPendingMessages] = useState<Map<string, 'sending' | 'sent' | 'error'>>(new Map())
   // Mensagens que falharam ao enviar — mapeia messageId → texto amigável do erro
   const [messageErrors, setMessageErrors] = useState<Map<string, string>>(new Map())
+  // Lock de idempotência client-side: evita disparar dois retries simultâneos da mesma mensagem.
+  const retryingMessageIdsRef = useRef<Set<string>>(new Set())
   
   // File upload (images and PDFs)
   // Multiple attachments — like WhatsApp, each file becomes its own message
@@ -1073,6 +1093,35 @@ export default function WorkdeskPage() {
   const [disparoSetoresWhatsapp, setDisparoSetoresWhatsapp] = useState<Array<{ id: string; nome: string }>>([])
   const [setorCanalConfig, setSetorCanalConfig] = useState<'whatsapp' | 'discord' | 'evolution_api'>('whatsapp')
   const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
+  // Trava de ordenação da lista de chats — configurada por setor (app/setor/[id]).
+  // Um atendente pode ter tickets de vários setores; cada um usa a própria configuração
+  // (mapa setor_id -> travado), em vez de um único flag global por colaborador.
+  const [travarOrdenacaoPorSetor, setTravarOrdenacaoPorSetor] = useState<Map<string, boolean>>(new Map())
+  const travarOrdenacaoPorSetorRef = useRef<Map<string, boolean>>(new Map())
+  useEffect(() => {
+    travarOrdenacaoPorSetorRef.current = travarOrdenacaoPorSetor
+  }, [travarOrdenacaoPorSetor])
+  // Busca (e faz cache em memória) a flag travar_ordenacao_chat dos setores ainda não
+  // conhecidos. Query isolada: se a coluna não existir no banco (migration pendente),
+  // essa falha não deve derrubar nenhum outro fetch — só mantém tudo como "não travado".
+  const ensureTravarOrdenacaoCarregada = useCallback(async (setorIds: (string | null | undefined)[]) => {
+    const idsUnicos = Array.from(new Set(setorIds.filter((id): id is string => !!id)))
+    const idsFaltantes = idsUnicos.filter((id) => !travarOrdenacaoPorSetorRef.current.has(id))
+    if (idsFaltantes.length === 0) return
+    const { data, error } = await supabase.from('setores').select('id, travar_ordenacao_chat').in('id', idsFaltantes)
+    if (error) return
+    setTravarOrdenacaoPorSetor((prev) => {
+      const next = new Map(prev)
+      for (const id of idsFaltantes) next.set(id, false)
+      for (const s of data || []) next.set(s.id, !!s.travar_ordenacao_chat)
+      return next
+    })
+  }, [supabase])
+  // Chave de ordenação da lista de chats: por atividade (padrão), ou por criado_em quando
+  // o SETOR DO TICKET (não do colaborador) travou a reordenação.
+  const ticketSortKey = useCallback((t: { setor_id?: string | null; ultima_mensagem_em?: string | null; criado_em: string }) => {
+    return computeTicketSortKey(t, travarOrdenacaoPorSetorRef.current)
+  }, [])
   
   // Unread messages tracking
   // Histórico de atendimentos anteriores do cliente — exibido no sidebar direito.
@@ -1133,9 +1182,6 @@ export default function WorkdeskPage() {
   // envia uma resposta (handleSendMessage limpa o entry).
   const [firstUnreadAt, setFirstUnreadAt] = useState<Map<string, string>>(new Map())
 
-  // Ticket iframe popup
-  const [ticketIframeTicket, setTicketIframeTicket] = useState<Ticket | null>(null)
-
   // Selecionar cliente dialog
   const [selecionarClienteDialogOpen, setSelecionarClienteDialogOpen] = useState(false)
   const [selecionarClienteCnpj, setSelecionarClienteCnpj] = useState('')
@@ -1150,10 +1196,12 @@ export default function WorkdeskPage() {
   const [editarClienteForm, setEditarClienteForm] = useState({ nome: '', telefone: '', CNPJ: '', Registro: '', PDV: '' })
   const [editarClienteLoading, setEditarClienteLoading] = useState(false)
 
-  // Meus subsetores ativos (seleção do próprio atendente)
+  // Subsetores vinculados ao atendente (somente leitura no Workdesk)
   const [meusSubsetorIds, setMeusSubsetorIds] = useState<string[]>([])
-  const [subsetorPickerOpen, setSubsetorPickerOpen] = useState(false)
-  const [togglingSubsetor, setTogglingSubsetor] = useState(false)
+  const meusSubsetores = useMemo(
+    () => subsetoresDisponiveis.filter((subsetor) => meusSubsetorIds.includes(subsetor.id)),
+    [meusSubsetorIds, subsetoresDisponiveis],
+  )
 
   // Fetch colaborador atual
   const fetchColaborador = useCallback(async () => {
@@ -1194,6 +1242,10 @@ export default function WorkdeskPage() {
   // tinha setorCanaisAtivos=['whatsapp'] e nem via a opção "Não Oficial" no disparo.
   const allSetorIds = (colab.setores_vinculados || []).map((s: any) => s.setor_id)
   if (colab.setor_id && !allSetorIds.includes(colab.setor_id)) allSetorIds.push(colab.setor_id)
+  // Carrega a trava de ordenação dos setores vinculados ao colaborador — cobre o caso comum.
+  // Setores de tickets vistos via permissão "ver todos os tickets" são cobertos depois,
+  // em fetchTickets, usando o setor_id de cada ticket individualmente.
+  ensureTravarOrdenacaoCarregada(allSetorIds)
   if (allSetorIds.length > 0) {
     const { data: canaisAtivos } = await supabase
       .from('setor_canais')
@@ -1321,10 +1373,15 @@ export default function WorkdeskPage() {
           ultima_mensagem_tipo: lastMsg?.tipo || null,
         }
       })
-      // Sort by ultima_mensagem_em descending (most recent first, like WhatsApp)
-      const sortedTickets = ticketsWithMessages.sort((a, b) => 
-        new Date(b.ultima_mensagem_em || b.criado_em).getTime() - 
-        new Date(a.ultima_mensagem_em || a.criado_em).getTime()
+      // Garante a trava de ordenação carregada para TODOS os setores presentes nesta
+      // lista (não só os vinculados ao colaborador) antes de ordenar — cobre supervisores
+      // que veem tickets de setores fora dos seus vínculos diretos.
+      await ensureTravarOrdenacaoCarregada(ticketsWithMessages.map((t) => t.setor_id))
+      // Sort by ultima_mensagem_em descending (most recent first, like WhatsApp) —
+      // ou por criado_em quando o setor do ticket travou a reordenação automática.
+      const sortedTickets = ticketsWithMessages.sort((a, b) =>
+        new Date(ticketSortKey(b)).getTime() -
+        new Date(ticketSortKey(a)).getTime()
       )
       setTickets(sortedTickets)
 
@@ -2362,8 +2419,8 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
                   : t
               )
               return updated.sort((a, b) =>
-                new Date(b.ultima_mensagem_em || b.criado_em).getTime() -
-                new Date(a.ultima_mensagem_em || a.criado_em).getTime()
+                new Date(ticketSortKey(b)).getTime() -
+                new Date(ticketSortKey(a)).getTime()
               )
             })
           })
@@ -2787,7 +2844,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
       const clienteId = selectedTicket.clientes.id
       const updateData: Record<string, string | null> = {
         nome: editarClienteForm.nome || null,
-        telefone: editarClienteForm.telefone || null,
+        // Telefone é travado para edição no WorkDesk — não faz parte deste update.
         CNPJ: editarClienteForm.CNPJ?.replace(/\D/g, '') || null,
         Registro: editarClienteForm.Registro || null,
         PDV: editarClienteForm.PDV || null,
@@ -2821,27 +2878,6 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
     } finally {
       setEditarClienteLoading(false)
     }
-  }
-
-  // Toggle subsetor ativo do colaborador (escreve/remove em colaboradores_subsetores)
-  const toggleMeuSubsetor = async (subsetorId: string, setorId: string) => {
-    if (!colaborador || togglingSubsetor) return
-    setTogglingSubsetor(true)
-    const isActive = meusSubsetorIds.includes(subsetorId)
-    if (isActive) {
-      await supabase
-        .from('colaboradores_subsetores')
-        .delete()
-        .eq('colaborador_id', colaborador.id)
-        .eq('subsetor_id', subsetorId)
-      setMeusSubsetorIds((prev) => prev.filter((id) => id !== subsetorId))
-    } else {
-      await supabase
-        .from('colaboradores_subsetores')
-        .insert({ colaborador_id: colaborador.id, setor_id: setorId, subsetor_id: subsetorId })
-      setMeusSubsetorIds((prev) => [...prev, subsetorId])
-    }
-    setTogglingSubsetor(false)
   }
 
   const fetchAtendentesTransfer = useCallback(async (
@@ -3059,7 +3095,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
   }
 
   // Transfer ticket
-  const handleTransferTicket = async () => {
+  const handleTransferTicket = async (allowUnavailable: boolean = false) => {
     if (!selectedTicket) return
 
     const ticket = selectedTicket
@@ -3115,6 +3151,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
           colaborador_id: atendenteDestinoId,
           from_colaborador_nome: colaborador?.nome || 'Desconhecido',
           from_setor_nome: ticket.setores?.nome || 'Desconhecido',
+          allow_unavailable: allowUnavailable,
         }),
         signal: controller.signal,
       })
@@ -3130,7 +3167,13 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
           componente: 'handleTransferTicket',
           metadata: { type: 'transfer_error', status: res.status, ticketId, error: result.error },
         })
-        toast.error(result.error || 'Erro ao transferir ticket')
+        // A disponibilidade do atendente mudou entre a confirmação no client e o
+        // servidor revalidar agora — em vez de forçar silenciosamente, pede pra tentar de novo.
+        toast.error(
+          result.code === 'TARGET_UNAVAILABLE'
+            ? 'A disponibilidade do atendente mudou. Selecione o destino novamente para confirmar.'
+            : (result.error || 'Erro ao transferir ticket'),
+        )
         // Transfer failed — bring ticket back
         transferringTicketIdsRef.current.delete(ticketId)
         if (colaborador) fetchTickets(colaborador)
@@ -3174,12 +3217,8 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
   // Caso contrário (online ou "deixar na fila"), transfere direto.
   const attemptTransfer = () => {
     const target = transferDestinationMode === 'attendant' ? selectedTransferAttendant : null
-    if (target?.pausa_atual_id) {
-      toast.error('Este atendente está em pausa. Selecione outro atendente.')
-      return
-    }
     if (target && !isAtendenteOnline(target)) {
-      setOfflineTransferTarget({ id: target.id, nome: target.nome })
+      setOfflineTransferTarget({ id: target.id, nome: target.nome, pausa: Boolean(target.pausa_atual_id) })
       setOfflineConfirmOpen(true)
       return
     }
@@ -3188,7 +3227,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
 
   const confirmOfflineTransfer = () => {
     setOfflineConfirmOpen(false)
-    handleTransferTicket()
+    handleTransferTicket(true)
   }
 
   // Disparo - CNPJ lookup
@@ -3837,6 +3876,31 @@ const insertEmoji = (emoji: string) => {
     }
   }
 
+  // Persiste o resultado do envio (sucesso/falha) na mensagem, tanto no banco quanto
+  // no estado local — sem isso, um reload perde o indicador e volta a mostrar como enviada.
+  // Só atualiza o estado local (usado quando o SERVIDOR já é a fonte autoritativa do
+  // status — ex: a rota de envio já gravou 'enviado'/'falhou' no banco — pra evitar
+  // um segundo write conflitante vindo do client).
+  const reflectStatusEnvioLocal = useCallback((messageId: string, status: Mensagem['status_envio'], erro: string | null) => {
+    setMensagens(prev => prev.map(m => (m.id === messageId ? { ...m, status_envio: status, erro_envio: erro } : m)))
+  }, [])
+
+  // Persiste o resultado no banco — usado só quando o CLIENT é quem sabe o resultado
+  // (ex: 'indeterminado', quando a resposta da nossa própria API se perdeu e não dá
+  // pra saber se o provedor recebeu). Falha ao persistir é registrada, não escondida.
+  const markStatusEnvio = useCallback(async (messageId: string, status: Mensagem['status_envio'], erro: string | null) => {
+    reflectStatusEnvioLocal(messageId, status, erro)
+    const { error } = await supabase.from('mensagens').update({ status_envio: status, erro_envio: erro }).eq('id', messageId)
+    if (error) {
+      logError({
+        tela: 'WorkDesk',
+        error: `Falha ao persistir status_envio (${status}): ${error.message}`,
+        componente: 'markStatusEnvio',
+        metadata: { messageId, status },
+      })
+    }
+  }, [reflectStatusEnvioLocal, supabase])
+
   // Send message via WhatsApp API (optimistic update like WhatsApp).
   // `overrideFile` (e.g. from voice-note auto-send) bypasses the selectedFile state
   // so the recording fires immediately without an extra Send click, and the
@@ -4046,22 +4110,33 @@ const insertEmoji = (emoji: string) => {
         setPendingMessages((prev) => new Map(prev).set(tempId, 'sending'))
 
         // Save message to Supabase
-        const { data: savedMsg, error: dbError } = await supabase
+        const insertPayloadBase = {
+          ticket_id: capturedTicketId,
+          cliente_id: capturedTicket.cliente_id,
+          remetente: 'colaborador',
+          conteudo: caption || file?.name || '',
+          tipo: messageType,
+          url_imagem: fileUrl,
+          media_type: file?.type || null,
+          phone_number_id: phoneNumberId,
+          canal_envio: canalEnvioValue,
+          reply_to_message_id: replyTo?.id || null,
+        }
+        let { data: savedMsg, error: dbError } = await supabase
           .from('mensagens')
-          .insert({
-            ticket_id: capturedTicketId,
-            cliente_id: capturedTicket.cliente_id,
-            remetente: 'colaborador',
-            conteudo: caption || file?.name || '',
-            tipo: messageType,
-            url_imagem: fileUrl,
-            media_type: file?.type || null,
-            phone_number_id: phoneNumberId,
-            canal_envio: canalEnvioValue,
-            reply_to_message_id: replyTo?.id || null,
-          })
+          .insert({ ...insertPayloadBase, status_envio: 'pendente' })
           .select()
           .single()
+
+        // Coluna status_envio pode não existir neste ambiente (feature revertida/em
+        // rollout) — nunca deixa isso impedir o envio da mensagem em si.
+        if (dbError?.code === '42703') {
+          ;({ data: savedMsg, error: dbError } = await supabase
+            .from('mensagens')
+            .insert(insertPayloadBase)
+            .select()
+            .single())
+        }
 
         if (dbError || !savedMsg) {
           console.error('[v0] Error saving message to database:', dbError)
@@ -4159,6 +4234,9 @@ const insertEmoji = (emoji: string) => {
 
             setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
             setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
+            // Erro HTTP confirmado — a própria rota de envio já gravou 'falhou' no banco
+            // (é a fonte autoritativa); aqui só refletimos localmente pra UI atualizar na hora.
+            reflectStatusEnvioLocal(currentMsgId, 'falhou', userMsg)
             return false
           }
         } catch (sendError) {
@@ -4173,11 +4251,17 @@ const insertEmoji = (emoji: string) => {
           toast.error(userMsg)
           setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
           setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
+          // Perdemos a resposta da nossa própria API — não dá pra saber se o provedor
+          // recebeu ou não. Estado explícito 'indeterminado' (não 'falhou'): o client é
+          // quem sabe disso, então é ele quem persiste.
+          await markStatusEnvio(currentMsgId, 'indeterminado', userMsg)
           return false
         }
 
-        // Mark as sent — clear the sending/sent mark after 2s (never touch 'error')
+        // Mark as sent — clear the sending/sent mark after 2s (never touch 'error').
+        // A rota de envio já gravou 'enviado' no banco (fonte autoritativa); só refletimos localmente.
         setPendingMessages(prev => new Map(prev).set(currentMsgId, 'sent'))
+        reflectStatusEnvioLocal(currentMsgId, 'enviado', null)
         setTimeout(() => {
           setPendingMessages(prev => {
             const n = new Map(prev)
@@ -4224,10 +4308,11 @@ const insertEmoji = (emoji: string) => {
         ? { ...t, ultima_mensagem: messageContent || 'Arquivo enviado', ultima_mensagem_em: now, ultima_mensagem_remetente: 'colaborador' as const }
         : t
     )
-    // Sort by ultima_mensagem_em descending (most recent first)
-    return updated.sort((a, b) => 
-      new Date(b.ultima_mensagem_em || b.criado_em).getTime() - 
-      new Date(a.ultima_mensagem_em || a.criado_em).getTime()
+    // Sort by ultima_mensagem_em descending (most recent first) —
+    // ou por criado_em quando o setor travou a reordenação automática.
+    return updated.sort((a, b) =>
+      new Date(ticketSortKey(b)).getTime() -
+      new Date(ticketSortKey(a)).getTime()
     )
   })
   
@@ -4290,6 +4375,25 @@ const insertEmoji = (emoji: string) => {
   // (o insert ocorre antes do send), então só reemitimos para o canal correto.
   const retrySendMessage = useCallback(async (msg: Mensagem) => {
     if (!selectedTicket) return
+    // Restrições de retry: só a mensagem do ticket aberto atualmente, ativo, de saída
+    // do colaborador, e sem outra tentativa já em andamento pra essa mesma mensagem.
+    // (O servidor repete essas validações — isto é só feedback rápido na UI.)
+    if (msg.ticket_id !== selectedTicket.id) {
+      toast.error('Abra o ticket correspondente para reenviar esta mensagem')
+      return
+    }
+    if (!['aberto', 'em_atendimento'].includes(selectedTicket.status)) {
+      toast.error('Este ticket não está mais ativo — não é possível reenviar')
+      return
+    }
+    if (msg.remetente !== 'colaborador') {
+      return
+    }
+    if (retryingMessageIdsRef.current.has(msg.id)) {
+      return
+    }
+    retryingMessageIdsRef.current.add(msg.id)
+
     const ticketPhone = selectedTicket.clientes?.telefone
     const canal = msg.canal_envio || 'whatsapp'
     const phoneNumberId = msg.phone_number_id || null
@@ -4347,18 +4451,25 @@ const insertEmoji = (emoji: string) => {
         toast.error(userMsg, { duration: 6000 })
         setPendingMessages(prev => new Map(prev).set(msg.id, 'error'))
         setMessageErrors(prev => new Map(prev).set(msg.id, userMsg))
+        // A rota já gravou 'falhou' no banco (fonte autoritativa) — só refletimos localmente.
+        reflectStatusEnvioLocal(msg.id, 'falhou', userMsg)
         return
       }
 
       setPendingMessages(prev => new Map(prev).set(msg.id, 'sent'))
       toast.success('Mensagem reenviada')
+      reflectStatusEnvioLocal(msg.id, 'enviado', null)
     } catch (err) {
       const userMsg = 'Erro de conexão ao reenviar mensagem'
       toast.error(userMsg)
       setPendingMessages(prev => new Map(prev).set(msg.id, 'error'))
       setMessageErrors(prev => new Map(prev).set(msg.id, userMsg))
+      // Perdemos a resposta — estado indeterminado, não falha confirmada.
+      await markStatusEnvio(msg.id, 'indeterminado', userMsg)
+    } finally {
+      retryingMessageIdsRef.current.delete(msg.id)
     }
-  }, [selectedTicket])
+  }, [selectedTicket, markStatusEnvio, reflectStatusEnvioLocal])
 
   // Handle Enter key to send message
   const handleKeyPress = useCallback((e: React.KeyboardEvent) => {
@@ -4540,7 +4651,7 @@ const insertEmoji = (emoji: string) => {
           {/* Subsetor Picker */}
           {subsetoresDisponiveis.length > 0 && (
             <div className="px-2 py-1.5 border-b border-border shrink-0">
-              <Popover open={subsetorPickerOpen} onOpenChange={setSubsetorPickerOpen}>
+              <Popover>
                 <PopoverTrigger asChild>
                   <Button
                     variant="ghost"
@@ -4550,11 +4661,11 @@ const insertEmoji = (emoji: string) => {
                     <div className="flex items-center gap-1.5 min-w-0">
                       <Layers className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span className="truncate text-muted-foreground">
-                        {meusSubsetorIds.length === 0
+                        {meusSubsetores.length === 0
                           ? 'Nenhum subsetor'
-                          : meusSubsetorIds.length === subsetoresDisponiveis.length
-                          ? 'Todos subsetores'
-                          : `${meusSubsetorIds.length} subsetor${meusSubsetorIds.length > 1 ? 'es' : ''}`}
+                          : meusSubsetores.length === 1
+                          ? meusSubsetores[0].nome
+                          : `${meusSubsetores.length} subsetores`}
                       </span>
                     </div>
                     <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -4562,28 +4673,26 @@ const insertEmoji = (emoji: string) => {
                 </PopoverTrigger>
                 <PopoverContent className="w-56 p-2" align="start">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
-                    Meus Subsetores
+                    Subsetores vinculados
                   </p>
-                  <div className="space-y-0.5">
-                    {subsetoresDisponiveis.map((subsetor) => {
-                      const isActive = meusSubsetorIds.includes(subsetor.id)
-                      return (
-                        <label
-                          key={subsetor.id}
-                          className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted cursor-pointer"
-                        >
-                          <Checkbox
-                            checked={isActive}
-                            disabled={togglingSubsetor}
-                            onCheckedChange={() =>
-                              toggleMeuSubsetor(subsetor.id, subsetor.setor_id || '')
-                            }
-                          />
+                  {meusSubsetores.length === 0 ? (
+                    <p className="px-1 py-2 text-sm text-muted-foreground">
+                      Nenhum subsetor vinculado.
+                    </p>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {meusSubsetores.map((subsetor) => (
+                        <div key={subsetor.id} className="flex items-center gap-2 rounded-md px-2 py-1.5">
+                          <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
                           <span className="text-sm">{subsetor.nome}</span>
-                        </label>
-                      )
-                    })}
-                  </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="mt-2 flex items-start gap-1.5 border-t border-border px-1 pt-2 text-xs text-muted-foreground">
+                    <Lock className="mt-0.5 h-3 w-3 shrink-0" />
+                    Alterações são feitas pela administração do setor.
+                  </p>
                 </PopoverContent>
               </Popover>
             </div>
@@ -4607,7 +4716,6 @@ const insertEmoji = (emoji: string) => {
               firstUnreadAt={firstUnreadAt}
               setorCanal={setorCanalConfig}
               colaboradorEmail={colaborador?.email || ''}
-              onOpenTicketIframe={(ticket) => setTicketIframeTicket(ticket)}
             />
           </div>
         </aside>
@@ -4728,6 +4836,10 @@ const insertEmoji = (emoji: string) => {
                           let lastTicketId: string | null = null
                           return mensagensOrdenadas.map((msg, index) => {
                             const msgStatus = pendingMessages.get(msg.id)
+                            // Sem entrada efêmera (ex: depois de um reload), cai pro status persistido no banco.
+                            // 'indeterminado' = perdemos a resposta da API, não sabemos se o provedor recebeu.
+                            const sendOutcome = computeSendOutcome(msgStatus, msg.status_envio)
+                            const isFailedSend = sendOutcome === 'failed' || sendOutcome === 'indeterminate'
                             const isNewTicket = msg.ticket_id !== lastTicketId
                             const isCurrentTicket = msg.ticket_id === selectedTicket?.id
                             const isPreviousTicket = !isCurrentTicket && isNewTicket
@@ -4857,7 +4969,7 @@ const insertEmoji = (emoji: string) => {
                                       isOutgoingMessage(msg.remetente)
                                         ? 'bg-primary text-primary-foreground rounded-br-md'
                                         : 'bg-secondary text-secondary-foreground rounded-bl-md',
-                                      msgStatus === 'error' && 'bg-orange-500 text-white border-2 border-orange-300'
+                                      isFailedSend && 'bg-orange-500 text-white border-2 border-orange-300'
                                     )}
                                   >
                         {/* Quoted reply block — preview of the parent message above this one */}
@@ -4892,10 +5004,12 @@ const insertEmoji = (emoji: string) => {
                             </p>
                           </div>
                         )}
-                        {msgStatus === 'error' && (
+                        {isFailedSend && (
                           <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
-                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                            Falha no envio
+                            {sendOutcome === 'indeterminate'
+                              ? <HelpCircle className="h-3.5 w-3.5 shrink-0" />
+                              : <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
+                            {sendOutcome === 'indeterminate' ? 'Envio não confirmado' : 'Falha no envio'}
                           </div>
                         )}
                         {msg.url_imagem && (
@@ -4931,10 +5045,10 @@ const insertEmoji = (emoji: string) => {
                             ? <TextoMensagem conteudo={msg.conteudo} className="text-sm whitespace-pre-wrap" />
                             : <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>
                         )}
-                        {msgStatus === 'error' && (
+                        {isFailedSend && (
                           <div className="mt-2 space-y-1.5">
-                            {messageErrors.get(msg.id) && (
-                              <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id)}</p>
+                            {(messageErrors.get(msg.id) || msg.erro_envio) && (
+                              <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id) || msg.erro_envio}</p>
                             )}
                             <button
                               type="button"
@@ -4955,10 +5069,11 @@ const insertEmoji = (emoji: string) => {
                                       </span>
                                       {isOutgoingMessage(msg.remetente) && (
                                         <>
-                                          {msgStatus === 'sending' && <Clock className="h-3 w-3 animate-pulse" />}
-                                          {msgStatus === 'sent' && <Check className="h-3 w-3" />}
-                                          {msgStatus === 'error' && <AlertTriangle className="h-3 w-3" />}
-                                          {!msgStatus && <CheckCheck className="h-3 w-3" />}
+                                          {(sendOutcome === 'sending' || sendOutcome === 'pending') && <Clock className="h-3 w-3 animate-pulse" />}
+                                          {sendOutcome === 'sent' && <Check className="h-3 w-3" />}
+                                          {sendOutcome === 'failed' && <AlertTriangle className="h-3 w-3" />}
+                                          {sendOutcome === 'indeterminate' && <HelpCircle className="h-3 w-3" />}
+                                          {sendOutcome === 'normal' && <CheckCheck className="h-3 w-3" />}
                                         </>
                                       )}
                                     </div>
@@ -5237,13 +5352,10 @@ const insertEmoji = (emoji: string) => {
                   className="w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                   autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  data-gramm="false"
-                  data-gramm_editor="false"
-                  data-enable-grammarly="false"
-                  data-ms-editor="false"
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
+                  spellCheck
+                  lang="pt-BR"
                   rows={1}
                   style={{ minHeight: '36px', maxHeight: '120px' }}
                   />
@@ -5613,13 +5725,15 @@ const insertEmoji = (emoji: string) => {
                 {/* Botão: Abrir ticket no sistema Softcom — sempre visível,
                     mesmo quando a seção "Info do Ticket" está colapsada. */}
                 <Button
+                  asChild
                   variant="outline"
                   size="sm"
                   className="w-full mt-3 h-8 text-xs gap-2 border-primary/40 text-primary hover:bg-primary/10"
-                  onClick={() => setTicketIframeTicket(selectedTicket)}
                 >
-                  <Ticket className="h-3.5 w-3.5" />
-                  Abrir ticket
+                  <a href={buildOcorrenciaRapidaUrl(selectedTicket)} target="_blank" rel="noopener noreferrer">
+                    <Ticket className="h-3.5 w-3.5" />
+                    Abrir ticket
+                  </a>
                 </Button>
               </div>
               )}
@@ -5844,6 +5958,10 @@ onClick={() => {
                           let lastTicketId: string | null = null
                           return mensagensOrdenadas.map((msg, index) => {
                             const msgStatus = pendingMessages.get(msg.id)
+                            // Sem entrada efêmera (ex: depois de um reload), cai pro status persistido no banco.
+                            // 'indeterminado' = perdemos a resposta da API, não sabemos se o provedor recebeu.
+                            const sendOutcome = computeSendOutcome(msgStatus, msg.status_envio)
+                            const isFailedSend = sendOutcome === 'failed' || sendOutcome === 'indeterminate'
                             const isNewTicket = msg.ticket_id !== lastTicketId
                             const isCurrentTicket = msg.ticket_id === selectedTicket?.id
                             const isPreviousTicket = !isCurrentTicket && isNewTicket
@@ -5940,13 +6058,15 @@ onClick={() => {
                     isOutgoingMessage(msg.remetente)
                       ? 'bg-primary text-primary-foreground rounded-br-md'
                       : 'bg-secondary text-secondary-foreground rounded-bl-md',
-                    msgStatus === 'error' && 'bg-orange-500 text-white border-2 border-orange-300'
+                    isFailedSend && 'bg-orange-500 text-white border-2 border-orange-300'
                                     )}
                                   >
-                  {msgStatus === 'error' && (
+                  {isFailedSend && (
                     <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                      Falha no envio
+                      {sendOutcome === 'indeterminate'
+                        ? <HelpCircle className="h-3.5 w-3.5 shrink-0" />
+                        : <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
+                      {sendOutcome === 'indeterminate' ? 'Envio não confirmado' : 'Falha no envio'}
                     </div>
                   )}
                   {msg.url_imagem && (
@@ -5967,10 +6087,10 @@ onClick={() => {
                   {isContactMessage(msg) && msg.conteudo ? (
                     <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
                   ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <TextoMensagem conteudo={msg.conteudo} className="text-sm whitespace-pre-wrap" />}
-                  {msgStatus === 'error' && (
+                  {isFailedSend && (
                     <div className="mt-2 space-y-1.5">
-                      {messageErrors.get(msg.id) && (
-                        <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id)}</p>
+                      {(messageErrors.get(msg.id) || msg.erro_envio) && (
+                        <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id) || msg.erro_envio}</p>
                       )}
                       <button
                         type="button"
@@ -5991,10 +6111,11 @@ onClick={() => {
                                       </span>
                                       {isOutgoingMessage(msg.remetente) && (
                                         <>
-                                          {msgStatus === 'sending' && <Clock className="h-3 w-3 animate-pulse" />}
-                                          {msgStatus === 'sent' && <Check className="h-3 w-3" />}
-                                          {msgStatus === 'error' && <AlertTriangle className="h-3 w-3" />}
-                                          {!msgStatus && <CheckCheck className="h-3 w-3" />}
+                                          {(sendOutcome === 'sending' || sendOutcome === 'pending') && <Clock className="h-3 w-3 animate-pulse" />}
+                                          {sendOutcome === 'sent' && <Check className="h-3 w-3" />}
+                                          {sendOutcome === 'failed' && <AlertTriangle className="h-3 w-3" />}
+                                          {sendOutcome === 'indeterminate' && <HelpCircle className="h-3 w-3" />}
+                                          {sendOutcome === 'normal' && <CheckCheck className="h-3 w-3" />}
                                         </>
                                       )}
                                     </div>
@@ -6081,13 +6202,10 @@ onClick={() => {
                   placeholder="Mensagem..."
                   className="flex-1 resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  data-gramm="false"
-                  data-gramm_editor="false"
-                  data-enable-grammarly="false"
-                  data-ms-editor="false"
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
+                  spellCheck
+                  lang="pt-BR"
                   rows={1}
                   style={{ minHeight: '36px', maxHeight: '120px' }}
                   />
@@ -6434,7 +6552,6 @@ onClick={() => {
                                 <SelectItem
                                   key={atendente.id}
                                   value={atendente.id}
-                                  disabled={Boolean(atendente.pausa_atual_id)}
                                 >
                                   <span className="flex items-center gap-2">
                                     <span
@@ -6527,14 +6644,16 @@ onClick={() => {
         </DialogContent>
       </Dialog>
 
-      {/* Confirmação: transferir para atendente offline */}
+      {/* Confirmação: transferir para atendente offline ou em pausa */}
       <AlertDialog open={offlineConfirmOpen} onOpenChange={setOfflineConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>⚠️ Transferir para atendente offline?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {offlineTransferTarget?.pausa ? '⚠️ Transferir para atendente em pausa?' : '⚠️ Transferir para atendente offline?'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              <strong>{offlineTransferTarget?.nome}</strong> está offline no momento. O ticket
-              será atribuído a ele(a) e aparecerá na lista dele(a) no WorkDesk. Deseja
+              <strong>{offlineTransferTarget?.nome}</strong> está {offlineTransferTarget?.pausa ? 'em pausa' : 'offline'} no
+              momento. O ticket será atribuído a ele(a) e aparecerá na lista dele(a) no WorkDesk. Deseja
               transferir mesmo assim?
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -6908,6 +7027,10 @@ onClick={() => {
                     placeholder="Digite a mensagem..."
                     value={disparoMensagemEvolution}
                     onChange={(e) => setDisparoMensagemEvolution(e.target.value)}
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
+                    spellCheck
+                    lang="pt-BR"
                   />
                   <p className="text-[10px] text-muted-foreground">
                     O ticket será criado e atribuído a você imediatamente. Você poderá enviar mais mensagens sem aguardar a resposta do cliente.
@@ -7119,10 +7242,14 @@ onClick={() => {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs">Telefone</Label>
+              <Label className="text-xs flex items-center gap-1">
+                Telefone
+                <Lock className="h-3 w-3 text-muted-foreground" />
+              </Label>
               <Input
                 value={editarClienteForm.telefone}
-                onChange={(e) => setEditarClienteForm((f) => ({ ...f, telefone: e.target.value }))}
+                readOnly
+                className="bg-muted text-muted-foreground cursor-not-allowed"
                 placeholder="5511999999999"
               />
             </div>
@@ -7177,45 +7304,6 @@ onClick={() => {
         </DialogContent>
       </Dialog>
 
-      {/* Ticket Iframe Popup */}
-      {ticketIframeTicket && colaborador && (
-        <div
-          className="fixed inset-x-0 bottom-0 z-[200] flex items-start justify-center bg-black/60 backdrop-blur-sm px-4 pb-4 pt-4"
-          style={{ top: 64 }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setTicketIframeTicket(null)
-          }}
-        >
-          <div className="relative w-full max-w-[96vw] rounded-lg overflow-hidden shadow-2xl border border-border bg-background flex flex-col" style={{ height: 'calc(100vh - 88px)' }}>
-            {/* Header */}
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-card shrink-0">
-              <div className="flex items-center gap-1.5">
-                <Ticket className="h-3.5 w-3.5 text-primary" />
-                <span className="text-xs font-semibold">
-                  Ocorrência rápida — {ticketIframeTicket.clientes?.nome || 'Cliente'}
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6"
-                onClick={() => setTicketIframeTicket(null)}
-              >
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-
-            {/* iFrame — Ocorrência rápida (Service Desk). q = CNPJ → telefone → Registro (só dígitos);
-                ticket = nº do ticket no SoftcomHub; tel = telefone do cliente (só dígitos). */}
-            <iframe
-              src={`https://agenda.softcomtecnologia.com/service-desk/ocorrencia-rapida?q=${encodeURIComponent((ticketIframeTicket.clientes?.CNPJ || ticketIframeTicket.clientes?.telefone || ticketIframeTicket.clientes?.Registro || '').replace(/\D/g, ''))}&ticket=${encodeURIComponent(ticketIframeTicket.numero)}&tel=${encodeURIComponent((ticketIframeTicket.clientes?.telefone || '').replace(/\D/g, ''))}`}
-              className="w-full flex-1 border-0"
-              title={`Ocorrência rápida — ${ticketIframeTicket.clientes?.nome || 'Cliente'}`}
-              allow="clipboard-read; clipboard-write"
-            />
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -7238,7 +7326,6 @@ function TicketList({
   firstUnreadAt,
   setorCanal,
   colaboradorEmail,
-  onOpenTicketIframe,
 }: {
   tickets: Ticket[]
   selectedTicket: Ticket | null
@@ -7256,7 +7343,6 @@ function TicketList({
   firstUnreadAt: Map<string, string>
   setorCanal: 'whatsapp' | 'discord' | 'evolution_api'
   colaboradorEmail: string
-  onOpenTicketIframe: (ticket: Ticket) => void
 }) {
   // Tick every 30s to re-evaluate wait times
   const [, setTick] = useState(0)

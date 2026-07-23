@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
+import { computePausaElapsedMs, isPausaEstourada, formatPausaLabel } from '@/lib/pausa-status'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -356,6 +357,29 @@ export default function MonitoramentoPage() {
         }
       }
       const atendentes = Array.from(atendentesMap.values())
+
+      // Dados da pausa ativa (nome + início + tempo máximo configurado) — query isolada
+      // via .in(id), mesmo padrão usado em app/api/painel/atendentes/route.ts (evita
+      // ambiguidade de FK do embed direto colaboradores -> pausas_colaboradores).
+      const pausaIds = atendentes.filter((a: any) => a.pausa_atual_id).map((a: any) => a.pausa_atual_id)
+      const pausaInfoMap = new Map<string, { nome: string; inicio: string; tempoMaximoMinutos: number | null }>()
+      if (pausaIds.length > 0) {
+        const { data: pausasAtivas } = await supabase
+          .from('pausas_colaboradores')
+          .select('id, inicio, pausas(nome, tempo_maximo_minutos)')
+          .in('id', pausaIds)
+        for (const p of pausasAtivas || []) {
+          const pausaInfo = (p as any).pausas
+          pausaInfoMap.set(p.id, {
+            nome: pausaInfo?.nome || 'Pausa',
+            inicio: p.inicio,
+            tempoMaximoMinutos: pausaInfo?.tempo_maximo_minutos ?? null,
+          })
+        }
+      }
+      for (const a of atendentes as any[]) {
+        if (a.pausa_atual_id) a.pausaInfo = pausaInfoMap.get(a.pausa_atual_id) || null
+      }
 
       const tickets = ticketsAtivos || []
       const todayTickets = ticketsHoje || []
@@ -1481,7 +1505,7 @@ export default function MonitoramentoPage() {
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
-                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subsetor</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
                     </TableRow>
@@ -1545,11 +1569,8 @@ export default function MonitoramentoPage() {
                             </TableCell>
                             <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
                             <TableCell className="text-sm text-foreground max-w-[160px]">
-                              <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
-                                {ticket.setor}
-                                {ticket.subsetor && (
-                                  <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                                )}
+                              <span className="block truncate" title={`${ticket.setor} / ${ticket.subsetor || 'Suporte'}`}>
+                                {ticket.subsetor || 'Suporte'}
                               </span>
                             </TableCell>
                             <TableCell className="text-sm text-foreground">
@@ -1609,6 +1630,9 @@ export default function MonitoramentoPage() {
                     {atendentesLista.map((atendente: any) => {
                       const isOnline = isAtendenteOnline(atendente) && !atendente.pausa_atual_id
                       const isPausa = !!atendente.pausa_atual_id
+                      const pausaInfo = atendente.pausaInfo as { nome: string; inicio: string; tempoMaximoMinutos: number | null } | null | undefined
+                      const pausaElapsedMs = isPausa ? computePausaElapsedMs(pausaInfo, Date.now()) : 0
+                      const pausaEstourada = isPausa && isPausaEstourada(pausaInfo, pausaElapsedMs)
                       return (
                         <div
                           key={atendente.id}
@@ -1617,16 +1641,16 @@ export default function MonitoramentoPage() {
                           <span
                             className={cn(
                               'h-3 w-3 shrink-0 rounded-full',
-                              isOnline ? 'bg-green-500' : isPausa ? 'bg-yellow-500' : 'bg-gray-400'
+                              isOnline ? 'bg-green-500' : pausaEstourada ? 'bg-red-500' : isPausa ? 'bg-yellow-500' : 'bg-gray-400'
                             )}
                           />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-medium text-foreground">{atendente.nome}</p>
                             <p className={cn(
-                              'text-xs',
-                              isOnline ? 'text-green-600 dark:text-green-400' : isPausa ? 'text-yellow-600 dark:text-yellow-400' : 'text-muted-foreground'
+                              'text-xs truncate',
+                              isOnline ? 'text-green-600 dark:text-green-400' : pausaEstourada ? 'text-red-600 dark:text-red-400 font-medium' : isPausa ? 'text-yellow-600 dark:text-yellow-400' : 'text-muted-foreground'
                             )}>
-                              {isOnline ? 'Online' : isPausa ? 'Em pausa' : 'Offline'}
+                              {isOnline ? 'Online' : isPausa ? formatPausaLabel(pausaInfo, pausaElapsedMs) : 'Offline'}
                             </p>
                           </div>
                           {atendente.ticketsAtivos > 0 && (
@@ -1653,7 +1677,7 @@ export default function MonitoramentoPage() {
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
-                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subsetor</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1698,10 +1722,7 @@ export default function MonitoramentoPage() {
                           <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
                           <TableCell className="text-xs text-foreground max-w-[160px]">
                             <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
-                              {ticket.setor}
-                              {ticket.subsetor && (
-                                <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                              )}
+                              {ticket.subsetor || ticket.setor}
                             </span>
                           </TableCell>
                           <TableCell>

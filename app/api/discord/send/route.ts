@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { authorizeTicketSend } from '@/lib/ticket-send-auth'
 
 const DISCORD_API_URL = 'https://discord.com/api/v10'
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const body = await request.json()
     const { ticketId, message, messageId, fileUrl, fileType, fileName } = body
 
@@ -17,6 +24,11 @@ export async function POST(request: NextRequest) {
         { error: 'Missing required fields: ticketId, message or fileUrl' },
         { status: 400 },
       )
+    }
+
+    const sendAuth = await authorizeTicketSend(supabase, ticketId, user.email!)
+    if (!sendAuth.ok) {
+      return NextResponse.json({ error: sendAuth.error }, { status: sendAuth.status })
     }
 
     // Get ticket to find setor
@@ -70,6 +82,9 @@ export async function POST(request: NextRequest) {
 
     if (!discordBotToken) {
       console.error('[Discord Send] ERRO: Nenhum bot token encontrado para setor', ticket.setor_id)
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: 'Discord bot token não configurado para este setor' }).eq('id', messageId)
+      }
       return NextResponse.json(
         { error: 'Discord bot token nao configurado para este setor' },
         { status: 400 },
@@ -106,10 +121,11 @@ export async function POST(request: NextRequest) {
 
     if (!discordUserId) {
       console.error('[Discord Send] ERRO: discord_user_id não encontrado para ticketId', ticketId)
-      return NextResponse.json(
-        { error: 'Discord User ID nao encontrado para este cliente. O cliente precisa enviar uma mensagem primeiro.' },
-        { status: 400 },
-      )
+      const errMsg = 'Discord User ID nao encontrado para este cliente. O cliente precisa enviar uma mensagem primeiro.'
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: errMsg }).eq('id', messageId)
+      }
+      return NextResponse.json({ error: errMsg }, { status: 400 })
     }
 
     // Step 1: Open a DM channel with the user
@@ -132,6 +148,9 @@ export async function POST(request: NextRequest) {
 
     if (!dmChannelResponse.ok) {
       console.error('[Discord Send] ERRO ao abrir DM channel:', dmChannel)
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: 'Erro ao abrir DM com o usuario no Discord' }).eq('id', messageId)
+      }
       return NextResponse.json(
         { error: 'Erro ao abrir DM com o usuario no Discord', details: dmChannel },
         { status: dmChannelResponse.status },
@@ -148,6 +167,9 @@ export async function POST(request: NextRequest) {
       // Download the file from the URL first
       const fileResponse = await fetch(fileUrl)
       if (!fileResponse.ok) {
+        if (messageId) {
+          await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: 'Erro ao baixar arquivo para envio' }).eq('id', messageId)
+        }
         return NextResponse.json(
           { error: 'Erro ao baixar arquivo para envio' },
           { status: 500 },
@@ -197,6 +219,12 @@ export async function POST(request: NextRequest) {
 
     if (!discordResponse.ok) {
       console.error('[Discord Send] ERRO ao enviar mensagem:', discordData)
+      if (messageId) {
+        await supabase
+          .from('mensagens')
+          .update({ status_envio: 'falhou', erro_envio: 'Erro ao enviar mensagem no Discord' })
+          .eq('id', messageId)
+      }
       return NextResponse.json(
         { error: 'Erro ao enviar mensagem no Discord', details: discordData },
         { status: discordResponse.status },
@@ -207,10 +235,13 @@ export async function POST(request: NextRequest) {
 
     // Update the saved message with the discord message id if messageId was provided
     if (messageId) {
-      await supabase
+      const { error: updateError } = await supabase
         .from('mensagens')
-        .update({ whatsapp_message_id: discordData.id })
+        .update({ whatsapp_message_id: discordData.id, status_envio: 'enviado', erro_envio: null })
         .eq('id', messageId)
+      if (updateError) {
+        console.error('[Discord Send] Falha ao persistir status_envio:', updateError.message)
+      }
     }
 
     // Set primeira_resposta_em on ticket if not yet set (same as WhatsApp/Evolution routes)

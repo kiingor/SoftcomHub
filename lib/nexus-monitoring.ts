@@ -14,11 +14,13 @@ type NexusSessionBoundaryInput = {
   maxGapMs: number
 }
 
-const NEXUS_REMETENTES = new Set(['cliente-nexus', 'bot-nexus'])
-
 const ACTOR_LABELS: Record<string, string> = {
   'cliente-nexus': 'Cliente · Nexus',
   'bot-nexus': 'Nexus IA',
+  // O fluxo do n8n às vezes grava as mesmas mensagens da fase bot como só
+  // 'cliente'/'bot' (sem o sufixo -nexus) — mesmo bot, mesmo cliente, só uma
+  // inconsistência de tag. Mantém o rótulo equivalente ao par -nexus.
+  bot: 'Nexus IA',
   cliente: 'Cliente',
   colaborador: 'Colaborador',
 }
@@ -47,9 +49,23 @@ function normalizeLabel(value: string): string {
   return words.charAt(0).toLocaleUpperCase('pt-BR') + words.slice(1)
 }
 
-export function getNexusMessagePhase(remetente: string | null | undefined): NexusMessagePhase {
+export function getNexusMessagePhase(
+  remetente: string | null | undefined,
+  ticketId?: string | null,
+): NexusMessagePhase {
   const normalizedRemetente = remetente?.trim().toLocaleLowerCase('pt-BR') ?? ''
-  return NEXUS_REMETENTES.has(normalizedRemetente) ? 'nexus' : 'human'
+  if (normalizedRemetente === 'cliente-nexus' || normalizedRemetente === 'bot-nexus') return 'nexus'
+  // O n8n às vezes grava as mesmas mensagens da fase bot como só 'cliente'/'bot'
+  // (sem o sufixo -nexus). Só conta como fase Nexus enquanto NÃO existe ticket —
+  // senão uma mensagem 'cliente' normal, já em atendimento humano, seria
+  // classificada errado como se ainda fosse conversa com o bot.
+  // Mesma regra de app/dashboard/nexus/page.tsx e lib/utils.ts (isClientMessage/
+  // isBotMessage) — duplicada aqui em vez de importada pra evitar mistura entre a
+  // extensão exigida pelo runtime nativo do node (--test) e a exigida pelo tsc do
+  // Next.js (que rejeita `.ts` explícito no import).
+  const isClientOrBotSemSufixoNexus = normalizedRemetente.startsWith('cliente') || normalizedRemetente === 'bot'
+  if (!ticketId && isClientOrBotSemSufixoNexus) return 'nexus'
+  return 'human'
 }
 
 export function getNexusMessageActorLabel(remetente: string | null | undefined): string {

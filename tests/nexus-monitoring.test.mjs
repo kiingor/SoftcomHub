@@ -12,16 +12,27 @@ import {
 } from '../lib/nexus-monitoring.ts'
 
 test('identifies the Nexus and human phases of a conversation', () => {
+  // Remetentes com sufixo -nexus são sempre fase Nexus, com ou sem ticket.
   assert.equal(getNexusMessagePhase('cliente-nexus'), 'nexus')
+  assert.equal(getNexusMessagePhase('cliente-nexus', 'ticket-1'), 'nexus')
   assert.equal(getNexusMessagePhase('bot-nexus'), 'nexus')
-  assert.equal(getNexusMessagePhase('cliente'), 'human')
+  assert.equal(getNexusMessagePhase('bot-nexus', 'ticket-1'), 'nexus')
   assert.equal(getNexusMessagePhase('colaborador'), 'human')
   assert.equal(getNexusMessagePhase('integracao-externa'), 'human')
+})
+
+test('a plain "cliente"/"bot" remetente (n8n tagging inconsistency) is Nexus phase only while there is no ticket yet', () => {
+  assert.equal(getNexusMessagePhase('cliente', null), 'nexus')
+  assert.equal(getNexusMessagePhase('bot', null), 'nexus')
+  // Once a ticket exists, the same remetente means a normal human-attendance message.
+  assert.equal(getNexusMessagePhase('cliente', 'ticket-1'), 'human')
+  assert.equal(getNexusMessagePhase('bot', 'ticket-1'), 'human')
 })
 
 test('labels known actors and formats an unknown sender', () => {
   assert.equal(getNexusMessageActorLabel('cliente-nexus'), 'Cliente · Nexus')
   assert.equal(getNexusMessageActorLabel('bot-nexus'), 'Nexus IA')
+  assert.equal(getNexusMessageActorLabel('bot'), 'Nexus IA')
   assert.equal(getNexusMessageActorLabel('cliente'), 'Cliente')
   assert.equal(getNexusMessageActorLabel('colaborador'), 'Colaborador')
   assert.equal(getNexusMessageActorLabel('integracao_externa'), 'Integracao externa')

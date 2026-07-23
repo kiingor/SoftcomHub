@@ -42,15 +42,25 @@ import {
   shouldStartNewNexusSession,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
-import { cn, isClientMessage } from '@/lib/utils'
+import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 
 const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
-const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE]
-const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, 'cliente', 'colaborador']
+// O fluxo do n8n nem sempre marca as mensagens da fase bot com os remetentes
+// "oficiais" — em volume relevante grava 'cliente' (em vez de 'cliente-nexus')
+// e 'bot' (em vez de 'bot-nexus'), mesmo com ticket_id ainda nulo. Sem incluir
+// as 4 variações aqui, essas mensagens nunca aparecem na aba "Ao vivo" nem
+// disparam atualização em tempo real, embora sejam claramente parte da
+// conversa com o bot (ticket ainda não existe). Confirmado no banco: são só
+// essas 4 variações (nenhuma outra) em mensagens com ticket_id nulo. Pra
+// classificar em runtime (não no filtro SQL, que precisa da lista literal),
+// usar isClientMessage/isBotMessage de @/lib/utils — nunca comparar só com
+// NEXUS_CLIENT_REMETENTE/NEXUS_BOT_REMETENTE.
+const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE, 'cliente', 'bot']
+const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, 'colaborador']
 // Intervalo sem mensagens que separa um atendimento do próximo (novo contato).
 const NEXUS_SESSION_GAP_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_SESSION_GAP_MINUTES || 40)
 const NEXUS_ATENDIMENTOS_PAGE_SIZE = 12
@@ -691,13 +701,32 @@ export default function NexusPage() {
         if (telefoneNormalizado) telefonesComOcorrenciaSemSetor.add(telefoneNormalizado)
       }
 
+      // O bot Nexus manda a resposta por um phone_number_id CENTRALIZADO (compartilhado
+      // entre setores), diferente do número que o cliente usa pra falar com cada setor —
+      // então resolveSetor() por phone_number_id da PRÓPRIA mensagem funciona pro lado do
+      // cliente, mas atribui a mensagem do bot ao setor DONO desse número compartilhado
+      // (quase sempre errado). Por isso, o bot herda o setor do cliente na mesma conversa
+      // (por telefone/cliente_id), resolvido só a partir das mensagens do lado do cliente.
+      const setorPorContato = new Map<string, { id: string; nome: string }>()
+      for (const message of nexusMessages) {
+        if (isBotMessage(message.remetente)) continue
+        const setorCliente = resolveSetor(message)
+        if (!setorCliente) continue
+        const clienteMsg = (message as any).clientes
+        const telefoneCliente = normalizeBrazilianPhone(clienteMsg?.telefone)
+        if (telefoneCliente) setorPorContato.set(telefoneCliente, setorCliente)
+        if (message.cliente_id) setorPorContato.set(message.cliente_id, setorCliente)
+      }
+
       const groups = new Map<string, Omit<NexusConversation, 'lastBotMessageAt'>>()
       for (const message of nexusMessages) {
-        const setor = resolveSetor(message)
-        if (!setor) continue
-
         const cliente = (message as any).clientes
         const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
+        const setor = isBotMessage(message.remetente)
+          ? (setorPorContato.get(telefoneNormalizado) || (message.cliente_id ? setorPorContato.get(message.cliente_id) : undefined) || resolveSetor(message))
+          : resolveSetor(message)
+        if (!setor) continue
+
         const clienteKey = telefoneNormalizado || message.cliente_id || message.id
         const scopedClientId = message.cliente_id ? `${setor.id}::${message.cliente_id}` : null
         const scopedPhone = telefoneNormalizado ? `${setor.id}::${telefoneNormalizado}` : null
@@ -727,7 +756,7 @@ export default function NexusPage() {
 
       const conversations = Array.from(groups.values())
         .map((conversation): NexusConversation => {
-          const lastBotMessage = [...conversation.messages].reverse().find((message) => message.remetente === NEXUS_BOT_REMETENTE)
+          const lastBotMessage = [...conversation.messages].reverse().find((message) => isBotMessage(message.remetente))
           return {
             ...conversation,
             lastBotMessageAt: lastBotMessage?.enviado_em || '',
@@ -849,12 +878,26 @@ export default function NexusPage() {
         setorNome: string
         messages: any[]
       }>()
+      // Mesmo problema do fetcher "ao vivo": o bot manda pelo phone_number_id
+      // centralizado (setor errado). Bot herda o setor do cliente na mesma conversa.
+      const setorPorContatoHistorico = new Map<string, { id: string; nome: string }>()
       for (const message of nexusMessages) {
-        const setor = resolveSetor(message)
-        if (!setor) continue
-
+        if (isBotMessage(message.remetente)) continue
+        const setorCliente = resolveSetor(message)
+        if (!setorCliente) continue
+        const clienteMsg = (message as any).clientes
+        const telefoneCliente = normalizeBrazilianPhone(clienteMsg?.telefone)
+        if (telefoneCliente) setorPorContatoHistorico.set(telefoneCliente, setorCliente)
+        if (message.cliente_id) setorPorContatoHistorico.set(message.cliente_id, setorCliente)
+      }
+      for (const message of nexusMessages) {
         const cliente = (message as any).clientes
         const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
+        const setor = isBotMessage(message.remetente)
+          ? (setorPorContatoHistorico.get(telefoneNormalizado) || (message.cliente_id ? setorPorContatoHistorico.get(message.cliente_id) : undefined) || resolveSetor(message))
+          : resolveSetor(message)
+        if (!setor) continue
+
         const ref = getNexusConversationScopeKey(setor.id, message.cliente_id, telefoneNormalizado, message.id)
         const atual = porCliente.get(ref)
         if (atual) {
@@ -954,7 +997,7 @@ export default function NexusPage() {
       // 4. Classifica cada sessão pelo desfecho.
       const atendimentos = sessoes
         .map((sessao): NexusAtendimento | null => {
-          const lastBotMessage = [...sessao.messages].reverse().find((m) => m.remetente === NEXUS_BOT_REMETENTE)
+          const lastBotMessage = [...sessao.messages].reverse().find((m) => isBotMessage(m.remetente))
           const lastBotMessageAt = lastBotMessage?.enviado_em || ''
           const lastMessageAt = sessao.messages[sessao.messages.length - 1]?.enviado_em || ''
           const lastRemetente = sessao.messages[sessao.messages.length - 1]?.remetente || ''
@@ -1082,7 +1125,7 @@ export default function NexusPage() {
   const selectedPhaseFirstIndexes = useMemo(() => {
     const indexes = { nexus: -1, human: -1 }
     selectedTimelineMessages.forEach((message: any, index) => {
-      const phase = getNexusMessagePhase(message.remetente)
+      const phase = getNexusMessagePhase(message.remetente, message.ticket_id)
       if (indexes[phase] === -1) indexes[phase] = index
     })
     return indexes
@@ -1935,7 +1978,7 @@ export default function NexusPage() {
                 )}
 
                 {selectedTimelineMessages.map((message: any, index) => {
-                  const phase = getNexusMessagePhase(message.remetente)
+                  const phase = getNexusMessagePhase(message.remetente, message.ticket_id)
                   const showPhaseDivider = selectedPhaseFirstIndexes[phase] === index
                   const clientMessage = isClientMessage(message.remetente)
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { checkMetaCompatibility, extFromUrl, resolveMime } from '@/lib/whatsapp-media'
+import { authorizeTicketSend } from '@/lib/ticket-send-auth'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
 
@@ -64,6 +65,14 @@ const body = await request.json()
       )
     }
 
+    // Ticket precisa estar ativo e o colaborador autenticado precisa estar autorizado
+    // nele — cobre tanto o envio inicial quanto o retry (o client já filtra, mas o
+    // servidor é a fonte de verdade).
+    const sendAuth = await authorizeTicketSend(supabase, ticketId, user.email!)
+    if (!sendAuth.ok) {
+      return NextResponse.json({ error: sendAuth.error }, { status: sendAuth.status })
+    }
+
     console.log('[WhatsApp Send] Starting send:', { ticketId, hasMessage: !!message, hasMedia: !!mediaUrl, mediaType, recipientPhone })
 
     // Try to get credentials - Priority: setor_canais > setores > env vars
@@ -116,6 +125,9 @@ const body = await request.json()
     }
 
     if (!accessToken || !senderPhoneNumberId) {
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: 'WhatsApp credentials not configured' }).eq('id', messageId)
+      }
       return NextResponse.json(
         { error: 'WhatsApp credentials not configured' },
         { status: 500 }
@@ -231,6 +243,13 @@ const body = await request.json()
 
     if (!whatsappResponse.ok) {
       console.error('[WhatsApp Send] API error:', whatsappData)
+      // Fonte autoritativa do status: grava a falha confirmada aqui, não deixa pro client.
+      if (messageId) {
+        await supabase
+          .from('mensagens')
+          .update({ status_envio: 'falhou', erro_envio: whatsappData?.error?.message || 'Falha ao enviar mensagem via WhatsApp' })
+          .eq('id', messageId)
+      }
       return NextResponse.json(
         { error: 'Failed to send WhatsApp message', details: whatsappData },
         { status: whatsappResponse.status }
@@ -238,13 +257,6 @@ const body = await request.json()
     }
 
     console.log('[WhatsApp Send] Message sent successfully, WhatsApp ID:', whatsappData.messages?.[0]?.id)
-
-    // Get colaborador info
-    const { data: colaborador } = await supabase
-      .from('colaboradores')
-      .select('id')
-      .eq('email', user.email)
-      .single()
 
     let savedMessage = null
 
@@ -255,6 +267,8 @@ const body = await request.json()
         .from('mensagens')
         .update({
           whatsapp_message_id: whatsappData.messages?.[0]?.id,
+          status_envio: 'enviado',
+          erro_envio: null,
         })
         .eq('id', messageId)
         .select()

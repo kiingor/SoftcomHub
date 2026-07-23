@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { resolveMime } from '@/lib/whatsapp-media'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import { authorizeTicketSend } from '@/lib/ticket-send-auth'
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,6 +21,11 @@ export async function POST(request: NextRequest) {
         { error: 'Missing required fields: ticketId, message or fileUrl' },
         { status: 400 },
       )
+    }
+
+    const sendAuth = await authorizeTicketSend(supabase, ticketId, user.email!)
+    if (!sendAuth.ok) {
+      return NextResponse.json({ error: sendAuth.error }, { status: sendAuth.status })
     }
 
     // Look up the parent mensagem so we can build Evolution's `quoted` object.
@@ -60,6 +66,9 @@ export async function POST(request: NextRequest) {
 
     const clientePhone = (ticket as any).clientes?.telefone
     if (!clientePhone) {
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: 'Telefone do cliente nao encontrado' }).eq('id', messageId)
+      }
       return NextResponse.json({ error: 'Telefone do cliente nao encontrado' }, { status: 400 })
     }
 
@@ -117,6 +126,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (!evolutionBaseUrl || !evolutionApiKey) {
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: 'EvolutionAPI nao configurada neste setor' }).eq('id', messageId)
+      }
       return NextResponse.json(
         { error: 'EvolutionAPI nao configurada neste setor' },
         { status: 500 },
@@ -140,10 +152,11 @@ export async function POST(request: NextRequest) {
     }
 
     if (!resolvedInstance) {
-      return NextResponse.json(
-        { error: 'Nao foi possivel determinar a instancia (instanceName). Nenhuma mensagem do cliente com phone_number_id encontrada.' },
-        { status: 400 },
-      )
+      const errMsg = 'Nao foi possivel determinar a instancia (instanceName). Nenhuma mensagem do cliente com phone_number_id encontrada.'
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: errMsg }).eq('id', messageId)
+      }
+      return NextResponse.json({ error: errMsg }, { status: 400 })
     }
 
     // Format phone number
@@ -229,9 +242,13 @@ export async function POST(request: NextRequest) {
         const state = statusData?.instance?.state || statusData?.state
         if (state && state !== 'open' && state !== 'connected') {
           console.error(`[EvolutionAPI Send] Instância ${resolvedInstance} offline (state: ${state})`)
+          const offlineMsg = `Dispositivo offline. A instância "${resolvedInstance}" não está conectada ao WhatsApp. Verifique a conexão do dispositivo.`
+          if (messageId) {
+            await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: offlineMsg }).eq('id', messageId)
+          }
           return NextResponse.json(
             {
-              error: `Dispositivo offline. A instância "${resolvedInstance}" não está conectada ao WhatsApp. Verifique a conexão do dispositivo.`,
+              error: offlineMsg,
               details: { state, instance: resolvedInstance },
               deviceOffline: true,
             },
@@ -274,9 +291,13 @@ export async function POST(request: NextRequest) {
         evolutionResponse.status === 404
 
       if (isDeviceOffline) {
+        const offlineMsg = `Dispositivo offline. Não foi possível enviar a mensagem porque a instância "${resolvedInstance}" está desconectada. Verifique a conexão do WhatsApp.`
+        if (messageId) {
+          await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: offlineMsg }).eq('id', messageId)
+        }
         return NextResponse.json(
           {
-            error: `Dispositivo offline. Não foi possível enviar a mensagem porque a instância "${resolvedInstance}" está desconectada. Verifique a conexão do WhatsApp.`,
+            error: offlineMsg,
             details: evolutionData,
             deviceOffline: true,
           },
@@ -284,8 +305,12 @@ export async function POST(request: NextRequest) {
         )
       }
 
+      const genericErrorMsg = 'Erro ao enviar mensagem via EvolutionAPI'
+      if (messageId) {
+        await supabase.from('mensagens').update({ status_envio: 'falhou', erro_envio: genericErrorMsg }).eq('id', messageId)
+      }
       return NextResponse.json(
-        { error: 'Erro ao enviar mensagem via EvolutionAPI', details: evolutionData },
+        { error: genericErrorMsg, details: evolutionData },
         { status: evolutionResponse.status },
       )
     }
@@ -301,6 +326,8 @@ export async function POST(request: NextRequest) {
     if (messageId) {
       const updatePayload: Record<string, unknown> = {
         phone_number_id: resolvedInstance,
+        status_envio: 'enviado',
+        erro_envio: null,
       }
       if (evolutionMsgId) {
         updatePayload.whatsapp_message_id = evolutionMsgId
