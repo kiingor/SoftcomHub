@@ -17,10 +17,8 @@ type NexusSessionBoundaryInput = {
 const ACTOR_LABELS: Record<string, string> = {
   'cliente-nexus': 'Cliente · Nexus',
   'bot-nexus': 'Nexus IA',
-  // O fluxo do n8n às vezes grava as mesmas mensagens da fase bot como só
-  // 'cliente'/'bot' (sem o sufixo -nexus) — mesmo bot, mesmo cliente, só uma
-  // inconsistência de tag. Mantém o rótulo equivalente ao par -nexus.
-  bot: 'Nexus IA',
+  // 'bot' (sem sufixo -nexus) NÃO é o Nexus — é um bot/sistema diferente, então
+  // não tem entrada aqui (cai no fallback normalizeLabel, que gera "Bot").
   cliente: 'Cliente',
   colaborador: 'Colaborador',
 }
@@ -55,16 +53,13 @@ export function getNexusMessagePhase(
 ): NexusMessagePhase {
   const normalizedRemetente = remetente?.trim().toLocaleLowerCase('pt-BR') ?? ''
   if (normalizedRemetente === 'cliente-nexus' || normalizedRemetente === 'bot-nexus') return 'nexus'
-  // O n8n às vezes grava as mesmas mensagens da fase bot como só 'cliente'/'bot'
+  // O n8n às vezes grava a mensagem do cliente na fase bot como só 'cliente'
   // (sem o sufixo -nexus). Só conta como fase Nexus enquanto NÃO existe ticket —
   // senão uma mensagem 'cliente' normal, já em atendimento humano, seria
-  // classificada errado como se ainda fosse conversa com o bot.
-  // Mesma regra de app/dashboard/nexus/page.tsx e lib/utils.ts (isClientMessage/
-  // isBotMessage) — duplicada aqui em vez de importada pra evitar mistura entre a
-  // extensão exigida pelo runtime nativo do node (--test) e a exigida pelo tsc do
-  // Next.js (que rejeita `.ts` explícito no import).
-  const isClientOrBotSemSufixoNexus = normalizedRemetente.startsWith('cliente') || normalizedRemetente === 'bot'
-  if (!ticketId && isClientOrBotSemSufixoNexus) return 'nexus'
+  // classificada errado como se ainda fosse conversa com o bot. IMPORTANTE:
+  // 'bot' (sem sufixo -nexus) NÃO é o Nexus — é um bot/sistema diferente, não
+  // entra nessa checagem.
+  if (!ticketId && normalizedRemetente.startsWith('cliente')) return 'nexus'
   return 'human'
 }
 

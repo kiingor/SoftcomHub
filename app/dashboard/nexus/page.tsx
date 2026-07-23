@@ -42,24 +42,21 @@ import {
   shouldStartNewNexusSession,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
-import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
+import { cn, isClientMessage } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 
 const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VISIBILITY_MINUTES || 10)
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
-// O fluxo do n8n nem sempre marca as mensagens da fase bot com os remetentes
-// "oficiais" — em volume relevante grava 'cliente' (em vez de 'cliente-nexus')
-// e 'bot' (em vez de 'bot-nexus'), mesmo com ticket_id ainda nulo. Sem incluir
-// as 4 variações aqui, essas mensagens nunca aparecem na aba "Ao vivo" nem
-// disparam atualização em tempo real, embora sejam claramente parte da
-// conversa com o bot (ticket ainda não existe). Confirmado no banco: são só
-// essas 4 variações (nenhuma outra) em mensagens com ticket_id nulo. Pra
-// classificar em runtime (não no filtro SQL, que precisa da lista literal),
-// usar isClientMessage/isBotMessage de @/lib/utils — nunca comparar só com
-// NEXUS_CLIENT_REMETENTE/NEXUS_BOT_REMETENTE.
-const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE, 'cliente', 'bot']
+// O fluxo do n8n nem sempre marca a resposta do cliente na fase bot como
+// 'cliente-nexus' — em volume relevante ele grava só 'cliente' (mesmo com
+// ticket_id ainda nulo). Sem incluir 'cliente' aqui, essas mensagens nunca
+// aparecem na aba "Ao vivo" nem disparam atualização em tempo real, embora
+// sejam claramente parte da conversa com o bot (ticket ainda não existe).
+// IMPORTANTE: 'bot' (sem sufixo -nexus) NÃO é o Nexus — é um bot/sistema
+// diferente. Não incluir aqui nem tratar como equivalente a 'bot-nexus'.
+const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE, 'cliente']
 const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, 'colaborador']
 // Intervalo sem mensagens que separa um atendimento do próximo (novo contato).
 const NEXUS_SESSION_GAP_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_SESSION_GAP_MINUTES || 40)
@@ -709,7 +706,7 @@ export default function NexusPage() {
       // (por telefone/cliente_id), resolvido só a partir das mensagens do lado do cliente.
       const setorPorContato = new Map<string, { id: string; nome: string }>()
       for (const message of nexusMessages) {
-        if (isBotMessage(message.remetente)) continue
+        if (message.remetente === NEXUS_BOT_REMETENTE) continue
         const setorCliente = resolveSetor(message)
         if (!setorCliente) continue
         const clienteMsg = (message as any).clientes
@@ -722,7 +719,7 @@ export default function NexusPage() {
       for (const message of nexusMessages) {
         const cliente = (message as any).clientes
         const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
-        const setor = isBotMessage(message.remetente)
+        const setor = message.remetente === NEXUS_BOT_REMETENTE
           ? (setorPorContato.get(telefoneNormalizado) || (message.cliente_id ? setorPorContato.get(message.cliente_id) : undefined) || resolveSetor(message))
           : resolveSetor(message)
         if (!setor) continue
@@ -756,7 +753,7 @@ export default function NexusPage() {
 
       const conversations = Array.from(groups.values())
         .map((conversation): NexusConversation => {
-          const lastBotMessage = [...conversation.messages].reverse().find((message) => isBotMessage(message.remetente))
+          const lastBotMessage = [...conversation.messages].reverse().find((message) => message.remetente === NEXUS_BOT_REMETENTE)
           return {
             ...conversation,
             lastBotMessageAt: lastBotMessage?.enviado_em || '',
@@ -882,7 +879,7 @@ export default function NexusPage() {
       // centralizado (setor errado). Bot herda o setor do cliente na mesma conversa.
       const setorPorContatoHistorico = new Map<string, { id: string; nome: string }>()
       for (const message of nexusMessages) {
-        if (isBotMessage(message.remetente)) continue
+        if (message.remetente === NEXUS_BOT_REMETENTE) continue
         const setorCliente = resolveSetor(message)
         if (!setorCliente) continue
         const clienteMsg = (message as any).clientes
@@ -893,7 +890,7 @@ export default function NexusPage() {
       for (const message of nexusMessages) {
         const cliente = (message as any).clientes
         const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
-        const setor = isBotMessage(message.remetente)
+        const setor = message.remetente === NEXUS_BOT_REMETENTE
           ? (setorPorContatoHistorico.get(telefoneNormalizado) || (message.cliente_id ? setorPorContatoHistorico.get(message.cliente_id) : undefined) || resolveSetor(message))
           : resolveSetor(message)
         if (!setor) continue
@@ -997,7 +994,7 @@ export default function NexusPage() {
       // 4. Classifica cada sessão pelo desfecho.
       const atendimentos = sessoes
         .map((sessao): NexusAtendimento | null => {
-          const lastBotMessage = [...sessao.messages].reverse().find((m) => isBotMessage(m.remetente))
+          const lastBotMessage = [...sessao.messages].reverse().find((m) => m.remetente === NEXUS_BOT_REMETENTE)
           const lastBotMessageAt = lastBotMessage?.enviado_em || ''
           const lastMessageAt = sessao.messages[sessao.messages.length - 1]?.enviado_em || ''
           const lastRemetente = sessao.messages[sessao.messages.length - 1]?.remetente || ''

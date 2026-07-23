@@ -21,18 +21,23 @@ test('identifies the Nexus and human phases of a conversation', () => {
   assert.equal(getNexusMessagePhase('integracao-externa'), 'human')
 })
 
-test('a plain "cliente"/"bot" remetente (n8n tagging inconsistency) is Nexus phase only while there is no ticket yet', () => {
+test('a plain "cliente" remetente (n8n tagging inconsistency) is Nexus phase only while there is no ticket yet', () => {
   assert.equal(getNexusMessagePhase('cliente', null), 'nexus')
-  assert.equal(getNexusMessagePhase('bot', null), 'nexus')
   // Once a ticket exists, the same remetente means a normal human-attendance message.
   assert.equal(getNexusMessagePhase('cliente', 'ticket-1'), 'human')
+})
+
+test('"bot" (no -nexus suffix) is a different bot/system, never treated as Nexus phase', () => {
+  assert.equal(getNexusMessagePhase('bot'), 'human')
+  assert.equal(getNexusMessagePhase('bot', null), 'human')
   assert.equal(getNexusMessagePhase('bot', 'ticket-1'), 'human')
 })
 
 test('labels known actors and formats an unknown sender', () => {
   assert.equal(getNexusMessageActorLabel('cliente-nexus'), 'Cliente · Nexus')
   assert.equal(getNexusMessageActorLabel('bot-nexus'), 'Nexus IA')
-  assert.equal(getNexusMessageActorLabel('bot'), 'Nexus IA')
+  // 'bot' is a different system — must NOT be labeled as Nexus IA.
+  assert.equal(getNexusMessageActorLabel('bot'), 'Bot')
   assert.equal(getNexusMessageActorLabel('cliente'), 'Cliente')
   assert.equal(getNexusMessageActorLabel('colaborador'), 'Colaborador')
   assert.equal(getNexusMessageActorLabel('integracao_externa'), 'Integracao externa')
