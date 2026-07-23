@@ -138,7 +138,6 @@ import {
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
-import { DEFAULT_CUSTOM_AI_CHAT_MODEL } from '@/lib/ai-provider'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
@@ -7340,9 +7339,6 @@ const saveConfig = async () => {
                     />
                     <p className="text-xs text-muted-foreground">
                       Informe a URL base ou o endpoint <span className="font-mono">/chat/completions</span>. O endereço necessário será ajustado automaticamente.
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Modelo padrão: <span className="font-mono text-foreground">{DEFAULT_CUSTOM_AI_CHAT_MODEL}</span>
                     </p>
                   </div>
                 )}
