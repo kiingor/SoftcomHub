@@ -37,6 +37,7 @@ import {
   getNexusMessageActorLabel,
   getNexusMessagePhase,
   isMissingSupabaseRelation,
+  isNexusRelevantMessage,
   matchesNexusTicketConversationFilter,
   mergeNexusTicketTimeline,
   shouldStartNewNexusSession,
@@ -49,15 +50,20 @@ const NEXUS_BOT_VISIBILITY_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_BOT_VI
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
+// Tags inequívocas do Nexus — seguro usar em qualquer contexto (com ou sem ticket_id).
+const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE]
 // O fluxo do n8n nem sempre marca a resposta do cliente na fase bot como
 // 'cliente-nexus' — em volume relevante ele grava só 'cliente' (mesmo com
-// ticket_id ainda nulo). Sem incluir 'cliente' aqui, essas mensagens nunca
-// aparecem na aba "Ao vivo" nem disparam atualização em tempo real, embora
-// sejam claramente parte da conversa com o bot (ticket ainda não existe).
+// ticket_id ainda nulo). MAS 'cliente' é também a tag NORMAL de qualquer
+// mensagem de cliente já em atendimento humano — só é seguro tratá-la como
+// "órfã do Nexus" quando ticket_id ainda é nulo. Usar isso sem essa checagem
+// (ex: numa query sem filtro de ticket_id) varreria TODO o histórico de
+// clientes do sistema, não só o do Nexus — foi exatamente isso que deixou a
+// aba "Atendimentos" lenta/travada.
+const NEXUS_ORPHAN_CLIENT_REMETENTE = 'cliente'
 // IMPORTANTE: 'bot' (sem sufixo -nexus) NÃO é o Nexus — é um bot/sistema
-// diferente. Não incluir aqui nem tratar como equivalente a 'bot-nexus'.
-const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE, 'cliente']
-const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, 'colaborador']
+// diferente. Nunca incluir aqui nem tratar como equivalente a 'bot-nexus'.
+const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, NEXUS_ORPHAN_CLIENT_REMETENTE, 'colaborador']
 // Intervalo sem mensagens que separa um atendimento do próximo (novo contato).
 const NEXUS_SESSION_GAP_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_SESSION_GAP_MINUTES || 40)
 const NEXUS_ATENDIMENTOS_PAGE_SIZE = 12
@@ -574,7 +580,7 @@ export default function NexusPage() {
                   .from('mensagens')
                   .select('id, ticket_id, cliente_id, remetente, conteudo, tipo, enviado_em, url_imagem, media_type, phone_number_id, clientes(id, nome, telefone)')
                   .is('ticket_id', null)
-                  .in('remetente', NEXUS_REMETENTES)
+                  .in('remetente', [...NEXUS_REMETENTES, NEXUS_ORPHAN_CLIENT_REMETENTE])
                   .in('phone_number_id', channelIds)
                   .gte('enviado_em', lookbackSince)
                   .lte('enviado_em', until)
@@ -846,7 +852,32 @@ export default function NexusPage() {
         lotesDesc.push(...lote)
         if (lote.length < CHUNK) break
       }
-      const nexusMessages = lotesDesc.reverse()
+
+      // Mensagens 'cliente' órfãs (n8n não marcou como 'cliente-nexus') SÓ contam
+      // como Nexus enquanto ticket_id ainda é nulo — por isso vêm de uma busca
+      // separada, e não do .in('remetente', ...) acima. Incluir 'cliente' ali
+      // sem essa restrição varreria TODO o histórico de clientes do sistema
+      // (não só o do Nexus), que foi o que deixou esta aba lenta.
+      const orfasCliente = canResolveMessages
+        ? await loadRowsByPages(() => {
+            let query = supabase
+              .from('mensagens')
+              .select('id, ticket_id, cliente_id, remetente, conteudo, tipo, enviado_em, url_imagem, media_type, phone_number_id, clientes(id, nome, telefone)')
+              .is('ticket_id', null)
+              .eq('remetente', NEXUS_ORPHAN_CLIENT_REMETENTE)
+              .gte('enviado_em', since)
+              .lte('enviado_em', until)
+              .order('enviado_em', { ascending: true })
+              .order('id', { ascending: true })
+            if (channelIds.length > 0) query = query.in('phone_number_id', channelIds)
+            return query
+          })
+        : []
+
+      const nexusMessages = [...lotesDesc.reverse(), ...orfasCliente].sort((a, b) => {
+        const diff = new Date(a.enviado_em).getTime() - new Date(b.enviado_em).getTime()
+        return diff !== 0 ? diff : String(a.id).localeCompare(String(b.id))
+      })
 
       const [ocorrenciasDoSetor, ocorrenciasSemSetor] = await Promise.all([
         ocorrenciasDoSetorPromise,
@@ -1257,7 +1288,10 @@ export default function NexusPage() {
           if (!row?.remetente || !NEXUS_TIMELINE_REMETENTES.includes(row.remetente)) return
 
           if (selectedTicketId && row.ticket_id === selectedTicketId) mutateSelectedTicketMessages()
-          if (!NEXUS_REMETENTES.includes(row.remetente)) return
+          // Só refaz a busca "Ao vivo"/"Atendimentos" pra mensagens realmente do
+          // Nexus — não pra toda mensagem 'cliente' do sistema (ver
+          // isNexusRelevantMessage).
+          if (!isNexusRelevantMessage(row.remetente, row.ticket_id)) return
           if (row.phone_number_id && monitoredChannelIds.size > 0 && !monitoredChannelIds.has(row.phone_number_id)) return
 
           mutate()

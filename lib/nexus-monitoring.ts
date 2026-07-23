@@ -14,6 +14,28 @@ type NexusSessionBoundaryInput = {
   maxGapMs: number
 }
 
+const NEXUS_STRICT_REMETENTES = new Set(['cliente-nexus', 'bot-nexus'])
+// 'cliente' (sem sufixo -nexus) só é seguro tratar como mensagem do Nexus
+// enquanto o ticket ainda não existe — é também a tag NORMAL de qualquer
+// mensagem de cliente já em atendimento humano. Usar essa tag como "é do
+// Nexus" sem checar ticket_id varre TODO o histórico de clientes do sistema,
+// não só o do Nexus (foi exatamente isso que deixou a aba "Atendimentos"
+// lenta/travada — voltava milhares de mensagens não relacionadas).
+const NEXUS_ORPHAN_CLIENT_REMETENTE = 'cliente'
+
+// Decide se uma mensagem (evento de INSERT/UPDATE em `mensagens`, ou linha de
+// uma query) deve contar como "relevante pro Nexus" — usado tanto pro gate do
+// realtime quanto (implicitamente) pelo escopo das queries de "Ao vivo" e
+// "Atendimentos". 'bot' (sem sufixo -nexus) nunca conta — é um bot diferente.
+export function isNexusRelevantMessage(
+  remetente: string | null | undefined,
+  ticketId: string | null | undefined,
+): boolean {
+  if (!remetente) return false
+  if (NEXUS_STRICT_REMETENTES.has(remetente)) return true
+  return remetente === NEXUS_ORPHAN_CLIENT_REMETENTE && !ticketId
+}
+
 const ACTOR_LABELS: Record<string, string> = {
   'cliente-nexus': 'Cliente · Nexus',
   'bot-nexus': 'Nexus IA',

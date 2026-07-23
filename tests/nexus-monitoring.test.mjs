@@ -6,10 +6,30 @@ import {
   getNexusMessageActorLabel,
   getNexusMessagePhase,
   isMissingSupabaseRelation,
+  isNexusRelevantMessage,
   matchesNexusTicketConversationFilter,
   mergeNexusTicketTimeline,
   shouldStartNewNexusSession,
 } from '../lib/nexus-monitoring.ts'
+
+test('cliente-nexus/bot-nexus always count as Nexus, with or without a ticket', () => {
+  assert.equal(isNexusRelevantMessage('cliente-nexus', null), true)
+  assert.equal(isNexusRelevantMessage('cliente-nexus', 'ticket-1'), true)
+  assert.equal(isNexusRelevantMessage('bot-nexus', null), true)
+  assert.equal(isNexusRelevantMessage('bot-nexus', 'ticket-1'), true)
+})
+
+test('a plain "cliente" only counts as Nexus while there is no ticket yet — never sweeps in normal human-attendance messages', () => {
+  assert.equal(isNexusRelevantMessage('cliente', null), true)
+  assert.equal(isNexusRelevantMessage('cliente', 'ticket-1'), false)
+})
+
+test('"bot" (different system) and "colaborador" never count as Nexus, regardless of ticket', () => {
+  assert.equal(isNexusRelevantMessage('bot', null), false)
+  assert.equal(isNexusRelevantMessage('bot', 'ticket-1'), false)
+  assert.equal(isNexusRelevantMessage('colaborador', null), false)
+  assert.equal(isNexusRelevantMessage(null, null), false)
+})
 
 test('identifies the Nexus and human phases of a conversation', () => {
   // Remetentes com sufixo -nexus são sempre fase Nexus, com ou sem ticket.
