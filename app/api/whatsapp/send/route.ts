@@ -1,129 +1,464 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
+import {
+  claimPersistedMessageSend,
+  completeLegacyPersistedMessageSend,
+  completePersistedMessageSend,
+  loadLegacyPersistedMessageSend,
+  persistAcceptedLegacyMessage,
+  type MessageSendAttempt,
+  type PersistedMessagePayload,
+} from '@/lib/message-send-claim'
+import {
+  REPLYABLE_TICKET_SENDERS,
+  canUseLegacyChannelFallback,
+  isConfiguredLegacyWhatsappChannel,
+  resolvePersistedRecipient,
+  selectAuthorizedTicketChannel,
+  validateOutboundMediaUrl,
+} from '@/lib/message-send-target'
+import { resolveSharedChannelOwnerId } from '@/lib/nexus-channel-resolution'
+import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 import { checkMetaCompatibility, extFromUrl, resolveMime } from '@/lib/whatsapp-media'
+import { authorizeTicketSend } from '@/lib/ticket-send-auth'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
+const requestSchema = z.object({
+  ticketId: z.string().uuid(),
+  message: z.string().max(20_000).nullish(),
+  recipientPhone: z.string().max(64).nullish(),
+  phoneNumberId: z.string().max(255).nullish(),
+  imageUrl: z.string().max(4_096).nullish(),
+  fileUrl: z.string().max(4_096).nullish(),
+  fileType: z.string().max(255).nullish(),
+  fileName: z.string().max(512).nullish(),
+  messageId: z.string().uuid().nullish(),
+  replyToMessageId: z.string().uuid().nullish(),
+  retry: z.boolean().optional(),
+}).strict()
+
+async function persistFailure(
+  serviceClient: ReturnType<typeof createServiceClient> | null,
+  attempt: MessageSendAttempt | null,
+  error: string,
+) {
+  if (!serviceClient || !attempt) return null
+  const result = await completePersistedMessageSend(serviceClient, attempt, {
+    status: 'falhou',
+    error,
+  })
+  if (result.ok) return null
+  return NextResponse.json(
+    {
+      error: result.error,
+      code: result.code,
+      providerAccepted: false,
+      status_envio: 'enviando',
+    },
+    { status: 500 },
+  )
+}
 
 export async function POST(request: NextRequest) {
+  let serviceClient: ReturnType<typeof createServiceClient> | null = null
+  let sendAttempt: MessageSendAttempt | null = null
+  let providerRequestStarted = false
+
   try {
     const supabase = await createClient()
 
     // Get current user
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
+    if (!user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-const body = await request.json()
-    const { ticketId, message, recipientPhone, phoneNumberId, imageUrl, fileUrl, fileType, fileName, messageId, replyToMessageId } = body
-
-    // Resolve the WhatsApp message ID of the parent message we're replying to.
-    // We store the internal mensagem UUID in `replyToMessageId`; the actual
-    // Meta context needs the `wamid` (whatsapp_message_id).
-    let replyContextWamid: string | null = null
-    if (replyToMessageId) {
-      const { data: parent } = await supabase
-        .from('mensagens')
-        .select('whatsapp_message_id')
-        .eq('id', replyToMessageId)
-        .maybeSingle()
-      replyContextWamid = parent?.whatsapp_message_id || null
-      if (!replyContextWamid) {
-        console.warn('[WhatsApp Send] replyToMessageId provided but parent has no whatsapp_message_id; sending without context', { replyToMessageId })
-      }
+    const parsed = requestSchema.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Parâmetros de envio inválidos', code: 'INVALID_SEND_REQUEST' },
+        { status: 400 },
+      )
     }
+    const body = parsed.data
+    const {
+      ticketId,
+      message,
+      recipientPhone,
+      phoneNumberId,
+      imageUrl,
+      fileUrl,
+      fileType,
+      fileName,
+      messageId,
+      replyToMessageId,
+      retry = false,
+    } = body
 
-    // Support both imageUrl (legacy) and fileUrl (new). Resolve MIME from the
-    // explicit type, the filename, or the URL extension — handles certs and
-    // other files browsers leave with empty file.type.
-    const mediaUrl = fileUrl || imageUrl
-    const resolvedMime = resolveMime(fileType, fileName) ||
-      resolveMime(fileType, mediaUrl ? `f.${extFromUrl(mediaUrl)}` : '') ||
-      (imageUrl ? 'image/jpeg' : '')
-    const mediaType = resolvedMime || fileType || (imageUrl ? 'image/jpeg' : null)
-
-    // Log when sending a non-whitelist MIME so we can correlate with Meta's
-    // actual response. The Meta whitelist is documented but anecdotal reports
-    // suggest some types may go through — we let the API decide instead of
-    // hard-blocking. Look for [WhatsApp Send] error responses below to confirm
-    // if Meta really rejected/silently dropped the delivery.
-    if (mediaUrl) {
-      const compat = checkMetaCompatibility(mediaType || '', fileName)
-      if (!compat.accepted) {
-        console.warn(
-          '[WhatsApp Send] Sending non-whitelist MIME to Meta (delivery not guaranteed):',
-          { mediaType, fileName, reason: compat.reason },
-        )
-      }
-    }
-
-    if (!ticketId || (!message && !mediaUrl) || !recipientPhone) {
+    const requestedMediaUrl = fileUrl || imageUrl
+    if (!ticketId || (!messageId && !message && !requestedMediaUrl) || (!messageId && !recipientPhone)) {
       return NextResponse.json(
         { error: 'Missing required fields: ticketId, message or mediaUrl, recipientPhone' },
         { status: 400 }
       )
     }
 
-    console.log('[WhatsApp Send] Starting send:', { ticketId, hasMessage: !!message, hasMedia: !!mediaUrl, mediaType, recipientPhone })
+    // Ticket precisa estar ativo e o colaborador autenticado precisa estar autorizado
+    // nele — cobre tanto o envio inicial quanto o retry (o client já filtra, mas o
+    // servidor é a fonte de verdade).
+    const sendAuth = await authorizeTicketSend(supabase, ticketId, user.email)
+    if (!sendAuth.ok) {
+      return NextResponse.json(
+        { error: sendAuth.error, code: sendAuth.code },
+        { status: sendAuth.status },
+      )
+    }
+    if (retry === true && !messageId) {
+      return NextResponse.json(
+        { error: 'Retry exige uma mensagem persistida', code: 'RETRY_REQUIRES_MESSAGE_ID' },
+        { status: 400 },
+      )
+    }
 
-    // Try to get credentials - Priority: setor_canais > setores > env vars
-    let accessToken = process.env.WHATSAPP_ACCESS_TOKEN
-    let senderPhoneNumberId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID
+    serviceClient ||= createServiceClient()
+    const authoritativeClient = serviceClient
 
-    if (ticketId) {
-      const { data: ticket } = await supabase
-        .from('tickets')
-        .select('setor_id')
-        .eq('id', ticketId)
-        .single()
+    const { data: ticketContext, error: ticketContextError } = await authoritativeClient
+      .from('tickets')
+      .select('setor_id, cliente_id, clientes(telefone)')
+      .eq('id', ticketId)
+      .maybeSingle()
 
-      if (ticket?.setor_id) {
-        // Priority 1: Check setor_canais by phone_number_id
-        if (phoneNumberId) {
-          const { data: canalMatch } = await supabase
-            .from('setor_canais')
-            .select('phone_number_id, whatsapp_token')
-            .eq('setor_id', ticket.setor_id)
-            .eq('phone_number_id', phoneNumberId)
-            .eq('tipo', 'whatsapp')
-            .eq('ativo', true)
-            .limit(1)
-            .maybeSingle()
+    if (ticketContextError || !ticketContext?.setor_id) {
+      return NextResponse.json(
+        { error: 'Ticket ou setor não encontrado', code: 'TICKET_NOT_FOUND' },
+        { status: 404 },
+      )
+    }
 
-          if (canalMatch) {
-            if (canalMatch.whatsapp_token) accessToken = canalMatch.whatsapp_token
-            senderPhoneNumberId = canalMatch.phone_number_id || senderPhoneNumberId
-            console.log('[WhatsApp Send] Using setor_canais credentials for phone_number_id:', phoneNumberId)
+    let persistedMessage: PersistedMessagePayload | null = null
+    let legacyPersistedMessage = false
+
+    if (messageId) {
+      const claim = await claimPersistedMessageSend(
+        serviceClient,
+        ticketId,
+        messageId,
+        retry === true,
+      )
+      if (!claim.ok) {
+        if (claim.code === 'SEND_STATUS_SCHEMA_UNAVAILABLE' && retry !== true) {
+          const legacyMessage = await loadLegacyPersistedMessageSend(
+            serviceClient,
+            ticketId,
+            messageId,
+          )
+          if (!legacyMessage.ok) {
+            return NextResponse.json(
+              { error: legacyMessage.error, code: legacyMessage.code },
+              { status: legacyMessage.status },
+            )
           }
+          if (legacyMessage.providerMessageId) {
+            return NextResponse.json({
+              success: true,
+              idempotent: true,
+              legacy: true,
+              whatsappMessageId: legacyMessage.providerMessageId,
+            })
+          }
+          persistedMessage = legacyMessage.message
+          legacyPersistedMessage = true
+        } else {
+          return NextResponse.json(
+            {
+              error: claim.error,
+              code: claim.code,
+              status_envio: claim.status_envio,
+            },
+            { status: claim.status },
+          )
         }
-
-        // Priority 2: Fallback to setores table
-        if (!accessToken || accessToken === process.env.WHATSAPP_ACCESS_TOKEN) {
-          const { data: setor } = await supabase
-            .from('setores')
-            .select('phone_number_id, whatsapp_token')
-            .eq('id', ticket.setor_id)
-            .single()
-
-          if (setor?.whatsapp_token) {
-            accessToken = setor.whatsapp_token
-          }
-          if (!senderPhoneNumberId && setor?.phone_number_id) {
-            senderPhoneNumberId = setor.phone_number_id
-          }
-        }
+      } else if (claim.kind === 'already_sent') {
+        return NextResponse.json({
+          success: true,
+          idempotent: true,
+          status_envio: claim.status_envio,
+          whatsappMessageId: claim.providerMessageId,
+        })
+      } else {
+        sendAttempt = claim.attempt
+        persistedMessage = claim.attempt.message
       }
     }
 
-    if (!accessToken || !senderPhoneNumberId) {
+    const sendMessage = persistedMessage ? persistedMessage.content : message
+    let mediaUrl = persistedMessage ? persistedMessage.fileUrl : requestedMediaUrl
+    const requestedFileType = persistedMessage ? persistedMessage.mediaType : fileType
+    const requestedFileName = persistedMessage ? null : fileName
+    const requestedPhoneNumberId = persistedMessage
+      ? persistedMessage.phoneNumberId
+      : phoneNumberId
+    const effectiveReplyToMessageId = persistedMessage
+      ? persistedMessage.replyToMessageId
+      : replyToMessageId ?? null
+    const resolvedMime = resolveMime(requestedFileType, requestedFileName) ||
+      resolveMime(
+        requestedFileType,
+        mediaUrl ? `f.${extFromUrl(mediaUrl)}` : '',
+      ) ||
+      (imageUrl && !persistedMessage ? 'image/jpeg' : '')
+    const mediaType = resolvedMime || requestedFileType ||
+      (imageUrl && !persistedMessage ? 'image/jpeg' : null)
+
+    if (!sendMessage && !mediaUrl) {
+      const error = 'A mensagem persistida não possui conteúdo para envio'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
       return NextResponse.json(
-        { error: 'WhatsApp credentials not configured' },
+        { error, code: 'MESSAGE_CONTENT_INVALID', status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined },
+        { status: 422 },
+      )
+    }
+
+    if (mediaUrl) {
+      const validatedMedia = validateOutboundMediaUrl(mediaUrl)
+      if (!validatedMedia.ok) {
+        const persistenceFailure = await persistFailure(
+          serviceClient,
+          sendAttempt,
+          validatedMedia.error,
+        )
+        if (persistenceFailure) return persistenceFailure
+        sendAttempt = null
+        return NextResponse.json(
+          {
+            error: validatedMedia.error,
+            code: validatedMedia.code,
+            status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+          },
+          { status: 422 },
+        )
+      }
+      mediaUrl = validatedMedia.url
+      const compat = checkMetaCompatibility(mediaType || '', requestedFileName)
+      if (!compat.accepted) {
+        console.warn('[WhatsApp Send] MIME fora da lista recomendada:', compat.reason)
+      }
+    }
+
+    let replyContextWamid: string | null = null
+    if (effectiveReplyToMessageId) {
+      const { data: parent, error: parentError } = await authoritativeClient
+        .from('mensagens')
+        .select('whatsapp_message_id')
+        .eq('id', effectiveReplyToMessageId)
+        .eq('ticket_id', ticketId)
+        .in('remetente', [...REPLYABLE_TICKET_SENDERS])
+        .maybeSingle()
+
+      if (parentError || !parent?.whatsapp_message_id) {
+        const error = 'A mensagem respondida não pertence a este ticket ou não pode ser citada'
+        const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+        if (persistenceFailure) return persistenceFailure
+        sendAttempt = null
+        return NextResponse.json(
+          { error, code: 'REPLY_MESSAGE_INVALID', status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined },
+          { status: 422 },
+        )
+      }
+      replyContextWamid = parent.whatsapp_message_id
+    }
+
+    const { data: allModernChannels, error: modernChannelsError } = await authoritativeClient
+      .from('setor_canais')
+      .select('id, setor_id, phone_number_id, whatsapp_token, ativo')
+      .eq('setor_id', ticketContext.setor_id)
+      .eq('tipo', 'whatsapp')
+      .order('id', { ascending: true })
+
+    if (modernChannelsError) {
+      throw modernChannelsError
+    }
+
+    const activeChannels = (allModernChannels || []).filter((channel) => channel.ativo)
+    let matchingModernChannels = allModernChannels || []
+    let matchingActiveChannels = activeChannels
+    let historicalEvidence: Array<{
+      channelIdentifier: string | null
+      sender: string | null
+      providerMessageId: string | null
+    }> = []
+
+    if (requestedPhoneNumberId) {
+      const { data: matchingChannels, error: matchingChannelsError } = await authoritativeClient
+        .from('setor_canais')
+        .select('id, setor_id, phone_number_id, whatsapp_token, ativo')
+        .eq('tipo', 'whatsapp')
+        .eq('phone_number_id', requestedPhoneNumberId)
+        .order('id', { ascending: true })
+        .limit(1000)
+
+      if (matchingChannelsError) throw matchingChannelsError
+      matchingModernChannels = matchingChannels || []
+      matchingActiveChannels = matchingModernChannels.filter(
+        (channel) => channel.ativo,
+      )
+
+      const belongsToCurrentSector = activeChannels.some(
+        (channel) => channel.phone_number_id === requestedPhoneNumberId,
+      )
+      if (!belongsToCurrentSector) {
+        const { data: priorInboundMessages, error: priorInboundError } = await authoritativeClient
+          .from('mensagens')
+          .select('phone_number_id, remetente, whatsapp_message_id')
+          .eq('ticket_id', ticketId)
+          .in('remetente', ['cliente', 'cliente-nexus'])
+          .eq('phone_number_id', requestedPhoneNumberId)
+          .not('whatsapp_message_id', 'is', null)
+          .limit(1)
+
+        if (priorInboundError) throw priorInboundError
+        historicalEvidence = (priorInboundMessages || []).map((priorMessage) => ({
+          channelIdentifier: priorMessage.phone_number_id,
+          sender: priorMessage.remetente,
+          providerMessageId: priorMessage.whatsapp_message_id,
+        }))
+      }
+    }
+
+    const modernChannel = selectAuthorizedTicketChannel({
+      currentActiveChannels: activeChannels,
+      matchingActiveChannels,
+      historicalEvidence,
+      requestedIdentifier: requestedPhoneNumberId,
+      getIdentifier: (channel) => channel.phone_number_id,
+      getOwnerId: (channel) => channel.setor_id,
+      resolveOwnerId: resolveSharedChannelOwnerId,
+    })
+    let legacyChannel: {
+      id: string
+      setor_id: string
+      phone_number_id: string | null
+      whatsapp_token: string | null
+    } | null = null
+    const relevantModernConfigurations = requestedPhoneNumberId
+      ? matchingModernChannels
+      : allModernChannels || []
+
+    if (
+      !modernChannel
+      && canUseLegacyChannelFallback(relevantModernConfigurations)
+    ) {
+      let legacyQuery = authoritativeClient
+        .from('setores')
+        .select('id, canal, phone_number_id, whatsapp_token')
+        .order('id', { ascending: true })
+
+      legacyQuery = requestedPhoneNumberId
+        ? legacyQuery.eq('phone_number_id', requestedPhoneNumberId)
+        : legacyQuery.eq('id', ticketContext.setor_id)
+
+      const { data: legacySectors, error: legacySectorsError } = await legacyQuery.limit(1000)
+      if (legacySectorsError) throw legacySectorsError
+
+      // Legacy rows have no per-channel active flag. Treat only an explicitly
+      // configured WhatsApp row as usable. A modern row for the identifier,
+      // even inactive, deliberately blocks this compatibility path.
+      const configuredLegacyChannels = (legacySectors || [])
+        .filter((sector) => isConfiguredLegacyWhatsappChannel(
+          sector,
+          process.env.WHATSAPP_ACCESS_TOKEN,
+        ))
+        .map((sector) => ({
+          id: `legacy:${sector.id}`,
+          setor_id: sector.id,
+          phone_number_id: sector.phone_number_id,
+          whatsapp_token: sector.whatsapp_token,
+        }))
+      const currentLegacyChannels = configuredLegacyChannels.filter(
+        (channel) => channel.setor_id === ticketContext.setor_id,
+      )
+
+      legacyChannel = selectAuthorizedTicketChannel({
+        currentActiveChannels: currentLegacyChannels,
+        matchingActiveChannels: configuredLegacyChannels,
+        historicalEvidence,
+        requestedIdentifier: requestedPhoneNumberId,
+        getIdentifier: (channel) => channel.phone_number_id,
+        getOwnerId: (channel) => channel.setor_id,
+        resolveOwnerId: resolveSharedChannelOwnerId,
+      })
+    }
+
+    if (requestedPhoneNumberId && !modernChannel && !legacyChannel) {
+      const error = 'O canal informado não pertence ao setor atual do ticket'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: 'CHANNEL_MISMATCH',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: 422 },
+      )
+    }
+
+    const accessToken =
+      modernChannel?.whatsapp_token
+      || (modernChannel ? process.env.WHATSAPP_ACCESS_TOKEN : null)
+      || legacyChannel?.whatsapp_token
+      || (legacyChannel ? process.env.WHATSAPP_ACCESS_TOKEN : null)
+    const senderPhoneNumberId =
+      modernChannel?.phone_number_id
+      || legacyChannel?.phone_number_id
+
+    if (!accessToken || !senderPhoneNumberId) {
+      const error = 'WhatsApp credentials not configured'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: 'CHANNEL_NOT_CONFIGURED',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
         { status: 500 }
       )
     }
 
-    // Format phone number (remove non-digits and ensure country code)
-    const formattedPhone = recipientPhone.replace(/\D/g, '')
+    const ticketClient = Array.isArray(ticketContext.clientes)
+      ? ticketContext.clientes[0]
+      : ticketContext.clientes
+    const persistedRecipient = resolvePersistedRecipient(
+      ticketClient?.telefone,
+      persistedMessage ? null : recipientPhone,
+    )
+
+    if (!persistedRecipient.ok) {
+      const persistenceFailure = await persistFailure(
+        serviceClient,
+        sendAttempt,
+        persistedRecipient.error,
+      )
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error: persistedRecipient.error,
+          code: persistedRecipient.code,
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: 422 },
+      )
+    }
+
+    const formattedPhone = persistedRecipient.phone
 
     // Build message payload based on type (image, document, or text)
     let messagePayload: Record<string, unknown>
@@ -135,7 +470,7 @@ const body = await request.json()
 
       // Default document filename: explicit fileName > URL basename > generic.
       const documentFilename =
-        fileName ||
+        requestedFileName ||
         (mediaUrl ? mediaUrl.split('/').pop()?.split('?')[0] : null) ||
         'arquivo'
 
@@ -148,7 +483,7 @@ const body = await request.json()
           type: 'image',
           image: {
             link: mediaUrl,
-            caption: message || undefined,
+            caption: sendMessage || undefined,
           },
         }
       } else if (isAudio) {
@@ -169,7 +504,7 @@ const body = await request.json()
           type: 'video',
           video: {
             link: mediaUrl,
-            caption: message || undefined,
+            caption: sendMessage || undefined,
           },
         }
       } else {
@@ -182,7 +517,7 @@ const body = await request.json()
           type: 'document',
           document: {
             link: mediaUrl,
-            caption: message || undefined,
+            caption: sendMessage || undefined,
             filename: documentFilename,
           },
         }
@@ -196,7 +531,7 @@ const body = await request.json()
         type: 'text',
         text: {
           preview_url: false,
-          body: message,
+          body: sendMessage,
         },
       }
     }
@@ -209,13 +544,31 @@ const body = await request.json()
 
     const whatsappUrl = `${WHATSAPP_API_URL}/${senderPhoneNumberId}/messages`
 
-    // Log curl equivalent for debugging
-    console.log(`[WhatsApp Send] curl --location '${whatsappUrl}' \\
-  --header 'Authorization: Bearer ${accessToken?.substring(0, 10)}...' \\
-  --header 'Content-Type: application/json' \\
-  --data '${JSON.stringify(messagePayload, null, 4)}'`)
+    const latestAuthorization = await authorizeTicketSend(supabase, ticketId, user.email)
+    if (
+      !latestAuthorization.ok
+      || latestAuthorization.ticket.setor_id !== ticketContext.setor_id
+    ) {
+      const error = latestAuthorization.ok
+        ? 'O ticket mudou de setor durante o envio'
+        : latestAuthorization.error
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: latestAuthorization.ok
+            ? 'TICKET_CONTEXT_CHANGED'
+            : latestAuthorization.code,
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: latestAuthorization.ok ? 409 : latestAuthorization.status },
+      )
+    }
 
     // Send message via WhatsApp Cloud API
+    providerRequestStarted = true
     const whatsappResponse = await fetch(whatsappUrl, {
       method: 'POST',
       headers: {
@@ -227,106 +580,147 @@ const body = await request.json()
 
     const whatsappData = await whatsappResponse.json()
 
-    console.log('[WhatsApp Send] API Response - Status:', whatsappResponse.status, '| Body:', JSON.stringify(whatsappData, null, 2))
-
     if (!whatsappResponse.ok) {
-      console.error('[WhatsApp Send] API error:', whatsappData)
+      console.error('[WhatsApp Send] Provider error status:', whatsappResponse.status)
+      const error = whatsappData?.error?.message || 'Falha ao enviar mensagem via WhatsApp'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
       return NextResponse.json(
-        { error: 'Failed to send WhatsApp message', details: whatsappData },
+        {
+          error: 'Failed to send WhatsApp message',
+          code: 'PROVIDER_SEND_FAILED',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
         { status: whatsappResponse.status }
       )
     }
 
-    console.log('[WhatsApp Send] Message sent successfully, WhatsApp ID:', whatsappData.messages?.[0]?.id)
-
-    // Get colaborador info
-    const { data: colaborador } = await supabase
-      .from('colaboradores')
-      .select('id')
-      .eq('email', user.email)
-      .single()
+    const providerMessageId = whatsappData.messages?.[0]?.id
+    if (!providerMessageId) {
+      throw new Error('WhatsApp não retornou o identificador da mensagem')
+    }
 
     let savedMessage = null
 
     // If messageId was provided, update the existing message with WhatsApp ID
-    if (messageId) {
-      console.log('[WhatsApp Send] Updating existing message:', messageId)
-      const { data, error: updateError } = await supabase
-        .from('mensagens')
-        .update({
-          whatsapp_message_id: whatsappData.messages?.[0]?.id,
-        })
-        .eq('id', messageId)
-        .select()
-        .single()
-
-      if (updateError) {
-        console.error('[WhatsApp Send] Database update error:', updateError)
-      } else {
-        console.log('[WhatsApp Send] Message updated successfully')
+    if (messageId && legacyPersistedMessage) {
+      const completion = await completeLegacyPersistedMessageSend(
+        serviceClient!,
+        ticketId,
+        messageId,
+        providerMessageId,
+        senderPhoneNumberId,
+      )
+      if (!completion.ok) {
+        return NextResponse.json(
+          {
+            error: completion.error,
+            code: completion.code,
+            providerAccepted: true,
+          },
+          { status: 500 },
+        )
       }
-      savedMessage = data
+    } else if (messageId) {
+      const completion = await completePersistedMessageSend(serviceClient!, sendAttempt!, {
+        status: 'enviado',
+        providerMessageId,
+        phoneNumberId: senderPhoneNumberId,
+      })
+      if (!completion.ok) {
+        return NextResponse.json(
+          {
+            error: completion.error,
+            code: completion.code,
+            providerAccepted: true,
+            status_envio: 'enviando',
+          },
+          { status: 500 },
+        )
+      }
+      sendAttempt = null
     } else {
-      // Save new message to database (fallback for old behavior)
-      console.log('[WhatsApp Send] Creating new message in database')
+      // Compatibility for automatic closure messages that are not pre-persisted.
       const mtLower = (mediaType || '').toLowerCase()
       const messageType = mtLower.startsWith('image/') ? 'imagem'
         : mtLower.startsWith('audio/') ? 'audio'
         : mtLower.startsWith('video/') ? 'video'
         : mediaUrl ? 'documento'
         : 'texto'
-      const { data, error: dbError } = await supabase
-        .from('mensagens')
-        .insert({
-          ticket_id: ticketId,
-          remetente: 'colaborador',
-          conteudo: message || '',
-          tipo: messageType,
-          phone_number_id: senderPhoneNumberId,
-          whatsapp_message_id: whatsappData.messages?.[0]?.id,
-          url_imagem: mediaUrl || null,
-          media_type: mediaType || null,
-          reply_to_message_id: replyToMessageId || null,
-        })
-        .select()
-        .single()
+      serviceClient ||= createServiceClient()
+      const persistence = await persistAcceptedLegacyMessage(serviceClient, {
+        ticketId,
+        clientId: ticketContext.cliente_id,
+        content: sendMessage || '',
+        type: messageType,
+        phoneNumberId: senderPhoneNumberId,
+        providerMessageId,
+        fileUrl: mediaUrl,
+        mediaType,
+        channel: 'whatsapp',
+        replyToMessageId: effectiveReplyToMessageId,
+      })
 
-      if (dbError) {
-        console.error('[WhatsApp Send] Database error:', dbError)
+      if (!persistence.ok) {
+        console.error('[WhatsApp Send] Falha ao persistir mensagem aceita')
         // Message was sent but not saved - still return success but warn
         return NextResponse.json({
           success: true,
           warning: 'Message sent but failed to save to database',
-          whatsappMessageId: whatsappData.messages?.[0]?.id,
+          providerAccepted: true,
+          whatsappMessageId: providerMessageId,
         })
       }
-      console.log('[WhatsApp Send] Message saved successfully')
-      savedMessage = data
+      savedMessage = persistence.message
     }
 
-    // Update ticket first response time if this is the first colaborador message
-    const { data: existingMessages } = await supabase
-      .from('mensagens')
-      .select('id')
-      .eq('ticket_id', ticketId)
-      .eq('remetente', 'colaborador')
-      .limit(2)
-
-    if (existingMessages && existingMessages.length === 1) {
-      // This was the first colaborador message
-      await supabase
-        .from('tickets')
-        .update({ primeira_resposta_em: new Date().toISOString() })
-        .eq('id', ticketId)
-    }
+    await supabase
+      .from('tickets')
+      .update({ primeira_resposta_em: new Date().toISOString() })
+      .eq('id', ticketId)
+      .in('status', ['aberto', 'em_atendimento'])
+      .is('primeira_resposta_em', null)
 
     return NextResponse.json({
       success: true,
       message: savedMessage,
-      whatsappMessageId: whatsappData.messages?.[0]?.id,
+      status_envio: messageId && !legacyPersistedMessage ? 'enviado' : undefined,
+      legacy: legacyPersistedMessage || undefined,
+      whatsappMessageId: providerMessageId,
     })
   } catch (error) {
-    console.error('Error sending WhatsApp message:', error)
+    console.error('[WhatsApp Send] Falha interna de envio')
+    if (serviceClient && sendAttempt) {
+      const status = providerRequestStarted ? 'indeterminado' : 'falhou'
+      const completion = await completePersistedMessageSend(serviceClient, sendAttempt, {
+        status,
+        error: error instanceof Error ? error.message : 'Erro interno no envio',
+      })
+      if (!completion.ok) {
+        return NextResponse.json(
+          {
+            error: completion.error,
+            code: completion.code,
+            providerAccepted: providerRequestStarted,
+            status_envio: 'enviando',
+          },
+          { status: 500 },
+        )
+      }
+      return NextResponse.json(
+        {
+          error: providerRequestStarted
+            ? 'Não foi possível confirmar o envio no provedor'
+            : 'Erro interno antes do envio',
+          code: providerRequestStarted
+            ? 'MESSAGE_SEND_INDETERMINATE'
+            : 'MESSAGE_SEND_FAILED',
+          status_envio: status,
+        },
+        { status: providerRequestStarted ? 502 : 500 },
+      )
+    }
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

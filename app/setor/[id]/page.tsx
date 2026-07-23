@@ -8,6 +8,7 @@ import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador } from '@/lib/hooks/use-data'
+import { computePausaElapsedMs, formatPausaStatusLabel, isPausaEstourada } from '@/lib/pausa-status'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 import { DateRange } from 'react-day-picker'
 import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
@@ -459,11 +460,34 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     const subsetor = Array.isArray(cs.subsetores) ? cs.subsetores[0] : cs.subsetores
     if (subsetor) colabSubsetoresMap[cs.colaborador_id].push(subsetor as { id: string; nome: string })
   }
-  const atendentes = atendentesSetor.map((as: any) => ({
+  const atendentesBase = atendentesSetor.map((as: any) => ({
     ...as.colaboradores,
     subsetor_ids: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.id),
     subsetor_nomes: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.nome),
   })).filter(Boolean)
+
+  // Dados da pausa ativa (nome + início + tempo máximo configurado) — mesmo padrão
+  // isolado usado em app/dashboard/monitoramento/page.tsx (evita ambiguidade de FK).
+  const pausaIds = atendentesBase.filter((a: any) => a.pausa_atual_id).map((a: any) => a.pausa_atual_id)
+  const pausaInfoMap = new Map<string, { nome: string; inicio: string; tempoMaximoMinutos: number | null }>()
+  if (pausaIds.length > 0) {
+    const { data: pausasAtivas } = await supabase
+      .from('pausas_colaboradores')
+      .select('id, inicio, pausas(nome, tempo_maximo_minutos)')
+      .in('id', pausaIds)
+    for (const p of pausasAtivas || []) {
+      const pausaRelation = (p as any).pausas
+      const pausaInfo = Array.isArray(pausaRelation) ? pausaRelation[0] : pausaRelation
+      pausaInfoMap.set(p.id, {
+        nome: pausaInfo?.nome || 'Pausa',
+        inicio: p.inicio,
+        tempoMaximoMinutos: pausaInfo?.tempo_maximo_minutos ?? null,
+      })
+    }
+  }
+  const atendentes = atendentesBase.map((a: any) => (
+    a.pausa_atual_id ? { ...a, pausaInfo: pausaInfoMap.get(a.pausa_atual_id) || null } : a
+  ))
 
   // Calculate stats
   const ticketsNaFila = ticketsAtivos.filter((t: any) => t.status === 'aberto')
@@ -701,7 +725,14 @@ function ReportWidget({
           </span>
         )}
         <span className="truncate text-sm font-medium text-foreground">{label}</span>
-        <Button variant="ghost" size="icon" className="ml-auto h-6 w-6 text-muted-foreground" onClick={onToggleCollapse} title="Expandir">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="ml-auto h-6 w-6 text-muted-foreground"
+          onClick={onToggleCollapse}
+          aria-label={`Expandir ${label}`}
+          title="Expandir"
+        >
           <Maximize2 className="h-3.5 w-3.5" />
         </Button>
       </div>
@@ -715,7 +746,14 @@ function ReportWidget({
           <span className="report-drag-handle flex h-6 cursor-move items-center px-0.5 text-muted-foreground touch-none" title="Arraste para mover">
             <GripVertical className="h-4 w-4" />
           </span>
-          <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground" onClick={onToggleCollapse} title="Minimizar">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground"
+            onClick={onToggleCollapse}
+            aria-label={`Minimizar ${label}`}
+            title="Minimizar"
+          >
             <Minus className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -1098,7 +1136,11 @@ function SetorPageInner() {
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
-  const [monitoringTick, setTick] = useState(0) // Force re-render for time updates
+  const [monitoringPageSize, setMonitoringPageSize] = useState(5)
+  const [monitoringPage, setMonitoringPage] = useState(1)
+  const [attendantsPageSize, setAttendantsPageSize] = useState(5)
+  const [attendantsPage, setAttendantsPage] = useState(1)
+  const [monitoringTick, setTick] = useState(() => Date.now()) // Current monitoring timestamp
   // Filtros do relatório inicializados a partir da querystring (link
   // compartilhável). A escrita de volta na URL acontece num effect mais abaixo.
   const [dateFilter, setDateFilter] = useState(() => searchParams.get('periodo') || 'today')
@@ -1113,6 +1155,9 @@ function SetorPageInner() {
   })
   const [saving, setSaving] = useState(false)
   const [hasUnsavedConfig, setHasUnsavedConfig] = useState(false)
+  // Vira true se detectarmos que a coluna setores.travar_ordenacao_chat ainda não existe
+  // no banco (rollout de migration pendente) — usado só pra avisar na UI, não bloqueia o resto.
+  const [travarOrdenacaoChatIndisponivel, setTravarOrdenacaoChatIndisponivel] = useState(false)
   const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
   // Dirty tracking das outras seções da página Configurações — alimenta a
   // FloatingSaveBar para unificar os múltiplos saves em um único CTA.
@@ -1238,6 +1283,7 @@ function SetorPageInner() {
   assinatura_ativa: false,
   encerramento_auto_ativo: false,
   encerramento_auto_minutos: 30,
+  travar_ordenacao_chat: false,
   })
 
 // Templates state
@@ -1380,11 +1426,12 @@ function SetorPageInner() {
     ativo: boolean
     setor_id: string
     criado_em: string
+    tempo_maximo_minutos: number | null
   }
   const [pausas, setPausas] = useState<Pausa[]>([])
   const [isPausaModalOpen, setIsPausaModalOpen] = useState(false)
   const [editingPausa, setEditingPausa] = useState<Pausa | null>(null)
-  const [pausaForm, setPausaForm] = useState({ nome: '', descricao: '' })
+  const [pausaForm, setPausaForm] = useState({ nome: '', descricao: '', tempo_maximo_minutos: '' })
   const [deletingPausaId, setDeletingPausaId] = useState<string | null>(null)
 
   // Available template variables
@@ -1613,7 +1660,7 @@ function SetorPageInner() {
   useEffect(() => {
     if (activeSection !== 'monitoramento') return
     const interval = setInterval(() => {
-      setTick((t) => t + 1)
+      setTick(Date.now())
     }, 1000)
     return () => clearInterval(interval)
   }, [activeSection])
@@ -1647,9 +1694,9 @@ function SetorPageInner() {
   }, [setorId])
 
   const setor = data?.setor
-  const atendentesStats = data?.atendentesStats || { online: 0, pausa: 0, invisivel: 0 }
-  const ticketsHoje = data?.ticketsHoje || { perdidos: 0, abandonados: 0, finalizados: 0, fechados: 0 }
-  const temposHoje = data?.temposHoje || { tempoMedioEspera: '00:00:00', tempoMedioResposta: '00:00:00', tempoMedioPrimeiraResposta: '00:00:00', tempoMedioAtendimento: '00:00:00' }
+  const baseAtendentesStats = data?.atendentesStats || { online: 0, pausa: 0, invisivel: 0 }
+  const baseTicketsHoje = data?.ticketsHoje || { perdidos: 0, abandonados: 0, finalizados: 0, fechados: 0 }
+  const baseTemposHoje = data?.temposHoje || { tempoMedioEspera: '00:00:00', tempoMedioResposta: '00:00:00', tempoMedioPrimeiraResposta: '00:00:00', tempoMedioAtendimento: '00:00:00' }
   const tickets = data?.tickets || []
   const ticketsMonitoramentoHoje = data?.ticketsMonitoramentoHoje || []
   const ticketsRelatorioRaw = relatorioData || []
@@ -1974,6 +2021,88 @@ function SetorPageInner() {
   const permissoes = data?.permissoes || []
   const pausasData = data?.pausas || []
 
+  const atendentesStats = useMemo(() => {
+    if (subsetorFilter.length === 0) return baseAtendentesStats
+
+    const scopedAttendants = atendentes.filter((attendant: any) => (
+      matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
+    ))
+
+    return {
+      online: scopedAttendants.filter((attendant: any) => isAtendenteOnline(attendant)).length,
+      pausa: scopedAttendants.filter((attendant: any) => (
+        attendant.ativo && Boolean(attendant.pausa_atual_id)
+      )).length,
+      invisivel: scopedAttendants.filter((attendant: any) => (
+        attendant.ativo
+        && !attendant.pausa_atual_id
+        && !isAtendenteOnline(attendant)
+      )).length,
+    }
+  }, [atendentes, baseAtendentesStats, subsetorFilter])
+
+  const scopedTicketsHoje = useMemo(
+    () => subsetorFilter.length === 0
+      ? ticketsMonitoramentoHoje
+      : ticketsMonitoramentoHoje.filter((ticket: any) => (
+          matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
+        )),
+    [subsetorFilter, ticketsMonitoramentoHoje],
+  )
+
+  const ticketsHoje = useMemo(() => {
+    if (subsetorFilter.length === 0) return baseTicketsHoje
+    const finalized = scopedTicketsHoje.filter((ticket: any) => ticket.status === 'encerrado').length
+
+    return {
+      total: scopedTicketsHoje.length,
+      perdidos: 0,
+      abandonados: 0,
+      finalizados: finalized,
+      fechados: finalized,
+    }
+  }, [baseTicketsHoje, scopedTicketsHoje, subsetorFilter])
+
+  const temposHoje = useMemo(() => {
+    if (subsetorFilter.length === 0) return baseTemposHoje
+
+    const averageDuration = (
+      startField: string,
+      endField: string,
+      predicate?: (ticket: any) => boolean,
+    ) => {
+      const durations = scopedTicketsHoje
+        .filter((ticket: any) => (
+          ticket[startField]
+          && ticket[endField]
+          && (!predicate || predicate(ticket))
+        ))
+        .map((ticket: any) => (
+          new Date(ticket[endField]).getTime() - new Date(ticket[startField]).getTime()
+        ))
+        .filter((duration: number) => Number.isFinite(duration) && duration >= 0)
+
+      return durations.length > 0
+        ? durations.reduce((total: number, duration: number) => total + duration, 0) / durations.length
+        : 0
+    }
+
+    const isClosed = (ticket: any) => ticket.status === 'encerrado'
+
+    return {
+      tempoMedioEspera: formatMonitoringTime(averageDuration('criado_em', 'atribuido_em')),
+      tempoMedioResposta: formatMonitoringTime(
+        averageDuration('criado_em', 'encerrado_em', isClosed),
+      ),
+      tempoMedioPrimeiraResposta: formatMonitoringTime(
+        averageDuration('criado_em', 'primeira_resposta_em'),
+      ),
+      tempoMedioAtendimento: formatMonitoringTime(
+        averageDuration('atribuido_em', 'encerrado_em', isClosed),
+      ),
+    }
+  }, [baseTemposHoje, scopedTicketsHoje, subsetorFilter])
+
   // Update pausas state when data changes
   const pausasLength = pausasData.length
   useEffect(() => {
@@ -2026,6 +2155,7 @@ function SetorPageInner() {
         assinatura_ativa: setor.assinatura_ativa || false,
         encerramento_auto_ativo: setor.encerramento_auto_ativo || false,
         encerramento_auto_minutos: setor.encerramento_auto_minutos ?? 30,
+        travar_ordenacao_chat: setor.travar_ordenacao_chat || false,
       })
       fetchTemplates()
       fetchCanais()
@@ -2264,7 +2394,14 @@ function SetorPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [horariosLength, setorId])
 
-  
+
+
+  // Nome do subsetor do ticket é mais específico que o setor (fixo nesta tela) para a coluna "Fila".
+  const subsetorNomeById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const s of subsetores as any[]) m.set(s.id, s.nome)
+    return m
+  }, [subsetores])
 
   const ticketsEmAndamento = useMemo(() => {
     return tickets
@@ -2300,7 +2437,7 @@ function SetorPageInner() {
           ? getDurationMs(t.atribuido_em || t.criado_em, null)
           : 0,
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: setor?.nome || '',
+        fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
         atendente: t.colaboradores?.nome || null,
         prioridade: t.prioridade,
         status: t.status,
@@ -2310,7 +2447,7 @@ function SetorPageInner() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter, monitoringTick])
+  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter, monitoringTick, subsetorNomeById])
 
   const atendenteFiltroOptions = useMemo(() => {
     const order = (x: any) => (x.is_online && !x.pausa_atual_id ? 0 : x.pausa_atual_id ? 1 : 2)
@@ -2353,7 +2490,7 @@ function SetorPageInner() {
       isAtendenteOnline(attendant)
       && matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
     ))
-    const now = Date.now()
+    const now = monitoringTick
     const maxQueueMs = queuedTickets.reduce((max: number, ticket: any) => (
       ticket.criado_em ? Math.max(max, now - new Date(ticket.criado_em).getTime()) : max
     ), 0)
@@ -2392,7 +2529,7 @@ function SetorPageInner() {
         tempoNaFila: formatDuration(t.criado_em, null),
         tempoNaFilaMs: getDurationMs(t.criado_em, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: setor?.nome || '',
+        fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
         prioridade: t.prioridade,
         status: t.status,
         criado_em: t.criado_em,
@@ -2400,25 +2537,33 @@ function SetorPageInner() {
         clientes: t.clientes,
         colaboradores: t.colaboradores,
       }))
-  }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick])
+  }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
 
   const activeTicketCountByAttendant = useMemo(() => {
     const counts = new Map<string, number>()
     for (const ticket of tickets) {
-      if (ticket.status !== 'em_atendimento' || !ticket.colaborador_id) continue
+      if (
+        ticket.status !== 'em_atendimento'
+        || !ticket.colaborador_id
+        || !matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
+      ) continue
       counts.set(ticket.colaborador_id, (counts.get(ticket.colaborador_id) || 0) + 1)
     }
     return counts
-  }, [tickets])
+  }, [subsetorFilter, tickets])
 
   const finalizedTodayCountByAttendant = useMemo(() => {
     const counts = new Map<string, number>()
     for (const ticket of ticketsMonitoramentoHoje) {
-      if (ticket.status !== 'encerrado' || !ticket.colaborador_id) continue
+      if (
+        ticket.status !== 'encerrado'
+        || !ticket.colaborador_id
+        || !matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
+      ) continue
       counts.set(ticket.colaborador_id, (counts.get(ticket.colaborador_id) || 0) + 1)
     }
     return counts
-  }, [ticketsMonitoramentoHoje])
+  }, [subsetorFilter, ticketsMonitoramentoHoje])
 
   const sortedTicketsEmAndamento = useMemo(() => {
     const getValue = (ticket: any): SortValue => {
@@ -2480,7 +2625,12 @@ function SetorPageInner() {
       }
     }
 
-    return [...atendentes].sort((first, second) => {
+    const filtered = atendentes.filter((attendant: any) => (
+      matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
+      && (atendenteFilter.length === 0 || atendenteFilter.includes(attendant.id))
+    ))
+
+    return [...filtered].sort((first, second) => {
       const comparison = compareSortValues(
         getValue(first),
         getValue(second),
@@ -2491,9 +2641,58 @@ function SetorPageInner() {
   }, [
     activeTicketCountByAttendant,
     atendentes,
+    atendenteFilter,
     attendantsSort,
     finalizedTodayCountByAttendant,
+    subsetorFilter,
   ])
+
+  const monitoringItemCount = activeTab === 'em-andamento'
+    ? sortedTicketsEmAndamento.length
+    : activeTab === 'aguardando'
+      ? sortedTicketsAguardando.length
+      : sortedMonitoringAttendants.length
+  const monitoringTotalPages = Math.max(1, Math.ceil(monitoringItemCount / monitoringPageSize))
+  const safeMonitoringPage = Math.min(monitoringPage, monitoringTotalPages)
+  const monitoringPageStart = (safeMonitoringPage - 1) * monitoringPageSize
+  const monitoringRangeStart = monitoringItemCount === 0 ? 0 : monitoringPageStart + 1
+  const monitoringRangeEnd = Math.min(monitoringPageStart + monitoringPageSize, monitoringItemCount)
+
+  const paginatedTicketsEmAndamento = useMemo(
+    () => sortedTicketsEmAndamento.slice(monitoringPageStart, monitoringPageStart + monitoringPageSize),
+    [monitoringPageSize, monitoringPageStart, sortedTicketsEmAndamento],
+  )
+  const paginatedTicketsAguardando = useMemo(
+    () => sortedTicketsAguardando.slice(monitoringPageStart, monitoringPageStart + monitoringPageSize),
+    [monitoringPageSize, monitoringPageStart, sortedTicketsAguardando],
+  )
+  const paginatedMonitoringAttendants = useMemo(
+    () => sortedMonitoringAttendants.slice(monitoringPageStart, monitoringPageStart + monitoringPageSize),
+    [monitoringPageSize, monitoringPageStart, sortedMonitoringAttendants],
+  )
+
+  const filteredManagementAttendants = useMemo(() => {
+    const term = searchAtendente.trim().toLocaleLowerCase('pt-BR')
+    return atendentes.filter((atendente: any) => {
+      if (!term) return true
+      return (
+        atendente.nome?.toLocaleLowerCase('pt-BR').includes(term)
+        || atendente.email?.toLocaleLowerCase('pt-BR').includes(term)
+      )
+    })
+  }, [atendentes, searchAtendente])
+  const attendantsTotalPages = Math.max(1, Math.ceil(filteredManagementAttendants.length / attendantsPageSize))
+  const safeAttendantsPage = Math.min(attendantsPage, attendantsTotalPages)
+  const attendantsPageStart = (safeAttendantsPage - 1) * attendantsPageSize
+  const attendantsRangeStart = filteredManagementAttendants.length === 0 ? 0 : attendantsPageStart + 1
+  const attendantsRangeEnd = Math.min(
+    attendantsPageStart + attendantsPageSize,
+    filteredManagementAttendants.length,
+  )
+  const paginatedManagementAttendants = useMemo(
+    () => filteredManagementAttendants.slice(attendantsPageStart, attendantsPageStart + attendantsPageSize),
+    [attendantsPageSize, attendantsPageStart, filteredManagementAttendants],
+  )
 
 const handleLogout = async () => {
   await unsubscribeCurrentBrowser().catch(() => {})
@@ -2608,49 +2807,67 @@ const handleLogout = async () => {
 const saveConfig = async () => {
     setSaving(true)
     try {
-      const { error } = await supabase
+      const basePayload: Record<string, unknown> = {
+        nome: configForm.nome,
+        descricao: configForm.descricao,
+        icon_url: configForm.icon_url,
+        cor: configForm.cor,
+        mensagem_finalizacao: configForm.mensagem_finalizacao,
+        canal: configForm.canal || 'whatsapp',
+        template_id: configForm.template_id || null,
+        phone_number_id: configForm.phone_number_id || null,
+        template_language: configForm.template_language || 'pt_BR',
+        whatsapp_token: configForm.whatsapp_token || null,
+        max_disparos_dia: configForm.max_disparos_dia || 0,
+        discord_bot_token: configForm.discord_bot_token || null,
+        discord_guild_id: configForm.discord_guild_id || null,
+        evolution_base_url: configForm.evolution_base_url || null,
+        evolution_api_key: configForm.evolution_api_key || null,
+        // webhook_eventos guarda 2 flags: 'ticket_encerrado' (envio do webhook) e
+        // 'avaliacao'. [] = ambos off; null (nunca salvo) = ambos on por padrão.
+        webhook_eventos: [
+          ...(configForm.webhook_ativo ? ['ticket_encerrado'] : []),
+          ...(configForm.avaliacao_ativa ? ['avaliacao'] : []),
+        ],
+        tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
+        tag_id: configForm.tag_id || null,
+        is_receptor: configForm.is_receptor,
+        transmissao_ativa: configForm.transmissao_ativa,
+        setor_receptor_id: configForm.setor_receptor_id || null,
+        openai_api_key: configForm.openai_api_key || null,
+        openai_ativo: configForm.openai_ativo || false,
+        openai_url_personalizada: configForm.openai_url_personalizada || false,
+        openai_base_url: configForm.openai_url_personalizada ? (configForm.openai_base_url || null) : null,
+        nexus_ativo: configForm.nexus_ativo || false,
+        assistente_ia: configForm.assistente_ia || false,
+        assinatura_ativa: configForm.assinatura_ativa || false,
+        encerramento_auto_ativo: configForm.encerramento_auto_ativo,
+        encerramento_auto_minutos: configForm.encerramento_auto_minutos,
+      }
+
+      // travar_ordenacao_chat pode ainda não existir em produção (rollout de coluna
+      // pendente). Tenta com o campo; se a coluna não existir, refaz sem ele
+      // pra não derrubar o salvamento do resto das configurações do setor.
+      let { error } = await supabase
         .from('setores')
-  .update({
-  nome: configForm.nome,
-  descricao: configForm.descricao,
-  icon_url: configForm.icon_url,
-  cor: configForm.cor,
-  mensagem_finalizacao: configForm.mensagem_finalizacao,
-  canal: configForm.canal || 'whatsapp',
-  template_id: configForm.template_id || null,
-  phone_number_id: configForm.phone_number_id || null,
-  template_language: configForm.template_language || 'pt_BR',
-  whatsapp_token: configForm.whatsapp_token || null,
-  max_disparos_dia: configForm.max_disparos_dia || 0,
-  discord_bot_token: configForm.discord_bot_token || null,
-  discord_guild_id: configForm.discord_guild_id || null,
-  evolution_base_url: configForm.evolution_base_url || null,
-  evolution_api_key: configForm.evolution_api_key || null,
-  // webhook_eventos guarda 2 flags: 'ticket_encerrado' (envio do webhook) e
-  // 'avaliacao'. [] = ambos off; null (nunca salvo) = ambos on por padrão.
-  webhook_eventos: [
-    ...(configForm.webhook_ativo ? ['ticket_encerrado'] : []),
-    ...(configForm.avaliacao_ativa ? ['avaliacao'] : []),
-  ],
-  tempo_espera_minutos: configForm.tempo_espera_minutos || 10,
-  tag_id: configForm.tag_id || null,
-  is_receptor: configForm.is_receptor,
-  transmissao_ativa: configForm.transmissao_ativa,
-  setor_receptor_id: configForm.setor_receptor_id || null,
-  openai_api_key: configForm.openai_api_key || null,
-  openai_ativo: configForm.openai_ativo || false,
-  openai_url_personalizada: configForm.openai_url_personalizada || false,
-  openai_base_url: configForm.openai_url_personalizada ? (configForm.openai_base_url || null) : null,
-  nexus_ativo: configForm.nexus_ativo || false,
-  assistente_ia: configForm.assistente_ia || false,
-  assinatura_ativa: configForm.assinatura_ativa || false,
-  encerramento_auto_ativo: configForm.encerramento_auto_ativo,
-  encerramento_auto_minutos: configForm.encerramento_auto_minutos,
-  })
+        .update({ ...basePayload, travar_ordenacao_chat: configForm.travar_ordenacao_chat })
         .eq('id', setorId)
 
+      let travarOrdenacaoIndisponivel = false
+      if (error?.code === '42703' || error?.code === 'PGRST204') {
+        travarOrdenacaoIndisponivel = true
+        setTravarOrdenacaoChatIndisponivel(true)
+        ;({ error } = await supabase.from('setores').update(basePayload).eq('id', setorId))
+      } else if (!error) {
+        setTravarOrdenacaoChatIndisponivel(false)
+      }
+
       if (error) throw error
-      toast.success('Configurações salvas com sucesso!')
+      toast.success(
+        travarOrdenacaoIndisponivel
+          ? 'Configurações salvas! (Trava de ordenação ainda não disponível neste ambiente — fale com o suporte técnico.)'
+          : 'Configurações salvas com sucesso!',
+      )
       setHasUnsavedConfig(false)
       mutate()
     } catch (error) {
@@ -3356,6 +3573,16 @@ const saveConfig = async () => {
       return
     }
 
+    let tempoMaximoMinutos: number | null = null
+    if (pausaForm.tempo_maximo_minutos.trim()) {
+      const parsed = Number(pausaForm.tempo_maximo_minutos)
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        toast.error('Tempo máximo deve ser um número inteiro de minutos, 0 ou maior')
+        return
+      }
+      tempoMaximoMinutos = parsed
+    }
+
     try {
       if (editingPausa) {
         const { error } = await supabase
@@ -3363,6 +3590,7 @@ const saveConfig = async () => {
           .update({
             nome: pausaForm.nome.trim(),
             descricao: pausaForm.descricao.trim() || null,
+            tempo_maximo_minutos: tempoMaximoMinutos,
           })
           .eq('id', editingPausa.id)
         if (error) throw error
@@ -3372,6 +3600,7 @@ const saveConfig = async () => {
           setor_id: setorId,
           nome: pausaForm.nome.trim(),
           descricao: pausaForm.descricao.trim() || null,
+          tempo_maximo_minutos: tempoMaximoMinutos,
         })
         if (error) throw error
         toast.success('Pausa criada!')
@@ -3379,7 +3608,7 @@ const saveConfig = async () => {
 
       setIsPausaModalOpen(false)
       setEditingPausa(null)
-      setPausaForm({ nome: '', descricao: '' })
+      setPausaForm({ nome: '', descricao: '', tempo_maximo_minutos: '' })
       fetchPausas()
       mutate()
     } catch (error) {
@@ -3430,13 +3659,17 @@ const saveConfig = async () => {
 
   const openEditPausa = (pausa: Pausa) => {
     setEditingPausa(pausa)
-    setPausaForm({ nome: pausa.nome, descricao: pausa.descricao || '' })
+    setPausaForm({
+      nome: pausa.nome,
+      descricao: pausa.descricao || '',
+      tempo_maximo_minutos: pausa.tempo_maximo_minutos != null ? String(pausa.tempo_maximo_minutos) : '',
+    })
     setIsPausaModalOpen(true)
   }
 
   const openNewPausa = () => {
     setEditingPausa(null)
-    setPausaForm({ nome: '', descricao: '' })
+    setPausaForm({ nome: '', descricao: '', tempo_maximo_minutos: '' })
     setIsPausaModalOpen(true)
   }
 
@@ -4144,7 +4377,13 @@ const saveConfig = async () => {
           
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-full"
+                aria-label="Abrir menu do usuário"
+                title="Menu do usuário"
+              >
                 <User className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -4215,7 +4454,10 @@ const saveConfig = async () => {
                     pluralWord="subsetores"
                     options={subsetorFiltroOptions}
                     selected={subsetorFilter}
-                    onChange={setSubsetorFilter}
+                    onChange={(next) => {
+                      setSubsetorFilter(next)
+                      setMonitoringPage(1)
+                    }}
                     open={quickSubsetorFiltroOpen}
                     onOpenChange={setQuickSubsetorFiltroOpen}
                   />
@@ -4446,7 +4688,10 @@ const saveConfig = async () => {
                       pluralWord="atendentes"
                       options={atendenteFiltroOptions}
                       selected={atendenteFilter}
-                      onChange={setAtendenteFilter}
+                      onChange={(next) => {
+                        setAtendenteFilter(next)
+                        setMonitoringPage(1)
+                      }}
                       open={filtrosOpen}
                       onOpenChange={setFiltrosOpen}
                       searchable
@@ -4456,7 +4701,10 @@ const saveConfig = async () => {
                       <Input
                         placeholder="Buscar pelo Nº do ticket"
                         value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
+                        onChange={(e) => {
+                          setSearchTerm(e.target.value)
+                          setMonitoringPage(1)
+                        }}
                         className="w-52 pl-9 h-9"
                       />
                     </div>
@@ -4468,7 +4716,10 @@ const saveConfig = async () => {
                 <div className="border-b border-border mb-4">
                   <div className="flex gap-0">
                     <button
-                      onClick={() => setActiveTab('em-andamento')}
+                      onClick={() => {
+                        setActiveTab('em-andamento')
+                        setMonitoringPage(1)
+                      }}
                       className={cn(
                         "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'em-andamento'
@@ -4479,7 +4730,10 @@ const saveConfig = async () => {
                       Atribuído/Em andamento
                     </button>
                     <button
-                      onClick={() => setActiveTab('aguardando')}
+                      onClick={() => {
+                        setActiveTab('aguardando')
+                        setMonitoringPage(1)
+                      }}
                       className={cn(
                         "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'aguardando'
@@ -4495,7 +4749,10 @@ const saveConfig = async () => {
                       )}
                     </button>
                     <button
-                      onClick={() => setActiveTab('atendentes')}
+                      onClick={() => {
+                        setActiveTab('atendentes')
+                        setMonitoringPage(1)
+                      }}
                       className={cn(
                         "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'atendentes'
@@ -4504,17 +4761,6 @@ const saveConfig = async () => {
                       )}
                     >
                       Atendentes
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('filas')}
-                      className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
-                        activeTab === 'filas'
-                          ? "border-primary text-primary"
-                          : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
-                      )}
-                    >
-                      Filas
                     </button>
                   </div>
                 </div>
@@ -4604,7 +4850,7 @@ const saveConfig = async () => {
                               </TableCell>
                             </TableRow>
                           ) : (
-                            sortedTicketsEmAndamento.map((ticket: any) => {
+                            paginatedTicketsEmAndamento.map((ticket: any) => {
                               const aguardandoResposta = ticket.status === 'em_atendimento' && !ticket.primeira_resposta_em
                               return (
                                 <TableRow 
@@ -4636,7 +4882,7 @@ const saveConfig = async () => {
                                   </TableCell>
                                   <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
                                   <TableCell className="text-sm text-foreground max-w-[160px]">
-                                    <span className="block truncate" title={ticket.fila || setor?.nome}>{ticket.fila || setor?.nome}</span>
+                                    <span className="block truncate" title={ticket.fila && ticket.fila !== setor?.nome ? `${setor?.nome} / ${ticket.fila}` : setor?.nome}>{ticket.fila || setor?.nome}</span>
                                   </TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
                                   <TableCell>
@@ -4645,6 +4891,8 @@ const saveConfig = async () => {
                                       size="icon" 
                                       className="h-7 w-7"
                                       onClick={() => openConversation(ticket)}
+                                      aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
+                                      title="Abrir conversa"
                                     >
                                       <MessageCircle className="h-4 w-4" />
                                     </Button>
@@ -4727,7 +4975,7 @@ const saveConfig = async () => {
                               </TableCell>
                             </TableRow>
                           ) : (
-                            sortedTicketsAguardando.map((ticket: any) => (
+                            paginatedTicketsAguardando.map((ticket: any) => (
                               <TableRow key={ticket.id} className="bg-yellow-50/50 dark:bg-yellow-950/20">
                                 <TableCell>
                                   <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
@@ -4746,7 +4994,7 @@ const saveConfig = async () => {
                                 </TableCell>
                                 <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={setor?.nome} compact /></TableCell>
                                 <TableCell className="text-sm text-foreground max-w-[160px]">
-                                  <span className="block truncate" title={setor?.nome}>{setor?.nome}</span>
+                                  <span className="block truncate" title={ticket.fila && ticket.fila !== setor?.nome ? `${setor?.nome} / ${ticket.fila}` : setor?.nome}>{ticket.fila || setor?.nome}</span>
                                 </TableCell>
                                 <TableCell>
                                   <Badge variant={
@@ -4762,6 +5010,8 @@ const saveConfig = async () => {
                                     size="icon" 
                                     className="h-7 w-7"
                                     onClick={() => openConversation(ticket)}
+                                    aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
+                                    title="Abrir conversa"
                                   >
                                     <MessageCircle className="h-4 w-4" />
                                   </Button>
@@ -4831,13 +5081,19 @@ const saveConfig = async () => {
                               </TableCell>
                             </TableRow>
                           ) : (
-                            sortedMonitoringAttendants.map((atendente: any) => {
+                            paginatedMonitoringAttendants.map((atendente: any) => {
                               const ticketsDoAtendente = activeTicketCountByAttendant.get(atendente.id) || 0
                               const finalizadosHojeDoAtendente = finalizedTodayCountByAttendant.get(atendente.id) || 0
                               const isOnPause = !!atendente.pausa_atual_id
                               const isOnline = atendente.is_online
+                              const pausaInfo = atendente.pausaInfo as { nome: string; inicio: string; tempoMaximoMinutos: number | null } | null | undefined
+                              const pausaElapsedMs = isOnPause ? computePausaElapsedMs(pausaInfo, monitoringTick) : 0
+                              const pausaEstourada = isOnPause && isPausaEstourada(pausaInfo, pausaElapsedMs)
+                              const pausaLabel = formatPausaStatusLabel(pausaInfo, pausaElapsedMs)
                               const statusDisplay = isOnPause
-                                ? { color: 'bg-amber-500', textColor: 'text-amber-600 dark:text-amber-400', label: 'Ausente' }
+                                ? pausaEstourada
+                                  ? { color: 'bg-red-500', textColor: 'text-red-600 dark:text-red-400 font-medium', label: pausaLabel }
+                                  : { color: 'bg-amber-500', textColor: 'text-amber-600 dark:text-amber-400', label: pausaLabel }
                                 : isOnline
                                   ? { color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Online' }
                                   : { color: 'bg-gray-400', textColor: 'text-muted-foreground', label: 'Offline' }
@@ -4861,6 +5117,8 @@ const saveConfig = async () => {
                                           size="icon"
                                           className="h-7 w-7"
                                           disabled={isChanging}
+                                          aria-label={`Alterar status de ${atendente.nome}`}
+                                          title="Alterar status"
                                         >
                                           {isChanging
                                             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -4897,21 +5155,20 @@ const saveConfig = async () => {
                     </div>
                   )}
 
-                  {/* Filas Tab */}
-                  {activeTab === 'filas' && (
-                    <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                      <AlertCircle className="mb-2 h-8 w-8" />
-                      <p>Configuração de filas em desenvolvimento</p>
-                    </div>
-                  )}
                 </div>
 
                 {/* Pagination */}
-                <div className="flex items-center justify-between border-t border-border pt-4 mt-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4 mt-4">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <span>Resultados por página:</span>
-                    <Select defaultValue="5">
-                      <SelectTrigger className="h-8 w-16">
+                    <Select
+                      value={String(monitoringPageSize)}
+                      onValueChange={(value) => {
+                        setMonitoringPageSize(Number(value))
+                        setMonitoringPage(1)
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-16" aria-label="Resultados por página do monitoramento">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -4922,19 +5179,55 @@ const saveConfig = async () => {
                     </Select>
                   </div>
                   <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                    <span>1-{Math.min(5, tickets.length)} de {tickets.length}</span>
+                    <span aria-live="polite">
+                      {monitoringRangeStart}-{monitoringRangeEnd} de {monitoringItemCount}
+                    </span>
                     <div className="flex items-center gap-0.5 ml-2">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" disabled>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setMonitoringPage(1)}
+                        disabled={safeMonitoringPage <= 1}
+                        aria-label="Primeira página"
+                        title="Primeira página"
+                      >
                         <ChevronFirst className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" disabled>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setMonitoringPage(Math.max(1, safeMonitoringPage - 1))}
+                        disabled={safeMonitoringPage <= 1}
+                        aria-label="Página anterior"
+                        title="Página anterior"
+                      >
                         <ChevronLeft className="h-4 w-4" />
                       </Button>
-                      <span className="px-2">1</span>
-                      <Button variant="ghost" size="icon" className="h-7 w-7">
+                      <span className="px-2" aria-label={`Página ${safeMonitoringPage} de ${monitoringTotalPages}`}>
+                        {safeMonitoringPage}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setMonitoringPage(Math.min(monitoringTotalPages, safeMonitoringPage + 1))}
+                        disabled={safeMonitoringPage >= monitoringTotalPages || monitoringItemCount === 0}
+                        aria-label="Próxima página"
+                        title="Próxima página"
+                      >
                         <ChevronRight className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => setMonitoringPage(monitoringTotalPages)}
+                        disabled={safeMonitoringPage >= monitoringTotalPages || monitoringItemCount === 0}
+                        aria-label="Última página"
+                        title="Última página"
+                      >
                         <ChevronLast className="h-4 w-4" />
                       </Button>
                     </div>
@@ -4943,13 +5236,6 @@ const saveConfig = async () => {
               </CardContent>
             </Card>
 
-            {/* Warning Note */}
-            {ticketsEmAndamento.some((t: any) => t.status === 'em_atendimento' && !t.primeira_resposta_em) && (
-              <div className="flex items-center gap-2 rounded-lg bg-yellow-100 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-3 text-sm text-yellow-800 dark:text-yellow-200">
-                <AlertCircle className="h-4 w-4 flex-shrink-0" />
-                <span>O destaque amarelo sinaliza que um ticket foi atribuído a um atendente, mas o contato ainda não recebeu a primeira resposta.</span>
-              </div>
-            )}
           </div>
         )}
 
@@ -5001,6 +5287,7 @@ const saveConfig = async () => {
                                 className="h-6 w-6 text-muted-foreground disabled:opacity-30"
                                 onClick={() => moveRelatorioCard(id, -1)}
                                 disabled={idx === 0}
+                                aria-label={`Subir ${opt.label}`}
                                 title="Subir"
                               >
                                 <ArrowUp className="h-3.5 w-3.5" />
@@ -5011,6 +5298,7 @@ const saveConfig = async () => {
                                 className="h-6 w-6 text-muted-foreground disabled:opacity-30"
                                 onClick={() => moveRelatorioCard(id, 1)}
                                 disabled={idx === relatorioVisibleIds.length - 1}
+                                aria-label={`Descer ${opt.label}`}
                                 title="Descer"
                               >
                                 <ArrowDown className="h-3.5 w-3.5" />
@@ -5947,6 +6235,8 @@ const saveConfig = async () => {
                                 size="icon"
                                 className="h-7 w-7"
                                 onClick={() => openConversation(ticket)}
+                                aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
+                                title="Abrir conversa"
                               >
                                 <MessageCircle className="h-4 w-4" />
                               </Button>
@@ -5993,7 +6283,10 @@ const saveConfig = async () => {
               <Input
                 placeholder="Buscar por nome ou e-mail"
                 value={searchAtendente}
-                onChange={(e) => setSearchAtendente(e.target.value)}
+                onChange={(e) => {
+                  setSearchAtendente(e.target.value)
+                  setAttendantsPage(1)
+                }}
                 className="pl-9"
               />
             </div>
@@ -6037,17 +6330,18 @@ const saveConfig = async () => {
                   </Button>
                 </div>
               </Card>
+            ) : filteredManagementAttendants.length === 0 ? (
+              <Card className="glass-card-elevated rounded-lg p-12">
+                <div className="flex flex-col items-center justify-center text-center">
+                  <Search className="mb-3 h-8 w-8 text-muted-foreground" />
+                  <h3 className="font-semibold tracking-tight">Nenhum atendente encontrado</h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Ajuste a busca ou os filtros para ver outros atendentes.
+                  </p>
+                </div>
+              </Card>
             ) : (
-              atendentes
-                .filter((atendente: any) => {
-                  if (!searchAtendente) return true
-                  const term = searchAtendente.toLowerCase()
-                  return (
-                    atendente.nome?.toLowerCase().includes(term) ||
-                    atendente.email?.toLowerCase().includes(term)
-                  )
-                })
-                .map((atendente: any) => {
+              paginatedManagementAttendants.map((atendente: any) => {
                 const initials = atendente.nome
                   ?.split(' ')
                   .map((n: string) => n[0])
@@ -6176,7 +6470,14 @@ const saveConfig = async () => {
                           {/* Status mobile */}
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" className="lg:hidden h-8 w-8" disabled={alterandoStatusId === atendente.id}>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="lg:hidden h-8 w-8"
+                                disabled={alterandoStatusId === atendente.id}
+                                aria-label={`Alterar status de ${atendente.nome}`}
+                                title="Alterar status"
+                              >
                                 {alterandoStatusId === atendente.id
                                   ? <Loader2 className="h-4 w-4 animate-spin" />
                                   : <MoreHorizontal className="h-4 w-4" />
@@ -6207,6 +6508,8 @@ const saveConfig = async () => {
                             size="icon"
                             className="h-8 w-8"
                             onClick={() => openEditAtendenteModal(atendente)}
+                            aria-label={`Editar atendente ${atendente.nome}`}
+                            title="Editar atendente"
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
@@ -6215,6 +6518,8 @@ const saveConfig = async () => {
                             size="icon"
                             className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
                             onClick={() => openDeleteConfirm({ id: atendente.id, nome: atendente.nome })}
+                            aria-label={`Excluir atendente ${atendente.nome}`}
+                            title="Excluir atendente"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -6228,12 +6533,18 @@ const saveConfig = async () => {
           </div>
 
           {/* Pagination */}
-          {atendentes.length > 0 && (
-            <div className="flex items-center justify-between pt-2">
+          {filteredManagementAttendants.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <span>Resultados por página:</span>
-                <Select defaultValue="5">
-                  <SelectTrigger className="h-8 w-16">
+                <Select
+                  value={String(attendantsPageSize)}
+                  onValueChange={(value) => {
+                    setAttendantsPageSize(Number(value))
+                    setAttendantsPage(1)
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-16" aria-label="Resultados por página de atendentes">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -6244,19 +6555,55 @@ const saveConfig = async () => {
                 </Select>
               </div>
               <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                <span>1-{atendentes.length} de {atendentes.length}</span>
+                <span aria-live="polite">
+                  {attendantsRangeStart}-{attendantsRangeEnd} de {filteredManagementAttendants.length}
+                </span>
                 <div className="flex items-center gap-0.5 ml-2">
-                  <Button variant="ghost" size="icon" className="h-7 w-7" disabled>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setAttendantsPage(1)}
+                    disabled={safeAttendantsPage <= 1}
+                    aria-label="Primeira página"
+                    title="Primeira página"
+                  >
                     <ChevronFirst className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7" disabled>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setAttendantsPage(Math.max(1, safeAttendantsPage - 1))}
+                    disabled={safeAttendantsPage <= 1}
+                    aria-label="Página anterior"
+                    title="Página anterior"
+                  >
                     <ChevronLeft className="h-4 w-4" />
                   </Button>
-                  <span className="px-2">1</span>
-                  <Button variant="ghost" size="icon" className="h-7 w-7">
+                  <span className="px-2" aria-label={`Página ${safeAttendantsPage} de ${attendantsTotalPages}`}>
+                    {safeAttendantsPage}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setAttendantsPage(Math.min(attendantsTotalPages, safeAttendantsPage + 1))}
+                    disabled={safeAttendantsPage >= attendantsTotalPages}
+                    aria-label="Próxima página"
+                    title="Próxima página"
+                  >
                     <ChevronRight className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setAttendantsPage(attendantsTotalPages)}
+                    disabled={safeAttendantsPage >= attendantsTotalPages}
+                    aria-label="Última página"
+                    title="Última página"
+                  >
                     <ChevronLast className="h-4 w-4" />
                   </Button>
                 </div>
@@ -6402,7 +6749,12 @@ const saveConfig = async () => {
                       <TableCell className="text-right">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`Abrir ações da pausa ${pausa.nome}`}
+                              title="Ações da pausa"
+                            >
                               <Settings className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>
@@ -6820,7 +7172,13 @@ const saveConfig = async () => {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex items-center justify-end gap-1">
-                              <Button variant="ghost" size="icon" onClick={() => openEditSubsetor(subsetor)}>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => openEditSubsetor(subsetor)}
+                                aria-label={`Editar subsetor ${subsetor.nome}`}
+                                title="Editar subsetor"
+                              >
                                 <Pencil className="h-4 w-4" />
                               </Button>
                               <Button
@@ -6829,6 +7187,8 @@ const saveConfig = async () => {
                                 onClick={() => deleteSubsetor(subsetor.id)}
                                 disabled={deletingSubsetorId === subsetor.id}
                                 className="text-destructive hover:text-destructive"
+                                aria-label={`Excluir subsetor ${subsetor.nome}`}
+                                title="Excluir subsetor"
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
@@ -7190,6 +7550,8 @@ const saveConfig = async () => {
                               variant="ghost"
                               size="icon"
                               onClick={() => openEditCanal(canal)}
+                              aria-label={`Editar canal ${canal.nome || canal.id}`}
+                              title="Editar canal"
                             >
                               <Pencil className="h-4 w-4" />
                             </Button>
@@ -7199,6 +7561,8 @@ const saveConfig = async () => {
                               onClick={() => deleteCanal(canal.id)}
                               disabled={deletingCanalId === canal.id}
                               className="text-destructive hover:text-destructive"
+                              aria-label={`Excluir canal ${canal.nome || canal.id}`}
+                              title="Excluir canal"
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -7344,6 +7708,39 @@ const saveConfig = async () => {
           </CardContent>
         </Card>
 
+        {/* Ordenação de Conversas */}
+        <Card className="glass-card-elevated rounded-lg">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ArrowUpDown className="h-5 w-5" />
+              Ordenação de Conversas
+            </CardTitle>
+            <CardDescription>Controla se a lista de chats do WorkDesk sobe automaticamente conversas com mensagens novas</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="travar-ordenacao-chat" className="text-sm font-medium">Travar ordenação da lista de chats</Label>
+                <p className="text-xs text-muted-foreground">Quando ativado, a lista de conversas do WorkDesk não reordena automaticamente ao receber ou enviar mensagens — a ordem fica fixa para todos os atendentes deste setor</p>
+                {travarOrdenacaoChatIndisponivel && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Este recurso ainda não está disponível neste ambiente (falta uma atualização de banco de dados). A opção acima não será salva até isso ser resolvido.
+                  </p>
+                )}
+              </div>
+              <Switch
+                id="travar-ordenacao-chat"
+                aria-label="Travar ordenação da lista de chats"
+                checked={configForm.travar_ordenacao_chat}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, travar_ordenacao_chat: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Row 3: Templates de Mensagem + Webhooks */}
         <div className="grid gap-6 md:grid-cols-2">
           {/* Templates de Mensagem */}
@@ -7398,6 +7795,8 @@ const saveConfig = async () => {
                             })
                             setIsTemplateModalOpen(true)
                           }}
+                          aria-label={`Editar mensagem rápida ${template.atalho}`}
+                          title="Editar mensagem rápida"
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
@@ -7406,6 +7805,8 @@ const saveConfig = async () => {
                           size="icon"
                           onClick={() => deleteTemplate(template.id)}
                           className="text-destructive hover:text-destructive"
+                          aria-label={`Excluir mensagem rápida ${template.atalho}`}
+                          title="Excluir mensagem rápida"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -7687,6 +8088,7 @@ const saveConfig = async () => {
                           size="icon"
                           className="ml-auto h-8 w-8 text-destructive hover:text-destructive"
                           onClick={() => removeTransbordoBloqueio(i)}
+                          aria-label={`Remover janela de bloqueio ${i + 1}`}
                           title="Remover janela"
                         >
                           <Trash2 className="h-4 w-4" />
@@ -8359,6 +8761,22 @@ const saveConfig = async () => {
                 rows={3}
               />
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="pausa-tempo-maximo">Tempo máximo (minutos, opcional)</Label>
+              <Input
+                id="pausa-tempo-maximo"
+                type="number"
+                min={0}
+                step={1}
+                value={pausaForm.tempo_maximo_minutos}
+                onChange={(e) => setPausaForm((prev) => ({ ...prev, tempo_maximo_minutos: e.target.value }))}
+                placeholder="Ex: 90 (1h30)"
+              />
+              <p className="text-xs text-muted-foreground">
+                Se definido, o supervisor verá um alerta quando o atendente ultrapassar esse tempo nesta pausa.
+              </p>
+            </div>
           </div>
 
           <div className="flex justify-end gap-2">
@@ -8704,7 +9122,13 @@ const saveConfig = async () => {
                   Conversa com {selectedTicket.clientes?.nome || selectedTicket.clientes?.telefone || 'Cliente'}
                 </p>
               </div>
-              <Button variant="ghost" size="icon" onClick={closeConversation}>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={closeConversation}
+                aria-label="Fechar conversa"
+                title="Fechar conversa"
+              >
                 <X className="h-5 w-5" />
               </Button>
             </div>
@@ -8898,6 +9322,7 @@ const saveConfig = async () => {
                             className="h-9 w-9 shrink-0 bg-amber-500 text-white hover:bg-amber-600"
                             onClick={handleEnviarNotaInterna}
                             disabled={enviandoNota || !notaInterna.trim()}
+                            aria-label="Enviar nota interna"
                             title="Enviar nota interna (só o atendente vê)"
                           >
                             {enviandoNota ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -9262,6 +9687,8 @@ const saveConfig = async () => {
                         className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                         disabled={deletingAvisoId === aviso.id}
                         onClick={() => deleteAviso(aviso.id)}
+                        aria-label={`Excluir aviso ${aviso.titulo}`}
+                        title="Excluir aviso"
                       >
                         {deletingAvisoId === aviso.id
                           ? <Loader2 className="h-3.5 w-3.5 animate-spin" />

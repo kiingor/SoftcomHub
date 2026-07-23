@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
+import { computePausaElapsedMs, formatPausaStatusLabel, isPausaEstourada } from '@/lib/pausa-status'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -78,10 +79,15 @@ import {
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
+import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
+import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
 
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
+const SEM_SUBSETOR_ID = 'sem_subsetor'
+const NO_TRANSFER_SUBSETOR = '__sem_subsetor__'
+const POSTGREST_IN_CHUNK_SIZE = 200
 
 async function loadRowsByPages(createQuery: () => any, pageSize = 1000) {
   const rows: any[] = []
@@ -95,6 +101,65 @@ async function loadRowsByPages(createQuery: () => any, pageSize = 1000) {
   }
 
   return rows
+}
+
+function chunkValues<T>(values: readonly T[], size = POSTGREST_IN_CHUNK_SIZE): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size))
+  }
+  return chunks
+}
+
+async function loadRowsByValues(
+  supabase: ReturnType<typeof createClient>,
+  table: string,
+  columns: string,
+  filterColumn: string,
+  values: readonly string[],
+  configure?: (query: any) => any,
+) {
+  const valueChunks = chunkValues([...new Set(values)])
+  const chunkRows = await Promise.all(valueChunks.map((valueChunk) => loadRowsByPages(() => {
+    let query: any = supabase.from(table).select(columns).in(filterColumn, valueChunk)
+    if (configure) query = configure(query)
+    return query
+  })))
+
+  return chunkRows.flat()
+}
+
+function getPhoneLookupVariants(phone: string) {
+  const trimmedPhone = phone.trim()
+  const normalizedPhone = normalizeBrazilianPhone(trimmedPhone)
+  if (!normalizedPhone) return trimmedPhone ? [trimmedPhone] : []
+
+  const hasBrazilCountryCode = normalizedPhone.startsWith('55')
+    && (normalizedPhone.length === 12 || normalizedPhone.length === 13)
+  const nationalPhone = hasBrazilCountryCode ? normalizedPhone.slice(2) : normalizedPhone
+  const variants = new Set([
+    trimmedPhone,
+    normalizedPhone,
+    `+${normalizedPhone}`,
+    nationalPhone,
+  ])
+
+  if (nationalPhone.length === 10 || nationalPhone.length === 11) {
+    const areaCode = nationalPhone.slice(0, 2)
+    const localNumber = nationalPhone.slice(2)
+    const prefixLength = localNumber.length === 9 ? 5 : 4
+    const formattedLocalNumber = `${localNumber.slice(0, prefixLength)}-${localNumber.slice(prefixLength)}`
+    variants.add(`(${areaCode}) ${formattedLocalNumber}`)
+    variants.add(`(${areaCode})${formattedLocalNumber}`)
+    variants.add(`${areaCode} ${formattedLocalNumber}`)
+    variants.add(`${areaCode}${formattedLocalNumber}`)
+    variants.add(`+55 (${areaCode}) ${formattedLocalNumber}`)
+    variants.add(`+55(${areaCode})${formattedLocalNumber}`)
+    variants.add(`55 (${areaCode}) ${formattedLocalNumber}`)
+    variants.add(`55${areaCode}${formattedLocalNumber}`)
+  }
+
+  return [...variants].filter(Boolean)
 }
 
 function formatMs(ms: number) {
@@ -162,6 +227,24 @@ type NexusConversation = {
   messages: any[]
 }
 
+type TransferSubsetor = {
+  id: string
+  nome: string
+  setor_id: string
+}
+
+type TransferAtendente = {
+  id: string
+  nome: string
+  is_online: boolean
+  ativo: boolean
+  pausa_atual_id: string | null
+  last_heartbeat: string | null
+  subsetor_ids: string[]
+}
+
+type TransferTab = 'atendente' | 'setor'
+
 export default function MonitoramentoPage() {
   const supabase = useMemo(() => createClient(), [])
   const { data: colaborador } = useColaborador()
@@ -204,9 +287,10 @@ export default function MonitoramentoPage() {
   const [searchAtendente, setSearchAtendente] = useState('')
   const [, setTick] = useState(0)
 
-  // Helper: verifica se atendente está online (confia no is_online do banco)
+  // Mesmo critério usado pela distribuição e pela API de transferência:
+  // ativo, online, sem pausa e com heartbeat recente.
   const isAtendenteOnline = useCallback((atendente: any): boolean => {
-    return !!(atendente?.is_online && atendente?.ativo)
+    return isTransferTargetAvailable(atendente)
   }, [])
 
   // Conversation panel state
@@ -226,10 +310,16 @@ export default function MonitoramentoPage() {
   const [encerrarDialogOpen, setEncerrarDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [transferLoading, setTransferLoading] = useState(false)
-  const [atendentesDisponiveis, setAtendentesDisponiveis] = useState<any[]>([])
+  const [transferOptionsLoading, setTransferOptionsLoading] = useState(false)
+  const [transferTab, setTransferTab] = useState<TransferTab>('atendente')
+  const [atendentesDisponiveis, setAtendentesDisponiveis] = useState<TransferAtendente[]>([])
+  const [subsetoresTransfer, setSubsetoresTransfer] = useState<TransferSubsetor[]>([])
   const [setoresTransfer, setSetoresTransfer] = useState<any[]>([])
   const [selectedSetorTransfer, setSelectedSetorTransfer] = useState<string>('all')
+  const [selectedSubsetorTransfer, setSelectedSubsetorTransfer] = useState<string>('')
   const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all')
+  const [transferUnavailableConfirmOpen, setTransferUnavailableConfirmOpen] = useState(false)
+  const transferOptionsRequestIdRef = useRef(0)
 
   // Tick every second for live times
   useEffect(() => {
@@ -296,18 +386,36 @@ export default function MonitoramentoPage() {
   // Fetch monitoring data
   const { data, error: monitoringError, isLoading, mutate } = useSWR(
     colaborador && setorIdsFiltrados.length > 0
-      ? ['dashboard-monitoramento', setorIdsFiltrados.join(','), setorFilter.join(','), tagFilter.join(',')]
+      ? [
+          'dashboard-monitoramento',
+          setorIdsFiltrados.join(','),
+          setorFilter.join(','),
+          tagFilter.join(','),
+          subsetorFilter.join(','),
+        ]
       : null,
     async () => {
       const targetSetorIds = setorFilter.length > 0 ? setorFilter : setorIdsFiltrados
+      const namedSubsetorIds = subsetorFilter.filter((id) => id !== SEM_SUBSETOR_ID)
+      const includesGeneralQueue = subsetorFilter.includes(SEM_SUBSETOR_ID)
+      const applySubsetorFilter = (query: any) => {
+        if (subsetorFilter.length === 0) return query
+        if (includesGeneralQueue && namedSubsetorIds.length > 0) {
+          return query.or(`subsetor_id.is.null,subsetor_id.in.(${namedSubsetorIds.join(',')})`)
+        }
+        if (includesGeneralQueue) return query.is('subsetor_id', null)
+        return query.in('subsetor_id', namedSubsetorIds)
+      }
 
       // Fetch active tickets (aberto + em_atendimento) across all accessible setores
       let ticketsQuery = supabase
         .from('tickets')
-        .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, pausa_atual_id), setores!tickets_setor_id_fkey(id, nome), subsetores(id, nome)')
+        .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat), setores!tickets_setor_id_fkey(id, nome), subsetores(id, nome)')
         .in('setor_id', targetSetorIds)
         .in('status', ['aberto', 'em_atendimento'])
-      const { data: ticketsAtivos } = await ticketsQuery
+      ticketsQuery = applySubsetorFilter(ticketsQuery)
+      const { data: ticketsAtivos, error: ticketsAtivosError } = await ticketsQuery
+      if (ticketsAtivosError) throw ticketsAtivosError
 
       // Lookup global de setores — usado pra reescrever descrições antigas de
       // transbordo na hora da exibição. Carrega TODOS os setores (não só os
@@ -340,42 +448,111 @@ export default function MonitoramentoPage() {
       // Fetch today's tickets (for stats)
       const now = new Date()
       const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
-      const { data: ticketsHoje } = await supabase
+      let ticketsHojeQuery = supabase
         .from('tickets')
-        .select('id, status, criado_em, primeira_resposta_em, encerrado_em')
+        .select('id, status, criado_em, primeira_resposta_em, encerrado_em, subsetor_id')
         .in('setor_id', targetSetorIds)
         .gte('criado_em', startOfDay)
+      ticketsHojeQuery = applySubsetorFilter(ticketsHojeQuery)
+      const { data: ticketsHoje, error: ticketsHojeError } = await ticketsHojeQuery
+      if (ticketsHojeError) throw ticketsHojeError
 
       // Separate count queries to avoid Supabase 1000-row default limit
-      const { count: countRecebidos } = await supabase
+      let countRecebidosQuery = supabase
         .from('tickets')
         .select('*', { count: 'exact', head: true })
         .in('setor_id', targetSetorIds)
         .gte('criado_em', startOfDay)
-
-      const { count: countResolvidos } = await supabase
+      let countResolvidosQuery = supabase
         .from('tickets')
         .select('*', { count: 'exact', head: true })
         .eq('status', 'encerrado')
         .in('setor_id', targetSetorIds)
         .gte('criado_em', startOfDay)
+      countRecebidosQuery = applySubsetorFilter(countRecebidosQuery)
+      countResolvidosQuery = applySubsetorFilter(countResolvidosQuery)
+      const [
+        { count: countRecebidos, error: countRecebidosError },
+        { count: countResolvidos, error: countResolvidosError },
+      ] = await Promise.all([countRecebidosQuery, countResolvidosQuery])
+      if (countRecebidosError) throw countRecebidosError
+      if (countResolvidosError) throw countResolvidosError
 
       // Fetch atendentes across all accessible setores
-      let atendentesQuery = supabase
+      const atendentesQuery = supabase
         .from('colaboradores_setores')
-        .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+        .select('setor_id, colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
         .in('setor_id', targetSetorIds)
-      const { data: atendentesData } = await atendentesQuery
+      const subsetorLinksQuery = subsetorFilter.length > 0
+        ? supabase
+            .from('colaboradores_subsetores')
+            .select('setor_id, colaborador_id, subsetor_id')
+            .in('setor_id', targetSetorIds)
+        : Promise.resolve({ data: [], error: null })
+      const [
+        { data: atendentesData, error: atendentesError },
+        { data: subsetorLinks, error: subsetorLinksError },
+      ] = await Promise.all([atendentesQuery, subsetorLinksQuery])
+      if (atendentesError) throw atendentesError
+      if (subsetorLinksError) throw subsetorLinksError
+
+      const subsetoresByMembership = new Map<string, string[]>()
+      for (const link of subsetorLinks || []) {
+        const key = `${link.setor_id}:${link.colaborador_id}`
+        const current = subsetoresByMembership.get(key) || []
+        current.push(link.subsetor_id)
+        subsetoresByMembership.set(key, current)
+      }
+      const matchesAttendantSubsetor = (membership: any) => {
+        if (subsetorFilter.length === 0) return true
+        const linkedSubsetores = subsetoresByMembership.get(
+          `${membership.setor_id}:${membership.colaborador_id}`,
+        ) || []
+        return (
+          (includesGeneralQueue && linkedSubsetores.length === 0)
+          || linkedSubsetores.some((id) => namedSubsetorIds.includes(id))
+        )
+      }
 
       // Deduplicate atendentes (same person can be in multiple setores)
       const atendentesMap = new Map()
       for (const a of atendentesData || []) {
+        if (!matchesAttendantSubsetor(a)) continue
         const colab = (a as any).colaboradores
-        if (colab && !atendentesMap.has(colab.id)) {
+        if (colab?.ativo && !atendentesMap.has(colab.id)) {
           atendentesMap.set(colab.id, colab)
         }
       }
       const atendentes = Array.from(atendentesMap.values())
+
+      const pausaIds = atendentes
+        .filter((atendente: any) => atendente.pausa_atual_id)
+        .map((atendente: any) => atendente.pausa_atual_id)
+      if (pausaIds.length > 0) {
+        const { data: pausasAtivas, error: pausasAtivasError } = await supabase
+          .from('pausas_colaboradores')
+          .select('id, inicio, pausas(nome, tempo_maximo_minutos)')
+          .in('id', pausaIds)
+        if (pausasAtivasError) throw pausasAtivasError
+        const pausaInfoById = new Map(
+          (pausasAtivas || []).map((pausa: any) => {
+            const pausaConfig = Array.isArray(pausa.pausas) ? pausa.pausas[0] : pausa.pausas
+            return [
+              pausa.id,
+              {
+                nome: pausaConfig?.nome || 'Pausa',
+                inicio: pausa.inicio,
+                tempoMaximoMinutos: pausaConfig?.tempo_maximo_minutos ?? null,
+              },
+            ]
+          }),
+        )
+        for (const atendente of atendentes as any[]) {
+          if (atendente.pausa_atual_id) {
+            atendente.pausaInfo = pausaInfoById.get(atendente.pausa_atual_id) || null
+          }
+        }
+      }
 
       const tickets = ticketsAtivos || []
       const todayTickets = ticketsHoje || []
@@ -383,13 +560,10 @@ export default function MonitoramentoPage() {
       // Calculate stats
       const ticketsNaFila = tickets.filter((t: any) => t.status === 'aberto')
       const ticketsEmAtendimento = tickets.filter((t: any) => t.status === 'em_atendimento')
-      const ticketsFinalizados = todayTickets.filter((t: any) => t.status === 'encerrado')
-
       // Max times
       const nowMs = Date.now()
 
-      // Online = is_online true, ativo, e sem pausa
-      const atendentesOnline = atendentes.filter((c: any) => c.is_online && c.ativo && !c.pausa_atual_id)
+      const atendentesOnline = atendentes.filter((c: any) => isAtendenteOnline(c))
       const atendentesEmPausa = atendentes.filter((c: any) => c.pausa_atual_id && c.ativo)
       let maxTempoFila = 0
       let maxTempoResposta = 0
@@ -474,47 +648,73 @@ export default function MonitoramentoPage() {
 
       const clienteIds = new Set<string>()
       const telefones = new Set<string>()
+      const telefonesNormalizados = new Set<string>()
+      const telefonePorClienteId = new Map<string, string>()
 
       for (const message of nexusMessages) {
         if (message.cliente_id) clienteIds.add(message.cliente_id)
         const telefone = (message as any).clientes?.telefone
-        if (telefone) telefones.add(telefone)
+        if (!telefone) continue
+
+        telefones.add(telefone)
+        const telefoneNormalizado = normalizeBrazilianPhone(telefone)
+        if (!telefoneNormalizado) continue
+
+        telefonesNormalizados.add(telefoneNormalizado)
+        if (message.cliente_id) {
+          telefonePorClienteId.set(message.cliente_id, telefoneNormalizado)
+        }
       }
 
-      const clientesPorTelefone = telefones.size > 0
-        ? await supabase
-            .from('clientes')
-            .select('id, telefone')
-            .in('telefone', Array.from(telefones))
-        : { data: [] }
+      const phoneLookupVariants = [...new Set(
+        Array.from(telefones).flatMap(getPhoneLookupVariants),
+      )]
+      const clientesPorTelefone = phoneLookupVariants.length > 0
+        ? await loadRowsByValues(
+            supabase,
+            'clientes',
+            'id, telefone',
+            'telefone',
+            phoneLookupVariants,
+            (query) => query.order('id', { ascending: true }),
+          )
+        : []
 
-      const telefonePorClienteId = new Map<string, string>()
-      for (const cliente of clientesPorTelefone.data || []) {
-        clienteIds.add(cliente.id)
+      for (const cliente of clientesPorTelefone) {
         const telefone = normalizeBrazilianPhone(cliente.telefone)
-        if (telefone) telefonePorClienteId.set(cliente.id, telefone)
+        if (!telefone || !telefonesNormalizados.has(telefone)) continue
+
+        clienteIds.add(cliente.id)
+        telefonePorClienteId.set(cliente.id, telefone)
       }
 
-      const setorIaIds = setoresIa.map((setor: any) => setor.id)
-      const nexusTicketsAtivos = clienteIds.size > 0 && setorIaIds.length > 0
-        ? await supabase
-            .from('tickets')
-            .select('id, cliente_id, setor_id')
-            .in('cliente_id', Array.from(clienteIds))
-            .in('setor_id', setorIaIds)
-            .in('status', ['aberto', 'em_atendimento'])
-        : { data: [] }
+      const nexusTicketsAtivos = clienteIds.size > 0
+        ? await loadRowsByValues(
+            supabase,
+            'tickets',
+            'id, cliente_id',
+            'cliente_id',
+            Array.from(clienteIds),
+            (query) => query
+              .in('status', ['aberto', 'em_atendimento'])
+              .order('id', { ascending: true }),
+          )
+        : []
 
-      const nexusTicketIds = (nexusTicketsAtivos.data || [])
+      const nexusTicketIds = nexusTicketsAtivos
         .map((ticket: any) => ticket.id)
         .filter(Boolean)
       const ticketChannelMessages = nexusTicketIds.length > 0 && channelIds.length > 0
-        ? await loadRowsByPages(() => supabase
-            .from('mensagens')
-            .select('ticket_id, phone_number_id')
-            .in('ticket_id', nexusTicketIds)
-            .in('phone_number_id', channelIds)
-            .order('id', { ascending: true }))
+        ? await loadRowsByValues(
+            supabase,
+            'mensagens',
+            'ticket_id, phone_number_id',
+            'ticket_id',
+            nexusTicketIds,
+            (query) => query
+              .in('phone_number_id', channelIds)
+              .order('id', { ascending: true }),
+          )
         : []
 
       const channelKeysByTicket = new Map<string, Set<string>>()
@@ -529,7 +729,7 @@ export default function MonitoramentoPage() {
 
       const clientesComTicketAtivo = new Set<string>()
       const telefonesComTicketAtivo = new Set<string>()
-      for (const ticket of nexusTicketsAtivos.data || []) {
+      for (const ticket of nexusTicketsAtivos) {
         if (!ticket.id || !ticket.cliente_id) continue
         const channelKeys = channelKeysByTicket.get(ticket.id)
         // A ticket without one canonical channel must not hide conversations
@@ -602,6 +802,7 @@ export default function MonitoramentoPage() {
         .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
 
       return {
+        observedAtMs: nowMs,
         tickets,
         atendentes,
         todosSetores: todosSetoresData || [],
@@ -613,14 +814,16 @@ export default function MonitoramentoPage() {
           total: tickets.length,
           naFila: ticketsNaFila.length,
           emAtendimento: ticketsEmAtendimento.length,
-          finalizados: ticketsFinalizados.length,
+          finalizados: countResolvidos || 0,
           tempoMaximoFila: formatMs(maxTempoFila),
           tempoMaximoResposta: formatMs(maxTempoResposta),
         },
         atendentesStats: {
           online: atendentesOnline.length,
           pausa: atendentesEmPausa.length,
-          offline: atendentes.filter((c: any) => !c.is_online && c.ativo && !c.pausa_atual_id).length,
+          offline: atendentes.filter((c: any) => (
+            c.ativo && !c.pausa_atual_id && !isAtendenteOnline(c)
+          )).length,
         },
         temposHoje: {
           tempoMedioPrimeiraResposta: formatMs(avgFirstResp),
@@ -634,6 +837,7 @@ export default function MonitoramentoPage() {
   )
 
   const stats = data?.stats || { total: 0, naFila: 0, emAtendimento: 0, finalizados: 0, tempoMaximoFila: '00:00:00', tempoMaximoResposta: '00:00:00' }
+  const monitoringNowMs = data?.observedAtMs || 0
   const atendentesStats = data?.atendentesStats || { online: 0, pausa: 0, offline: 0 }
   const temposHoje = data?.temposHoje || { tempoMedioPrimeiraResposta: '00:00:00', tempoMedioResolucao: '00:00:00', totalRecebidos: 0, totalResolvidos: 0 }
   const tickets = data?.tickets || []
@@ -725,14 +929,14 @@ export default function MonitoramentoPage() {
       }
     })
     // Online (sem pausa) → em pausa → offline; depois quem tem ticket agora; depois nome.
-    const order = (x: { is_online: boolean; pausa: boolean }) =>
-      x.is_online && !x.pausa ? 0 : x.pausa ? 1 : 2
+    const order = (x: { online: boolean; pausa: boolean }) =>
+      x.online ? 0 : x.pausa ? 1 : 2
     return (atendentesRaw || [])
       .filter((a: any) => a.ativo)
       .map((a: any) => ({
         id: a.id,
         nome: a.nome,
-        is_online: !!a.is_online,
+        online: isAtendenteOnline(a),
         pausa: !!a.pausa_atual_id,
       }))
       .sort((a, b) =>
@@ -740,7 +944,7 @@ export default function MonitoramentoPage() {
         || (Number(comTicket.has(b.id)) - Number(comTicket.has(a.id)))
         || (a.nome || '').localeCompare(b.nome || ''),
       )
-  }, [atendentesRaw, tickets])
+  }, [atendentesRaw, isAtendenteOnline, tickets])
 
   const ticketsEmAndamento = useMemo(() => {
     return tickets
@@ -749,7 +953,7 @@ export default function MonitoramentoPage() {
         // Filtro por atendente (multi-seleção: vazio = todos)
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         // Filtro de subsetor
-        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
+        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || SEM_SUBSETOR_ID)) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         const numero = String(t.numero ?? t.id?.slice(0, 8) ?? '')
@@ -759,8 +963,10 @@ export default function MonitoramentoPage() {
         id: t.id,
         cliente_id: t.cliente_id,
         setor_id: t.setor_id,
+        subsetor_id: t.subsetor_id,
         colaborador_id: t.colaborador_id,
         setores: t.setores,
+        subsetores: t.subsetores,
         colaboradores: t.colaboradores,
         numero: t.numero ?? null,
         // Tempo na fila = criado_em → atribuido_em (tempo sem atendente)
@@ -790,7 +996,7 @@ export default function MonitoramentoPage() {
       .filter((t: any) => t.status === 'aberto' && !t.colaborador_id)
       .filter((t: any) => {
         // Filtro de subsetor
-        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || 'sem_subsetor')) return false
+        if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || SEM_SUBSETOR_ID)) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
@@ -799,6 +1005,12 @@ export default function MonitoramentoPage() {
       .map((t: any) => ({
         id: t.id,
         cliente_id: t.cliente_id,
+        setor_id: t.setor_id,
+        subsetor_id: t.subsetor_id,
+        colaborador_id: t.colaborador_id,
+        setores: t.setores,
+        subsetores: t.subsetores,
+        colaboradores: t.colaboradores,
         numero: t.numero ?? null,
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         telefone: t.clientes?.telefone || null,
@@ -830,13 +1042,13 @@ export default function MonitoramentoPage() {
       .sort((a: any, b: any) => {
         // Ordem: Online primeiro → Pausa → Offline, e dentro de cada grupo por nome
         const order = (x: any) => {
-          if (x.is_online && !x.pausa_atual_id) return 0 // Online
+          if (isAtendenteOnline(x)) return 0              // Online
           if (x.pausa_atual_id) return 1                  // Em pausa
           return 2                                         // Offline
         }
         return order(a) - order(b) || a.nome?.localeCompare(b.nome)
       })
-  }, [atendentesRaw, tickets, searchAtendente])
+  }, [atendentesRaw, isAtendenteOnline, tickets, searchAtendente])
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
@@ -1032,115 +1244,258 @@ export default function MonitoramentoPage() {
     }
   }
 
-  // Open transfer dialog and fetch data
-  const openTransferDialog = async () => {
-    setTransferDialogOpen(true)
-    setSelectedSetorTransfer('all')
+  const selectedTransferSubsetorId = selectedSubsetorTransfer === NO_TRANSFER_SUBSETOR
+    ? null
+    : selectedSubsetorTransfer || null
+  const transferSubsetorSelectionReady = selectedSubsetorTransfer !== ''
+  const transferAtendentesCompativeis = transferSubsetorSelectionReady
+    ? atendentesDisponiveis.filter((atendente) => (
+        isExactSubsetorMatch(selectedTransferSubsetorId, atendente.subsetor_ids)
+      ))
+    : []
+  const selectedTransferAtendente = transferAtendentesCompativeis.find(
+    (atendente) => atendente.id === selectedAtendenteTransfer,
+  )
+
+  const loadTransferOptions = async (
+    targetSetorId: string,
+    initialSubsetorId: string | null = null,
+  ) => {
+    const requestId = ++transferOptionsRequestIdRef.current
+    setTransferOptionsLoading(true)
     setSelectedAtendenteTransfer('all')
     setAtendentesDisponiveis([])
-    setSetoresTransfer([])
+    setSubsetoresTransfer([])
+    setSelectedSubsetorTransfer('')
 
+    try {
+      const [subsetoresResult, atendentesResult, subsetorLinksResult] = await Promise.all([
+        supabase
+          .from('subsetores')
+          .select('id, nome, setor_id')
+          .eq('setor_id', targetSetorId)
+          .eq('ativo', true)
+          .order('nome'),
+        supabase
+          .from('colaboradores_setores')
+          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+          .eq('setor_id', targetSetorId),
+        supabase
+          .from('colaboradores_subsetores')
+          .select('colaborador_id, subsetor_id')
+          .eq('setor_id', targetSetorId),
+      ])
+
+      if (subsetoresResult.error) throw subsetoresResult.error
+      if (atendentesResult.error) throw atendentesResult.error
+      if (subsetorLinksResult.error) throw subsetorLinksResult.error
+      if (requestId !== transferOptionsRequestIdRef.current) return
+
+      const subsetorIdsByAtendente = new Map<string, string[]>()
+      for (const link of subsetorLinksResult.data ?? []) {
+        const current = subsetorIdsByAtendente.get(link.colaborador_id) ?? []
+        current.push(link.subsetor_id)
+        subsetorIdsByAtendente.set(link.colaborador_id, current)
+      }
+
+      const atendentesMap = new Map<string, TransferAtendente>()
+      for (const row of atendentesResult.data ?? []) {
+        const relation = Array.isArray(row.colaboradores)
+          ? row.colaboradores[0]
+          : row.colaboradores
+        if (!relation?.ativo) continue
+        if (
+          targetSetorId === selectedTicket?.setor_id
+          && relation.id === selectedTicket?.colaborador_id
+        ) continue
+
+        atendentesMap.set(relation.id, {
+          ...relation,
+          subsetor_ids: subsetorIdsByAtendente.get(relation.id) ?? [],
+        })
+      }
+
+      const subsetores = (subsetoresResult.data ?? []) as TransferSubsetor[]
+      const initialSubsetorExists = initialSubsetorId
+        ? subsetores.some((subsetor) => subsetor.id === initialSubsetorId)
+        : false
+
+      setSubsetoresTransfer(subsetores)
+      setAtendentesDisponiveis(
+        [...atendentesMap.values()].sort((a, b) => a.nome.localeCompare(b.nome)),
+      )
+      setSelectedSubsetorTransfer(
+        initialSubsetorExists
+          ? initialSubsetorId!
+          : subsetores.length === 0
+            ? NO_TRANSFER_SUBSETOR
+            : '',
+      )
+    } catch (error) {
+      if (requestId !== transferOptionsRequestIdRef.current) return
+      console.error('[Monitoramento] Erro ao carregar opções de transferência:', error)
+      toast.error('Não foi possível carregar os destinos de transferência')
+    } finally {
+      if (requestId === transferOptionsRequestIdRef.current) {
+        setTransferOptionsLoading(false)
+      }
+    }
+  }
+
+  const handleTransferDialogOpenChange = (open: boolean) => {
+    setTransferDialogOpen(open)
+    if (open) return
+
+    transferOptionsRequestIdRef.current += 1
+    setTransferUnavailableConfirmOpen(false)
+    setTransferOptionsLoading(false)
+    setTransferLoading(false)
+  }
+
+  const openTransferDialog = async () => {
     const currentSetorId = selectedTicket?.setor_id
-    if (!currentSetorId) return
-
-    // Fetch destination setores configured for this setor
-    const { data: destinosData } = await supabase
-      .from('setor_destinos_transferencia')
-      .select('setor_destino_id, setores:setor_destino_id(id, nome)')
-      .eq('setor_origem_id', currentSetorId)
-
-    if (destinosData && destinosData.length > 0) {
-      const destinos = destinosData.map((d: any) => d.setores).filter(Boolean).sort((a: any, b: any) => a.nome.localeCompare(b.nome))
-      setSetoresTransfer(destinos)
-    }
-
-    // Fetch atendentes from same setor
-    const { data: csData } = await supabase
-      .from('colaboradores_setores')
-      .select('colaborador_id')
-      .eq('setor_id', currentSetorId)
-
-    if (csData && csData.length > 0) {
-      const ids = csData.map((cs: any) => cs.colaborador_id)
-      const { data: colabData } = await supabase
-        .from('colaboradores')
-        .select('id, nome, is_online, ativo, last_heartbeat')
-        .in('id', ids)
-        .eq('ativo', true)
-        .neq('id', selectedTicket?.colaborador_id || '')
-
-      setAtendentesDisponiveis(colabData || [])
-    }
-  }
-
-  // Fetch atendentes when destination setor changes
-  const handleSetorTransferChange = async (setorId: string) => {
-    setSelectedSetorTransfer(setorId)
-    setSelectedAtendenteTransfer('all')
-
-    const { data: csData } = await supabase
-      .from('colaboradores_setores')
-      .select('colaborador_id')
-      .eq('setor_id', setorId)
-
-    if (csData && csData.length > 0) {
-      const ids = csData.map((cs: any) => cs.colaborador_id)
-      const { data: colabData } = await supabase
-        .from('colaboradores')
-        .select('id, nome, is_online, ativo, last_heartbeat')
-        .in('id', ids)
-        .eq('ativo', true)
-      setAtendentesDisponiveis(colabData || [])
-    } else {
-      setAtendentesDisponiveis([])
-    }
-  }
-
-  // Execute transfer
-  const handleTransferTicket = async () => {
-    if (!selectedTicket) return
-    setTransferLoading(true)
-
-    const res = await fetch('/api/tickets/transferir', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ticket_id: selectedTicket.id,
-        setor_id: selectedSetorTransfer !== 'all' ? selectedSetorTransfer : undefined,
-        colaborador_id: selectedAtendenteTransfer !== 'all' ? selectedAtendenteTransfer : null,
-        from_colaborador_nome: selectedTicket.colaboradores?.nome || 'Desconhecido',
-        from_setor_nome: selectedTicket.setores?.nome || 'Desconhecido',
-      }),
-    })
-
-    const result = await res.json()
-
-    if (!res.ok) {
-      toast.error(result.error || 'Erro ao transferir ticket')
-      setTransferLoading(false)
+    if (!currentSetorId) {
+      toast.error('Setor atual do ticket não identificado')
       return
     }
 
-    if (result.queued) {
-      toast.info('Atendente no limite de tickets — ticket adicionado à fila de espera')
-    } else {
-      toast.success('Ticket transferido com sucesso')
+    setTransferTab('atendente')
+    setSelectedSetorTransfer('all')
+    setSelectedAtendenteTransfer('all')
+    setSetoresTransfer([])
+    setTransferDialogOpen(true)
+
+    const [destinosResult] = await Promise.all([
+      supabase
+        .from('setor_destinos_transferencia')
+        .select('setor_destino_id, setores:setor_destino_id(id, nome)')
+        .eq('setor_origem_id', currentSetorId),
+      loadTransferOptions(currentSetorId, selectedTicket.subsetor_id ?? null),
+    ])
+
+    if (destinosResult.error) {
+      console.error('[Monitoramento] Erro ao carregar setores de transferência:', destinosResult.error)
+      toast.error('Não foi possível carregar os setores de destino')
+      return
     }
 
-    setTransferDialogOpen(false)
-    setTransferLoading(false)
+    const destinos = (destinosResult.data ?? [])
+      .flatMap((row: any) => Array.isArray(row.setores) ? row.setores : [row.setores])
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.nome.localeCompare(b.nome))
+    setSetoresTransfer(destinos)
+  }
 
-    // Se o ticket foi para a fila (sem atendente), acionar distribuição imediata
-    if (selectedAtendenteTransfer === 'all') {
-      fetch('/api/tickets/auto-assign', {
+  const handleTransferTabChange = (value: string) => {
+    const nextTab = value as TransferTab
+    setTransferTab(nextTab)
+    setSelectedAtendenteTransfer('all')
+    setTransferUnavailableConfirmOpen(false)
+
+    if (nextTab === 'atendente' && selectedTicket?.setor_id) {
+      setSelectedSetorTransfer('all')
+      void loadTransferOptions(selectedTicket.setor_id, selectedTicket.subsetor_id ?? null)
+      return
+    }
+
+    transferOptionsRequestIdRef.current += 1
+    setTransferOptionsLoading(false)
+    setSelectedSetorTransfer('all')
+    setSelectedSubsetorTransfer('')
+    setSubsetoresTransfer([])
+    setAtendentesDisponiveis([])
+  }
+
+  const handleSetorTransferChange = (setorId: string) => {
+    setSelectedSetorTransfer(setorId)
+    setTransferUnavailableConfirmOpen(false)
+    void loadTransferOptions(setorId)
+  }
+
+  const handleSubsetorTransferChange = (subsetorId: string) => {
+    setSelectedSubsetorTransfer(subsetorId)
+    setSelectedAtendenteTransfer('all')
+    setTransferUnavailableConfirmOpen(false)
+  }
+
+  const handleTransferTicket = async (allowUnavailable = false) => {
+    if (!selectedTicket || !transferSubsetorSelectionReady) return
+
+    const targetSetorId = transferTab === 'setor'
+      ? selectedSetorTransfer
+      : selectedTicket.setor_id
+    const targetAtendente = selectedAtendenteTransfer !== 'all'
+      ? selectedTransferAtendente
+      : null
+
+    if (!targetSetorId || targetSetorId === 'all') {
+      toast.error('Selecione o setor de destino')
+      return
+    }
+    if (selectedAtendenteTransfer !== 'all' && !targetAtendente) {
+      toast.error('Selecione um atendente compatível com o subsetor')
+      return
+    }
+
+    setTransferLoading(true)
+    try {
+      const res = await fetch('/api/tickets/transferir', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      }).catch(() => {})
-    }
+        body: JSON.stringify({
+          ticket_id: selectedTicket.id,
+          setor_id: targetSetorId,
+          subsetor_id: selectedTransferSubsetorId,
+          colaborador_id: targetAtendente?.id ?? null,
+          allow_unavailable: allowUnavailable,
+          from_colaborador_nome: selectedTicket.colaboradores?.nome || 'Desconhecido',
+          from_setor_nome: selectedTicket.setores?.nome || 'Desconhecido',
+        }),
+      })
 
-    closeConversation()
-    mutate()
+      const result = await res.json().catch(() => null)
+      if (!res.ok) {
+        if (result?.code === 'TARGET_UNAVAILABLE' && targetAtendente) {
+          setTransferUnavailableConfirmOpen(true)
+        } else {
+          toast.error(result?.error || 'Erro ao transferir ticket')
+        }
+        return
+      }
+
+      if (result?.queued) {
+        toast.info(result.message || 'Ticket enviado para a fila')
+        fetch('/api/tickets/auto-assign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }).catch(() => {})
+      } else {
+        toast.success(result?.message || 'Ticket transferido com sucesso')
+      }
+
+      handleTransferDialogOpenChange(false)
+      closeConversation()
+      mutate()
+    } catch (error) {
+      console.error('[Monitoramento] Erro ao transferir ticket:', error)
+      toast.error('Erro ao transferir ticket')
+    } finally {
+      setTransferLoading(false)
+    }
+  }
+
+  const attemptTransferTicket = () => {
+    if (selectedTransferAtendente && !isAtendenteOnline(selectedTransferAtendente)) {
+      setTransferUnavailableConfirmOpen(true)
+      return
+    }
+    void handleTransferTicket()
+  }
+
+  const confirmUnavailableTransfer = () => {
+    setTransferUnavailableConfirmOpen(false)
+    void handleTransferTicket(true)
   }
 
 
@@ -1209,6 +1564,7 @@ export default function MonitoramentoPage() {
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filtrar por subsetor</p>
                     {subsetorFilter.length > 0 && (
                       <button
+                        type="button"
                         onClick={() => setSubsetorFilter([])}
                         className="text-[11px] font-medium text-primary hover:underline"
                       >
@@ -1217,12 +1573,15 @@ export default function MonitoramentoPage() {
                     )}
                   </div>
                   <div className="space-y-1 max-h-[280px] overflow-y-auto">
-                    {[{ id: 'sem_subsetor', nome: 'Sem subsetor' }, ...subsetoresDisponiveis].map((s) => {
+                    {[{ id: SEM_SUBSETOR_ID, nome: 'Sem subsetor' }, ...subsetoresDisponiveis].map((s) => {
                       const selected = subsetorFilter.includes(s.id)
                       return (
                         <button
+                          type="button"
                           key={s.id}
                           onClick={() => setSubsetorFilter(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
+                          aria-pressed={selected}
+                          aria-label={`${selected ? 'Remover' : 'Adicionar'} filtro ${s.nome}`}
                           className={cn(
                             "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted",
                             selected && "font-medium text-primary",
@@ -1298,7 +1657,7 @@ export default function MonitoramentoPage() {
                           <span
                             className={cn(
                               "h-2 w-2 shrink-0 rounded-full",
-                              a.is_online && !a.pausa ? "bg-green-500" : a.pausa ? "bg-yellow-500" : "bg-gray-400",
+                              a.online ? "bg-green-500" : a.pausa ? "bg-yellow-500" : "bg-gray-400",
                             )}
                             aria-hidden="true"
                           />
@@ -1551,7 +1910,7 @@ export default function MonitoramentoPage() {
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
-                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atendente</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
                     </TableRow>
@@ -1615,11 +1974,8 @@ export default function MonitoramentoPage() {
                             </TableCell>
                             <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
                             <TableCell className="text-sm text-foreground max-w-[160px]">
-                              <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
-                                {ticket.setor}
-                                {ticket.subsetor && (
-                                  <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                                )}
+                              <span className="block truncate" title={ticket.subsetor || 'Sem subsetor'}>
+                                {ticket.subsetor || 'Sem subsetor'}
                               </span>
                             </TableCell>
                             <TableCell className="text-sm text-foreground">
@@ -1627,7 +1983,7 @@ export default function MonitoramentoPage() {
                                 <div className="flex items-center gap-1.5">
                                   <span className={cn(
                                     'h-2 w-2 shrink-0 rounded-full',
-                                    ticket.colaboradores?.is_online && !ticket.colaboradores?.pausa_atual_id
+                                    isAtendenteOnline(ticket.colaboradores)
                                       ? 'bg-green-500'
                                       : ticket.colaboradores?.pausa_atual_id
                                         ? 'bg-yellow-500'
@@ -1638,7 +1994,14 @@ export default function MonitoramentoPage() {
                               ) : '-'}
                             </TableCell>
                             <TableCell>
-                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openConversation(ticket)}>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => openConversation(ticket)}
+                                aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
+                                title="Abrir conversa"
+                              >
                                 <MessageCircle className="h-4 w-4" />
                               </Button>
                             </TableCell>
@@ -1679,6 +2042,14 @@ export default function MonitoramentoPage() {
                     {atendentesLista.map((atendente: any) => {
                       const isOnline = isAtendenteOnline(atendente) && !atendente.pausa_atual_id
                       const isPausa = !!atendente.pausa_atual_id
+                      const pausaElapsedMs = isPausa
+                        ? computePausaElapsedMs(atendente.pausaInfo, monitoringNowMs)
+                        : 0
+                      const pausaEstourada = isPausa
+                        && isPausaEstourada(atendente.pausaInfo, pausaElapsedMs)
+                      const pausaLabel = isPausa
+                        ? formatPausaStatusLabel(atendente.pausaInfo, pausaElapsedMs)
+                        : null
                       return (
                         <div
                           key={atendente.id}
@@ -1687,16 +2058,28 @@ export default function MonitoramentoPage() {
                           <span
                             className={cn(
                               'h-3 w-3 shrink-0 rounded-full',
-                              isOnline ? 'bg-green-500' : isPausa ? 'bg-yellow-500' : 'bg-gray-400'
+                              isOnline
+                                ? 'bg-green-500'
+                                : pausaEstourada
+                                  ? 'bg-red-500'
+                                  : isPausa
+                                    ? 'bg-yellow-500'
+                                    : 'bg-gray-400'
                             )}
                           />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-medium text-foreground">{atendente.nome}</p>
                             <p className={cn(
                               'text-xs',
-                              isOnline ? 'text-green-600 dark:text-green-400' : isPausa ? 'text-yellow-600 dark:text-yellow-400' : 'text-muted-foreground'
+                              isOnline
+                                ? 'text-green-600 dark:text-green-400'
+                                : pausaEstourada
+                                  ? 'font-medium text-red-600 dark:text-red-400'
+                                  : isPausa
+                                    ? 'text-yellow-600 dark:text-yellow-400'
+                                    : 'text-muted-foreground'
                             )}>
-                              {isOnline ? 'Online' : isPausa ? 'Em pausa' : 'Offline'}
+                              {isOnline ? 'Online' : pausaLabel || 'Offline'}
                             </p>
                           </div>
                           {atendente.ticketsAtivos > 0 && (
@@ -1723,7 +2106,7 @@ export default function MonitoramentoPage() {
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Origem</TableHead>
-                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Setor / Subsetor</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Fila</TableHead>
                       <TableHead className="text-xs w-12"></TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1767,15 +2150,19 @@ export default function MonitoramentoPage() {
                           </TableCell>
                           <TableCell><OrigemBadge origem={origensMap.get(ticket.id)} setorAtualNome={ticket.setor} compact /></TableCell>
                           <TableCell className="text-xs text-foreground max-w-[160px]">
-                            <span className="block truncate" title={ticket.subsetor ? `${ticket.setor} / ${ticket.subsetor}` : ticket.setor}>
-                              {ticket.setor}
-                              {ticket.subsetor && (
-                                <span className="text-muted-foreground"> / {ticket.subsetor}</span>
-                              )}
+                            <span className="block truncate" title={ticket.subsetor || 'Sem subsetor'}>
+                              {ticket.subsetor || 'Sem subsetor'}
                             </span>
                           </TableCell>
                           <TableCell>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openConversation(ticket)}>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => openConversation(ticket)}
+                              aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
+                              title="Abrir conversa"
+                            >
                               <MessageCircle className="h-4 w-4" />
                             </Button>
                           </TableCell>
@@ -1874,6 +2261,8 @@ export default function MonitoramentoPage() {
                               size="icon"
                               className="h-7 w-7"
                               onClick={() => setSelectedNexusConversation(conversation)}
+                              aria-label={`Abrir conversa Nexus de ${conversation.contato}`}
+                              title="Abrir conversa Nexus"
                             >
                               <MessageCircle className="h-4 w-4" />
                             </Button>
@@ -1912,7 +2301,7 @@ export default function MonitoramentoPage() {
       </AlertDialog>
 
       {/* Transfer Dialog */}
-      <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
+      <Dialog open={transferDialogOpen} onOpenChange={handleTransferDialogOpenChange}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -1920,11 +2309,11 @@ export default function MonitoramentoPage() {
               Transferir Ticket
             </DialogTitle>
             <DialogDescription>
-              Transfira este ticket para outro setor ou atendente.
+              Selecione o subsetor e envie para a fila ou para um atendente compatível.
             </DialogDescription>
           </DialogHeader>
 
-          <Tabs defaultValue="atendente" className="w-full">
+          <Tabs value={transferTab} onValueChange={handleTransferTabChange} className="w-full">
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="atendente">👤 Atendente</TabsTrigger>
               <TabsTrigger value="setor">🏢 Setor</TabsTrigger>
@@ -1932,48 +2321,85 @@ export default function MonitoramentoPage() {
 
             <TabsContent value="atendente" className="space-y-4 pt-4">
               <div className="space-y-2">
-                <Label>Selecione um atendente do setor atual</Label>
-                <Select value={selectedAtendenteTransfer} onValueChange={setSelectedAtendenteTransfer}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Escolha um atendente..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {atendentesDisponiveis.map((atendente) => {
-                      const online = isAtendenteOnline(atendente)
-                      return (
-                        <SelectItem key={atendente.id} value={atendente.id} disabled={!online}>
-                          <div className="flex items-center gap-2">
-                            <span className={cn('h-2 w-2 rounded-full', online ? 'bg-green-500' : 'bg-gray-400')} />
-                            <span className={!online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
-                            {!online && <span className="text-xs text-muted-foreground">(Offline)</span>}
-                          </div>
+                <Label>Subsetor do atendimento</Label>
+                {transferOptionsLoading ? (
+                  <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Carregando opções...
+                  </p>
+                ) : subsetoresTransfer.length > 0 ? (
+                  <Select value={selectedSubsetorTransfer} onValueChange={handleSubsetorTransferChange}>
+                    <SelectTrigger aria-label="Subsetor do atendimento">
+                      <SelectValue placeholder="Escolha um subsetor..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {subsetoresTransfer.map((subsetor) => (
+                        <SelectItem key={subsetor.id} value={subsetor.id}>
+                          {subsetor.nome}
                         </SelectItem>
-                      )
-                    })}
-                  </SelectContent>
-                </Select>
-                {atendentesDisponiveis.length === 0 && (
-                  <p className="text-sm text-muted-foreground">Nenhum outro atendente neste setor.</p>
-                )}
-                {atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
-                  <p className="text-sm text-amber-600">Todos os atendentes estão offline.</p>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                    Este setor não possui subsetores ativos. Será usada a fila geral.
+                  </p>
                 )}
               </div>
+
+              {transferSubsetorSelectionReady && !transferOptionsLoading && (
+                <div className="space-y-2">
+                  <Label>Atendente compatível</Label>
+                  <Select
+                    value={selectedAtendenteTransfer === 'all' ? '' : selectedAtendenteTransfer}
+                    onValueChange={setSelectedAtendenteTransfer}
+                    disabled={transferAtendentesCompativeis.length === 0}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Escolha um atendente..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {transferAtendentesCompativeis.map((atendente) => {
+                        const online = isAtendenteOnline(atendente)
+                        const status = atendente.pausa_atual_id
+                          ? 'Em pausa'
+                          : online ? 'Online' : 'Offline'
+                        return (
+                          <SelectItem key={atendente.id} value={atendente.id}>
+                            <div className="flex items-center gap-2">
+                              <span className={cn(
+                                'h-2 w-2 rounded-full',
+                                online ? 'bg-green-500' : atendente.pausa_atual_id ? 'bg-amber-500' : 'bg-gray-400',
+                              )} />
+                              <span>{atendente.nome}</span>
+                              <span className="text-xs text-muted-foreground">· {status}</span>
+                            </div>
+                          </SelectItem>
+                        )
+                      })}
+                    </SelectContent>
+                  </Select>
+                  {transferAtendentesCompativeis.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      Nenhum outro atendente compatível com este subsetor.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <Button
-                onClick={handleTransferTicket}
+                onClick={attemptTransferTicket}
                 disabled={
-                  !selectedAtendenteTransfer ||
-                  selectedAtendenteTransfer === 'all' ||
-                  transferLoading ||
-                  !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer))
+                  !transferSubsetorSelectionReady
+                  || selectedAtendenteTransfer === 'all'
+                  || !selectedTransferAtendente
+                  || transferLoading
+                  || transferOptionsLoading
                 }
                 className="w-full"
               >
                 {transferLoading ? 'Transferindo...' : 'Transferir para Atendente'}
               </Button>
-              {selectedAtendenteTransfer && selectedAtendenteTransfer !== 'all' && !isAtendenteOnline(atendentesDisponiveis.find((a) => a.id === selectedAtendenteTransfer)) && (
-                <p className="text-sm text-destructive">Este atendente está offline. Selecione um atendente online.</p>
-              )}
             </TabsContent>
 
             <TabsContent value="setor" className="space-y-4 pt-4">
@@ -1999,52 +2425,121 @@ export default function MonitoramentoPage() {
 
               {selectedSetorTransfer !== 'all' && (
                 <div className="space-y-2">
-                  <Label>Atribuir a um atendente (opcional)</Label>
+                  <Label>Subsetor de destino</Label>
+                  {transferOptionsLoading ? (
+                    <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Carregando opções...
+                    </p>
+                  ) : subsetoresTransfer.length > 0 ? (
+                    <Select value={selectedSubsetorTransfer} onValueChange={handleSubsetorTransferChange}>
+                      <SelectTrigger aria-label="Subsetor de destino">
+                        <SelectValue placeholder="Escolha um subsetor..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {subsetoresTransfer.map((subsetor) => (
+                          <SelectItem key={subsetor.id} value={subsetor.id}>
+                            {subsetor.nome}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                      Este setor não possui subsetores ativos. O ticket ficará na fila geral.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {selectedSetorTransfer !== 'all' && transferSubsetorSelectionReady && !transferOptionsLoading && (
+                <div className="space-y-2">
+                  <Label>Destino final</Label>
                   <Select value={selectedAtendenteTransfer} onValueChange={setSelectedAtendenteTransfer}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Deixar na fila do setor..." />
+                      <SelectValue placeholder="Deixar na fila..." />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">
                         <div className="flex items-center gap-2">
                           <span className="h-2 w-2 rounded-full bg-blue-500" />
-                          Deixar na fila (atribuir automaticamente)
+                          {selectedTransferSubsetorId
+                            ? 'Deixar na fila do subsetor'
+                            : 'Deixar na fila geral'}
                         </div>
                       </SelectItem>
-                      {atendentesDisponiveis.map((atendente) => {
+                      {transferAtendentesCompativeis.map((atendente) => {
                         const online = isAtendenteOnline(atendente)
+                        const status = atendente.pausa_atual_id
+                          ? 'Em pausa'
+                          : online ? 'Online' : 'Offline'
                         return (
-                          <SelectItem key={atendente.id} value={atendente.id} disabled={!online}>
+                          <SelectItem key={atendente.id} value={atendente.id}>
                             <div className="flex items-center gap-2">
-                              <span className={cn('h-2 w-2 rounded-full', online ? 'bg-green-500' : 'bg-gray-400')} />
-                              <span className={!online ? 'text-muted-foreground' : ''}>{atendente.nome}</span>
-                              {!online && <span className="text-xs text-muted-foreground">(Offline)</span>}
+                              <span className={cn(
+                                'h-2 w-2 rounded-full',
+                                online ? 'bg-green-500' : atendente.pausa_atual_id ? 'bg-amber-500' : 'bg-gray-400',
+                              )} />
+                              <span>{atendente.nome}</span>
+                              <span className="text-xs text-muted-foreground">· {status}</span>
                             </div>
                           </SelectItem>
                         )
                       })}
                     </SelectContent>
                   </Select>
+                  {transferAtendentesCompativeis.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      Nenhum atendente compatível. O ticket permanecerá na fila selecionada.
+                    </p>
+                  )}
                 </div>
               )}
 
-              {selectedSetorTransfer !== 'all' && atendentesDisponiveis.length > 0 && !atendentesDisponiveis.some((a) => isAtendenteOnline(a)) && (
-                <p className="text-sm text-blue-600 bg-blue-50 p-2 rounded-md">
-                  Nenhum atendente online neste setor. O ticket irá para a fila e será atribuído automaticamente quando alguém ficar online.
-                </p>
-              )}
-
               <Button
-                onClick={handleTransferTicket}
-                disabled={!selectedSetorTransfer || selectedSetorTransfer === 'all' || transferLoading}
+                onClick={attemptTransferTicket}
+                disabled={
+                  selectedSetorTransfer === 'all'
+                  || !transferSubsetorSelectionReady
+                  || transferLoading
+                  || transferOptionsLoading
+                }
                 className="w-full"
               >
-                {transferLoading ? 'Transferindo...' : 'Transferir para Setor'}
+                {transferLoading
+                  ? 'Transferindo...'
+                  : selectedAtendenteTransfer === 'all'
+                    ? 'Enviar para a Fila'
+                    : 'Transferir para Atendente'}
               </Button>
             </TabsContent>
           </Tabs>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={transferUnavailableConfirmOpen}
+        onOpenChange={setTransferUnavailableConfirmOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Transferir para atendente indisponível?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{selectedTransferAtendente?.nome}</strong> está{' '}
+              {selectedTransferAtendente?.pausa_atual_id ? 'em pausa' : 'offline'}
+              {' '}no momento. O ticket será atribuído diretamente mesmo assim.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmUnavailableTransfer}>
+              Transferir mesmo assim
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Conversation Slide-out Panel */}
       {selectedTicket && (
@@ -2060,7 +2555,13 @@ export default function MonitoramentoPage() {
                   {selectedTicket.contato} - {selectedTicket.setor}
                 </p>
               </div>
-              <Button variant="ghost" size="icon" onClick={closeConversation}>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={closeConversation}
+                aria-label="Fechar conversa"
+                title="Fechar conversa"
+              >
                 <X className="h-5 w-5" />
               </Button>
             </div>
@@ -2318,7 +2819,13 @@ export default function MonitoramentoPage() {
                   {selectedNexusConversation.contato} - {selectedNexusConversation.setorNome}
                 </p>
               </div>
-              <Button variant="ghost" size="icon" onClick={() => setSelectedNexusConversation(null)}>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSelectedNexusConversation(null)}
+                aria-label="Fechar conversa Nexus"
+                title="Fechar conversa Nexus"
+              >
                 <X className="h-5 w-5" />
               </Button>
             </div>

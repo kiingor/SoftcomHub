@@ -5,6 +5,10 @@ import React from "react"
 import { useEffect, useState, useCallback, useRef, useMemo, startTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { logError } from '@/lib/error-logger'
+import { stripBrazilCountryCode } from '@/lib/phone'
+import { computeSendOutcome } from '@/lib/message-send-status'
+import { areSetorSortConfigsEqual, sortTicketsBySetorConfig } from '@/lib/ticket-sort'
+import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
@@ -16,6 +20,7 @@ import {
   MessageCircle,
   Clock,
   AlertTriangle,
+  HelpCircle,
   CheckCircle,
   X,
   Filter,
@@ -207,6 +212,9 @@ interface Mensagem {
   phone_number_id?: string | null
   canal_envio?: string | null
   whatsapp_message_id?: string
+  status_envio?: 'pendente' | 'enviando' | 'enviado' | 'falhou' | 'indeterminado' | null
+  erro_envio?: string | null
+  envio_tentativa_em?: string | null
   discord_user_id?: string | null
   url_imagem?: string | null
   media_type?: string | null
@@ -221,6 +229,22 @@ interface Mensagem {
     criado_em: string
     encerrado_em: string | null
   }
+}
+
+const SEND_CLAIM_STALE_MS = 10 * 60 * 1000
+const MAX_STALE_RECONCILE_ATTEMPTS = 5
+
+// Monta a URL da "Ocorrência rápida" (Service Desk) pro ticket selecionado — usada
+// como href de um <a target="_blank"> nativo (não window.open), pra abrir a guia
+// respeitando bloqueadores de pop-up e navegação normal do navegador (abrir em nova
+// guia/janela, cmd/ctrl+click, etc.).
+function buildOcorrenciaRapidaUrl(ticket: Ticket | null): string {
+  if (!ticket) return '#'
+  const cnpjDigits = (ticket.clientes?.CNPJ || '').replace(/\D/g, '')
+  const registroDigits = (ticket.clientes?.Registro || '').replace(/\D/g, '')
+  const tel = stripBrazilCountryCode(ticket.clientes?.telefone)
+  const q = cnpjDigits || tel || registroDigits
+  return `https://agenda.softcomtecnologia.com/service-desk/ocorrencia-rapida?q=${encodeURIComponent(q)}&ticket=${encodeURIComponent(String(ticket.numero))}&tel=${encodeURIComponent(tel)}`
 }
 
 // Converte payload de erro dos endpoints /api/evolution/send e /api/whatsapp/send
@@ -865,11 +889,10 @@ export default function WorkdeskPage() {
   const transferringTicketIdsRef = useRef<Set<string>>(new Set())
   // Confirmação ao transferir para atendente offline.
   const [offlineConfirmOpen, setOfflineConfirmOpen] = useState(false)
-  const [offlineTransferTarget, setOfflineTransferTarget] = useState<{ id: string; nome: string } | null>(null)
+  const [offlineTransferTarget, setOfflineTransferTarget] = useState<{ id: string; nome: string; pausa?: boolean } | null>(null)
 
-  // Helper: verifica se o atendente pode receber uma transferência agora.
   const isAtendenteOnline = useCallback((atendente?: TransferAtendente): boolean => {
-    return !!(atendente?.is_online && atendente?.ativo && !atendente?.pausa_atual_id)
+    return isTransferTargetAvailable(atendente)
   }, [])
 
   const transferSectorOptions = useMemo(() => {
@@ -908,7 +931,7 @@ export default function WorkdeskPage() {
   const onlineCompatibleAttendants = compatibleTransferAttendants.filter(isAtendenteOnline)
   const isTransferDestinationReady = hasSelectedTransferSubsetor && (
     transferDestinationMode === 'queue'
-    || Boolean(selectedTransferAttendant && !selectedTransferAttendant.pausa_atual_id)
+    || Boolean(selectedTransferAttendant)
   )
 
   // Message input
@@ -1004,6 +1027,11 @@ export default function WorkdeskPage() {
   const [pendingMessages, setPendingMessages] = useState<Map<string, 'sending' | 'sent' | 'error'>>(new Map())
   // Mensagens que falharam ao enviar — mapeia messageId → texto amigável do erro
   const [messageErrors, setMessageErrors] = useState<Map<string, string>>(new Map())
+  // Lock de idempotência client-side: evita disparar dois retries simultâneos da mesma mensagem.
+  const retryingMessageIdsRef = useRef<Set<string>>(new Set())
+  const reconciledStaleSendClaimsRef = useRef<Set<string>>(new Set())
+  const staleSendTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const [retryConfirmationMessage, setRetryConfirmationMessage] = useState<Mensagem | null>(null)
   
   // File upload (images and PDFs)
   // Multiple attachments — like WhatsApp, each file becomes its own message
@@ -1073,6 +1101,73 @@ export default function WorkdeskPage() {
   const [disparoSetoresWhatsapp, setDisparoSetoresWhatsapp] = useState<Array<{ id: string; nome: string }>>([])
   const [setorCanalConfig, setSetorCanalConfig] = useState<'whatsapp' | 'discord' | 'evolution_api'>('whatsapp')
   const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
+  const [travarOrdenacaoPorSetor, setTravarOrdenacaoPorSetor] = useState<Map<string, boolean>>(new Map())
+  const travarOrdenacaoPorSetorRef = useRef<Map<string, boolean>>(new Map())
+  const travarOrdenacaoRequestIdRef = useRef(0)
+  const travarOrdenacaoRequestPorSetorRef = useRef<Map<string, number>>(new Map())
+
+  const applyTravarOrdenacaoPorSetor = useCallback((next: Map<string, boolean>) => {
+    if (areSetorSortConfigsEqual(travarOrdenacaoPorSetorRef.current, next)) return
+    travarOrdenacaoPorSetorRef.current = next
+    setTravarOrdenacaoPorSetor(next)
+  }, [])
+
+  const loadTravarOrdenacaoPorSetor = useCallback(async (
+    setorIds: (string | null | undefined)[],
+  ): Promise<ReadonlyMap<string, boolean>> => {
+    const idsUnicos = Array.from(new Set(setorIds.filter((id): id is string => !!id)))
+    if (idsUnicos.length === 0) return travarOrdenacaoPorSetorRef.current
+
+    const requestId = ++travarOrdenacaoRequestIdRef.current
+    for (const id of idsUnicos) {
+      travarOrdenacaoRequestPorSetorRef.current.set(id, requestId)
+    }
+
+    const { data, error } = await supabase
+      .from('setores')
+      .select('id, travar_ordenacao_chat')
+      .in('id', idsUnicos)
+
+    if (error) return travarOrdenacaoPorSetorRef.current
+
+    const resultBySetor = new Map((data || []).map(
+      (setor) => [setor.id, setor.travar_ordenacao_chat === true],
+    ))
+    const next = new Map(travarOrdenacaoPorSetorRef.current)
+    for (const id of idsUnicos) {
+      if (travarOrdenacaoRequestPorSetorRef.current.get(id) !== requestId) continue
+      next.set(id, resultBySetor.get(id) === true)
+    }
+    applyTravarOrdenacaoPorSetor(next)
+    return next
+  }, [applyTravarOrdenacaoPorSetor, supabase])
+
+  useEffect(() => {
+    setTickets((current) => sortTicketsBySetorConfig(current, travarOrdenacaoPorSetor))
+  }, [travarOrdenacaoPorSetor])
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('workdesk-ticket-sort-config')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'setores' },
+        (payload) => {
+          const setor = payload.new as { id?: string; travar_ordenacao_chat?: boolean | null }
+          if (!setor.id || !travarOrdenacaoPorSetorRef.current.has(setor.id)) return
+          const realtimeRequestId = ++travarOrdenacaoRequestIdRef.current
+          travarOrdenacaoRequestPorSetorRef.current.set(setor.id, realtimeRequestId)
+          const next = new Map(travarOrdenacaoPorSetorRef.current)
+          next.set(setor.id, setor.travar_ordenacao_chat === true)
+          applyTravarOrdenacaoPorSetor(next)
+        },
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [applyTravarOrdenacaoPorSetor, supabase])
   
   // Unread messages tracking
   // Histórico de atendimentos anteriores do cliente — exibido no sidebar direito.
@@ -1133,9 +1228,6 @@ export default function WorkdeskPage() {
   // envia uma resposta (handleSendMessage limpa o entry).
   const [firstUnreadAt, setFirstUnreadAt] = useState<Map<string, string>>(new Map())
 
-  // Ticket iframe popup
-  const [ticketIframeTicket, setTicketIframeTicket] = useState<Ticket | null>(null)
-
   // Selecionar cliente dialog
   const [selecionarClienteDialogOpen, setSelecionarClienteDialogOpen] = useState(false)
   const [selecionarClienteCnpj, setSelecionarClienteCnpj] = useState('')
@@ -1194,6 +1286,7 @@ export default function WorkdeskPage() {
   // tinha setorCanaisAtivos=['whatsapp'] e nem via a opção "Não Oficial" no disparo.
   const allSetorIds = (colab.setores_vinculados || []).map((s: any) => s.setor_id)
   if (colab.setor_id && !allSetorIds.includes(colab.setor_id)) allSetorIds.push(colab.setor_id)
+  void loadTravarOrdenacaoPorSetor(allSetorIds)
   if (allSetorIds.length > 0) {
     const { data: canaisAtivos } = await supabase
       .from('setor_canais')
@@ -1213,7 +1306,7 @@ export default function WorkdeskPage() {
       window.location.href = '/login'
       return null
     }
-  }, [supabase])
+  }, [loadTravarOrdenacaoPorSetor, supabase])
 
 // Fetch tickets - colaborador only sees tickets assigned to them
   const fetchTickets = useCallback(async (colab: Colaborador) => {
@@ -1321,11 +1414,10 @@ export default function WorkdeskPage() {
           ultima_mensagem_tipo: lastMsg?.tipo || null,
         }
       })
-      // Sort by ultima_mensagem_em descending (most recent first, like WhatsApp)
-      const sortedTickets = ticketsWithMessages.sort((a, b) => 
-        new Date(b.ultima_mensagem_em || b.criado_em).getTime() - 
-        new Date(a.ultima_mensagem_em || a.criado_em).getTime()
+      const sortConfig = await loadTravarOrdenacaoPorSetor(
+        ticketsWithMessages.map((ticket) => ticket.setor_id),
       )
+      const sortedTickets = sortTicketsBySetorConfig(ticketsWithMessages, sortConfig)
       setTickets(sortedTickets)
 
       // Keep selectedTicket data in sync without losing focus
@@ -1352,7 +1444,7 @@ export default function WorkdeskPage() {
         }
       }
     }
-  }, [supabase])
+  }, [loadTravarOrdenacaoPorSetor, supabase])
 
   // Fetch contagem de clientes em fila nos setores ATIVOS do colaborador.
   // "Em fila" = ticket aberto, sem colaborador atribuído, em um setor que o
@@ -2151,6 +2243,38 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       })
     }
 
+    const handleUpdatedMessage = (payload: any) => {
+      const updatedMessage = payload.new as Mensagem
+      setMensagens((prev) => prev.map((message) =>
+        message.id === updatedMessage.id ? { ...message, ...updatedMessage } : message
+      ))
+
+      if (!updatedMessage.status_envio) return
+
+      setPendingMessages((prev) => {
+        const next = new Map(prev)
+        if (['pendente', 'enviando'].includes(updatedMessage.status_envio || '')) {
+          next.set(updatedMessage.id, 'sending')
+        } else {
+          next.delete(updatedMessage.id)
+        }
+        return next
+      })
+
+      setMessageErrors((prev) => {
+        const next = new Map(prev)
+        if (
+          ['falhou', 'indeterminado'].includes(updatedMessage.status_envio || '')
+          && updatedMessage.erro_envio
+        ) {
+          next.set(updatedMessage.id, updatedMessage.erro_envio)
+        } else {
+          next.delete(updatedMessage.id)
+        }
+        return next
+      })
+    }
+
     // Subscribe to messages for this specific ticket
     const channel = supabase
       .channel(`mensagens-${selectedTicketIdRef2}`)
@@ -2163,6 +2287,16 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           filter: `ticket_id=eq.${selectedTicketIdRef2}`,
         },
         handleNewMessage
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'mensagens',
+          filter: `ticket_id=eq.${selectedTicketIdRef2}`,
+        },
+        handleUpdatedMessage
       )
       .on(
         'postgres_changes',
@@ -2361,10 +2495,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
                     }
                   : t
               )
-              return updated.sort((a, b) =>
-                new Date(b.ultima_mensagem_em || b.criado_em).getTime() -
-                new Date(a.ultima_mensagem_em || a.criado_em).getTime()
-              )
+              return sortTicketsBySetorConfig(updated, travarOrdenacaoPorSetorRef.current)
             })
           })
         }
@@ -2517,20 +2648,22 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
         if (hasDiscordMsg || lastCanalEnvio === 'discord') {
           setorCanal = 'discord'
           phoneNumberId = null
-        } else if (lastCanalEnvio === 'evolutionapi' || lastPhoneNumberId) {
-          if (lastPhoneNumberId) {
-            const { data: evoCanal } = await supabase
-              .from('setor_canais')
-              .select('instancia')
-              .eq('tipo', 'evolution_api')
-              .eq('instancia', lastPhoneNumberId)
-              .eq('ativo', true)
-              .maybeSingle()
-            setorCanal = evoCanal ? 'evolution_api' : 'whatsapp'
-            phoneNumberId = lastPhoneNumberId
-          } else {
-            setorCanal = 'evolution_api'
-          }
+        } else if (lastCanalEnvio === 'evolutionapi' || lastCanalEnvio === 'evolution_api') {
+          setorCanal = 'evolution_api'
+          phoneNumberId = lastPhoneNumberId
+        } else if (lastCanalEnvio === 'whatsapp') {
+          setorCanal = 'whatsapp'
+          phoneNumberId = lastPhoneNumberId
+        } else if (lastPhoneNumberId) {
+          const { data: evoCanal } = await supabase
+            .from('setor_canais')
+            .select('instancia')
+            .eq('tipo', 'evolution_api')
+            .eq('instancia', lastPhoneNumberId)
+            .eq('ativo', true)
+            .maybeSingle()
+          setorCanal = evoCanal ? 'evolution_api' : 'whatsapp'
+          phoneNumberId = lastPhoneNumberId
         } else if (ticketToClose.setor_id) {
           // Fallback: buscar canal ativo do setor
           const { data: canalAtivo } = await supabase
@@ -2787,7 +2920,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
       const clienteId = selectedTicket.clientes.id
       const updateData: Record<string, string | null> = {
         nome: editarClienteForm.nome || null,
-        telefone: editarClienteForm.telefone || null,
+        // Telefone é travado para edição no WorkDesk — não faz parte deste update.
         CNPJ: editarClienteForm.CNPJ?.replace(/\D/g, '') || null,
         Registro: editarClienteForm.Registro || null,
         PDV: editarClienteForm.PDV || null,
@@ -3059,7 +3192,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
   }
 
   // Transfer ticket
-  const handleTransferTicket = async () => {
+  const handleTransferTicket = async (allowUnavailable: boolean = false) => {
     if (!selectedTicket) return
 
     const ticket = selectedTicket
@@ -3087,19 +3220,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
     const ticketId = ticket.id
     setTransferLoading(true)
 
-    // Mark as transferring BEFORE the API call to prevent realtime from bringing it back
     transferringTicketIdsRef.current.add(ticketId)
-
-    // Remove ticket from UI immediately for instant feedback
-    setTickets((prev) => prev.filter((t) => t.id !== ticketId))
-    setSelectedTicket(null)
-    selectedTicketIdRef.current = null
-    setMobileDrawerOpen(false)
-    setMensagens([])
-    setTransferDialogOpen(false)
-    transferLoadRequestIdRef.current += 1
-    resetTransferForm()
-    setTransferDataLoading(false)
 
     try {
       const controller = new AbortController()
@@ -3115,6 +3236,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
           colaborador_id: atendenteDestinoId,
           from_colaborador_nome: colaborador?.nome || 'Desconhecido',
           from_setor_nome: ticket.setores?.nome || 'Desconhecido',
+          allow_unavailable: allowUnavailable,
         }),
         signal: controller.signal,
       })
@@ -3130,12 +3252,29 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
           componente: 'handleTransferTicket',
           metadata: { type: 'transfer_error', status: res.status, ticketId, error: result.error },
         })
-        toast.error(result.error || 'Erro ao transferir ticket')
-        // Transfer failed — bring ticket back
+        if (result.code === 'TARGET_UNAVAILABLE' && atendenteDestino) {
+          setOfflineTransferTarget({
+            id: atendenteDestino.id,
+            nome: atendenteDestino.nome,
+            pausa: result.pausa === true,
+          })
+          setOfflineConfirmOpen(true)
+        } else {
+          toast.error(result.error || 'Erro ao transferir ticket')
+        }
         transferringTicketIdsRef.current.delete(ticketId)
-        if (colaborador) fetchTickets(colaborador)
         return
       }
+
+      setTickets((prev) => prev.filter((current) => current.id !== ticketId))
+      setSelectedTicket(null)
+      selectedTicketIdRef.current = null
+      setMobileDrawerOpen(false)
+      setMensagens([])
+      setTransferDialogOpen(false)
+      transferLoadRequestIdRef.current += 1
+      resetTransferForm()
+      setTransferDataLoading(false)
 
       if (!result.queued && atendenteDestino) {
         toast.success(`Ticket transferido para ${atendenteDestino.nome}`)
@@ -3158,7 +3297,6 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
         })
         toast.error('Erro ao transferir ticket. Tente novamente.')
       }
-      // On error, bring ticket back
       transferringTicketIdsRef.current.delete(ticketId)
       if (colaborador) fetchTickets(colaborador)
     } finally {
@@ -3170,16 +3308,10 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
     }
   }
 
-  // Antes de transferir: se o atendente de destino estiver offline, pede confirmação.
-  // Caso contrário (online ou "deixar na fila"), transfere direto.
   const attemptTransfer = () => {
     const target = transferDestinationMode === 'attendant' ? selectedTransferAttendant : null
-    if (target?.pausa_atual_id) {
-      toast.error('Este atendente está em pausa. Selecione outro atendente.')
-      return
-    }
     if (target && !isAtendenteOnline(target)) {
-      setOfflineTransferTarget({ id: target.id, nome: target.nome })
+      setOfflineTransferTarget({ id: target.id, nome: target.nome, pausa: Boolean(target.pausa_atual_id) })
       setOfflineConfirmOpen(true)
       return
     }
@@ -3188,7 +3320,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
 
   const confirmOfflineTransfer = () => {
     setOfflineConfirmOpen(false)
-    handleTransferTicket()
+    handleTransferTicket(true)
   }
 
   // Disparo - CNPJ lookup
@@ -3837,6 +3969,267 @@ const insertEmoji = (emoji: string) => {
     }
   }
 
+  const reflectStatusEnvioLocal = useCallback((
+    messageId: string,
+    status: Mensagem['status_envio'],
+    erro: string | null,
+    attemptAt?: string | null,
+  ) => {
+    setMensagens(prev => prev.map(m => (
+      m.id === messageId
+        ? {
+            ...m,
+            status_envio: status,
+            erro_envio: erro,
+            ...(attemptAt !== undefined ? { envio_tentativa_em: attemptAt } : {}),
+          }
+        : m
+    )))
+  }, [])
+
+  const readStatusEnvio = useCallback(async (messageId: string) => {
+    const { data, error } = await supabase
+      .from('mensagens')
+      .select('status_envio, erro_envio, envio_tentativa_em')
+      .eq('id', messageId)
+      .maybeSingle()
+
+    if (error) {
+      logError({
+        tela: 'WorkDesk',
+        error: `Falha ao reler status_envio: ${error.message}`,
+        componente: 'readStatusEnvio',
+        metadata: { messageId },
+      })
+      return null
+    }
+    return data as Pick<Mensagem, 'status_envio' | 'erro_envio' | 'envio_tentativa_em'> | null
+  }, [supabase])
+
+  const reconcileSendAfterNetworkFailure = useCallback(async (
+    ticketId: string,
+    messageId: string,
+    fallbackError: string,
+  ): Promise<boolean> => {
+    let snapshot: Pick<Mensagem, 'status_envio' | 'erro_envio' | 'envio_tentativa_em'> | null = null
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
+      snapshot = await readStatusEnvio(messageId)
+      if (!snapshot || !['pendente', 'enviando'].includes(snapshot.status_envio || '')) break
+      if (snapshot.status_envio === 'enviado') break
+    }
+
+    if (snapshot?.status_envio === 'pendente') {
+      try {
+        const response = await fetch('/api/mensagens/send-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ticketId,
+            messageId,
+            action: 'mark_indeterminate',
+          }),
+        })
+        const result = await response.json().catch(() => null)
+        if (response.ok && result?.status_envio) {
+          snapshot = {
+            status_envio: result.status_envio as Mensagem['status_envio'],
+            erro_envio: result.erro_envio || fallbackError,
+          }
+        } else {
+          snapshot = await readStatusEnvio(messageId)
+        }
+      } catch {
+        snapshot = await readStatusEnvio(messageId)
+      }
+    }
+
+    if (snapshot?.status_envio === 'enviado') {
+      setPendingMessages((prev) => new Map(prev).set(messageId, 'sent'))
+      setMessageErrors((prev) => {
+        const next = new Map(prev)
+        next.delete(messageId)
+        return next
+      })
+      reflectStatusEnvioLocal(messageId, 'enviado', null)
+      toast.success('Mensagem enviada')
+      return true
+    }
+
+    if (snapshot?.status_envio === 'falhou') {
+      const errorMessage = snapshot.erro_envio || fallbackError
+      setPendingMessages((prev) => new Map(prev).set(messageId, 'error'))
+      setMessageErrors((prev) => new Map(prev).set(messageId, errorMessage))
+      reflectStatusEnvioLocal(messageId, 'falhou', errorMessage)
+      toast.error(errorMessage)
+      return false
+    }
+
+    if (snapshot?.status_envio === 'enviando') {
+      setPendingMessages((prev) => new Map(prev).set(messageId, 'sending'))
+      reflectStatusEnvioLocal(
+        messageId,
+        'enviando',
+        null,
+        snapshot.envio_tentativa_em,
+      )
+      toast.info('O envio ainda está sendo processado')
+      return false
+    }
+
+    const errorMessage = snapshot?.erro_envio || fallbackError
+    setPendingMessages((prev) => new Map(prev).set(messageId, 'error'))
+    setMessageErrors((prev) => new Map(prev).set(messageId, errorMessage))
+
+    reflectStatusEnvioLocal(
+      messageId,
+      snapshot?.status_envio === 'indeterminado' ? 'indeterminado' : (snapshot?.status_envio || null),
+      errorMessage,
+    )
+
+    toast.error(errorMessage)
+    return false
+  }, [readStatusEnvio, reflectStatusEnvioLocal])
+
+  useEffect(() => {
+    const ticketId = selectedTicket?.id
+    if (!ticketId) return
+
+    const scheduleReconciliation = (
+      message: Mensagem,
+      claimKey: string,
+      attempt: number,
+      delay: number,
+    ) => {
+      if (staleSendTimersRef.current.has(claimKey)) return
+      const timer = setTimeout(() => {
+        staleSendTimersRef.current.delete(claimKey)
+        void reconcileStaleSend(message, claimKey, attempt)
+      }, Math.max(0, delay))
+      staleSendTimersRef.current.set(claimKey, timer)
+    }
+
+    const scheduleRetry = (message: Mensagem, claimKey: string, attempt: number) => {
+      if (attempt + 1 >= MAX_STALE_RECONCILE_ATTEMPTS) return
+      const delay = Math.min(30_000 * (2 ** attempt), 5 * 60_000)
+      scheduleReconciliation(message, claimKey, attempt + 1, delay)
+    }
+
+    async function reconcileStaleSend(
+      message: Mensagem,
+      claimKey: string,
+      attempt: number,
+    ) {
+      try {
+        const response = await fetch('/api/mensagens/send-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ticketId,
+            messageId: message.id,
+            action: 'mark_indeterminate',
+          }),
+        })
+        const result = await response.json().catch(() => null)
+        if (!response.ok || !result?.status_envio) {
+          scheduleRetry(message, claimKey, attempt)
+          return
+        }
+
+        const status = result.status_envio as Mensagem['status_envio']
+        if (status === 'enviando' || status === 'pendente') {
+          scheduleRetry(message, claimKey, attempt)
+          return
+        }
+
+        const errorMessage = status === 'indeterminado'
+          ? 'O envio foi interrompido e não pôde ser confirmado'
+          : null
+        reflectStatusEnvioLocal(message.id, status, errorMessage)
+
+        setPendingMessages((prev) => {
+          const next = new Map(prev)
+          if (status === 'enviado') {
+            next.set(message.id, 'sent')
+          } else {
+            next.set(message.id, 'error')
+          }
+          return next
+        })
+        setMessageErrors((prev) => {
+          const next = new Map(prev)
+          if (errorMessage) next.set(message.id, errorMessage)
+          else next.delete(message.id)
+          return next
+        })
+      } catch {
+        scheduleRetry(message, claimKey, attempt)
+      }
+    }
+
+    for (const message of mensagens) {
+      const acceptedLegacySend =
+        message.status_envio === 'pendente'
+        && Boolean(message.whatsapp_message_id)
+      const claimTimestamp = message.envio_tentativa_em
+        ? Date.parse(message.envio_tentativa_em)
+        : Number.NaN
+      const orphanedInProgressSend =
+        message.status_envio === 'enviando'
+        && !Number.isFinite(claimTimestamp)
+      const claimKey = acceptedLegacySend
+        ? `${message.id}:accepted:${message.whatsapp_message_id}`
+        : orphanedInProgressSend
+          ? `${message.id}:orphan:${message.envio_tentativa_em || 'missing'}`
+          : `${message.id}:${message.envio_tentativa_em}`
+      for (const [scheduledKey, timer] of staleSendTimersRef.current) {
+        if (scheduledKey.startsWith(`${message.id}:`) && scheduledKey !== claimKey) {
+          clearTimeout(timer)
+          staleSendTimersRef.current.delete(scheduledKey)
+        }
+      }
+      if (
+        message.ticket_id !== ticketId
+        || reconciledStaleSendClaimsRef.current.has(claimKey)
+      ) {
+        continue
+      }
+
+      if (acceptedLegacySend) {
+        reconciledStaleSendClaimsRef.current.add(claimKey)
+        void reconcileStaleSend(message, claimKey, 0)
+        continue
+      }
+      if (orphanedInProgressSend) {
+        reconciledStaleSendClaimsRef.current.add(claimKey)
+        void reconcileStaleSend(message, claimKey, 0)
+        continue
+      }
+      if (message.status_envio !== 'enviando') {
+        continue
+      }
+
+      const remaining = claimTimestamp + SEND_CLAIM_STALE_MS - Date.now() + 1_000
+      reconciledStaleSendClaimsRef.current.add(claimKey)
+      if (remaining <= 0) {
+        void reconcileStaleSend(message, claimKey, 0)
+      } else {
+        scheduleReconciliation(message, claimKey, 0, remaining)
+      }
+    }
+  }, [mensagens, reflectStatusEnvioLocal, selectedTicket?.id])
+
+  useEffect(() => {
+    return () => {
+      for (const timer of staleSendTimersRef.current.values()) {
+        clearTimeout(timer)
+      }
+      staleSendTimersRef.current.clear()
+      reconciledStaleSendClaimsRef.current.clear()
+    }
+  }, [selectedTicket?.id])
+
   // Send message via WhatsApp API (optimistic update like WhatsApp).
   // `overrideFile` (e.g. from voice-note auto-send) bypasses the selectedFile state
   // so the recording fires immediately without an extra Send click, and the
@@ -3915,7 +4308,13 @@ const insertEmoji = (emoji: string) => {
         setorCanal = 'discord'
         phoneNumberId = null
         console.log('[workdesk] Canal detectado: DISCORD (via canal_envio)')
-      } else if (lastCanalEnvio === 'evolutionapi' || lastPhoneNumberId) {
+      } else if (lastCanalEnvio === 'evolutionapi' || lastCanalEnvio === 'evolution_api') {
+        setorCanal = 'evolution_api'
+        phoneNumberId = lastPhoneNumberId
+      } else if (lastCanalEnvio === 'whatsapp') {
+        setorCanal = 'whatsapp'
+        phoneNumberId = lastPhoneNumberId
+      } else if (lastPhoneNumberId) {
         // Evolution ou WhatsApp — cruzar phone_number_id com setor_canais
         // IMPORTANTE: busca em TODOS os setores (ticket pode ter sido transferido do setor original)
         if (lastPhoneNumberId) {
@@ -4046,22 +4445,35 @@ const insertEmoji = (emoji: string) => {
         setPendingMessages((prev) => new Map(prev).set(tempId, 'sending'))
 
         // Save message to Supabase
-        const { data: savedMsg, error: dbError } = await supabase
+        const insertPayloadBase = {
+          ticket_id: capturedTicketId,
+          cliente_id: capturedTicket.cliente_id,
+          remetente: 'colaborador',
+          conteudo: caption || file?.name || '',
+          tipo: messageType,
+          url_imagem: fileUrl,
+          media_type: file?.type || null,
+          phone_number_id: phoneNumberId,
+          canal_envio: canalEnvioValue,
+          reply_to_message_id: replyTo?.id || null,
+        }
+        let statusEnvioSchemaDisponivel = true
+        let { data: savedMsg, error: dbError } = await supabase
           .from('mensagens')
-          .insert({
-            ticket_id: capturedTicketId,
-            cliente_id: capturedTicket.cliente_id,
-            remetente: 'colaborador',
-            conteudo: caption || file?.name || '',
-            tipo: messageType,
-            url_imagem: fileUrl,
-            media_type: file?.type || null,
-            phone_number_id: phoneNumberId,
-            canal_envio: canalEnvioValue,
-            reply_to_message_id: replyTo?.id || null,
-          })
+          .insert({ ...insertPayloadBase, status_envio: 'pendente' })
           .select()
           .single()
+
+        // Coluna status_envio pode não existir neste ambiente (feature revertida/em
+        // rollout) — nunca deixa isso impedir o envio da mensagem em si.
+        if (dbError && ['42703', 'PGRST204'].includes(dbError.code || '')) {
+          statusEnvioSchemaDisponivel = false
+          ;({ data: savedMsg, error: dbError } = await supabase
+            .from('mensagens')
+            .insert(insertPayloadBase)
+            .select()
+            .single())
+        }
 
         if (dbError || !savedMsg) {
           console.error('[v0] Error saving message to database:', dbError)
@@ -4072,7 +4484,13 @@ const insertEmoji = (emoji: string) => {
         // Update optimistic message with real ID + canal_envio (para retry)
         setMensagens(prev => prev.map(m =>
           m.id === tempId
-            ? { ...m, id: savedMsg.id, canal_envio: canalEnvioValue, phone_number_id: phoneNumberId || undefined }
+            ? {
+                ...m,
+                id: savedMsg.id,
+                canal_envio: canalEnvioValue,
+                phone_number_id: phoneNumberId || undefined,
+                status_envio: statusEnvioSchemaDisponivel ? 'pendente' : null,
+              }
             : m
         ))
         // Migrar chave de pendingMessages do tempId para o ID real — sem isso,
@@ -4126,8 +4544,6 @@ const insertEmoji = (emoji: string) => {
             }
           }
 
-          console.log(`[workdesk] Enviando via ${setorCanal.toUpperCase()} → ${sendUrl}`, sendBody)
-
           const response = await fetch(sendUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4135,8 +4551,6 @@ const insertEmoji = (emoji: string) => {
           })
 
           const result = await response.json()
-
-          console.log(`[workdesk] Resposta ${sendUrl} (status ${response.status}):`, result)
 
           if (!response.ok) {
             console.warn('[workdesk] Send API failed:', result)
@@ -4151,14 +4565,28 @@ const insertEmoji = (emoji: string) => {
             let userMsg: string
             if (result?.deviceOffline) {
               userMsg = '📱 Dispositivo desconectado! A mensagem não foi enviada porque o WhatsApp do dispositivo está offline.'
-              toast.error(userMsg, { duration: 8000 })
             } else {
               userMsg = parseSendErrorMessage(result)
-              toast.error(userMsg, { duration: 6000 })
             }
 
+            const serverStatus = result?.status_envio as Mensagem['status_envio']
+            if (
+              result?.code === 'MESSAGE_SEND_IN_PROGRESS'
+              || serverStatus === 'enviando'
+            ) {
+              await reconcileSendAfterNetworkFailure(capturedTicketId, currentMsgId, userMsg)
+              return false
+            }
+
+            toast.error(userMsg, { duration: result?.deviceOffline ? 8000 : 6000 })
             setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
             setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
+            if (serverStatus) {
+              reflectStatusEnvioLocal(currentMsgId, serverStatus, result?.erro_envio || userMsg)
+            }
+            if (result?.code === 'TICKET_NOT_ACTIVE' && colaboradorCurrentRef.current) {
+              void fetchTickets(colaboradorCurrentRef.current)
+            }
             return false
           }
         } catch (sendError) {
@@ -4170,14 +4598,20 @@ const insertEmoji = (emoji: string) => {
             metadata: { type: 'send_network_error', sendUrl, ticketId: selectedTicketIdRef.current },
           })
           const userMsg = 'Erro de conexão ao enviar mensagem'
-          toast.error(userMsg)
-          setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
-          setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
-          return false
+          if (!statusEnvioSchemaDisponivel) {
+            toast.error(`${userMsg}. Verifique o histórico antes de tentar novamente.`)
+            setPendingMessages(prev => new Map(prev).set(currentMsgId, 'error'))
+            setMessageErrors(prev => new Map(prev).set(currentMsgId, userMsg))
+            reflectStatusEnvioLocal(currentMsgId, null, userMsg)
+            return false
+          }
+          return reconcileSendAfterNetworkFailure(capturedTicketId, currentMsgId, userMsg)
         }
 
-        // Mark as sent — clear the sending/sent mark after 2s (never touch 'error')
+        // Mark as sent — clear the sending/sent mark after 2s (never touch 'error').
+        // A rota de envio já gravou 'enviado' no banco (fonte autoritativa); só refletimos localmente.
         setPendingMessages(prev => new Map(prev).set(currentMsgId, 'sent'))
+        reflectStatusEnvioLocal(currentMsgId, 'enviado', null)
         setTimeout(() => {
           setPendingMessages(prev => {
             const n = new Map(prev)
@@ -4224,49 +4658,52 @@ const insertEmoji = (emoji: string) => {
         ? { ...t, ultima_mensagem: messageContent || 'Arquivo enviado', ultima_mensagem_em: now, ultima_mensagem_remetente: 'colaborador' as const }
         : t
     )
-    // Sort by ultima_mensagem_em descending (most recent first)
-    return updated.sort((a, b) => 
-      new Date(b.ultima_mensagem_em || b.criado_em).getTime() - 
-      new Date(a.ultima_mensagem_em || a.criado_em).getTime()
-    )
+    // Sort by ultima_mensagem_em descending (most recent first) —
+    // ou por criado_em quando o setor travou a reordenação automática.
+    return sortTicketsBySetorConfig(updated, travarOrdenacaoPorSetorRef.current)
   })
   
   // Auto start attendance if ticket is open
       if (capturedTicket.status === 'aberto') {
-        const { error: updateError } = await supabase
+        const firstResponseAt = new Date().toISOString()
+        const { data: startedTicket, error: updateError } = await supabase
           .from('tickets')
           .update({ 
             status: 'em_atendimento',
-            colaborador_id: colaborador.id,
-            primeira_resposta_em: new Date().toISOString()
+            primeira_resposta_em: firstResponseAt,
           })
           .eq('id', capturedTicketId)
+          .eq('status', 'aberto')
+          .eq('colaborador_id', colaborador.id)
+          .select('id')
+          .maybeSingle()
         
-        if (!updateError) {
-          const now = new Date().toISOString()
-          // Atualiza o selectedTicket localmente sem refetch
+        if (!updateError && startedTicket) {
           setSelectedTicket(prev =>
             prev?.id === capturedTicketId
-              ? { ...prev, status: 'em_atendimento', colaborador_id: colaborador.id, primeira_resposta_em: now }
+              ? { ...prev, status: 'em_atendimento', primeira_resposta_em: firstResponseAt }
               : prev
           )
-          // Atualiza a lista de tickets localmente sem disparar N+1 queries
           startTransition(() => {
             setTickets(prev =>
               prev.map(t =>
                 t.id === capturedTicketId
-                  ? { ...t, status: 'em_atendimento', colaborador_id: colaborador.id, primeira_resposta_em: now }
+                  ? { ...t, status: 'em_atendimento', primeira_resposta_em: firstResponseAt }
                   : t
               )
             )
           })
+        } else if (!updateError && colaboradorCurrentRef.current) {
+          void fetchTickets(colaboradorCurrentRef.current)
         }
       } else if (!capturedTicket.primeira_resposta_em) {
-        // Update first response time if not already set
         await supabase
           .from('tickets')
           .update({ primeira_resposta_em: new Date().toISOString() })
           .eq('id', capturedTicketId)
+          .eq('status', 'em_atendimento')
+          .eq('colaborador_id', colaborador.id)
+          .is('primeira_resposta_em', null)
       }
       
       // After 2 seconds, silently refresh to get real message IDs (sem loading
@@ -4290,6 +4727,25 @@ const insertEmoji = (emoji: string) => {
   // (o insert ocorre antes do send), então só reemitimos para o canal correto.
   const retrySendMessage = useCallback(async (msg: Mensagem) => {
     if (!selectedTicket) return
+    // Restrições de retry: só a mensagem do ticket aberto atualmente, ativo, de saída
+    // do colaborador, e sem outra tentativa já em andamento pra essa mesma mensagem.
+    // (O servidor repete essas validações — isto é só feedback rápido na UI.)
+    if (msg.ticket_id !== selectedTicket.id) {
+      toast.error('Abra o ticket correspondente para reenviar esta mensagem')
+      return
+    }
+    if (!['aberto', 'em_atendimento'].includes(selectedTicket.status)) {
+      toast.error('Este ticket não está mais ativo — não é possível reenviar')
+      return
+    }
+    if (msg.remetente !== 'colaborador') {
+      return
+    }
+    if (retryingMessageIdsRef.current.has(msg.id)) {
+      return
+    }
+    retryingMessageIdsRef.current.add(msg.id)
+
     const ticketPhone = selectedTicket.clientes?.telefone
     const canal = msg.canal_envio || 'whatsapp'
     const phoneNumberId = msg.phone_number_id || null
@@ -4305,9 +4761,11 @@ const insertEmoji = (emoji: string) => {
         ticketId: msg.ticket_id,
         message: msg.conteudo,
         messageId: msg.id,
+        retry: true,
         fileUrl: msg.url_imagem || null,
         fileType: msg.media_type || null,
         fileName: null,
+        replyToMessageId: msg.reply_to_message_id || null,
       }
     } else if (canal === 'evolutionapi' || canal === 'evolution_api') {
       sendUrl = '/api/evolution/send'
@@ -4315,10 +4773,12 @@ const insertEmoji = (emoji: string) => {
         ticketId: msg.ticket_id,
         message: msg.conteudo,
         messageId: msg.id,
+        retry: true,
         instanceName: phoneNumberId,
         fileUrl: msg.url_imagem || null,
         fileType: msg.media_type || null,
         fileName: null,
+        replyToMessageId: msg.reply_to_message_id || null,
       }
     } else {
       sendBody = {
@@ -4329,6 +4789,8 @@ const insertEmoji = (emoji: string) => {
         fileUrl: msg.url_imagem || null,
         fileType: msg.media_type || null,
         messageId: msg.id,
+        retry: true,
+        replyToMessageId: msg.reply_to_message_id || null,
       }
     }
 
@@ -4344,21 +4806,51 @@ const insertEmoji = (emoji: string) => {
         const userMsg = result?.deviceOffline
           ? '📱 Dispositivo desconectado! Verifique a conexão do WhatsApp.'
           : parseSendErrorMessage(result)
+        const serverStatus = result?.status_envio as Mensagem['status_envio']
+        if (
+          result?.code === 'MESSAGE_SEND_IN_PROGRESS'
+          || serverStatus === 'enviando'
+        ) {
+          await reconcileSendAfterNetworkFailure(msg.ticket_id, msg.id, userMsg)
+          return
+        }
+
         toast.error(userMsg, { duration: 6000 })
         setPendingMessages(prev => new Map(prev).set(msg.id, 'error'))
         setMessageErrors(prev => new Map(prev).set(msg.id, userMsg))
+        if (serverStatus) {
+          reflectStatusEnvioLocal(msg.id, serverStatus, result?.erro_envio || userMsg)
+        }
+        if (result?.code === 'TICKET_NOT_ACTIVE' && colaboradorCurrentRef.current) {
+          void fetchTickets(colaboradorCurrentRef.current)
+        }
         return
       }
 
       setPendingMessages(prev => new Map(prev).set(msg.id, 'sent'))
       toast.success('Mensagem reenviada')
+      reflectStatusEnvioLocal(msg.id, 'enviado', null)
     } catch (err) {
       const userMsg = 'Erro de conexão ao reenviar mensagem'
-      toast.error(userMsg)
-      setPendingMessages(prev => new Map(prev).set(msg.id, 'error'))
-      setMessageErrors(prev => new Map(prev).set(msg.id, userMsg))
+      await reconcileSendAfterNetworkFailure(msg.ticket_id, msg.id, userMsg)
+    } finally {
+      retryingMessageIdsRef.current.delete(msg.id)
     }
-  }, [selectedTicket])
+  }, [fetchTickets, reconcileSendAfterNetworkFailure, reflectStatusEnvioLocal, selectedTicket])
+
+  const requestRetrySend = useCallback((msg: Mensagem) => {
+    if (msg.status_envio === 'indeterminado') {
+      setRetryConfirmationMessage(msg)
+      return
+    }
+    void retrySendMessage(msg)
+  }, [retrySendMessage])
+
+  const confirmIndeterminateRetry = useCallback(() => {
+    const message = retryConfirmationMessage
+    setRetryConfirmationMessage(null)
+    if (message) void retrySendMessage(message)
+  }, [retryConfirmationMessage, retrySendMessage])
 
   // Handle Enter key to send message
   const handleKeyPress = useCallback((e: React.KeyboardEvent) => {
@@ -4607,7 +5099,6 @@ const insertEmoji = (emoji: string) => {
               firstUnreadAt={firstUnreadAt}
               setorCanal={setorCanalConfig}
               colaboradorEmail={colaborador?.email || ''}
-              onOpenTicketIframe={(ticket) => setTicketIframeTicket(ticket)}
             />
           </div>
         </aside>
@@ -4728,9 +5219,22 @@ const insertEmoji = (emoji: string) => {
                           let lastTicketId: string | null = null
                           return mensagensOrdenadas.map((msg, index) => {
                             const msgStatus = pendingMessages.get(msg.id)
+                            // Sem entrada efêmera (ex: depois de um reload), cai pro status persistido no banco.
+                            // 'indeterminado' = perdemos a resposta da API, não sabemos se o provedor recebeu.
+                            const sendOutcome = computeSendOutcome(msgStatus, msg.status_envio)
+                            const isFailedSend = sendOutcome === 'failed' || sendOutcome === 'indeterminate'
                             const isNewTicket = msg.ticket_id !== lastTicketId
                             const isCurrentTicket = msg.ticket_id === selectedTicket?.id
                             const isPreviousTicket = !isCurrentTicket && isNewTicket
+                            const canRetrySend = Boolean(
+                              isFailedSend
+                              && isCurrentTicket
+                              && msg.remetente === 'colaborador'
+                              && !msg.id.startsWith('temp-')
+                              && selectedTicket
+                              && ['aberto', 'em_atendimento'].includes(selectedTicket.status)
+                              && ['falhou', 'indeterminado'].includes(msg.status_envio || '')
+                            )
                             lastTicketId = msg.ticket_id
 
                             return (
@@ -4857,7 +5361,7 @@ const insertEmoji = (emoji: string) => {
                                       isOutgoingMessage(msg.remetente)
                                         ? 'bg-primary text-primary-foreground rounded-br-md'
                                         : 'bg-secondary text-secondary-foreground rounded-bl-md',
-                                      msgStatus === 'error' && 'bg-orange-500 text-white border-2 border-orange-300'
+                                      isFailedSend && 'bg-orange-500 text-white border-2 border-orange-300'
                                     )}
                                   >
                         {/* Quoted reply block — preview of the parent message above this one */}
@@ -4892,10 +5396,12 @@ const insertEmoji = (emoji: string) => {
                             </p>
                           </div>
                         )}
-                        {msgStatus === 'error' && (
+                        {isFailedSend && (
                           <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
-                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                            Falha no envio
+                            {sendOutcome === 'indeterminate'
+                              ? <HelpCircle className="h-3.5 w-3.5 shrink-0" />
+                              : <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
+                            {sendOutcome === 'indeterminate' ? 'Envio não confirmado' : 'Falha no envio'}
                           </div>
                         )}
                         {msg.url_imagem && (
@@ -4931,14 +5437,14 @@ const insertEmoji = (emoji: string) => {
                             ? <TextoMensagem conteudo={msg.conteudo} className="text-sm whitespace-pre-wrap" />
                             : <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.conteudo, isOutgoingMessage(msg.remetente))}</p>
                         )}
-                        {msgStatus === 'error' && (
+                        {canRetrySend && (
                           <div className="mt-2 space-y-1.5">
-                            {messageErrors.get(msg.id) && (
-                              <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id)}</p>
+                            {(messageErrors.get(msg.id) || msg.erro_envio) && (
+                              <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id) || msg.erro_envio}</p>
                             )}
                             <button
                               type="button"
-                              onClick={() => retrySendMessage(msg)}
+                              onClick={() => requestRetrySend(msg)}
                               className="inline-flex items-center gap-1.5 rounded-md bg-white/25 hover:bg-white/35 px-2.5 py-1 text-xs font-medium transition-colors"
                             >
                               <RefreshCw className="h-3 w-3" />
@@ -4955,10 +5461,11 @@ const insertEmoji = (emoji: string) => {
                                       </span>
                                       {isOutgoingMessage(msg.remetente) && (
                                         <>
-                                          {msgStatus === 'sending' && <Clock className="h-3 w-3 animate-pulse" />}
-                                          {msgStatus === 'sent' && <Check className="h-3 w-3" />}
-                                          {msgStatus === 'error' && <AlertTriangle className="h-3 w-3" />}
-                                          {!msgStatus && <CheckCheck className="h-3 w-3" />}
+                                          {(sendOutcome === 'sending' || sendOutcome === 'pending') && <Clock className="h-3 w-3 animate-pulse" />}
+                                          {sendOutcome === 'sent' && <Check className="h-3 w-3" />}
+                                          {sendOutcome === 'failed' && <AlertTriangle className="h-3 w-3" />}
+                                          {sendOutcome === 'indeterminate' && <HelpCircle className="h-3 w-3" />}
+                                          {sendOutcome === 'normal' && <CheckCheck className="h-3 w-3" />}
                                         </>
                                       )}
                                     </div>
@@ -5613,13 +6120,15 @@ const insertEmoji = (emoji: string) => {
                 {/* Botão: Abrir ticket no sistema Softcom — sempre visível,
                     mesmo quando a seção "Info do Ticket" está colapsada. */}
                 <Button
+                  asChild
                   variant="outline"
                   size="sm"
                   className="w-full mt-3 h-8 text-xs gap-2 border-primary/40 text-primary hover:bg-primary/10"
-                  onClick={() => setTicketIframeTicket(selectedTicket)}
                 >
-                  <Ticket className="h-3.5 w-3.5" />
-                  Abrir ticket
+                  <a href={buildOcorrenciaRapidaUrl(selectedTicket)} target="_blank" rel="noopener noreferrer">
+                    <Ticket className="h-3.5 w-3.5" />
+                    Abrir ticket
+                  </a>
                 </Button>
               </div>
               )}
@@ -5844,9 +6353,22 @@ onClick={() => {
                           let lastTicketId: string | null = null
                           return mensagensOrdenadas.map((msg, index) => {
                             const msgStatus = pendingMessages.get(msg.id)
+                            // Sem entrada efêmera (ex: depois de um reload), cai pro status persistido no banco.
+                            // 'indeterminado' = perdemos a resposta da API, não sabemos se o provedor recebeu.
+                            const sendOutcome = computeSendOutcome(msgStatus, msg.status_envio)
+                            const isFailedSend = sendOutcome === 'failed' || sendOutcome === 'indeterminate'
                             const isNewTicket = msg.ticket_id !== lastTicketId
                             const isCurrentTicket = msg.ticket_id === selectedTicket?.id
                             const isPreviousTicket = !isCurrentTicket && isNewTicket
+                            const canRetrySend = Boolean(
+                              isFailedSend
+                              && isCurrentTicket
+                              && msg.remetente === 'colaborador'
+                              && !msg.id.startsWith('temp-')
+                              && selectedTicket
+                              && ['aberto', 'em_atendimento'].includes(selectedTicket.status)
+                              && ['falhou', 'indeterminado'].includes(msg.status_envio || '')
+                            )
                             lastTicketId = msg.ticket_id
 
                             return (
@@ -5940,13 +6462,15 @@ onClick={() => {
                     isOutgoingMessage(msg.remetente)
                       ? 'bg-primary text-primary-foreground rounded-br-md'
                       : 'bg-secondary text-secondary-foreground rounded-bl-md',
-                    msgStatus === 'error' && 'bg-orange-500 text-white border-2 border-orange-300'
+                    isFailedSend && 'bg-orange-500 text-white border-2 border-orange-300'
                                     )}
                                   >
-                  {msgStatus === 'error' && (
+                  {isFailedSend && (
                     <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                      Falha no envio
+                      {sendOutcome === 'indeterminate'
+                        ? <HelpCircle className="h-3.5 w-3.5 shrink-0" />
+                        : <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
+                      {sendOutcome === 'indeterminate' ? 'Envio não confirmado' : 'Falha no envio'}
                     </div>
                   )}
                   {msg.url_imagem && (
@@ -5967,14 +6491,14 @@ onClick={() => {
                   {isContactMessage(msg) && msg.conteudo ? (
                     <ContactCard conteudo={msg.conteudo} isOutgoing={isOutgoingMessage(msg.remetente)} />
                   ) : msg.conteudo && msg.tipo !== 'documento' && msg.tipo !== 'audio' && msg.tipo !== 'video' && !msg.url_imagem?.toLowerCase().endsWith('.pdf') && <TextoMensagem conteudo={msg.conteudo} className="text-sm whitespace-pre-wrap" />}
-                  {msgStatus === 'error' && (
+                  {canRetrySend && (
                     <div className="mt-2 space-y-1.5">
-                      {messageErrors.get(msg.id) && (
-                        <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id)}</p>
+                      {(messageErrors.get(msg.id) || msg.erro_envio) && (
+                        <p className="text-xs leading-snug opacity-95">{messageErrors.get(msg.id) || msg.erro_envio}</p>
                       )}
                       <button
                         type="button"
-                        onClick={() => retrySendMessage(msg)}
+                        onClick={() => requestRetrySend(msg)}
                         className="inline-flex items-center gap-1.5 rounded-md bg-white/25 hover:bg-white/35 px-2.5 py-1 text-xs font-medium transition-colors"
                       >
                         <RefreshCw className="h-3 w-3" />
@@ -5991,10 +6515,11 @@ onClick={() => {
                                       </span>
                                       {isOutgoingMessage(msg.remetente) && (
                                         <>
-                                          {msgStatus === 'sending' && <Clock className="h-3 w-3 animate-pulse" />}
-                                          {msgStatus === 'sent' && <Check className="h-3 w-3" />}
-                                          {msgStatus === 'error' && <AlertTriangle className="h-3 w-3" />}
-                                          {!msgStatus && <CheckCheck className="h-3 w-3" />}
+                                          {(sendOutcome === 'sending' || sendOutcome === 'pending') && <Clock className="h-3 w-3 animate-pulse" />}
+                                          {sendOutcome === 'sent' && <Check className="h-3 w-3" />}
+                                          {sendOutcome === 'failed' && <AlertTriangle className="h-3 w-3" />}
+                                          {sendOutcome === 'indeterminate' && <HelpCircle className="h-3 w-3" />}
+                                          {sendOutcome === 'normal' && <CheckCheck className="h-3 w-3" />}
                                         </>
                                       )}
                                     </div>
@@ -6249,6 +6774,29 @@ onClick={() => {
         </AlertDialogContent>
       </AlertDialog>
 
+      <AlertDialog
+        open={retryConfirmationMessage !== null}
+        onOpenChange={(open) => {
+          if (!open) setRetryConfirmationMessage(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reenviar mensagem não confirmada?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O provedor pode ter recebido esta mensagem mesmo sem a confirmação chegar ao WorkDesk.
+              Reenviar pode entregar o mesmo conteúdo duas vezes ao cliente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmIndeterminateRetry}>
+              Reenviar mesmo assim
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Transfer Dialog */}
       <Dialog open={transferDialogOpen} onOpenChange={handleTransferDialogOpenChange}>
         <DialogContent className="max-h-[calc(100dvh-2rem)] gap-0 overflow-hidden p-0 sm:max-w-xl">
@@ -6434,7 +6982,6 @@ onClick={() => {
                                 <SelectItem
                                   key={atendente.id}
                                   value={atendente.id}
-                                  disabled={Boolean(atendente.pausa_atual_id)}
                                 >
                                   <span className="flex items-center gap-2">
                                     <span
@@ -6527,14 +7074,16 @@ onClick={() => {
         </DialogContent>
       </Dialog>
 
-      {/* Confirmação: transferir para atendente offline */}
+      {/* Confirmação: transferir para atendente offline ou em pausa */}
       <AlertDialog open={offlineConfirmOpen} onOpenChange={setOfflineConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>⚠️ Transferir para atendente offline?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {offlineTransferTarget?.pausa ? '⚠️ Transferir para atendente em pausa?' : '⚠️ Transferir para atendente offline?'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              <strong>{offlineTransferTarget?.nome}</strong> está offline no momento. O ticket
-              será atribuído a ele(a) e aparecerá na lista dele(a) no WorkDesk. Deseja
+              <strong>{offlineTransferTarget?.nome}</strong> está {offlineTransferTarget?.pausa ? 'em pausa' : 'offline'} no
+              momento. O ticket será atribuído a ele(a) e aparecerá na lista dele(a) no WorkDesk. Deseja
               transferir mesmo assim?
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -7119,10 +7668,14 @@ onClick={() => {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs">Telefone</Label>
+              <Label className="text-xs flex items-center gap-1">
+                Telefone
+                <Lock className="h-3 w-3 text-muted-foreground" />
+              </Label>
               <Input
                 value={editarClienteForm.telefone}
-                onChange={(e) => setEditarClienteForm((f) => ({ ...f, telefone: e.target.value }))}
+                readOnly
+                className="bg-muted text-muted-foreground cursor-not-allowed"
                 placeholder="5511999999999"
               />
             </div>
@@ -7177,45 +7730,6 @@ onClick={() => {
         </DialogContent>
       </Dialog>
 
-      {/* Ticket Iframe Popup */}
-      {ticketIframeTicket && colaborador && (
-        <div
-          className="fixed inset-x-0 bottom-0 z-[200] flex items-start justify-center bg-black/60 backdrop-blur-sm px-4 pb-4 pt-4"
-          style={{ top: 64 }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setTicketIframeTicket(null)
-          }}
-        >
-          <div className="relative w-full max-w-[96vw] rounded-lg overflow-hidden shadow-2xl border border-border bg-background flex flex-col" style={{ height: 'calc(100vh - 88px)' }}>
-            {/* Header */}
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-card shrink-0">
-              <div className="flex items-center gap-1.5">
-                <Ticket className="h-3.5 w-3.5 text-primary" />
-                <span className="text-xs font-semibold">
-                  Ocorrência rápida — {ticketIframeTicket.clientes?.nome || 'Cliente'}
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6"
-                onClick={() => setTicketIframeTicket(null)}
-              >
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-
-            {/* iFrame — Ocorrência rápida (Service Desk). q = CNPJ → telefone → Registro (só dígitos);
-                ticket = nº do ticket no SoftcomHub; tel = telefone do cliente (só dígitos). */}
-            <iframe
-              src={`https://agenda.softcomtecnologia.com/service-desk/ocorrencia-rapida?q=${encodeURIComponent((ticketIframeTicket.clientes?.CNPJ || ticketIframeTicket.clientes?.telefone || ticketIframeTicket.clientes?.Registro || '').replace(/\D/g, ''))}&ticket=${encodeURIComponent(ticketIframeTicket.numero)}&tel=${encodeURIComponent((ticketIframeTicket.clientes?.telefone || '').replace(/\D/g, ''))}`}
-              className="w-full flex-1 border-0"
-              title={`Ocorrência rápida — ${ticketIframeTicket.clientes?.nome || 'Cliente'}`}
-              allow="clipboard-read; clipboard-write"
-            />
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -7238,7 +7752,6 @@ function TicketList({
   firstUnreadAt,
   setorCanal,
   colaboradorEmail,
-  onOpenTicketIframe,
 }: {
   tickets: Ticket[]
   selectedTicket: Ticket | null
@@ -7256,7 +7769,6 @@ function TicketList({
   firstUnreadAt: Map<string, string>
   setorCanal: 'whatsapp' | 'discord' | 'evolution_api'
   colaboradorEmail: string
-  onOpenTicketIframe: (ticket: Ticket) => void
 }) {
   // Tick every 30s to re-evaluate wait times
   const [, setTick] = useState(0)
