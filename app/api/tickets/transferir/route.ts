@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { processTicketQueue } from '@/lib/ticket-queue-processor'
+import { canTransferTicket, isTransferTargetAvailable } from '@/lib/transfer-authorization'
 
 const transferRequestSchema = z.object({
   ticket_id: z.string().uuid('ticket_id inválido'),
@@ -12,6 +13,9 @@ const transferRequestSchema = z.object({
   colaborador_id: z.string().uuid('colaborador_id inválido').nullable().optional(),
   from_colaborador_nome: z.string().max(200).optional(),
   from_setor_nome: z.string().max(200).optional(),
+  // Confirma que o atendente de destino está indisponível (offline/pausa) e mesmo
+  // assim deve receber o ticket — setado pelo client só depois de confirmação do usuário.
+  allow_unavailable: z.boolean().optional(),
 })
 
 const TRANSFER_ERRORS = {
@@ -30,10 +34,6 @@ const TRANSFER_ERRORS = {
   },
   COLLABORATOR_SUBSETOR_MISMATCH: {
     error: 'O atendente selecionado não é compatível com este subsetor.',
-    status: 422,
-  },
-  COLLABORATOR_ONLINE_PAUSED: {
-    error: 'Este atendente está em pausa. Selecione outro atendente.',
     status: 422,
   },
 }
@@ -78,7 +78,7 @@ export async function POST(request: Request) {
 
     const { data: actor, error: actorError } = await supabase
       .from('colaboradores')
-      .select('id, nome, ativo, is_master')
+      .select('id, nome, ativo, is_master, setor_id, permissoes:permissao_id(can_see_all_tickets)')
       .eq('email', user.email)
       .maybeSingle()
 
@@ -89,6 +89,8 @@ export async function POST(request: Request) {
     if (!actor?.ativo) {
       return NextResponse.json({ error: 'Colaborador não autorizado' }, { status: 403 })
     }
+    const actorPermissoes = Array.isArray(actor.permissoes) ? actor.permissoes[0] : actor.permissoes
+    const actorCanSeeAllTickets = actorPermissoes?.can_see_all_tickets === true
 
     const { data: ticket, error: ticketError } = await supabase
       .from('tickets')
@@ -105,8 +107,38 @@ export async function POST(request: Request) {
     if (!ticket) {
       return NextResponse.json({ error: 'Ticket não encontrado' }, { status: 404 })
     }
-    if (ticket.colaborador_id !== actor.id && actor.is_master !== true) {
-      return NextResponse.json({ error: 'Você não pode transferir este ticket' }, { status: 403 })
+    // Setores vinculados ao actor (além do legado colaboradores.setor_id) — só precisa
+    // buscar quando o actor não é dono do ticket nem master (evita uma query à toa).
+    let actorLinkedSetorIds: string[] = actor.setor_id ? [actor.setor_id] : []
+    if (ticket.colaborador_id !== actor.id && actor.is_master !== true && actorCanSeeAllTickets) {
+      const { data: actorSetorLinks, error: actorSetorLinksError } = await supabase
+        .from('colaboradores_setores')
+        .select('setor_id')
+        .eq('colaborador_id', actor.id)
+
+      if (actorSetorLinksError) {
+        console.error('[Transferir] Erro ao validar setores do colaborador:', actorSetorLinksError)
+        return NextResponse.json(
+          { error: 'Erro ao validar os setores do colaborador' },
+          { status: 500 },
+        )
+      }
+
+      actorLinkedSetorIds = Array.from(new Set([
+        ...actorLinkedSetorIds,
+        ...(actorSetorLinks || []).map((link: { setor_id: string }) => link.setor_id),
+      ]))
+    }
+
+    const transferAuth = canTransferTicket(
+      { id: actor.id, isMaster: actor.is_master === true, canSeeAllTickets: actorCanSeeAllTickets, linkedSetorIds: actorLinkedSetorIds },
+      { colaboradorId: ticket.colaborador_id, setorId: ticket.setor_id },
+    )
+    if (!transferAuth.allowed) {
+      const message = transferAuth.reason === 'SUPERVISOR_OUT_OF_SCOPE'
+        ? 'Você não pode transferir tickets de um setor ao qual não está vinculado'
+        : 'Você não pode transferir este ticket'
+      return NextResponse.json({ error: message }, { status: 403 })
     }
     if (!['aberto', 'em_atendimento'].includes(ticket.status)) {
       return NextResponse.json(
@@ -177,11 +209,12 @@ export async function POST(request: Request) {
     }
 
     let targetColaborador: { id: string; nome: string } | null = null
+    let wasTargetForcedUnavailable = false
     if (body.colaborador_id) {
       const [colaboradorResult, setorLinkResult, subsetorLinksResult] = await Promise.all([
         supabase
           .from('colaboradores')
-          .select('id, nome, is_online, ativo, pausa_atual_id')
+          .select('id, nome, is_online, ativo, pausa_atual_id, last_heartbeat')
           .eq('id', body.colaborador_id)
           .maybeSingle(),
         supabase
@@ -226,19 +259,29 @@ export async function POST(request: Request) {
         ))
         .filter((subsetorId): subsetorId is string => subsetorId !== null)
 
-      const mustValidateSubsetor = hasExplicitSubsetor || !isChangingSetor
-      if (mustValidateSubsetor && !isExactSubsetorMatch(targetSubsetorId, subsetorIds)) {
+      if (!isExactSubsetorMatch(targetSubsetorId, subsetorIds)) {
         return NextResponse.json(
           { error: TRANSFER_ERRORS.COLLABORATOR_SUBSETOR_MISMATCH.error },
           { status: 422 },
         )
       }
-      if (colaborador.is_online === true && colaborador.pausa_atual_id) {
+
+      // Disponibilidade revalidada agora, no servidor — o client já mostrou uma
+      // confirmação, mas o estado pode ter mudado entre a abertura do modal e o envio.
+      const colaboradorDisponivel = isTransferTargetAvailable(colaborador)
+      if (!colaboradorDisponivel && body.allow_unavailable !== true) {
         return NextResponse.json(
-          { error: TRANSFER_ERRORS.COLLABORATOR_ONLINE_PAUSED.error },
-          { status: 422 },
+          {
+            error: colaborador.pausa_atual_id
+              ? 'Este atendente está em pausa.'
+              : 'Este atendente está offline.',
+            code: 'TARGET_UNAVAILABLE',
+            pausa: Boolean(colaborador.pausa_atual_id),
+          },
+          { status: 409 },
         )
       }
+      wasTargetForcedUnavailable = !colaboradorDisponivel
 
       targetColaborador = { id: colaborador.id, nome: colaborador.nome }
     }
@@ -310,7 +353,7 @@ export async function POST(request: Request) {
     }
 
     const destinationLogSuffix = targetColaborador
-      ? ` (para ${targetColaborador.nome})`
+      ? ` (para ${targetColaborador.nome}${wasTargetForcedUnavailable ? ' — indisponível no momento, transferido mesmo assim' : ''})`
       : ' (fila)'
     const { error: logError } = await supabase.from('ticket_logs').insert({
       ticket_id: body.ticket_id,

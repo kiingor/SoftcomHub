@@ -1,147 +1,537 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
+import {
+  claimPersistedMessageSend,
+  completeLegacyPersistedMessageSend,
+  completePersistedMessageSend,
+  loadLegacyPersistedMessageSend,
+  persistAcceptedLegacyMessage,
+  type MessageSendAttempt,
+  type PersistedMessagePayload,
+} from '@/lib/message-send-claim'
+import {
+  REPLYABLE_TICKET_SENDERS,
+  canUseLegacyChannelFallback,
+  isConfiguredLegacyEvolutionChannel,
+  selectAuthorizedTicketChannel,
+  validateOutboundMediaUrl,
+} from '@/lib/message-send-target'
+import { resolveSharedChannelOwnerId } from '@/lib/nexus-channel-resolution'
+import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 import { resolveMime } from '@/lib/whatsapp-media'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import { authorizeTicketSend } from '@/lib/ticket-send-auth'
+
+const requestSchema = z.object({
+  ticketId: z.string().uuid(),
+  message: z.string().max(20_000).nullish(),
+  messageId: z.string().uuid().nullish(),
+  instanceName: z.string().max(255).nullish(),
+  fileUrl: z.string().max(4_096).nullish(),
+  fileType: z.string().max(255).nullish(),
+  fileName: z.string().max(512).nullish(),
+  replyToMessageId: z.string().uuid().nullish(),
+  retry: z.boolean().optional(),
+}).strict()
+
+function getEvolutionMessageId(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null
+  const root = payload as Record<string, unknown>
+  const directKey = root.key
+  if (directKey && typeof directKey === 'object') {
+    const id = (directKey as Record<string, unknown>).id
+    if (typeof id === 'string') return id
+  }
+
+  const message = root.message
+  if (!message || typeof message !== 'object') return null
+  const nestedKey = (message as Record<string, unknown>).key
+  if (!nestedKey || typeof nestedKey !== 'object') return null
+  const nestedId = (nestedKey as Record<string, unknown>).id
+  return typeof nestedId === 'string' ? nestedId : null
+}
+
+async function persistFailure(
+  serviceClient: ReturnType<typeof createServiceClient> | null,
+  attempt: MessageSendAttempt | null,
+  error: string,
+) {
+  if (!serviceClient || !attempt) return null
+  const result = await completePersistedMessageSend(serviceClient, attempt, {
+    status: 'falhou',
+    error,
+  })
+  if (result.ok) return null
+  return NextResponse.json(
+    {
+      error: result.error,
+      code: result.code,
+      providerAccepted: false,
+      status_envio: 'enviando',
+    },
+    { status: 500 },
+  )
+}
 
 export async function POST(request: NextRequest) {
+  let serviceClient: ReturnType<typeof createServiceClient> | null = null
+  let sendAttempt: MessageSendAttempt | null = null
+  let providerRequestStarted = false
+
   try {
     const supabase = await createClient()
 
     // Get current user
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
+    if (!user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = await request.json()
-    const { ticketId, message, messageId, instanceName, fileUrl, fileType, fileName, replyToMessageId } = body
-    if (!ticketId || (!message && !fileUrl)) {
+    const parsed = requestSchema.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Parâmetros de envio inválidos', code: 'INVALID_SEND_REQUEST' },
+        { status: 400 },
+      )
+    }
+    const body = parsed.data
+    const {
+      ticketId,
+      message,
+      messageId,
+      instanceName,
+      fileUrl,
+      fileType,
+      fileName,
+      replyToMessageId,
+      retry = false,
+    } = body
+    if (!ticketId || (!messageId && !message && !fileUrl)) {
       return NextResponse.json(
         { error: 'Missing required fields: ticketId, message or fileUrl' },
         { status: 400 },
       )
     }
 
-    // Look up the parent mensagem so we can build Evolution's `quoted` object.
-    // Evolution needs the wamid, the original sender's direction, and the
-    // original text to render the quoted preview correctly.
+    const sendAuth = await authorizeTicketSend(supabase, ticketId, user.email)
+    if (!sendAuth.ok) {
+      return NextResponse.json(
+        { error: sendAuth.error, code: sendAuth.code },
+        { status: sendAuth.status },
+      )
+    }
+    if (retry === true && !messageId) {
+      return NextResponse.json(
+        { error: 'Retry exige uma mensagem persistida', code: 'RETRY_REQUIRES_MESSAGE_ID' },
+        { status: 400 },
+      )
+    }
+
+    serviceClient ||= createServiceClient()
+    const authoritativeClient = serviceClient
+
+    let persistedMessage: PersistedMessagePayload | null = null
+    let legacyPersistedMessage = false
+
+    if (messageId) {
+      const claim = await claimPersistedMessageSend(
+        serviceClient,
+        ticketId,
+        messageId,
+        retry === true,
+      )
+      if (!claim.ok) {
+        if (claim.code === 'SEND_STATUS_SCHEMA_UNAVAILABLE' && retry !== true) {
+          const legacyMessage = await loadLegacyPersistedMessageSend(
+            serviceClient,
+            ticketId,
+            messageId,
+          )
+          if (!legacyMessage.ok) {
+            return NextResponse.json(
+              { error: legacyMessage.error, code: legacyMessage.code },
+              { status: legacyMessage.status },
+            )
+          }
+          if (legacyMessage.providerMessageId) {
+            return NextResponse.json({
+              success: true,
+              idempotent: true,
+              legacy: true,
+              messageId: legacyMessage.providerMessageId,
+            })
+          }
+          persistedMessage = legacyMessage.message
+          legacyPersistedMessage = true
+        } else {
+          return NextResponse.json(
+            {
+              error: claim.error,
+              code: claim.code,
+              status_envio: claim.status_envio,
+            },
+            { status: claim.status },
+          )
+        }
+      } else if (claim.kind === 'already_sent') {
+        return NextResponse.json({
+          success: true,
+          idempotent: true,
+          status_envio: claim.status_envio,
+          messageId: claim.providerMessageId,
+        })
+      } else {
+        sendAttempt = claim.attempt
+        persistedMessage = claim.attempt.message
+      }
+    }
+
+    const sendMessage = persistedMessage ? persistedMessage.content : message
+    let mediaUrl = persistedMessage ? persistedMessage.fileUrl : fileUrl
+    const mediaType = persistedMessage ? persistedMessage.mediaType : fileType
+    const mediaFileName = persistedMessage ? null : fileName
+    const requestedInstance = persistedMessage
+      ? persistedMessage.phoneNumberId
+      : instanceName
+    const effectiveReplyToMessageId = persistedMessage
+      ? persistedMessage.replyToMessageId
+      : replyToMessageId ?? null
+
+    if (!sendMessage && !mediaUrl) {
+      const error = 'A mensagem persistida não possui conteúdo para envio'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: 'MESSAGE_CONTENT_INVALID',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: 422 },
+      )
+    }
+
+    if (mediaUrl) {
+      const validatedMedia = validateOutboundMediaUrl(mediaUrl)
+      if (!validatedMedia.ok) {
+        const persistenceFailure = await persistFailure(
+          serviceClient,
+          sendAttempt,
+          validatedMedia.error,
+        )
+        if (persistenceFailure) return persistenceFailure
+        sendAttempt = null
+        return NextResponse.json(
+          {
+            error: validatedMedia.error,
+            code: validatedMedia.code,
+            status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+          },
+          { status: 422 },
+        )
+      }
+      mediaUrl = validatedMedia.url
+    }
+
     let quotedPayload: Record<string, unknown> | null = null
-    if (replyToMessageId) {
-      const { data: parent } = await supabase
+    if (effectiveReplyToMessageId) {
+      const { data: parent, error: parentError } = await authoritativeClient
         .from('mensagens')
         .select('whatsapp_message_id, remetente, conteudo')
-        .eq('id', replyToMessageId)
+        .eq('id', effectiveReplyToMessageId)
+        .eq('ticket_id', ticketId)
+        .in('remetente', [...REPLYABLE_TICKET_SENDERS])
         .maybeSingle()
-      if (parent?.whatsapp_message_id) {
-        quotedPayload = {
-          key: {
-            id: parent.whatsapp_message_id,
-            fromMe: parent.remetente === 'colaborador',
+
+      if (parentError || !parent?.whatsapp_message_id) {
+        const error = 'A mensagem respondida não pertence a este ticket ou não pode ser citada'
+        const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+        if (persistenceFailure) return persistenceFailure
+        sendAttempt = null
+        return NextResponse.json(
+          {
+            error,
+            code: 'REPLY_MESSAGE_INVALID',
+            status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
           },
-          message: {
-            conversation: parent.conteudo || '',
-          },
-        }
-      } else {
-        console.warn('[EvolutionAPI Send] replyToMessageId provided but parent has no whatsapp_message_id', { replyToMessageId })
+          { status: 422 },
+        )
+      }
+
+      quotedPayload = {
+        key: {
+          id: parent.whatsapp_message_id,
+          fromMe: parent.remetente === 'colaborador',
+        },
+        message: {
+          conversation: parent.conteudo || '',
+        },
       }
     }
 
     // Get ticket to find setor and client phone
-    const { data: ticket } = await supabase
+    const { data: ticket } = await authoritativeClient
       .from('tickets')
       .select('setor_id, cliente_id, clientes(telefone)')
       .eq('id', ticketId)
       .single()
 
     if (!ticket?.setor_id) {
-      return NextResponse.json({ error: 'Ticket ou setor nao encontrado' }, { status: 404 })
+      const error = 'Ticket ou setor nao encontrado'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: 'TICKET_NOT_FOUND',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: 404 },
+      )
     }
 
-    const clientePhone = (ticket as any).clientes?.telefone
+    const ticketClient = Array.isArray(ticket.clientes)
+      ? ticket.clientes[0]
+      : ticket.clientes
+    const clientePhone = ticketClient?.telefone
     if (!clientePhone) {
-      return NextResponse.json({ error: 'Telefone do cliente nao encontrado' }, { status: 400 })
+      const error = 'Telefone do cliente nao encontrado'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: 'RECIPIENT_NOT_FOUND',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: 400 },
+      )
     }
 
-    // Get EvolutionAPI credentials - Priority: setor_canais (por instancia) > setor_canais (setor atual) > setores
     let evolutionBaseUrl: string | null = null
     let evolutionApiKey: string | null = null
+    let resolvedInstance = requestedInstance
 
-    // Priority 1: busca pela instancia em TODOS os setores
-    // (ticket pode ter sido transferido do setor original, então não filtramos por setor_id)
-    if (instanceName) {
-      const { data: canalByInstance } = await supabase
+    const { data: channels, error: channelsError } = await authoritativeClient
+      .from('setor_canais')
+      .select('id, setor_id, instancia, evolution_base_url, evolution_api_key, ativo')
+      .eq('setor_id', ticket.setor_id)
+      .eq('tipo', 'evolution_api')
+      .order('id', { ascending: true })
+
+    if (channelsError) throw channelsError
+    const currentModernChannels = channels || []
+    const currentActiveChannels = currentModernChannels.filter(
+      (candidate) => candidate.ativo,
+    )
+    let matchingModernChannels = currentModernChannels
+    let matchingActiveChannels = currentActiveChannels
+    let historicalEvidence: Array<{
+      channelIdentifier: string | null
+      sender: string | null
+      providerMessageId: string | null
+    }> = []
+
+    if (requestedInstance) {
+      const { data: matchingChannels, error: matchingChannelsError } = await authoritativeClient
         .from('setor_canais')
-        .select('evolution_base_url, evolution_api_key')
+        .select('id, setor_id, instancia, evolution_base_url, evolution_api_key, ativo')
         .eq('tipo', 'evolution_api')
-        .eq('instancia', instanceName)
-        .eq('ativo', true)
-        .limit(1)
-        .maybeSingle()
+        .eq('instancia', requestedInstance)
+        .order('id', { ascending: true })
+        .limit(1000)
 
-      if (canalByInstance) {
-        evolutionBaseUrl = canalByInstance.evolution_base_url
-        evolutionApiKey = canalByInstance.evolution_api_key
-        console.log('[EvolutionAPI Send] Credenciais encontradas via instancia:', instanceName, '(busca global de setores)')
+      if (matchingChannelsError) throw matchingChannelsError
+      matchingModernChannels = matchingChannels || []
+      matchingActiveChannels = matchingModernChannels.filter(
+        (candidate) => candidate.ativo,
+      )
+
+      const belongsToCurrentSector = currentActiveChannels.some(
+        (candidate) => candidate.instancia === requestedInstance,
+      )
+      if (!belongsToCurrentSector) {
+        const { data: priorInboundMessages, error: priorInboundError } = await authoritativeClient
+          .from('mensagens')
+          .select('phone_number_id, remetente, whatsapp_message_id')
+          .eq('ticket_id', ticketId)
+          .in('remetente', ['cliente', 'cliente-nexus'])
+          .eq('phone_number_id', requestedInstance)
+          .not('whatsapp_message_id', 'is', null)
+          .limit(1)
+
+        if (priorInboundError) throw priorInboundError
+        historicalEvidence = (priorInboundMessages || []).map((priorMessage) => ({
+          channelIdentifier: priorMessage.phone_number_id,
+          sender: priorMessage.remetente,
+          providerMessageId: priorMessage.whatsapp_message_id,
+        }))
       }
     }
 
-    // Priority 2: Fallback — qualquer canal Evolution ativo do setor atual
-    if (!evolutionBaseUrl || !evolutionApiKey) {
-      const { data: canalSetor } = await supabase
-        .from('setor_canais')
-        .select('evolution_base_url, evolution_api_key')
-        .eq('setor_id', ticket.setor_id)
-        .eq('tipo', 'evolution_api')
-        .eq('ativo', true)
-        .limit(1)
-        .maybeSingle()
+    const modernChannel = selectAuthorizedTicketChannel({
+      currentActiveChannels,
+      matchingActiveChannels,
+      historicalEvidence,
+      requestedIdentifier: requestedInstance,
+      getIdentifier: (candidate) => candidate.instancia,
+      getOwnerId: (candidate) => candidate.setor_id,
+      resolveOwnerId: resolveSharedChannelOwnerId,
+    })
 
-      if (canalSetor) {
-        evolutionBaseUrl = evolutionBaseUrl || canalSetor.evolution_base_url
-        evolutionApiKey = evolutionApiKey || canalSetor.evolution_api_key
-        console.log('[EvolutionAPI Send] Credenciais encontradas via setor atual:', ticket.setor_id)
+    let legacyChannel: {
+      id: string
+      setor_id: string
+      channel_identifier: string | null
+      instancia: string | null
+      phone_number_id: string | null
+      evolution_base_url: string | null
+      evolution_api_key: string | null
+    } | null = null
+    const relevantModernConfigurations = requestedInstance
+      ? matchingModernChannels
+      : currentModernChannels
+
+    if (
+      !modernChannel
+      && canUseLegacyChannelFallback(relevantModernConfigurations)
+    ) {
+      type LegacyEvolutionSector = {
+        id: string
+        canal: string | null
+        instancia: string | null
+        phone_number_id: string | null
+        evolution_base_url: string | null
+        evolution_api_key: string | null
       }
+      let legacySectors: LegacyEvolutionSector[] = []
+
+      if (requestedInstance) {
+        // Use parameterized equality queries instead of interpolating the
+        // caller-controlled identifier into a PostgREST `.or(...)` filter.
+        const [byInstance, byPhoneNumber] = await Promise.all([
+          authoritativeClient
+            .from('setores')
+            .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
+            .eq('instancia', requestedInstance)
+            .order('id', { ascending: true })
+            .limit(1000),
+          authoritativeClient
+            .from('setores')
+            .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
+            .eq('phone_number_id', requestedInstance)
+            .order('id', { ascending: true })
+            .limit(1000),
+        ])
+        if (byInstance.error) throw byInstance.error
+        if (byPhoneNumber.error) throw byPhoneNumber.error
+
+        const uniqueSectors = new Map<string, LegacyEvolutionSector>()
+        for (const sector of [...(byInstance.data || []), ...(byPhoneNumber.data || [])]) {
+          uniqueSectors.set(sector.id, sector)
+        }
+        legacySectors = [...uniqueSectors.values()]
+      } else {
+        const { data, error } = await authoritativeClient
+          .from('setores')
+          .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
+          .eq('id', ticket.setor_id)
+          .order('id', { ascending: true })
+          .limit(1)
+        if (error) throw error
+        legacySectors = data || []
+      }
+
+      const configuredLegacyChannels = legacySectors
+        .filter(isConfiguredLegacyEvolutionChannel)
+        .map((sector) => ({
+          id: `legacy:${sector.id}`,
+          setor_id: sector.id,
+          channel_identifier: requestedInstance
+            ? (
+                sector.instancia === requestedInstance
+                  ? sector.instancia
+                  : sector.phone_number_id
+              )
+            : sector.instancia || sector.phone_number_id,
+          instancia: sector.instancia,
+          phone_number_id: sector.phone_number_id,
+          evolution_base_url: sector.evolution_base_url,
+          evolution_api_key: sector.evolution_api_key,
+        }))
+      const currentLegacyChannels = configuredLegacyChannels.filter(
+        (candidate) => candidate.setor_id === ticket.setor_id,
+      )
+
+      legacyChannel = selectAuthorizedTicketChannel({
+        currentActiveChannels: currentLegacyChannels,
+        matchingActiveChannels: configuredLegacyChannels,
+        historicalEvidence,
+        requestedIdentifier: requestedInstance,
+        getIdentifier: (candidate) => candidate.channel_identifier,
+        getOwnerId: (candidate) => candidate.setor_id,
+        resolveOwnerId: resolveSharedChannelOwnerId,
+      })
     }
 
-    // Priority 3: Fallback to setores table
-    if (!evolutionBaseUrl || !evolutionApiKey) {
-      const { data: setor } = await supabase
-        .from('setores')
-        .select('evolution_base_url, evolution_api_key')
-        .eq('id', ticket.setor_id)
-        .single()
-
-      evolutionBaseUrl = evolutionBaseUrl || setor?.evolution_base_url
-      evolutionApiKey = evolutionApiKey || setor?.evolution_api_key
-    }
-
-    if (!evolutionBaseUrl || !evolutionApiKey) {
+    if (!modernChannel && !legacyChannel) {
+      const error = 'A instância informada não pertence ao setor atual do ticket'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
       return NextResponse.json(
-        { error: 'EvolutionAPI nao configurada neste setor' },
+        {
+          error,
+          code: 'CHANNEL_MISMATCH',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: 422 },
+      )
+    }
+
+    evolutionBaseUrl =
+      modernChannel?.evolution_base_url
+      || legacyChannel?.evolution_base_url
+      || null
+    evolutionApiKey =
+      modernChannel?.evolution_api_key
+      || legacyChannel?.evolution_api_key
+      || null
+    resolvedInstance =
+      modernChannel?.instancia
+      || legacyChannel?.channel_identifier
+      || null
+
+    if (!evolutionBaseUrl || !evolutionApiKey) {
+      const error = 'EvolutionAPI nao configurada neste setor'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: 'CHANNEL_NOT_CONFIGURED',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
         { status: 500 },
       )
     }
 
-    // Resolve instanceName: use provided or fetch from last client message
-    let resolvedInstance = instanceName
     if (!resolvedInstance) {
-      const { data: lastMsg } = await supabase
-        .from('mensagens')
-        .select('phone_number_id')
-        .eq('ticket_id', ticketId)
-        .eq('remetente', 'cliente')
-        .not('phone_number_id', 'is', null)
-        .order('enviado_em', { ascending: false })
-        .limit(1)
-        .single()
-
-      resolvedInstance = lastMsg?.phone_number_id
-    }
-
-    if (!resolvedInstance) {
+      const errMsg = 'Nao foi possivel determinar a instancia (instanceName). Nenhuma mensagem do cliente com phone_number_id encontrada.'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, errMsg)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
       return NextResponse.json(
-        { error: 'Nao foi possivel determinar a instancia (instanceName). Nenhuma mensagem do cliente com phone_number_id encontrada.' },
+        {
+          error: errMsg,
+          code: 'CHANNEL_NOT_CONFIGURED',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
         { status: 400 },
       )
     }
@@ -157,16 +547,16 @@ export async function POST(request: NextRequest) {
     const baseUrl = evolutionBaseUrl.replace(/\/+$/, '')
 
     // Determine if this is a media or text message
-    const isMedia = !!fileUrl
+    const isMedia = !!mediaUrl
     let evolutionUrl: string
-    let evolutionBody: Record<string, any>
+    let evolutionBody: Record<string, unknown>
 
     if (isMedia) {
       // Resolve canonical MIME — browsers leave `file.type` empty for many
       // extensions (.cer, .p12, .key, .xml, .json, …) which Evolution then
       // refuses if we forward "application/octet-stream". Inferring from the
       // filename fixes the cert path on Evolution.
-      const mimetype = resolveMime(fileType, fileName)
+      const mimetype = resolveMime(mediaType, mediaFileName || mediaUrl)
       const mtLower = mimetype.toLowerCase()
       let mediatype: 'image' | 'video' | 'audio' | 'document' = 'document'
 
@@ -179,7 +569,7 @@ export async function POST(request: NextRequest) {
         evolutionUrl = `${baseUrl}/message/sendWhatsAppAudio/${resolvedInstance}`
         evolutionBody = {
           number: formattedPhone,
-          audio: fileUrl,
+          audio: mediaUrl,
           delay: 1000,
           encoding: true,
         }
@@ -189,9 +579,9 @@ export async function POST(request: NextRequest) {
           number: formattedPhone,
           mediatype,
           mimetype,
-          media: fileUrl,
-          fileName: fileName || 'arquivo',
-          caption: message || '',
+          media: mediaUrl,
+          fileName: mediaFileName || mediaUrl?.split('/').pop()?.split('?')[0] || 'arquivo',
+          caption: sendMessage || '',
           delay: 1000,
         }
       }
@@ -199,7 +589,7 @@ export async function POST(request: NextRequest) {
       evolutionUrl = `${baseUrl}/message/sendText/${resolvedInstance}`
       evolutionBody = {
         number: formattedPhone,
-        text: message,
+        text: sendMessage,
         delay: 1000,
       }
     }
@@ -209,12 +599,6 @@ export async function POST(request: NextRequest) {
     if (quotedPayload) {
       evolutionBody.quoted = quotedPayload
     }
-
-    // Log curl equivalent for debugging
-    console.log(`[EvolutionAPI] curl --location '${evolutionUrl}' \\
-  --header 'apikey: ${evolutionApiKey}' \\
-  --header 'Content-Type: application/json' \\
-  --data '${JSON.stringify(evolutionBody, null, 4)}'`)
 
     // Verificar se a instância está conectada antes de enviar
     try {
@@ -228,23 +612,52 @@ export async function POST(request: NextRequest) {
         const statusData = await statusResponse.json()
         const state = statusData?.instance?.state || statusData?.state
         if (state && state !== 'open' && state !== 'connected') {
-          console.error(`[EvolutionAPI Send] Instância ${resolvedInstance} offline (state: ${state})`)
+          console.error('[EvolutionAPI Send] Instância offline')
+          const offlineMsg = 'Dispositivo offline. A instância não está conectada ao WhatsApp. Verifique a conexão do dispositivo.'
+          const persistenceFailure = await persistFailure(serviceClient, sendAttempt, offlineMsg)
+          if (persistenceFailure) return persistenceFailure
+          sendAttempt = null
           return NextResponse.json(
             {
-              error: `Dispositivo offline. A instância "${resolvedInstance}" não está conectada ao WhatsApp. Verifique a conexão do dispositivo.`,
-              details: { state, instance: resolvedInstance },
+              error: offlineMsg,
+              code: 'DEVICE_OFFLINE',
               deviceOffline: true,
+              status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
             },
             { status: 503 },
           )
         }
       }
-    } catch (statusErr) {
-      console.warn('[EvolutionAPI Send] Não foi possível verificar status da instância:', statusErr)
+    } catch {
+      console.warn('[EvolutionAPI Send] Não foi possível verificar o status da instância')
       // Continua tentando enviar mesmo sem conseguir checar status
     }
 
+    const latestAuthorization = await authorizeTicketSend(supabase, ticketId, user.email)
+    if (
+      !latestAuthorization.ok
+      || latestAuthorization.ticket.setor_id !== ticket.setor_id
+    ) {
+      const error = latestAuthorization.ok
+        ? 'O ticket mudou de setor durante o envio'
+        : latestAuthorization.error
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
+      return NextResponse.json(
+        {
+          error,
+          code: latestAuthorization.ok
+            ? 'TICKET_CONTEXT_CHANGED'
+            : latestAuthorization.code,
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
+        { status: latestAuthorization.ok ? 409 : latestAuthorization.status },
+      )
+    }
+
     // Send message via EvolutionAPI
+    providerRequestStarted = true
     const evolutionResponse = await fetch(evolutionUrl, {
       method: 'POST',
       headers: {
@@ -254,7 +667,7 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(evolutionBody),
     })
 
-    let evolutionData: any
+    let evolutionData: unknown
     try {
       evolutionData = await evolutionResponse.json()
     } catch {
@@ -262,7 +675,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (!evolutionResponse.ok) {
-      console.error('[EvolutionAPI Send] API error:', evolutionData)
+      console.error('[EvolutionAPI Send] Provider error status:', evolutionResponse.status)
 
       // Detectar erro de dispositivo desconectado nas respostas de erro
       const errorStr = JSON.stringify(evolutionData).toLowerCase()
@@ -274,18 +687,31 @@ export async function POST(request: NextRequest) {
         evolutionResponse.status === 404
 
       if (isDeviceOffline) {
+        const offlineMsg = 'Dispositivo offline. Não foi possível enviar a mensagem porque a instância está desconectada. Verifique a conexão do WhatsApp.'
+        const persistenceFailure = await persistFailure(serviceClient, sendAttempt, offlineMsg)
+        if (persistenceFailure) return persistenceFailure
+        sendAttempt = null
         return NextResponse.json(
           {
-            error: `Dispositivo offline. Não foi possível enviar a mensagem porque a instância "${resolvedInstance}" está desconectada. Verifique a conexão do WhatsApp.`,
-            details: evolutionData,
+            error: offlineMsg,
+            code: 'DEVICE_OFFLINE',
             deviceOffline: true,
+            status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
           },
           { status: 503 },
         )
       }
 
+      const genericErrorMsg = 'Erro ao enviar mensagem via EvolutionAPI'
+      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, genericErrorMsg)
+      if (persistenceFailure) return persistenceFailure
+      sendAttempt = null
       return NextResponse.json(
-        { error: 'Erro ao enviar mensagem via EvolutionAPI', details: evolutionData },
+        {
+          error: genericErrorMsg,
+          code: 'PROVIDER_SEND_FAILED',
+          status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
+        },
         { status: evolutionResponse.status },
       )
     }
@@ -293,45 +719,122 @@ export async function POST(request: NextRequest) {
     // Persist Evolution's returned message key. Without this, replies to our
     // own Evolution-sent messages can't be quoted natively (the workdesk has
     // no wamid to put into the next `quoted` payload).
-    const evolutionMsgId: string | null =
-      evolutionData?.key?.id ||
-      evolutionData?.message?.key?.id ||
-      null
+    const evolutionMsgId = getEvolutionMessageId(evolutionData)
 
-    if (messageId) {
-      const updatePayload: Record<string, unknown> = {
-        phone_number_id: resolvedInstance,
+    let savedMessage: Record<string, unknown> | null = null
+    if (messageId && legacyPersistedMessage) {
+      const completion = await completeLegacyPersistedMessageSend(
+        serviceClient!,
+        ticketId,
+        messageId,
+        evolutionMsgId,
+        resolvedInstance,
+      )
+      if (!completion.ok) {
+        return NextResponse.json(
+          {
+            error: completion.error,
+            code: completion.code,
+            providerAccepted: true,
+          },
+          { status: 500 },
+        )
       }
-      if (evolutionMsgId) {
-        updatePayload.whatsapp_message_id = evolutionMsgId
+    } else if (messageId) {
+      const completion = await completePersistedMessageSend(serviceClient!, sendAttempt!, {
+        status: 'enviado',
+        providerMessageId: evolutionMsgId,
+        phoneNumberId: resolvedInstance,
+      })
+      if (!completion.ok) {
+        return NextResponse.json(
+          {
+            error: completion.error,
+            code: completion.code,
+            providerAccepted: true,
+            status_envio: 'enviando',
+          },
+          { status: 500 },
+        )
       }
-      await supabase
-        .from('mensagens')
-        .update(updatePayload)
-        .eq('id', messageId)
+      sendAttempt = null
+    } else {
+      const mtLower = (mediaType || '').toLowerCase()
+      const messageType = mtLower.startsWith('image/') ? 'imagem'
+        : mtLower.startsWith('audio/') ? 'audio'
+        : mtLower.startsWith('video/') ? 'video'
+        : mediaUrl ? 'documento'
+        : 'texto'
+      serviceClient ||= createServiceClient()
+      const persistence = await persistAcceptedLegacyMessage(serviceClient, {
+        ticketId,
+        clientId: ticket.cliente_id,
+        content: sendMessage || '',
+        type: messageType,
+        fileUrl: mediaUrl,
+        mediaType,
+        phoneNumberId: resolvedInstance,
+        channel: 'evolutionapi',
+        replyToMessageId: effectiveReplyToMessageId,
+        providerMessageId: evolutionMsgId,
+      })
+      if (!persistence.ok) {
+        return NextResponse.json({
+          success: true,
+          warning: 'Mensagem enviada, mas não foi possível salvar no histórico',
+          providerAccepted: true,
+          evolutionData,
+        })
+      }
+      savedMessage = persistence.message
     }
 
-    // Update ticket first response time if this is the first colaborador message
-    const { data: existingMessages } = await supabase
-      .from('mensagens')
-      .select('id')
-      .eq('ticket_id', ticketId)
-      .eq('remetente', 'colaborador')
-      .limit(2)
-
-    if (existingMessages && existingMessages.length === 1) {
-      await supabase
-        .from('tickets')
-        .update({ primeira_resposta_em: new Date().toISOString() })
-        .eq('id', ticketId)
-    }
+    await supabase
+      .from('tickets')
+      .update({ primeira_resposta_em: new Date().toISOString() })
+      .eq('id', ticketId)
+      .in('status', ['aberto', 'em_atendimento'])
+      .is('primeira_resposta_em', null)
 
     return NextResponse.json({
       success: true,
+      message: savedMessage,
       evolutionData,
+      status_envio: messageId && !legacyPersistedMessage ? 'enviado' : undefined,
+      legacy: legacyPersistedMessage || undefined,
     })
   } catch (error) {
-    console.error('[EvolutionAPI Send] Error:', error)
+    console.error('[EvolutionAPI Send] Falha interna de envio')
+    if (serviceClient && sendAttempt) {
+      const status = providerRequestStarted ? 'indeterminado' : 'falhou'
+      const completion = await completePersistedMessageSend(serviceClient, sendAttempt, {
+        status,
+        error: error instanceof Error ? error.message : 'Erro interno no envio',
+      })
+      if (!completion.ok) {
+        return NextResponse.json(
+          {
+            error: completion.error,
+            code: completion.code,
+            providerAccepted: providerRequestStarted,
+            status_envio: 'enviando',
+          },
+          { status: 500 },
+        )
+      }
+      return NextResponse.json(
+        {
+          error: providerRequestStarted
+            ? 'Não foi possível confirmar o envio no provedor'
+            : 'Erro interno antes do envio',
+          code: providerRequestStarted
+            ? 'MESSAGE_SEND_INDETERMINATE'
+            : 'MESSAGE_SEND_FAILED',
+          status_envio: status,
+        },
+        { status: providerRequestStarted ? 502 : 500 },
+      )
+    }
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 },
