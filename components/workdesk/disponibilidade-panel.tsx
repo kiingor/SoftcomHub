@@ -444,8 +444,12 @@ export function DisponibilidadePanel({
                 {loading ? 'Alterando...' : isOnline ? 'Ficar Offline' : 'Ficar Online'}
               </Button>
 
-              {/* Pause selector - only show when online and has pausas */}
-              {isOnline && pausas.length > 0 && (
+              {/* Seletor de pausa — disponível também offline.
+                  Antes exigia estar online, então quem chegava e já ia almoçar
+                  precisava ficar online só para poder entrar em pausa, e nesse
+                  intervalo recebia ticket. `startPausa` já grava is_online=false,
+                  então entrar em pausa direto do offline é coerente. */}
+              {pausas.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-border">
                   <p className="text-sm text-muted-foreground mb-2 flex items-center gap-2">
                     <Coffee className="h-4 w-4" />
