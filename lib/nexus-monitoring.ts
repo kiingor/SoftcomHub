@@ -122,6 +122,35 @@ export function hasNexusBotResponse(messages: readonly NexusSessionMessage[]): b
   ))
 }
 
+export function isNexusBotRemetente(remetente: string | null | undefined): boolean {
+  return remetente?.trim().toLocaleLowerCase('pt-BR') === NEXUS_BOT_REMETENTE
+}
+
+/**
+ * Setor ao qual a mensagem pertence para fins de agrupamento da conversa.
+ *
+ * O Nexus é triagem inicial: atende por um número só e encaminha para
+ * Financeiro, Suporte, Ouvidoria ou Comercial conforme o caso. Esse número
+ * também é canal de atendimento de um setor, então resolver o setor pelo canal
+ * do BOT atribuía toda resposta dele àquele setor — e a conversa aparecia
+ * partida em duas linhas no painel: a fala do cliente num setor, a resposta do
+ * bot em outro. Medido em 27/07/2026: 95 de 117 conversas de 48h duplicadas,
+ * com 1.000 de 1.000 mensagens do bot num único canal.
+ *
+ * A resposta do bot pertence à conversa do cliente, então herda o setor da
+ * última fala dele. Sem fala anterior (bot abriu a conversa), cai no canal
+ * próprio, que é o comportamento antigo.
+ */
+export function resolveNexusMessageSector<TSector>(params: {
+  remetente: string | null | undefined
+  ownSector: TSector | null | undefined
+  lastClientSector: TSector | null | undefined
+}): TSector | null {
+  const { remetente, ownSector, lastClientSector } = params
+  if (isNexusBotRemetente(remetente)) return lastClientSector ?? ownSector ?? null
+  return ownSector ?? null
+}
+
 export function classifyNexusSessionOutcome({
   messages,
   ticketId,

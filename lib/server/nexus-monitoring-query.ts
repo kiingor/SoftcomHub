@@ -5,7 +5,9 @@ import {
   classifyNexusSessionOutcome,
   formatNexusAttendanceType,
   getNexusConversationScopeKey,
+  isNexusBotRemetente,
   matchesNexusTicketConversationFilter,
+  resolveNexusMessageSector,
   NEXUS_ATENDIMENTOS_PAGE_SIZE,
   NEXUS_NO_TICKET_IDLE_MS,
   paginateNexusAggregates,
@@ -779,17 +781,36 @@ function groupMessagesIntoSessions(
     messages: MessageMetadata[]
   }>()
 
+  // Último setor em que cada cliente falou. As mensagens chegam ordenadas por
+  // `enviado_em`, então basta uma passada: quando o bot responde, já sabemos de
+  // onde veio a fala que ele está respondendo.
+  const lastClientSectorByClient = new Map<string, ResolvedSectorChannel>()
+
   for (const message of messages) {
-    const sector = message.phone_number_id
+    const ownSector = message.phone_number_id
       ? sectorsByChannel.get(message.phone_number_id)
       : null
-    if (!sector) continue
 
     const client = message.cliente_id ? clientsById.get(message.cliente_id) : null
     const normalizedPhone = normalizeBrazilianPhone(client?.telefone)
     // A message without any stable client identity cannot be grouped into a
     // conversation safely; using its own ID would count every row as a session.
     if (!message.cliente_id && !normalizedPhone) continue
+
+    // O Nexus atende os quatro setores por um número só, que também é canal de
+    // atendimento de um deles. Sem isto, toda resposta do bot cairia naquele
+    // setor e a conversa apareceria partida em duas linhas no painel.
+    const clientKey = normalizedPhone || message.cliente_id!
+    const sector = resolveNexusMessageSector({
+      remetente: message.remetente,
+      ownSector,
+      lastClientSector: lastClientSectorByClient.get(clientKey) ?? null,
+    })
+    if (!sector) continue
+    if (!isNexusBotRemetente(message.remetente)) {
+      lastClientSectorByClient.set(clientKey, sector)
+    }
+
     const groupKey = getNexusConversationScopeKey(
       sector.id,
       message.cliente_id,

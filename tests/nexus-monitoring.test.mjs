@@ -8,6 +8,8 @@ import {
   getNexusMessageActorLabel,
   getNexusMessagePhase,
   hasNexusBotResponse,
+  isNexusBotRemetente,
+  resolveNexusMessageSector,
   matchesNexusTicketConversationFilter,
   mergeNexusTicketTimeline,
   paginateNexusAggregates,
@@ -272,4 +274,48 @@ test('keeps an empty aggregate on the normalized first page', () => {
     totalItems: 0,
     totalPages: 1,
   })
+})
+
+// --- Setor da mensagem do bot -----------------------------------------------
+// O Nexus responde sempre pelo mesmo número, que também é canal de atendimento
+// de um setor. Sem esta regra, a resposta do bot cai no setor daquele canal e a
+// conversa aparece duplicada no painel.
+
+test('resposta do bot herda o setor da última fala do cliente', () => {
+  const setor = resolveNexusMessageSector({
+    remetente: 'bot-nexus',
+    ownSector: { id: 'financeiro' },   // canal do bot
+    lastClientSector: { id: 'servicedesk' },
+  })
+  assert.deepEqual(setor, { id: 'servicedesk' })
+})
+
+test('fala do cliente usa sempre o próprio canal, mesmo com histórico de outro setor', () => {
+  const setor = resolveNexusMessageSector({
+    remetente: 'cliente-nexus',
+    ownSector: { id: 'ouvidoria' },
+    lastClientSector: { id: 'servicedesk' },
+  })
+  assert.deepEqual(setor, { id: 'ouvidoria' })
+})
+
+test('bot abrindo a conversa, sem fala anterior do cliente, cai no próprio canal', () => {
+  const setor = resolveNexusMessageSector({
+    remetente: 'bot-nexus',
+    ownSector: { id: 'financeiro' },
+    lastClientSector: null,
+  })
+  assert.deepEqual(setor, { id: 'financeiro' })
+})
+
+test('sem setor de nenhum lado devolve null em vez de undefined', () => {
+  assert.equal(resolveNexusMessageSector({ remetente: 'bot-nexus', ownSector: null, lastClientSector: null }), null)
+  assert.equal(resolveNexusMessageSector({ remetente: 'cliente-nexus', ownSector: undefined, lastClientSector: null }), null)
+})
+
+test('reconhece o remetente do bot ignorando caixa e espaços', () => {
+  assert.equal(isNexusBotRemetente('bot-nexus'), true)
+  assert.equal(isNexusBotRemetente('  BOT-NEXUS  '), true)
+  assert.equal(isNexusBotRemetente('cliente-nexus'), false)
+  assert.equal(isNexusBotRemetente(null), false)
 })
