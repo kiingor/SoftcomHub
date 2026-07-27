@@ -97,6 +97,7 @@ import {
   NEXUS_NO_TICKET_IDLE_MS,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
@@ -106,48 +107,6 @@ const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
 const SEM_SUBSETOR_ID = 'sem_subsetor'
 const NO_TRANSFER_SUBSETOR = '__sem_subsetor__'
-const POSTGREST_IN_CHUNK_SIZE = 200
-
-async function loadRowsByPages(createQuery: () => any, pageSize = 1000) {
-  const rows: any[] = []
-
-  for (let page = 0; ; page += 1) {
-    const { data, error } = await createQuery().range(page * pageSize, page * pageSize + pageSize - 1)
-    if (error) throw error
-    if (!data || data.length === 0) break
-    rows.push(...data)
-    if (data.length < pageSize) break
-  }
-
-  return rows
-}
-
-function chunkValues<T>(values: readonly T[], size = POSTGREST_IN_CHUNK_SIZE): T[][] {
-  const chunks: T[][] = []
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size))
-  }
-  return chunks
-}
-
-async function loadRowsByValues(
-  supabase: ReturnType<typeof createClient>,
-  table: string,
-  columns: string,
-  filterColumn: string,
-  values: readonly string[],
-  configure?: (query: any) => any,
-) {
-  const valueChunks = chunkValues([...new Set(values)])
-  const chunkRows = await Promise.all(valueChunks.map((valueChunk) => loadRowsByPages(() => {
-    let query: any = supabase.from(table).select(columns).in(filterColumn, valueChunk)
-    if (configure) query = configure(query)
-    return query
-  })))
-
-  return chunkRows.flat()
-}
-
 function getPhoneLookupVariants(phone: string) {
   const trimmedPhone = phone.trim()
   const normalizedPhone = normalizeBrazilianPhone(trimmedPhone)

@@ -111,6 +111,7 @@ import { isConteudoProtocolo } from '@/lib/mensagem-conteudo'
 import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/cliente-softcom'
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
 import { telefoneSemDDI } from '@/lib/telefone'
+import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { toast } from 'sonner'
 import { useAudioAlert } from '@/hooks/use-audio-alert'
 
@@ -1606,11 +1607,14 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     setHistoricoConversaLoading(true)
     setHistoricoConversaMsgs([])
     try {
-      const { data } = await supabase
+      // Sem paginar, um ticket longo vinha cortado em 1.000 e, como a ordem é
+      // crescente, o que sumia eram justamente as mensagens mais recentes.
+      const data = await loadRowsByPages(() => supabase
         .from('mensagens')
         .select('id, remetente, conteudo, tipo, enviado_em, url_imagem, media_type')
         .eq('ticket_id', h.id)
         .order('enviado_em', { ascending: true, nullsFirst: false })
+        .order('id', { ascending: true }))
       setHistoricoConversaMsgs((data as unknown as Mensagem[]) || [])
     } catch (err) {
       console.warn('[workdesk] erro carregando conversa do histórico:', err)

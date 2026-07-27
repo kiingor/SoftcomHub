@@ -41,6 +41,7 @@ import {
   resolveNexusConversationScopes,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 import { cn, isClientMessage } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
@@ -50,7 +51,6 @@ const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
 const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE]
 const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, 'cliente', 'colaborador']
-const POSTGREST_IN_CHUNK_SIZE = 200
 
 const WORKLOAD_OS_TONES: Record<WorkloadOsLevel, { value: string; badge: string }> = {
   critical: {
@@ -353,48 +353,6 @@ const RANGE_OPTIONS = [
 ] as const
 
 type RangeValue = (typeof RANGE_OPTIONS)[number]['value']
-
-function chunkValues<T>(values: readonly T[], size = POSTGREST_IN_CHUNK_SIZE): T[][] {
-  const chunks: T[][] = []
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size))
-  }
-  return chunks
-}
-
-async function loadRowsByValues(
-  supabase: ReturnType<typeof createClient>,
-  table: string,
-  columns: string,
-  filterColumn: string,
-  values: readonly string[],
-  configure?: (query: any) => any,
-) {
-  const rows: any[] = []
-  for (const valueChunk of chunkValues(values)) {
-    let query: any = supabase.from(table).select(columns).in(filterColumn, valueChunk)
-    if (configure) query = configure(query)
-    const { data, error } = await query
-    if (error) throw error
-    rows.push(...(data || []))
-  }
-  return rows
-}
-
-async function loadRowsByPages(
-  createQuery: () => any,
-  pageSize = 1000,
-) {
-  const rows: any[] = []
-  for (let page = 0; ; page += 1) {
-    const { data, error } = await createQuery().range(page * pageSize, page * pageSize + pageSize - 1)
-    if (error) throw error
-    if (!data || data.length === 0) break
-    rows.push(...data)
-    if (data.length < pageSize) break
-  }
-  return rows
-}
 
 // Resolve os setores com IA acessíveis e devolve um mapeador mensagem→setor
 // pelo canal (phone_number_id / instancia). Compartilhado pelos fetchers

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
+import { loadRowsByPages } from '@/lib/supabase/paginate'
 import {
   Search,
   User,
@@ -164,11 +165,14 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
       }
 
       const ids = ticketsList.map((t) => t.id)
-      const { data: msgs } = await supabase
+      // Soma as mensagens de VÁRIOS tickets do cliente de uma vez, então passa
+      // de 1.000 com facilidade — sem paginar, o histórico vinha incompleto.
+      const msgs = await loadRowsByPages(() => supabase
         .from('mensagens')
         .select('id, ticket_id, remetente, conteudo, tipo, enviado_em')
         .in('ticket_id', ids)
         .order('enviado_em', { ascending: true })
+        .order('id', { ascending: true }))
 
       setMensagens((msgs as Mensagem[]) || [])
     } finally {

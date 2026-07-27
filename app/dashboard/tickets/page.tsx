@@ -56,6 +56,7 @@ import { useToast } from '@/hooks/use-toast'
 import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
+import { loadRowsByPages } from '@/lib/supabase/paginate'
 
 interface Cliente {
   id: string
@@ -392,26 +393,35 @@ export default function TicketsPage() {
     setDetailsModalOpen(true)
     setLoadingDetails(true)
 
-    // Fetch logs
-    const { data: logsData } = await supabase
+    // As colunas são `criado_em` e `enviado_em`. Ordenar por `created_at` fazia
+    // o PostgREST recusar as duas queries, e como o erro era descartado o modal
+    // abria sem log nenhum e sem mensagem nenhuma, calado.
+    const { data: logsData, error: logsError } = await supabase
       .from('ticket_logs')
       .select(`
         *,
         colaborador:colaboradores(id, nome)
       `)
       .eq('ticket_id', ticket.id)
-      .order('created_at', { ascending: false })
+      .order('criado_em', { ascending: false })
 
+    if (logsError) console.warn('[dashboard/tickets] erro carregando logs:', logsError)
     if (logsData) setTicketLogs(logsData)
 
-    // Fetch messages
-    const { data: messagesData } = await supabase
-      .from('mensagens')
-      .select('*')
-      .eq('ticket_id', ticket.id)
-      .order('created_at', { ascending: true })
+    // Um ticket longo passa de 1.000 mensagens; sem paginar, sumiam as últimas.
+    let messagesData: any[] = []
+    try {
+      messagesData = await loadRowsByPages(() => supabase
+        .from('mensagens')
+        .select('*')
+        .eq('ticket_id', ticket.id)
+        .order('enviado_em', { ascending: true })
+        .order('id', { ascending: true }))
+    } catch (error) {
+      console.warn('[dashboard/tickets] erro carregando mensagens:', error)
+    }
 
-    if (messagesData) setTicketMessages(messagesData)
+    setTicketMessages(messagesData)
 
     setLoadingDetails(false)
   }

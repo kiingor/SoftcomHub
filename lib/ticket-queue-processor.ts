@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
@@ -193,17 +194,22 @@ async function getAvailableColaboradores(
   // Carga aberta agora (vira teto) e quanto cada um já recebeu hoje (vira a ordem).
   const inicioDoDia = new Date()
   inicioDoDia.setHours(0, 0, 0, 0)
-  const [abertosRes, recebidosHojeRes] = await Promise.all([
-    supabase
+  // Paginado: `recebidosHoje` conta um dia inteiro do setor e já passa de 500
+  // no maior deles. Truncar em 1.000 não daria erro — daria contagem menor para
+  // quem mais recebeu, e a fila voltaria a concentrar em vez de equalizar.
+  const [abertosRows, recebidosHojeRows] = await Promise.all([
+    loadRowsByPages(() => supabase
       .from('tickets')
-      .select('colaborador_id')
+      .select('colaborador_id, id')
       .in('colaborador_id', eligibleIds)
-      .in('status', ['aberto', 'em_atendimento']),
-    supabase
+      .in('status', ['aberto', 'em_atendimento'])
+      .order('id', { ascending: true })),
+    loadRowsByPages(() => supabase
       .from('tickets')
-      .select('colaborador_id')
+      .select('colaborador_id, id')
       .in('colaborador_id', eligibleIds)
-      .gte('criado_em', inicioDoDia.toISOString()),
+      .gte('criado_em', inicioDoDia.toISOString())
+      .order('id', { ascending: true })),
   ])
 
   const contar = (linhas: any[] | null) => {
@@ -214,8 +220,8 @@ async function getAvailableColaboradores(
     }
     return mapa
   }
-  const abertos = contar(abertosRes.data)
-  const recebidosHoje = contar(recebidosHojeRes.data)
+  const abertos = contar(abertosRows)
+  const recebidosHoje = contar(recebidosHojeRows)
 
   // Mesma regra de `lib/distribuicao-fila.ts`: equaliza volume recebido no dia,
   // com o teto de abertos como filtro. Estava duplicada aqui com o critério
