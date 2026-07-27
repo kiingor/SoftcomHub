@@ -112,6 +112,7 @@ import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
 import { telefoneSemDDI } from '@/lib/telefone'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
+import { estaNoFimDaConversa } from '@/lib/scroll-conversa'
 import { toast } from 'sonner'
 import { useAudioAlert } from '@/hooks/use-audio-alert'
 
@@ -1533,6 +1534,19 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     }, 100)
   }, [])
 
+  /**
+   * Guardado a cada rolagem, e lido DEPOIS que a lista já foi recriada.
+   *
+   * Medir na hora do efeito não serve: se a mensagem nova já entrou no DOM, o
+   * `scrollHeight` cresceu e quem estava no fim aparece como se estivesse no
+   * meio. O que decide é onde o atendente estava ANTES da atualização.
+   */
+  const acompanhandoOFimRef = useRef(true)
+
+  const handleMessagesScroll = useCallback(() => {
+    acompanhandoOFimRef.current = estaNoFimDaConversa(messagesContainerRef.current)
+  }, [])
+
   // Load messages only when a DIFFERENT ticket is selected (by ID)
   // This prevents re-fetching when ticket data refreshes but same ticket is open
   const selectedTicketId = selectedTicket?.id || null
@@ -1630,12 +1644,22 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (el) el.scrollTop = el.scrollHeight
   }, [historicoConversaMsgs, historicoConversaLoading])
 
-  // Scroll to bottom when messages change
+  // Acompanha o fim da conversa — mas só de quem já estava no fim.
+  //
+  // `mensagens` é recriada a cada recibo de entrega ou de leitura, sem nenhuma
+  // mensagem nova: um `.map()` basta para mudar a identidade do array e disparar
+  // este efeito. Sem a guarda, o atendente que subiu para reler era puxado de
+  // volta para baixo 100ms depois, sozinho.
   useEffect(() => {
-    if (mensagens.length > 0 && !loadingMensagens) {
-      scrollToBottom()
-    }
+    if (mensagens.length === 0 || loadingMensagens) return
+    if (!acompanhandoOFimRef.current) return
+    scrollToBottom()
   }, [mensagens, loadingMensagens, scrollToBottom])
+
+  // Abrir outra conversa começa no fim, independente de onde a anterior parou.
+  useEffect(() => {
+    acompanhandoOFimRef.current = true
+  }, [selectedTicketId])
 
 // Real-time subscription for tickets
   // Track known ticket IDs to detect truly new arrivals
@@ -3921,6 +3945,8 @@ const insertEmoji = (emoji: string) => {
         }
         // Only update UI if user is still viewing this ticket
         if (selectedTicketIdRef.current === capturedTicketId) {
+          // Quem envia quer ver o que enviou, mesmo tendo subido para reler.
+          acompanhandoOFimRef.current = true
           setMensagens((prev) => [...prev, optimisticMessage])
         }
         setPendingMessages((prev) => new Map(prev).set(tempId, 'sending'))
@@ -4715,7 +4741,7 @@ const insertEmoji = (emoji: string) => {
 
               {/* Messages */}
               <div className="flex-1 overflow-hidden">
-                <div ref={messagesContainerRef} className="h-full overflow-y-auto">
+                <div ref={messagesContainerRef} onScroll={handleMessagesScroll} className="h-full overflow-y-auto">
                   <div className="p-4">
                   {loadingMensagens ? (
                     <div className="flex h-full items-center justify-center">
