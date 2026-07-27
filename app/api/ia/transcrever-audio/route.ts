@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { buildAiEndpointUrl } from '@/lib/ai-provider'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export async function POST(request: Request) {
@@ -77,12 +78,12 @@ export async function POST(request: Request) {
     const whisperController = new AbortController()
     const whisperTimeout = setTimeout(() => whisperController.abort(), 30000)
 
-    const baseUrl = setor.openai_url_personalizada && setor.openai_base_url
-      ? setor.openai_base_url.replace(/\/+$/, '')
-      : 'https://api.openai.com/v1'
+    const transcriptionsUrl = setor.openai_url_personalizada && setor.openai_base_url
+      ? buildAiEndpointUrl(setor.openai_base_url, 'audio/transcriptions')
+      : 'https://api.openai.com/v1/audio/transcriptions'
 
     try {
-      const whisperRes = await fetch(`${baseUrl}/audio/transcriptions`, {
+      const whisperRes = await fetch(transcriptionsUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${setor.openai_api_key}`,
