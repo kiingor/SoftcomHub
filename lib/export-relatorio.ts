@@ -5,6 +5,8 @@
 // quoting). XLSX uses the `xlsx` lib, imported lazily so it stays out of the
 // main bundle until the user actually exports.
 
+import { formatTicketStatus } from '@/lib/ticket-status'
+
 export interface RelatorioTicket {
   numero?: number | string | null
   canal?: string | null
@@ -19,11 +21,6 @@ export interface RelatorioTicket {
   [key: string]: unknown
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  aberto: 'Aberto',
-  em_atendimento: 'Em atendimento',
-  encerrado: 'Finalizado',
-}
 
 // Column order shared by CSV and XLSX so both exports stay identical.
 const COLUMNS = [
@@ -87,7 +84,7 @@ export function buildRelatorioRows(tickets: RelatorioTicket[]): ExportRow[] {
       Canal: t.canal || '',
       Atendente: t.colaboradores?.nome || '',
       Tipo: t.tipos_atendimento?.nome || '',
-      Status: STATUS_LABELS[t.status || ''] || t.status || '',
+      Status: formatTicketStatus(t.status),
       Abertura: formatDateTime(t.criado_em),
       Fechamento: formatDateTime(t.encerrado_em),
       '1ª resposta (TMA)': formatDuration(primeiraRespostaMs),

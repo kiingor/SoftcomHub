@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
-import { computePausaElapsedMs, formatPausaLabel, isPausaEstourada } from '@/lib/pausa-status'
+import { computePausaElapsedMs, formatPausaStatusLabel, isPausaEstourada } from '@/lib/pausa-status'
 import { cn } from '@/lib/utils'
 
 export interface PausaInfo {
@@ -62,7 +62,9 @@ export function AtendenteCard({ nome, isOnline, pausaInfo, emPausa, ticketsAtivo
                 ? 'text-yellow-600 dark:text-yellow-400'
                 : 'text-muted-foreground',
         )}>
-          {isOnline ? 'Online' : emPausa ? formatPausaLabel(pausaInfo, pausaElapsedMs) : 'Offline'}
+          {/* formatPausaStatusLabel e não formatPausaLabel: acrescenta
+              "· limite excedido" em texto, para o aviso não depender só da cor. */}
+          {isOnline ? 'Online' : emPausa ? formatPausaStatusLabel(pausaInfo, pausaElapsedMs) : 'Offline'}
         </p>
       </div>
       {ticketsAtivos > 0 && (

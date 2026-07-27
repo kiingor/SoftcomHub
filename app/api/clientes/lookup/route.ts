@@ -1,17 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { documentoVariants, isDocumentoValido, normalizeDocumento } from '@/lib/documento-cliente'
 import { lookupSoftcomClientByCnpj } from '@/lib/softcom-client'
 import { createClient } from '@/lib/supabase/server'
 
-const CLIENT_SELECT = 'id, nome, telefone, email, CNPJ, Registro, PDV'
-
-function normalizeCnpj(value: unknown) {
-  return typeof value === 'string' ? value.replace(/\D/g, '') : ''
-}
-
-function cnpjVariants(cnpj: string) {
-  const formatted = cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')
-  return formatted === cnpj ? [cnpj] : [cnpj, formatted]
-}
+const CLIENT_SELECT = 'id, nome, telefone, email, CNPJ, Registro, PDV, software, prime'
 
 function toClientResponse(cliente: Record<string, any>) {
   const cnpj = cliente.CNPJ ?? cliente.cnpj ?? null
@@ -26,6 +18,9 @@ function toClientResponse(cliente: Record<string, any>) {
     CNPJ: cnpj,
     Registro: registro,
     PDV: pdv,
+    // Sincronizados externamente; ficam null para cliente vindo da busca externa.
+    software: cliente.software ?? null,
+    prime: cliente.prime ?? null,
     cnpj,
     registro,
     pdv,
@@ -41,15 +36,16 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json().catch(() => null)
-    const normalizedCnpj = normalizeCnpj(body?.cnpj)
-    if (normalizedCnpj.length !== 14) {
-      return NextResponse.json({ error: 'Informe um CNPJ válido' }, { status: 400 })
+    // O campo continua chamando `cnpj` no contrato, mas aceita CNPJ ou CPF (MEI).
+    const normalizedDocumento = normalizeDocumento(body?.cnpj)
+    if (!isDocumentoValido(normalizedDocumento)) {
+      return NextResponse.json({ error: 'Informe um CNPJ ou CPF válido' }, { status: 400 })
     }
 
     const { data: localClientes, error: localError } = await supabase
       .from('clientes')
       .select(CLIENT_SELECT)
-      .in('CNPJ', cnpjVariants(normalizedCnpj))
+      .in('CNPJ', documentoVariants(normalizedDocumento))
       .limit(1)
 
     if (localError) {
@@ -62,7 +58,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ source: 'local', cliente: toClientResponse(localCliente) })
     }
 
-    const externalCliente = await lookupSoftcomClientByCnpj(normalizedCnpj)
+    const externalCliente = await lookupSoftcomClientByCnpj(normalizedDocumento)
     if (!externalCliente) {
       return NextResponse.json({ source: 'not_found', message: 'Cliente não encontrado' })
     }

@@ -137,10 +137,10 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
-import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
+import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
@@ -152,12 +152,15 @@ import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
-import { TextoMensagem } from '@/components/chat/texto-mensagem'
+import { MensagemBubble, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
+import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
 import {
   AreaChart,
   Area,
   BarChart,
   Bar,
+  LineChart,
+  Line,
   PieChart,
   Pie,
   Cell,
@@ -202,22 +205,9 @@ const WORKLOAD_OS_TONES: Record<WorkloadOsLevel, { value: string; badge: string 
   },
 }
 
-const SEM_SUBSETOR_ID = 'sem_subsetor'
-
 function matchesSubsetorFilter(selectedSubsetorIds: string[], subsetorId?: string | null) {
   return selectedSubsetorIds.length === 0
     || selectedSubsetorIds.includes(subsetorId || SEM_SUBSETOR_ID)
-}
-
-function matchesAtendenteSubsetorFilter(
-  selectedSubsetorIds: string[],
-  assignedSubsetorIds?: string[] | null,
-) {
-  if (selectedSubsetorIds.length === 0) return true
-
-  const subsetorIds = assignedSubsetorIds || []
-  return (selectedSubsetorIds.includes(SEM_SUBSETOR_ID) && subsetorIds.length === 0)
-    || subsetorIds.some((id) => selectedSubsetorIds.includes(id))
 }
 
 function formatMonitoringTime(ms: number) {
@@ -606,6 +596,13 @@ const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
 const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v5'
 const RELATORIO_ORDER_STORAGE_KEY = 'setor-relatorio-order-v1'
 
+// Preferência do filtro de subsetor no Monitoramento (aba Atendentes + filtro
+// rápido, que compartilham o mesmo estado). Isolada por colaborador + setor —
+// não pode vazar entre usuários nem entre setores no mesmo navegador.
+function getAtendentesSubsetorFiltroStorageKey(colaboradorId: string, setorId: string) {
+  return `setor-atendentes-subsetor-filtro-v1:${setorId}:${colaboradorId}`
+}
+
 // Tamanho padrão (em colunas de 12 / linhas de grid) de cada card
 const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   kpiPrimeiraResposta: { w: 4, h: 2 },
@@ -658,7 +655,7 @@ const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
   { id: 'kpiTaxa', label: 'Taxa de resolução' },
   { id: 'kpiNps', label: 'NPS Score' },
   { id: 'volume', label: 'Atendimentos ao longo do tempo' },
-  { id: 'heatmap', label: 'Horários de pico' },
+  { id: 'heatmap', label: 'Padrão horário por dia' },
   { id: 'sla', label: 'SLA de 1ª resposta' },
   { id: 'nps', label: 'Satisfação (NPS)' },
   { id: 'canal', label: 'Por canal' },
@@ -792,18 +789,74 @@ function buildSerieVolume(tickets: any[]) {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, count]) => { const [, m, dd] = key.split('-'); return { date: `${dd}/${m}`, count } })
 }
-function buildHeatmapData(tickets: any[]) {
-  const matrix: number[][] = Array.from({ length: 7 }, () => Array(12).fill(0))
+const DIAS_SEMANA_CURTOS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb']
+
+// Paleta categórica dos sete dias. Não usa os tokens --chart-N porque aqueles
+// são de baixo croma (feitos para 2–3 séries) e, com sete linhas sobrepostas,
+// ficariam indistinguíveis. Estas matizes são igualmente espaçadas e ficam em
+// lightness ~0.6, que se lê tanto no tema claro quanto no escuro.
+const DIAS_SEMANA_CORES = [
+  'oklch(0.62 0.17 255)', // Dom — azul
+  'oklch(0.66 0.19 45)',  // Seg — laranja (cor da marca)
+  'oklch(0.68 0.14 175)', // Ter — verde-água
+  'oklch(0.75 0.15 85)',  // Qua — âmbar
+  'oklch(0.70 0.16 350)', // Qui — rosa
+  'oklch(0.58 0.16 150)', // Sex — verde
+  'oklch(0.55 0.18 295)', // Sáb — roxo
+]
+
+// Faixa exibida no eixo. A madrugada é sempre vazia (medido: 0 atendimentos
+// entre 00h e 05h em 30 dias) e comprimia o resto do gráfico. O que cair fora
+// da faixa é contado e informado, para nada sumir em silêncio.
+const HORA_INICIO_GRAFICO = 6
+const HORA_FIM_GRAFICO = 23
+
+/**
+ * Série horária (0..23) com uma linha por dia da semana.
+ *
+ * Hora cheia, e não blocos de 2h: numa linha o eixo X não custa largura como
+ * custava numa célula de mapa de calor, então dá para ler o início do turno
+ * (7h) e o fim (18h) sem o gráfico crescer.
+ */
+function buildHorarioPicoSerie(tickets: any[]) {
+  const matrix: number[][] = Array.from({ length: 7 }, () => Array(24).fill(0))
   let max = 0
+  let picoDia = 0
+  let picoHora = 0
   for (const t of tickets) {
     if (!t.criado_em) continue
     const d = new Date(t.criado_em)
     const dia = d.getDay()
-    const bloco = Math.floor(d.getHours() / 2)
-    matrix[dia][bloco]++
-    if (matrix[dia][bloco] > max) max = matrix[dia][bloco]
+    const hora = d.getHours()
+    matrix[dia][hora]++
+    if (matrix[dia][hora] > max) {
+      max = matrix[dia][hora]
+      picoDia = dia
+      picoHora = hora
+    }
   }
-  return { matrix, max }
+
+  // Recharts espera um ponto por hora com uma chave por série.
+  const serie = []
+  for (let hora = HORA_INICIO_GRAFICO; hora <= HORA_FIM_GRAFICO; hora++) {
+    const ponto: Record<string, number | string> = { hora: `${String(hora).padStart(2, '0')}h` }
+    DIAS_SEMANA_CURTOS.forEach((dia, di) => { ponto[dia] = matrix[di][hora] })
+    serie.push(ponto)
+  }
+
+  // Atendimentos fora da faixa exibida — normalmente zero, mas se houver
+  // movimento de madrugada o número aparece no rodapé em vez de sumir.
+  let foraDaFaixa = 0
+  for (let dia = 0; dia < 7; dia++) {
+    for (let hora = 0; hora < 24; hora++) {
+      if (hora < HORA_INICIO_GRAFICO || hora > HORA_FIM_GRAFICO) foraDaFaixa += matrix[dia][hora]
+    }
+  }
+
+  const picoLabel = max > 0
+    ? `${DIAS_SEMANA_CURTOS[picoDia]} ${String(picoHora).padStart(2, '0')}h`
+    : '—'
+  return { serie, max, picoLabel, foraDaFaixa }
 }
 
 // Calculate relatorio statistics
@@ -923,13 +976,12 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
   const porCanal = Object.entries(canalMap).map(([canal, count]) => ({ canal, count })).sort((a, b) => b.count - a.count)
 
   // Distribuição por status/resultado
-  const statusLabels: Record<string, string> = { aberto: 'Aberto', em_atendimento: 'Em atendimento', encerrado: 'Encerrado' }
   const statusMap: Record<string, number> = {}
   for (const ticket of tickets) {
     const st = ticket.status || 'desconhecido'
     statusMap[st] = (statusMap[st] || 0) + 1
   }
-  const porStatus = Object.entries(statusMap).map(([status, count]) => ({ status: statusLabels[status] || status, count }))
+  const porStatus = Object.entries(statusMap).map(([status, count]) => ({ status: formatTicketStatus(status), count }))
 
   // Tipos de atendimento por técnico (matriz) — sobre encerrados classificados
   const tiposColunasSet = new Set<string>()
@@ -1140,7 +1192,26 @@ function SetorPageInner() {
   const [monitoringPage, setMonitoringPage] = useState(1)
   const [attendantsPageSize, setAttendantsPageSize] = useState(5)
   const [attendantsPage, setAttendantsPage] = useState(1)
-  const [monitoringTick, setTick] = useState(() => Date.now()) // Current monitoring timestamp
+  // Timestamp, não contador: o cálculo de tempo decorrido lê `monitoringTick`
+  // direto como "agora" (ver uso em computePausaElapsedMs e no tempo de fila).
+  const [monitoringTick, setTick] = useState(() => Date.now())
+  // Popover da aba Atendentes: precisa de um estado de abertura PRÓPRIO — não
+  // pode compartilhar `open` com o filtro rápido global (dois popovers
+  // controlados pelo mesmo booleano abririam/fechariam juntos).
+  const [atendentesTabSubsetorFiltroOpen, setAtendentesTabSubsetorFiltroOpen] = useState(false)
+  // Estado de abertura próprio: a seleção é compartilhada, mas dois popovers
+  // abertos ao mesmo tempo em telas diferentes não fazem sentido.
+  const [secaoAtendentesSubsetorFiltroOpen, setSecaoAtendentesSubsetorFiltroOpen] = useState(false)
+  // Guarda de hidratação: guarda a CHAVE (não um booleano) do localStorage que
+  // já foi lida — comparar contra a chave atual (setor + colaborador), em vez
+  // de um "já hidratou alguma vez", evita gravar a seleção do setor/colaborador
+  // anterior na chave nova durante a janela entre a troca de setor e o efeito
+  // de carregamento rodar (os dois efeitos podem disparar no mesmo commit,
+  // e o de gravação leria subsetorFilter/hydrated ainda desatualizados).
+  const [subsetorFilterHydratedKey, setSubsetorFilterHydratedKey] = useState<string | null>(null)
+  // Setor para o qual `subsetores` já foi confirmado carregado (distingue
+  // "[] porque não tem nenhum subsetor ativo" de "ainda carregando").
+  const [subsetoresLoadedSetorId, setSubsetoresLoadedSetorId] = useState<string | null>(null)
   // Filtros do relatório inicializados a partir da querystring (link
   // compartilhável). A escrita de volta na URL acontece num effect mais abaixo.
   const [dateFilter, setDateFilter] = useState(() => searchParams.get('periodo') || 'today')
@@ -1418,6 +1489,61 @@ function SetorPageInner() {
   const [savingSubsetor, setSavingSubsetor] = useState(false)
   const [deletingSubsetorId, setDeletingSubsetorId] = useState<string | null>(null)
 
+  // Chave de armazenamento do setor + colaborador atuais — null enquanto um
+  // dos dois ainda não é conhecido. Usada tanto para localStorage quanto como
+  // identidade de "hidratado para qual escopo" (ver subsetorFilterHydratedKey).
+  const subsetorFilterStorageKey = colaboradorLogado?.id && setorId
+    ? getAtendentesSubsetorFiltroStorageKey(colaboradorLogado.id, setorId)
+    : null
+
+  // Carrega a preferência de subsetorFilter salva (por colaborador + setor)
+  // assim que soubermos quem está logado e qual setor é este. Roda de novo se
+  // o colaborador ou o setor mudarem (navegação entre setores reaproveita o
+  // componente sem desmontar) — evita vazamento de seleção entre usuários/setores.
+  useEffect(() => {
+    if (!subsetorFilterStorageKey) return
+    let parsed: unknown = []
+    try {
+      const saved = window.localStorage.getItem(subsetorFilterStorageKey)
+      parsed = saved ? JSON.parse(saved) : []
+    } catch {
+      parsed = []
+    }
+    setSubsetorFilter(
+      Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')
+        ? parsed as string[]
+        : []
+    )
+    setSubsetorFilterHydratedKey(subsetorFilterStorageKey)
+  }, [subsetorFilterStorageKey])
+
+  // Persiste sempre que subsetorFilter mudar — só quando a chave já hidratada
+  // é EXATAMENTE a chave atual (não só "hidratou alguma vez"). Isso impede que,
+  // logo após trocar de setor/colaborador, este efeito grave a seleção antiga
+  // (ainda em `subsetorFilter`) na chave nova antes do efeito de carregamento
+  // acima ter rodado — os dois podem disparar no mesmo commit, e este efeito
+  // veria valores desatualizados se a guarda fosse só um booleano.
+  useEffect(() => {
+    if (!subsetorFilterStorageKey || subsetorFilterHydratedKey !== subsetorFilterStorageKey) return
+    try {
+      window.localStorage.setItem(subsetorFilterStorageKey, JSON.stringify(subsetorFilter))
+    } catch {}
+  }, [subsetorFilter, subsetorFilterHydratedKey, subsetorFilterStorageKey])
+
+  // Depois que os subsetores carregam PARA O SETOR ATUAL (subsetoresLoadedSetorId
+  // === setorId — distingue "carregado e vazio" de "ainda carregando"), descarta
+  // da seleção (e da preferência salva, via o effect de persistência acima)
+  // qualquer id que não existe mais ou foi desativado — sem isso um id inválido
+  // salvo prenderia a tela num filtro que nunca bate com nenhum atendente.
+  useEffect(() => {
+    if (!subsetorFilterStorageKey || subsetorFilterHydratedKey !== subsetorFilterStorageKey) return
+    if (subsetoresLoadedSetorId !== setorId) return
+    setSubsetorFilter((prev) => sanitizeSubsetorFilterSelection(
+      prev,
+      subsetores.filter((s) => s.ativo).map((s) => s.id),
+    ))
+  }, [subsetorFilterHydratedKey, subsetorFilterStorageKey, subsetoresLoadedSetorId, setorId, subsetores])
+
   // Pausas state
   interface Pausa {
     id: string
@@ -1629,14 +1755,38 @@ function SetorPageInner() {
     { revalidateOnFocus: false }
   )
 
-  // Avaliacoes por colaborador (para NPS nos cards de atendentes)
+  // Avaliacoes por colaborador (para NPS nos cards de atendentes).
+  //
+  // Precisa ser restrita aos colaboradores DESTE setor e paginada. Antes a
+  // query lia `avaliacoes` inteira sem filtro nem limite e o PostgREST cortava
+  // silenciosamente em 1.000 linhas: com 4.886 avaliações na base, atendentes
+  // cuja avaliação não caía nesse primeiro lote apareciam com nota 0 no card,
+  // enquanto o WorkDesk (que filtra por colaborador_id) mostrava a nota certa.
   const { data: avaliacoesColaboradores } = useSWR(
     setorId ? ['setor-avaliacoes-colaboradores', setorId] : null,
     async () => {
-      const { data } = await supabase
-        .from('avaliacoes')
-        .select('colaborador_id, nota')
-      return data || []
+      const { data: vinculos } = await supabase
+        .from('colaboradores_setores')
+        .select('colaborador_id')
+        .eq('setor_id', setorId)
+
+      const colaboradorIds = [...new Set((vinculos || []).map((v) => v.colaborador_id))]
+      if (colaboradorIds.length === 0) return []
+
+      // Pagina até esgotar — não confiar no limite padrão do PostgREST.
+      const PAGINA = 1000
+      const todas: { colaborador_id: string; nota: number }[] = []
+      for (let inicio = 0; ; inicio += PAGINA) {
+        const { data, error } = await supabase
+          .from('avaliacoes')
+          .select('colaborador_id, nota')
+          .in('colaborador_id', colaboradorIds)
+          .range(inicio, inicio + PAGINA - 1)
+        if (error || !data?.length) break
+        todas.push(...data)
+        if (data.length < PAGINA) break
+      }
+      return todas
     },
     { revalidateOnFocus: false }
   )
@@ -1805,23 +1955,41 @@ function SetorPageInner() {
   const [volumePeriod, setVolumePeriod] = useState('7')
   const [heatmapPeriod, setHeatmapPeriod] = useState('7')
   const [chartTickets, setChartTickets] = useState<{ criado_em: string }[]>([])
+  // Busca só a maior janela em uso entre os dois gráficos, e pagina até esgotar.
+  //
+  // Antes eram 90 dias fixos com `.limit(1000)` e ordem decrescente: o gráfico
+  // via apenas os 1.000 tickets mais recentes. Em ServiceDesk Matriz (11.849
+  // tickets em 90 dias) isso cobria 3,7 dias — escolher "últimos 30 dias" no
+  // mapa de calor mostrava 3,7 dias de dados e zerava os demais dias da semana.
+  const chartFetchDays = Math.max(Number(volumePeriod), Number(heatmapPeriod))
   useEffect(() => {
     if (!setorId) return
     let cancelled = false
     ;(async () => {
-      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
-      const { data, error } = await supabase
-        .from('tickets')
-        .select('criado_em')
-        .eq('setor_id', setorId)
-        .gte('criado_em', cutoff)
-        .order('criado_em', { ascending: false })
-        .limit(1000)
-      if (error) console.error('[charts] erro ao buscar tickets:', error)
-      if (!cancelled) setChartTickets(data || [])
+      const cutoff = new Date(chartPeriodCutoffMs(chartFetchDays)).toISOString()
+      const PAGINA = 1000
+      const todos: { criado_em: string }[] = []
+      for (let inicio = 0; ; inicio += PAGINA) {
+        const { data, error } = await supabase
+          .from('tickets')
+          .select('criado_em')
+          .eq('setor_id', setorId)
+          .gte('criado_em', cutoff)
+          .order('criado_em', { ascending: false })
+          .range(inicio, inicio + PAGINA - 1)
+        if (error) {
+          console.error('[charts] erro ao buscar tickets:', error)
+          break
+        }
+        if (!data?.length) break
+        todos.push(...data)
+        if (data.length < PAGINA) break
+        if (cancelled) return
+      }
+      if (!cancelled) setChartTickets(todos)
     })()
     return () => { cancelled = true }
-  }, [setorId])
+  }, [setorId, chartFetchDays])
   // Fonte dos gráficos: fetch dedicado de 90 dias; se ainda vazio, usa os tickets já carregados
   const chartSource = chartTickets.length > 0 ? chartTickets : ticketsRelatorioRaw
   const volumeSerie = useMemo(
@@ -1829,9 +1997,15 @@ function SetorPageInner() {
     [chartSource, volumePeriod]
   )
   const heatmapData = useMemo(
-    () => buildHeatmapData(filterTicketsByDays(chartSource, Number(heatmapPeriod))),
+    () => buildHorarioPicoSerie(filterTicketsByDays(chartSource, Number(heatmapPeriod))),
     [chartSource, heatmapPeriod]
   )
+  // Dias ocultos pelo clique na legenda — com sete linhas sobrepostas, poder
+  // isolar um dia é o que torna o gráfico legível.
+  const [diasOcultos, setDiasOcultos] = useState<string[]>([])
+  const alternarDia = (dia: string) => setDiasOcultos((prev) => (
+    prev.includes(dia) ? prev.filter((d) => d !== dia) : [...prev, dia]
+  ))
 
   // Roteamento: transferências/transbordos no período (usa origensMap + logs)
   const roteamentoStats = useMemo(() => {
@@ -2171,14 +2345,24 @@ function SetorPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setorId_stable])
 
-  // Fetch subsetores
+  // Fetch subsetores — protegido contra respostas fora de ordem: se o usuário
+  // já navegou para outro setor (ou disparou outro fetch) antes desta resposta
+  // chegar, o número de sequência não bate mais e o resultado é descartado, em
+  // vez de sobrescrever os dados (já mais atuais) do setor correto.
+  const fetchSubsetoresSeqRef = useRef(0)
   const fetchSubsetores = async () => {
+    const requestSetorId = setorId
+    const seq = ++fetchSubsetoresSeqRef.current
     const { data } = await supabase
       .from('subsetores')
       .select('*')
-      .eq('setor_id', setorId)
+      .eq('setor_id', requestSetorId)
       .order('nome')
-    if (data) setSubsetores(data)
+    if (fetchSubsetoresSeqRef.current !== seq) return
+    if (data) {
+      setSubsetores(data)
+      setSubsetoresLoadedSetorId(requestSetorId)
+    }
   }
 
   // Fetch distribution config
@@ -2539,6 +2723,10 @@ function SetorPageInner() {
       }))
   }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
 
+  // Sem filtro de subsetor, mostram o total do setor (matchesSubsetorFilter
+  // com seleção vazia aceita qualquer subsetor_id) — com filtro, só contam os
+  // tickets dos subsetores selecionados, mesmo que o atendente esteja ligado
+  // a outros também.
   const activeTicketCountByAttendant = useMemo(() => {
     const counts = new Map<string, number>()
     for (const ticket of tickets) {
@@ -2674,13 +2862,17 @@ function SetorPageInner() {
   const filteredManagementAttendants = useMemo(() => {
     const term = searchAtendente.trim().toLocaleLowerCase('pt-BR')
     return atendentes.filter((atendente: any) => {
+      // O filtro de subsetor precisa entrar AQUI, e não na hora de renderizar:
+      // a lista é paginada, e o contador ("x-y de N") e o estado vazio leem
+      // este memo. Filtrar só no map deixaria os três em desacordo.
+      if (!matchesAtendenteSubsetorFilter(subsetorFilter, atendente.subsetor_ids)) return false
       if (!term) return true
       return (
         atendente.nome?.toLocaleLowerCase('pt-BR').includes(term)
         || atendente.email?.toLocaleLowerCase('pt-BR').includes(term)
       )
     })
-  }, [atendentes, searchAtendente])
+  }, [atendentes, searchAtendente, subsetorFilter])
   const attendantsTotalPages = Math.max(1, Math.ceil(filteredManagementAttendants.length / attendantsPageSize))
   const safeAttendantsPage = Math.min(attendantsPage, attendantsTotalPages)
   const attendantsPageStart = (safeAttendantsPage - 1) * attendantsPageSize
@@ -4444,7 +4636,9 @@ const saveConfig = async () => {
               </div>
 
               {/* Quick Filters */}
-              {subsetorFiltroOptions.length > 1 && (
+              {/* Mostra mesmo com só "Sem subsetor" disponível se houver seleção ativa —
+                  senão um filtro ligado ficaria sem nenhum controle visível para limpar. */}
+              {(subsetorFiltroOptions.length > 1 || subsetorFilter.length > 0) && (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm text-muted-foreground">Filtros rápidos:</span>
                   <MultiSelectFilter
@@ -5026,6 +5220,21 @@ const saveConfig = async () => {
 
                   {/* Atendentes Tab */}
                   {activeTab === 'atendentes' && (
+                    <div className="space-y-3">
+                      {(subsetorFiltroOptions.length > 1 || subsetorFilter.length > 0) && (
+                        <MultiSelectFilter
+                          icon={Layers}
+                          placeholder="Filtrar atendentes por subsetor"
+                          header="Filtrar atendentes por subsetor"
+                          pluralWord="subsetores"
+                          options={subsetorFiltroOptions}
+                          selected={subsetorFilter}
+                          onChange={setSubsetorFilter}
+                          open={atendentesTabSubsetorFiltroOpen}
+                          onOpenChange={setAtendentesTabSubsetorFiltroOpen}
+                          searchable
+                        />
+                      )}
                     <div className="overflow-x-auto">
                       <Table>
                         <TableHeader>
@@ -5077,6 +5286,27 @@ const saveConfig = async () => {
                                   <Users className="mb-3 h-8 w-8 text-muted-foreground/50" />
                                   <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendente cadastrado neste setor</p>
                                   <p className="mt-1 text-xs text-muted-foreground">Cadastre atendentes para distribuir os tickets.</p>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ) : sortedMonitoringAttendants.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={5} className="h-32 text-center">
+                                <div className="flex flex-col items-center justify-center text-muted-foreground">
+                                  <Users className="mb-3 h-8 w-8 text-muted-foreground/50" aria-hidden="true" />
+                                  <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendente corresponde aos filtros atuais</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">Ajuste ou limpe os filtros de atendente e subsetor.</p>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="mt-3 h-7 text-xs"
+                                    onClick={() => {
+                                      setAtendenteFilter([])
+                                      setSubsetorFilter([])
+                                    }}
+                                  >
+                                    Limpar filtros
+                                  </Button>
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -5152,6 +5382,7 @@ const saveConfig = async () => {
                           )}
                         </TableBody>
                       </Table>
+                    </div>
                     </div>
                   )}
 
@@ -5643,7 +5874,7 @@ const saveConfig = async () => {
             </div>
             )}
 
-            {/* Horários de pico (heatmap) */}
+            {/* Padrão horário por dia da semana */}
             {visibleCards.heatmap && (
             <div key="heatmap" className="overflow-hidden">
             <ReportWidget {...wprops('heatmap')}>
@@ -5652,7 +5883,7 @@ const saveConfig = async () => {
                     <div className="flex items-center gap-3 flex-wrap">
                       <CardTitle className="text-base flex items-center gap-2">
                         <Clock className="h-4 w-4" />
-                        Horários de pico
+                        Padrão horário por dia da semana
                       </CardTitle>
                       <Select value={heatmapPeriod} onValueChange={setHeatmapPeriod}>
                         <SelectTrigger className="h-7 w-[150px] text-xs"><SelectValue /></SelectTrigger>
@@ -5663,7 +5894,7 @@ const saveConfig = async () => {
                         </SelectContent>
                       </Select>
                     </div>
-                    <p className="text-xs text-muted-foreground">Concentração por dia da semana e faixa de hora.</p>
+                    <p className="text-xs text-muted-foreground">Atendimentos por hora. Clique num dia da legenda para ocultá-lo.</p>
                   </CardHeader>
                   <CardContent className="min-h-0 flex-1">
                     {heatmapData.max === 0 ? (
@@ -5672,33 +5903,94 @@ const saveConfig = async () => {
                         <p className="text-sm text-muted-foreground">Sem dados no período</p>
                       </div>
                     ) : (
-                      <div
-                        className="flex h-full flex-col gap-1 text-[10px]"
-                        role="img"
-                        aria-label="Mapa de calor de horários de pico por dia da semana e faixa de hora"
-                      >
-                        <div className="flex items-center gap-1">
-                          <div className="w-8 shrink-0" />
-                          {Array.from({ length: 12 }).map((_, b) => (
-                            <div key={b} className="flex-1 text-center text-muted-foreground">{b % 2 === 0 ? b * 2 : ''}</div>
-                          ))}
-                        </div>
-                        {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map((dia, di) => (
-                          <div key={dia} className="flex flex-1 items-stretch gap-1 min-h-[14px]">
-                            <div className="w-8 shrink-0 flex items-center text-muted-foreground">{dia}</div>
-                            {heatmapData.matrix[di].map((v: number, b: number) => {
-                              const intensity = heatmapData.max > 0 ? v / heatmapData.max : 0
-                              return (
-                                <div
-                                  key={b}
-                                  className="flex-1 rounded-sm"
-                                  title={`${dia} ${b * 2}h–${b * 2 + 2}h: ${v} atendimento(s)`}
-                                  style={{ backgroundColor: v === 0 ? 'var(--muted)' : `rgba(249, 115, 22, ${0.15 + intensity * 0.85})` }}
+                      <div className="flex h-full flex-col gap-1">
+                        {/* Legenda clicável no topo: com sete linhas sobrepostas,
+                            isolar um dia é o que torna o gráfico legível. */}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-1 text-[10px] text-muted-foreground">
+                          {DIAS_SEMANA_CURTOS.map((dia, di) => {
+                            const oculto = diasOcultos.includes(dia)
+                            return (
+                              <button
+                                key={dia}
+                                type="button"
+                                onClick={() => alternarDia(dia)}
+                                aria-pressed={!oculto}
+                                title={oculto ? `Mostrar ${dia}` : `Ocultar ${dia}`}
+                                className={cn(
+                                  'flex items-center gap-1 rounded px-1 transition-opacity hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                                  oculto && 'opacity-40',
+                                )}
+                              >
+                                <span
+                                  className="h-2 w-2 rounded-[2px]"
+                                  style={{ backgroundColor: DIAS_SEMANA_CORES[di] }}
                                 />
-                              )
-                            })}
-                          </div>
-                        ))}
+                                {dia}
+                              </button>
+                            )
+                          })}
+                        </div>
+
+                        <div
+                          className="min-h-[180px] w-full flex-1"
+                          role="img"
+                          aria-label={`Gráfico de linhas com atendimentos por hora, uma linha por dia da semana. Pico de ${heatmapData.max} atendimentos em ${heatmapData.picoLabel}.`}
+                        >
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={heatmapData.serie} margin={{ top: 10, right: 16, left: -12, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                              <XAxis
+                                dataKey="hora"
+                                stroke="var(--muted-foreground)"
+                                fontSize={10}
+                                tickLine={false}
+                                axisLine={false}
+                                interval={1}
+                              />
+                              <YAxis
+                                stroke="var(--muted-foreground)"
+                                fontSize={10}
+                                tickLine={false}
+                                axisLine={false}
+                                allowDecimals={false}
+                              />
+                              <RechartsTooltip
+                                contentStyle={{
+                                  backgroundColor: 'var(--popover)',
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 8,
+                                  fontSize: 12,
+                                }}
+                                labelStyle={{ color: 'var(--foreground)' }}
+                                itemStyle={{ color: 'var(--foreground)' }}
+                              />
+                              {DIAS_SEMANA_CURTOS.map((dia, di) => (
+                                diasOcultos.includes(dia) ? null : (
+                                  <Line
+                                    key={dia}
+                                    type="monotone"
+                                    dataKey={dia}
+                                    stroke={DIAS_SEMANA_CORES[di]}
+                                    strokeWidth={2}
+                                    dot={{ r: 2, strokeWidth: 0, fill: DIAS_SEMANA_CORES[di] }}
+                                    activeDot={{ r: 4 }}
+                                  />
+                                )
+                              ))}
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1 text-[10px] text-muted-foreground">
+                          <span>
+                            Pico: <span className="font-medium text-foreground">{heatmapData.max}</span> em {heatmapData.picoLabel}
+                          </span>
+                          {heatmapData.foraDaFaixa > 0 && (
+                            <span title={`Atendimentos fora da faixa de ${HORA_INICIO_GRAFICO}h–${HORA_FIM_GRAFICO}h exibida no gráfico`}>
+                              +{heatmapData.foraDaFaixa} fora de {HORA_INICIO_GRAFICO}h–{HORA_FIM_GRAFICO}h
+                            </span>
+                          )}
+                        </div>
                       </div>
                     )}
                   </CardContent>
@@ -6204,12 +6496,10 @@ const saveConfig = async () => {
                                 variant="outline"
                                 className={cn(
                                   'text-[10px] whitespace-nowrap',
-                                  ticket.status === 'encerrado' && 'bg-green-100 text-green-700 border-green-300 dark:bg-green-950/30 dark:text-green-400 dark:border-green-800',
-                                  ticket.status === 'em_atendimento' && 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800',
-                                  ticket.status === 'aberto' && 'bg-yellow-100 text-yellow-700 border-yellow-300 dark:bg-yellow-950/30 dark:text-yellow-400 dark:border-yellow-800'
+                                  ticketStatusBadgeClass(ticket.status),
                                 )}
                               >
-                                {ticket.status === 'encerrado' ? 'Finalizado' : ticket.status === 'em_atendimento' ? 'Em atend.' : 'Aberto'}
+                                {formatTicketStatusCurto(ticket.status)}
                               </Badge>
                             </TableCell>
                             <TableCell className="text-xs text-center">
@@ -6290,12 +6580,24 @@ const saveConfig = async () => {
                 className="pl-9"
               />
             </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Filtrar por:</span>
-              <Badge variant="outline" className="cursor-pointer hover:bg-primary/10">
-                Status
-              </Badge>
-            </div>
+            {/* Mesmo estado (e mesma preferência salva) do filtro da aba
+                Monitoramento — o subsetor escolhido vale para o setor todo. */}
+            {(subsetorFiltroOptions.length > 1 || subsetorFilter.length > 0) && (
+              <div className="max-w-md">
+                <MultiSelectFilter
+                  icon={Layers}
+                  placeholder="Filtrar atendentes por subsetor"
+                  header="Filtrar atendentes por subsetor"
+                  pluralWord="subsetores"
+                  options={subsetorFiltroOptions}
+                  selected={subsetorFilter}
+                  onChange={setSubsetorFilter}
+                  open={secaoAtendentesSubsetorFiltroOpen}
+                  onOpenChange={setSecaoAtendentesSubsetorFiltroOpen}
+                  searchable
+                />
+              </div>
+            )}
           </div>
 
           {/* Atendentes List */}
@@ -9189,111 +9491,21 @@ const saveConfig = async () => {
                       </div>
                     ) : (
                       conversationMessages.map((msg: any) => (
-                        msg._ticketStart ? (
-                          <Fragment key={`sep-${msg.id}`}>
-                            <div className="flex items-center gap-3 py-2">
-                              <div className="flex-1 border-t border-dashed border-primary/30" />
-                              <span className="text-[10px] font-medium text-primary/70 whitespace-nowrap">Início do Ticket #{selectedTicket?.numero}</span>
-                              <div className="flex-1 border-t border-dashed border-primary/30" />
-                            </div>
-                            <div
-                              className={cn(
-                                "flex",
-                                isClientMessage(msg.remetente) ? "justify-start" : "justify-end"
-                              )}
-                            >
-                              <div className={cn(
-                                "max-w-[85%] rounded-lg px-3 py-2",
-                                isClientMessage(msg.remetente)
-                                  ? "bg-muted text-foreground rounded-bl-none"
-                                  : "bg-primary text-primary-foreground rounded-br-none"
-                              )}>
-                                <TextoMensagem conteudo={msg.conteudo} className="text-xs whitespace-pre-wrap" />
-                                <p className="text-[10px] mt-1 opacity-60 text-right">
-                                  {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                                </p>
-                              </div>
-                            </div>
-                          </Fragment>
-                        ) : msg.remetente === 'sistema' ? (
-                          <div key={msg.id} className="flex justify-center">
-                            <div className={cn(
-                              "flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[11px] max-w-[90%]",
-                              msg.conteudo.startsWith('Transferido')
-                                ? "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300"
-                                : "bg-muted/80 border-border text-muted-foreground"
-                            )}>
-                              {msg.conteudo.startsWith('Transferido') ? (
-                                <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
-                              ) : (
-                                <Megaphone className="h-3.5 w-3.5 shrink-0 text-primary" />
-                              )}
-                              <span>{msg.conteudo}</span>
-                              <span className="shrink-0 ml-1 opacity-60">
-                                {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                            </div>
-                          </div>
-                        ) : msg.remetente === 'supervisor' ? (
-                          <div key={msg.id} className="flex justify-start">
-                            <div className="max-w-[85%] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/30">
-                              <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                                🔒 Mensagem do supervisor
-                              </div>
-                              {(() => {
-                                const _l = (msg.conteudo || '').split('\n')
-                                const _ult = _l[_l.length - 1]
-                                const _ass = _l.length > 1 && _ult.startsWith('— ')
-                                const _corpo = _ass ? _l.slice(0, -1).join('\n').trimEnd() : (msg.conteudo || '')
-                                return (
-                                  <>
-                                    <p className="whitespace-pre-wrap text-sm text-amber-900 dark:text-amber-200">{_corpo}</p>
-                                    {_ass && <p className="mt-0.5 text-right text-[10px] italic text-amber-700/70 dark:text-amber-400/70">{_ult}</p>}
-                                  </>
-                                )
-                              })()}
-                              <p className="mt-1 text-right text-[10px] text-amber-700/70 dark:text-amber-400/70">
-                                {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                        <div
-                          key={msg.id}
-                          className={cn(
-                            "flex",
-                            isClientMessage(msg.remetente) ? "justify-start" : "justify-end"
-                          )}
-                        >
-                          <div
-                            className={cn(
-                              "max-w-[80%] rounded-lg px-3 py-2 text-sm",
-                              isClientMessage(msg.remetente)
-                                ? "bg-muted"
-                                : isBotMessage(msg.remetente)
-                                ? "bg-blue-100 dark:bg-blue-900/30"
-                                : "bg-primary text-primary-foreground"
+                        <Fragment key={msg.id}>
+                          {msg._ticketStart && <SeparadorInicioTicket numero={selectedTicket?.numero} />}
+                          <MensagemBubble
+                            variant="supervisao"
+                            mensagem={msg}
+                            media={(
+                              <MessageMediaPreview
+                                url={msg.url_imagem}
+                                mediaType={msg.media_type}
+                                tipo={msg.tipo}
+                                conteudo={msg.conteudo}
+                              />
                             )}
-                          >
-                            <MessageMediaPreview
-                              url={msg.url_imagem}
-                              mediaType={msg.media_type}
-                              tipo={msg.tipo}
-                              conteudo={msg.conteudo}
-                            />
-                            <TextoMensagem conteudo={msg.conteudo} />
-                            <p className={cn(
-                              "text-[10px] mt-1",
-                              isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"
-                            )}>
-                              {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', {
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </p>
-                          </div>
-                        </div>
-                        )
+                          />
+                        </Fragment>
                       ))
                     )}
                   </div>

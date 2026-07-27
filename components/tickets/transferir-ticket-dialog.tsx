@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { logError } from '@/lib/error-logger'
+import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
@@ -41,9 +42,6 @@ import { cn } from '@/lib/utils'
 // porque o Radix Select trata '' como "sem valor" e reexibe o placeholder.
 const UNSELECTED_TRANSFER_VALUE = 'all'
 
-// Mesmo limite usado pelo servidor em /api/tickets/transferir. Se divergir, a
-// tela promete um destino que a API vai recusar.
-const HEARTBEAT_STALE_MS = 5 * 60 * 1000
 
 export interface TransferSetor {
   id: string
@@ -137,15 +135,13 @@ export function TransferirTicketForm({
   const colaboradorId = colaborador?.id ?? undefined
   const colaboradorNome = colaborador?.nome ?? undefined
 
-  // Precisa espelhar exatamente a regra do servidor em /api/tickets/transferir:
-  // ativo, online, fora de pausa E com heartbeat fresco. Sem a checagem de
-  // heartbeat, quem fechou a aba sem ficar offline aparecia com bolinha verde,
-  // não disparava a confirmação de indisponível, e a transferência morria num
-  // 409 que se repetia a cada tentativa.
+  // Usa a MESMA função que /api/tickets/transferir usa no servidor. Uma cópia
+  // local aqui já causou o problema que isto corrige: a tela dizia "online",
+  // o servidor recusava com 409, e tentar de novo repetia o erro. Além de
+  // ativo/online/fora de pausa/heartbeat fresco, ela descarta heartbeat no
+  // futuro (clock skew), caso que a cópia local deixava passar.
   const isAtendenteOnline = useCallback((atendente?: TransferAtendente): boolean => {
-    if (!atendente?.is_online || !atendente?.ativo || atendente?.pausa_atual_id) return false
-    const heartbeat = atendente.last_heartbeat
-    return Boolean(heartbeat) && (Date.now() - new Date(heartbeat!).getTime()) < HEARTBEAT_STALE_MS
+    return isTransferTargetAvailable(atendente)
   }, [])
 
   const fetchAtendentes = useCallback(async (

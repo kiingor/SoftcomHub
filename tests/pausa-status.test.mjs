@@ -52,9 +52,23 @@ test('invalid persisted limits and elapsed values never show as exceeded', () =>
   assert.equal(isPausaEstourada({ ...negativeLimit, tempoMaximoMinutos: 30 }, Number.NaN), false)
 })
 
-test('formats elapsed time as HH:MM', () => {
+test('formats elapsed time as HH:MM:SS', () => {
   const pausaInfo = { nome: 'Almoço', inicio: '2026-07-23T12:00:00.000Z', tempoMaximoMinutos: 60 }
-  assert.equal(formatPausaElapsedLabel(pausaInfo, 90 * 60 * 1000), '01:30')
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 0), '00:00:00')
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 1_000), '00:00:01')
+  // seconds -> minutes boundary
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 59_000), '00:00:59')
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 60_000), '00:01:00')
+  // minutes -> hours boundary
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 59 * 60 * 1000 + 59_000), '00:59:59')
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 60 * 60 * 1000), '01:00:00')
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 90 * 60 * 1000), '01:30:00')
+})
+
+test('hours keep accumulating past 24 instead of wrapping like a clock', () => {
+  const pausaInfo = { nome: 'Almoço', inicio: '2026-07-23T12:00:00.000Z', tempoMaximoMinutos: 60 }
+  // 25h 00min 05s
+  assert.equal(formatPausaElapsedLabel(pausaInfo, 25 * 3_600_000 + 5_000), '25:00:05')
 })
 
 test('never renders "Pausa · null" — falls back to just the pausa name when data is missing', () => {
@@ -64,11 +78,13 @@ test('never renders "Pausa · null" — falls back to just the pausa name when d
 
 test('combines name and elapsed time when both are available', () => {
   const pausaInfo = { nome: 'Almoço', inicio: '2026-07-23T12:00:00.000Z', tempoMaximoMinutos: 60 }
-  assert.equal(formatPausaLabel(pausaInfo, 30 * 60 * 1000), 'Almoço · 00:30')
+  assert.equal(formatPausaLabel(pausaInfo, 30 * 60 * 1000 + 1_000), 'Almoço · 00:30:01')
 })
 
 test('announces an exceeded pause limit in text, not only by color', () => {
   const pausaInfo = { nome: 'Almoço', inicio: '2026-07-23T12:00:00.000Z', tempoMaximoMinutos: 30 }
-  assert.equal(formatPausaStatusLabel(pausaInfo, 30 * 60 * 1000), 'Almoço · 00:30')
-  assert.equal(formatPausaStatusLabel(pausaInfo, 31 * 60 * 1000), 'Almoço · 00:31 · limite excedido')
+  // Segundos passaram a fazer parte do rótulo (HH:MM:SS) — o supervisor precisa
+  // ver o cronômetro andar, não só o minuto virar.
+  assert.equal(formatPausaStatusLabel(pausaInfo, 30 * 60 * 1000), 'Almoço · 00:30:00')
+  assert.equal(formatPausaStatusLabel(pausaInfo, 31 * 60 * 1000), 'Almoço · 00:31:00 · limite excedido')
 })
