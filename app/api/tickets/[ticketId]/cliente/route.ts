@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { documentoVariants, isDocumentoValido, normalizeDocumento } from '@/lib/documento-cliente'
 import { lookupSoftcomClientByCnpj } from '@/lib/softcom-client'
 import { createClient as createServerClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 
-const CLIENT_SELECT = 'id, nome, telefone, email, CNPJ, Registro, PDV'
+const CLIENT_SELECT = 'id, nome, telefone, email, CNPJ, Registro, PDV, software, prime'
 
 interface ClienteSnapshot {
   id: string
@@ -11,15 +12,6 @@ interface ClienteSnapshot {
   CNPJ: string | null
   Registro: string | null
   PDV: string | null
-}
-
-function normalizeCnpj(value: unknown) {
-  return typeof value === 'string' ? value.replace(/\D/g, '') : ''
-}
-
-function cnpjVariants(cnpj: string) {
-  const formatted = cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')
-  return formatted === cnpj ? [cnpj] : [cnpj, formatted]
 }
 
 function phoneVariants(phone: string | null) {
@@ -43,6 +35,9 @@ function toClientResponse(cliente: Record<string, any>) {
     CNPJ: cnpj,
     Registro: registro,
     PDV: pdv,
+    // Sincronizados externamente; ficam null para cliente vindo da busca externa.
+    software: cliente.software ?? null,
+    prime: cliente.prime ?? null,
     cnpj,
     registro,
     pdv,
@@ -63,9 +58,10 @@ export async function PATCH(
 
     const { ticketId } = await params
     const body = await request.json().catch(() => null)
-    const normalizedCnpj = normalizeCnpj(body?.cnpj)
-    if (normalizedCnpj.length !== 14) {
-      return NextResponse.json({ error: 'Informe um CNPJ válido' }, { status: 400 })
+    // O campo continua chamando `cnpj` no contrato, mas aceita CNPJ ou CPF (MEI).
+    const normalizedDocumento = normalizeDocumento(body?.cnpj)
+    if (!isDocumentoValido(normalizedDocumento)) {
+      return NextResponse.json({ error: 'Informe um CNPJ ou CPF válido' }, { status: 400 })
     }
 
     const { data: actor, error: actorError } = await supabase
@@ -96,7 +92,7 @@ export async function PATCH(
     const { data: localClientes, error: localError } = await supabase
       .from('clientes')
       .select(CLIENT_SELECT)
-      .in('CNPJ', cnpjVariants(normalizedCnpj))
+      .in('CNPJ', documentoVariants(normalizedDocumento))
       .limit(1)
 
     if (localError) {
@@ -108,7 +104,7 @@ export async function PATCH(
     let createdClienteId: string | null = null
     let previousClienteData: ClienteSnapshot | null = null
     if (!cliente) {
-      const externalCliente = await lookupSoftcomClientByCnpj(normalizedCnpj)
+      const externalCliente = await lookupSoftcomClientByCnpj(normalizedDocumento)
       if (!externalCliente) {
         return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
       }
@@ -137,10 +133,10 @@ export async function PATCH(
         clientePorTelefone = clientesPorTelefone?.[0] ?? null
         if (
           clientePorTelefone?.CNPJ
-          && normalizeCnpj(clientePorTelefone.CNPJ) !== normalizedCnpj
+          && normalizeDocumento(clientePorTelefone.CNPJ) !== normalizedDocumento
         ) {
           return NextResponse.json(
-            { error: 'Este telefone já está vinculado a outro CNPJ.' },
+            { error: 'Este telefone já está vinculado a outro CNPJ/CPF.' },
             { status: 409 },
           )
         }

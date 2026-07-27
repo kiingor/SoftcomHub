@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
@@ -189,35 +190,57 @@ async function getAvailableColaboradores(
 
   if (eligibleIds.length === 0) return []
 
-  // Contar tickets ativos por colaborador
-  const { data: ticketCounts } = await supabase
-    .from('tickets')
-    .select('colaborador_id')
-    .in('colaborador_id', eligibleIds)
-    .in('status', ['aberto', 'em_atendimento'])
+  // Carga aberta agora (vira teto) e quanto cada um já recebeu hoje (vira a ordem).
+  const inicioDoDia = new Date()
+  inicioDoDia.setHours(0, 0, 0, 0)
+  const [abertosRes, recebidosHojeRes] = await Promise.all([
+    supabase
+      .from('tickets')
+      .select('colaborador_id')
+      .in('colaborador_id', eligibleIds)
+      .in('status', ['aberto', 'em_atendimento']),
+    supabase
+      .from('tickets')
+      .select('colaborador_id')
+      .in('colaborador_id', eligibleIds)
+      .gte('criado_em', inicioDoDia.toISOString()),
+  ])
 
-  const countMap = new Map<string, number>()
-  eligibleIds.forEach(id => countMap.set(id, 0))
-  ticketCounts?.forEach((t: any) => {
-    if (t.colaborador_id) {
-      countMap.set(t.colaborador_id, (countMap.get(t.colaborador_id) || 0) + 1)
+  const contar = (linhas: any[] | null) => {
+    const mapa = new Map<string, number>()
+    eligibleIds.forEach((id) => mapa.set(id, 0))
+    for (const l of linhas || []) {
+      if (l.colaborador_id) mapa.set(l.colaborador_id, (mapa.get(l.colaborador_id) || 0) + 1)
     }
-  })
+    return mapa
+  }
+  const abertos = contar(abertosRes.data)
+  const recebidosHoje = contar(recebidosHojeRes.data)
 
-  // Round-robin: desempate por last_ticket_received_at (atualizado no momento real da atribuição)
+  // Mesma regra de `lib/distribuicao-fila.ts`: equaliza volume recebido no dia,
+  // com o teto de abertos como filtro. Estava duplicada aqui com o critério
+  // antigo (ordem por carga aberta), o que fazia esta rota distribuir diferente
+  // de `criarEDistribuirTicket` para o mesmo cenário.
   const eligibleIdSet = new Set(eligibleIds)
-  return [...colaboradoresMap.values()]
-    .filter((c) => eligibleIdSet.has(c.id))
-    .map(c => ({
-      ...c,
-      ticketCount: countMap.get(c.id) || 0,
-    }))
-    .sort((a, b) => {
-      // 1) Menor quantidade de tickets primeiro
-      if (a.ticketCount !== b.ticketCount) return a.ticketCount - b.ticketCount
-      // 2) Empate: quem recebeu há MAIS tempo vai primeiro (round-robin real)
-      return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
-    })
+  const ordenados = ordenarPorEquilibrio(
+    [...colaboradoresMap.values()]
+      .filter((c) => eligibleIdSet.has(c.id))
+      .map((c) => ({
+        id: c.id,
+        nome: c.nome,
+        ticketsAbertos: abertos.get(c.id) || 0,
+        recebidosHoje: recebidosHoje.get(c.id) || 0,
+        ultimaAtribuicaoEm: c.lastReceivedAt,
+      })),
+    0, // o teto por atendente é aplicado adiante, na RPC atômica
+  )
+
+  return ordenados.map((c) => ({
+    id: c.id,
+    nome: c.nome as string,
+    lastReceivedAt: c.ultimaAtribuicaoEm || '1970-01-01',
+    ticketCount: c.ticketsAbertos,
+  }))
 }
 
 // Try to assign a single ticket with concurrency protection and max_tickets_per_agent limit

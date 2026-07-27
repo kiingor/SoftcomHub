@@ -63,14 +63,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Check if there's already an open ticket for this cliente in this setor
-    const { data: existingTicket } = await supabase
+    // Já existe atendimento aberto deste cliente neste setor?
+    //
+    // Usa limit(1) e não maybeSingle(): quando o cliente já tem MAIS de um
+    // ticket aberto — situação que a duplicidade de 24/07 produziu —
+    // maybeSingle() devolve erro, o erro era ignorado, `existingTicket` ficava
+    // nulo e a rota criava mais um ticket, agravando o problema que deveria
+    // impedir. Pegar o mais antigo resolve e ainda concentra a conversa no
+    // ticket original.
+    const { data: existingTickets, error: existingTicketsError } = await supabase
       .from('tickets')
       .select('id, status, colaborador_id, subsetor_id')
       .eq('cliente_id', finalClienteId)
       .eq('setor_id', setor_id)
       .in('status', ['aberto', 'em_atendimento'])
-      .maybeSingle()
+      .order('criado_em', { ascending: true })
+      .limit(1)
+
+    if (existingTicketsError) {
+      console.error('[tickets/criar] Erro ao verificar ticket aberto:', existingTicketsError)
+      return NextResponse.json({ error: 'Erro ao verificar atendimento existente' }, { status: 500 })
+    }
+    const existingTicket = existingTickets?.[0]
 
     if (existingTicket) {
       // If subsetor changed, update the existing ticket
