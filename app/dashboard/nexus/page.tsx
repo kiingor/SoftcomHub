@@ -32,14 +32,13 @@ import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import {
-  getNexusConversationScopeKey,
   getLatestNexusSessionMessages,
   getNexusMessageActorLabel,
   getNexusMessagePhase,
   isNexusBotRemetente,
   mergeNexusTicketTimeline,
   NEXUS_NO_TICKET_IDLE_MS,
-  resolveNexusMessageSector,
+  resolveNexusConversationScopes,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 import { cn, isClientMessage } from '@/lib/utils'
@@ -622,55 +621,36 @@ export default function NexusPage() {
         if (telefone) telefonesComTicketAtivo.add(`${channelKey}::${telefone}`)
       }
 
+      // `nexusMessages` está em ordem crescente, que é o que a resolução de
+      // escopo exige para a resposta do bot herdar o setor da fala do cliente.
+      const scopedMessages = resolveNexusConversationScopes(nexusMessages, {
+        getId: (message: any) => message.id,
+        getRemetente: (message: any) => message.remetente,
+        getClienteId: (message: any) => message.cliente_id,
+        getNormalizedPhone: (message: any) => normalizeBrazilianPhone(message.clientes?.telefone),
+        resolveOwnSector: (message: any) => resolveSetor(message),
+      })
+
       const groups = new Map<string, Omit<NexusConversation, 'lastBotMessageAt'>>()
-      // Último setor em que cada cliente falou, para a resposta do bot herdar.
-      // A chave NÃO leva o canal: é justamente por o bot atender num número
-      // diferente do que o cliente usou que os dois lados precisam se encontrar.
-      const setorDaUltimaFalaDoCliente = new Map<string, ReturnType<typeof resolveSetor>>()
-
-      for (const message of nexusMessages) {
-        const cliente = (message as any).clientes
-        const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
-        if (!message.cliente_id && !telefoneNormalizado) continue
-
-        // O Nexus é triagem: atende os quatro setores por um número só, que
-        // também é canal de atendimento de um deles. Resolver o setor pelo canal
-        // do BOT partia a conversa em duas linhas — a fala do cliente numa, a
-        // resposta do bot em outra.
-        const clienteRef = telefoneNormalizado || message.cliente_id!
-        const setor = resolveNexusMessageSector({
-          remetente: message.remetente,
-          ownSector: resolveSetor(message),
-          lastClientSector: setorDaUltimaFalaDoCliente.get(clienteRef) ?? null,
-        })
-        if (!setor) continue
-        if (!isNexusBotRemetente(message.remetente)) {
-          setorDaUltimaFalaDoCliente.set(clienteRef, setor)
-        }
-
-        const clienteKey = `${setor.channelKey}::${telefoneNormalizado || message.cliente_id || message.id}`
-        const scopedClientId = message.cliente_id ? `${setor.channelKey}::${message.cliente_id}` : null
-        const scopedPhone = telefoneNormalizado ? `${setor.channelKey}::${telefoneNormalizado}` : null
+      for (const scoped of scopedMessages) {
+        const { message, sector, clienteId, normalizedPhone, groupKey } = scoped
+        const clienteKey = `${sector.channelKey}::${scoped.clientKey}`
+        const scopedClientId = clienteId ? `${sector.channelKey}::${clienteId}` : null
+        const scopedPhone = normalizedPhone ? `${sector.channelKey}::${normalizedPhone}` : null
 
         if (scopedClientId && clientesComTicketAtivo.has(scopedClientId)) continue
         if (scopedPhone && telefonesComTicketAtivo.has(scopedPhone)) continue
 
-        const groupKey = getNexusConversationScopeKey(
-          setor.id,
-          message.cliente_id,
-          telefoneNormalizado,
-          message.id,
-          setor.channelKey,
-        )
+        const cliente = (message as any).clientes
         const current = groups.get(groupKey)
 
         groups.set(groupKey, {
           clienteKey,
-          clienteId: message.cliente_id,
+          clienteId,
           contato: cliente?.nome || cliente?.telefone || 'Cliente sem nome',
           telefone: cliente?.telefone || null,
-          setorId: setor.id,
-          setorNome: setor.nome,
+          setorId: sector.id,
+          setorNome: sector.nome,
           lastMessageAt: message.enviado_em,
           lastRemetente: message.remetente,
           messages: [...(current?.messages || []), message],

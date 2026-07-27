@@ -151,6 +151,89 @@ export function resolveNexusMessageSector<TSector>(params: {
   return ownSector ?? null
 }
 
+export type NexusSectorChannel = {
+  id: string
+  channelKey: string
+}
+
+export type NexusScopeAdapter<TMessage, TSector> = {
+  getId: (message: TMessage) => string
+  getRemetente: (message: TMessage) => string | null | undefined
+  getClienteId: (message: TMessage) => string | null | undefined
+  /** Telefone do cliente já normalizado, ou null quando não houver. */
+  getNormalizedPhone: (message: TMessage) => string | null | undefined
+  /** Setor do canal por onde a mensagem entrou, antes da regra do bot. */
+  resolveOwnSector: (message: TMessage) => TSector | null | undefined
+}
+
+export type NexusScopedMessage<TMessage, TSector> = {
+  message: TMessage
+  sector: TSector
+  clienteId: string | null
+  normalizedPhone: string | null
+  /** Identidade do cliente independente de canal. */
+  clientKey: string
+  groupKey: string
+}
+
+/**
+ * Resolve a que conversa cada mensagem do Nexus pertence.
+ *
+ * Regra única do painel, compartilhada pela lista "ao vivo" (client) e pelo
+ * histórico de atendimentos (server). Enquanto cada lado tinha a sua cópia, os
+ * dois divergiram: a correção do bot herdando o setor do cliente foi aplicada
+ * só no server, e a lista ao vivo continuou partindo a conversa em duas linhas.
+ *
+ * As mensagens PRECISAM vir em ordem cronológica crescente — a herança é uma
+ * passada só para frente, e uma resposta do bot só sabe de onde veio a fala que
+ * está respondendo se essa fala já tiver sido vista.
+ *
+ * Mensagens sem identidade estável de cliente são descartadas: usar o id da
+ * própria mensagem transformaria cada linha numa conversa.
+ */
+export function resolveNexusConversationScopes<TMessage, TSector extends NexusSectorChannel>(
+  messages: readonly TMessage[],
+  adapter: NexusScopeAdapter<TMessage, TSector>,
+): Array<NexusScopedMessage<TMessage, TSector>> {
+  const scopedMessages: Array<NexusScopedMessage<TMessage, TSector>> = []
+  const lastClientSectorByClient = new Map<string, TSector>()
+
+  for (const message of messages) {
+    const clienteId = adapter.getClienteId(message) ?? null
+    const normalizedPhone = adapter.getNormalizedPhone(message) ?? null
+    if (!clienteId && !normalizedPhone) continue
+
+    // A chave NÃO leva o canal: é justamente por o bot atender num número
+    // diferente do que o cliente usou que os dois lados precisam se encontrar.
+    const clientKey = normalizedPhone || clienteId!
+    const remetente = adapter.getRemetente(message)
+    const sector = resolveNexusMessageSector({
+      remetente,
+      ownSector: adapter.resolveOwnSector(message),
+      lastClientSector: lastClientSectorByClient.get(clientKey) ?? null,
+    })
+    if (!sector) continue
+    if (!isNexusBotRemetente(remetente)) lastClientSectorByClient.set(clientKey, sector)
+
+    scopedMessages.push({
+      message,
+      sector,
+      clienteId,
+      normalizedPhone,
+      clientKey,
+      groupKey: getNexusConversationScopeKey(
+        sector.id,
+        clienteId,
+        normalizedPhone,
+        adapter.getId(message),
+        sector.channelKey,
+      ),
+    })
+  }
+
+  return scopedMessages
+}
+
 export function classifyNexusSessionOutcome({
   messages,
   ticketId,
