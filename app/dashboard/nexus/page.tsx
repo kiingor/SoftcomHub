@@ -36,8 +36,10 @@ import {
   getLatestNexusSessionMessages,
   getNexusMessageActorLabel,
   getNexusMessagePhase,
+  isNexusBotRemetente,
   mergeNexusTicketTimeline,
   NEXUS_NO_TICKET_IDLE_MS,
+  resolveNexusMessageSector,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 import { cn, isClientMessage } from '@/lib/utils'
@@ -585,7 +587,7 @@ export default function NexusPage() {
         ? await loadRowsByValues(
             supabase,
             'mensagens',
-            'ticket_id, phone_number_id',
+            'ticket_id, phone_number_id, remetente',
             'ticket_id',
             ticketIds,
             (query) => query.in('phone_number_id', channelIds),
@@ -595,6 +597,10 @@ export default function NexusPage() {
       const channelKeysByTicket = new Map<string, Set<string>>()
       for (const message of ticketChannelMessages) {
         if (!message.ticket_id) continue
+        // Abrir um ticket vincula o histórico do bot a ele. Como o bot escreve
+        // pelo número da triagem, contar esse canal daria dois canais para o
+        // mesmo ticket e o cliente continuaria listado como "sem ticket".
+        if (isNexusBotRemetente(message.remetente)) continue
         const setor = resolveSetor(message)
         if (!setor) continue
         const channelKeys = channelKeysByTicket.get(message.ticket_id) || new Set<string>()
@@ -617,13 +623,31 @@ export default function NexusPage() {
       }
 
       const groups = new Map<string, Omit<NexusConversation, 'lastBotMessageAt'>>()
-      for (const message of nexusMessages) {
-        const setor = resolveSetor(message)
-        if (!setor) continue
+      // Último setor em que cada cliente falou, para a resposta do bot herdar.
+      // A chave NÃO leva o canal: é justamente por o bot atender num número
+      // diferente do que o cliente usou que os dois lados precisam se encontrar.
+      const setorDaUltimaFalaDoCliente = new Map<string, ReturnType<typeof resolveSetor>>()
 
+      for (const message of nexusMessages) {
         const cliente = (message as any).clientes
         const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
         if (!message.cliente_id && !telefoneNormalizado) continue
+
+        // O Nexus é triagem: atende os quatro setores por um número só, que
+        // também é canal de atendimento de um deles. Resolver o setor pelo canal
+        // do BOT partia a conversa em duas linhas — a fala do cliente numa, a
+        // resposta do bot em outra.
+        const clienteRef = telefoneNormalizado || message.cliente_id!
+        const setor = resolveNexusMessageSector({
+          remetente: message.remetente,
+          ownSector: resolveSetor(message),
+          lastClientSector: setorDaUltimaFalaDoCliente.get(clienteRef) ?? null,
+        })
+        if (!setor) continue
+        if (!isNexusBotRemetente(message.remetente)) {
+          setorDaUltimaFalaDoCliente.set(clienteRef, setor)
+        }
+
         const clienteKey = `${setor.channelKey}::${telefoneNormalizado || message.cliente_id || message.id}`
         const scopedClientId = message.cliente_id ? `${setor.channelKey}::${message.cliente_id}` : null
         const scopedPhone = telefoneNormalizado ? `${setor.channelKey}::${telefoneNormalizado}` : null
