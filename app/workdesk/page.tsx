@@ -110,6 +110,7 @@ import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { isConteudoProtocolo } from '@/lib/mensagem-conteudo'
 import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/cliente-softcom'
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
+import { telefoneSemDDI } from '@/lib/telefone'
 import { toast } from 'sonner'
 import { useAudioAlert } from '@/hooks/use-audio-alert'
 
@@ -5433,7 +5434,7 @@ const insertEmoji = (emoji: string) => {
                   {selectedTicket.clientes.telefone && (
                     <button
                       type="button"
-                      onClick={() => copyToClipboard(selectedTicket.clientes.telefone!, 'Telefone')}
+                      onClick={() => copyToClipboard(telefoneSemDDI(selectedTicket.clientes.telefone), 'Telefone')}
                       className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
                     >
                       <Copy className="h-3 w-3" />
