@@ -218,13 +218,17 @@ test('keeps the same client isolated by canonical Nexus channel', () => {
   assert.notEqual(firstChannel, secondChannel)
 })
 
-test('starts a new session after a ticket but keeps null-to-ticket conversion together', () => {
+test('só um ticket diferente quebra a sessão; ausência de ticket não quebra', () => {
   const base = { hasCurrentSession: true, gapMs: 1_000, maxGapMs: 60_000 }
 
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: null, incomingTicketId: 'ticket-1' }), false)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: 'ticket-1' }), false)
-  assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: null }), true)
+  // A despedida do bot sai depois de o histórico ser vinculado e vem sem
+  // carimbo de ticket. Ela pertence à conversa, não é um contato novo.
+  assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: null }), false)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: 'ticket-2' }), true)
+  // Quem separa contatos é o intervalo, e ele continua separando.
+  assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: null, gapMs: 60_000 }), true)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: null, incomingTicketId: null, gapMs: 60_000 }), true)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: null, incomingTicketId: null, gapMs: 61_000 }), true)
 })

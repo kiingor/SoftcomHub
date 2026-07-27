@@ -341,10 +341,15 @@ export function shouldStartNewNexusSession({
 }: NexusSessionBoundaryInput): boolean {
   if (!hasCurrentSession || gapMs >= maxGapMs) return true
 
-  // null -> ticket is the same conversation being converted. Once a session
-  // already belongs to a ticket, however, a different ticket or a new null
-  // message starts another contact and must not be attached to the old ticket.
-  return Boolean(currentTicketId && incomingTicketId !== currentTicketId)
+  // Só um ticket DIFERENTE prova que é outra conversa. Mensagem sem ticket não
+  // contradiz nada — é apenas não carimbada, e separar contatos é trabalho do
+  // intervalo acima.
+  //
+  // Tratar `null` como fronteira partia a última fala do bot ("Vou te passar
+  // pra um técnico"), que sai segundos depois de o n8n vincular o histórico ao
+  // ticket e não recebe o carimbo. Ela virava uma sessão à parte, de uma
+  // mensagem só, listada como "Encerrada sem ticket" ao lado da conversa real.
+  return Boolean(currentTicketId && incomingTicketId && incomingTicketId !== currentTicketId)
 }
 
 export function mergeNexusTicketTimeline<
