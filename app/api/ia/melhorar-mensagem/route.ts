@@ -1,4 +1,9 @@
 import { NextResponse } from 'next/server'
+import {
+  buildAiEndpointUrl,
+  DEFAULT_CUSTOM_AI_CHAT_MODEL,
+  DEFAULT_OPENAI_CHAT_MODEL,
+} from '@/lib/ai-provider'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export async function POST(request: Request) {
@@ -47,19 +52,23 @@ export async function POST(request: Request) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10000)
 
-    const baseUrl = setor.openai_url_personalizada && setor.openai_base_url
-      ? setor.openai_base_url.replace(/\/+$/, '')
-      : 'https://api.openai.com/v1'
+    const hasCustomProvider = Boolean(setor.openai_url_personalizada && setor.openai_base_url)
+    const chatCompletionsUrl = hasCustomProvider
+      ? buildAiEndpointUrl(setor.openai_base_url, 'chat/completions')
+      : 'https://api.openai.com/v1/chat/completions'
+    const model = hasCustomProvider
+      ? DEFAULT_CUSTOM_AI_CHAT_MODEL
+      : DEFAULT_OPENAI_CHAT_MODEL
 
     try {
-      const openaiResponse = await fetch(`${baseUrl}/chat/completions`, {
+      const openaiResponse = await fetch(chatCompletionsUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${setor.openai_api_key}`,
         },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model,
           messages: [
             {
               role: 'system',
