@@ -45,3 +45,7 @@ next-env.d.ts
 # cursor / editor
 .cursor/
 .claude/
+
+# Testes e2e — credenciais e artefatos
+e2e/cypress.env.json
+e2e/cypress/artefatos/
