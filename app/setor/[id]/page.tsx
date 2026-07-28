@@ -144,7 +144,7 @@ import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorF
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
-import { CardTempoRealSubsetor } from '@/components/setor/card-tempo-real-subsetor'
+import { PainelSubsetoresLateral } from '@/components/setor/painel-subsetores-lateral'
 import { calcularTempoReal } from '@/lib/monitoramento-tempo-real'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
@@ -1200,11 +1200,6 @@ function SetorPageInner() {
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
-  // Subsetor de cada card de comparação em tempo real. Guardados por gestor +
-  // setor, como o filtro rápido — a escolha é dele, não do navegador de todos.
-  const [cardSubsetorA, setCardSubsetorA] = useState<string>('')
-  const [cardSubsetorB, setCardSubsetorB] = useState<string>('')
-  const [mostrarCardsSubsetor, setMostrarCardsSubsetor] = useState(false)
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
   const [monitoringPageSize, setMonitoringPageSize] = useState(5)
   const [monitoringPage, setMonitoringPage] = useState(1)
@@ -2763,46 +2758,14 @@ function SetorPageInner() {
     [subsetores],
   )
 
-  /** Subsetores do setor, para escolher o que cada card de comparação mostra. */
+  /** Subsetores do setor, base das linhas da coluna lateral. */
   const opcoesSubsetorTempoReal = useMemo(() => (
     (subsetores as any[]).map((s) => ({ id: s.id, nome: s.nome }))
       .sort((a, b) => a.nome.localeCompare(b.nome))
   ), [subsetores])
 
-  // Identidade estável da lista: sem isto, qualquer atualização de `subsetores`
-  // recriaria o array e o efeito de carga sobrescreveria a escolha do gestor.
-  const chaveOpcoesSubsetor = opcoesSubsetorTempoReal.map((o) => o.id).join(',')
-
-  const cardsSubsetorStorageKey = colaboradorLogado?.id && setorId
-    ? `setor-cards-subsetor-v1:${setorId}:${colaboradorLogado.id}`
-    : null
-
-  useEffect(() => {
-    if (!cardsSubsetorStorageKey || opcoesSubsetorTempoReal.length < 2) return
-    let salvo: { a?: string; b?: string; visivel?: boolean } | null = null
-    try {
-      salvo = JSON.parse(window.localStorage.getItem(cardsSubsetorStorageKey) || 'null')
-    } catch { /* preferência corrompida cai no padrão */ }
-
-    // Subsetor apagado ou renomeado não pode deixar o card preso num id morto.
-    const existe = (id?: string) => Boolean(id) && opcoesSubsetorTempoReal.some((o) => o.id === id)
-    setCardSubsetorA(existe(salvo?.a) ? salvo!.a! : opcoesSubsetorTempoReal[0].id)
-    setCardSubsetorB(existe(salvo?.b) ? salvo!.b! : opcoesSubsetorTempoReal[1].id)
-    setMostrarCardsSubsetor(Boolean(salvo?.visivel))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardsSubsetorStorageKey, chaveOpcoesSubsetor])
-
-  useEffect(() => {
-    if (!cardsSubsetorStorageKey || !cardSubsetorA || !cardSubsetorB) return
-    try {
-      window.localStorage.setItem(cardsSubsetorStorageKey, JSON.stringify({
-        a: cardSubsetorA, b: cardSubsetorB, visivel: mostrarCardsSubsetor,
-      }))
-    } catch { /* navegador sem storage não impede usar a tela */ }
-  }, [cardsSubsetorStorageKey, cardSubsetorA, cardSubsetorB, mostrarCardsSubsetor])
-
   /**
-   * Um resumo por card, usando o MESMO cálculo do card do setor.
+   * Um resumo por subsetor, usando o MESMO cálculo do card do setor.
    *
    * `monitoringTick` entra nas dependências porque a maior espera cresce com o
    * relógio, não com a chegada de dados — sem ele o número congelaria.
@@ -2820,14 +2783,22 @@ function SetorPageInner() {
     })
   ), [tickets, ticketsMonitoramentoHoje, atendentes, monitoringTick])
 
-  const resumoCardA = useMemo(
-    () => (cardSubsetorA ? resumoDoSubsetor(cardSubsetorA) : null),
-    [cardSubsetorA, resumoDoSubsetor],
-  )
-  const resumoCardB = useMemo(
-    () => (cardSubsetorB ? resumoDoSubsetor(cardSubsetorB) : null),
-    [cardSubsetorB, resumoDoSubsetor],
-  )
+  /**
+   * Uma linha por subsetor para a coluna lateral, na mesma ordem de urgência do
+   * resto do painel: quem tem mais gente na fila primeiro, depois quem espera há
+   * mais tempo. É onde o gestor age.
+   */
+  const linhasSubsetorLateral = useMemo(() => (
+    opcoesSubsetorTempoReal
+      .map((opcao) => ({ id: opcao.id, nome: opcao.nome, resumo: resumoDoSubsetor(opcao.id) }))
+      // Subsetor sem nada ativo só ocuparia espaço na coluna estreita.
+      .filter((linha) => linha.resumo.total > 0)
+      .sort((a, b) => (
+        b.resumo.naFila - a.resumo.naFila
+        || b.resumo.maiorEsperaFilaMs - a.resumo.maiorEsperaFilaMs
+        || a.nome.localeCompare(b.nome)
+      ))
+  ), [opcoesSubsetorTempoReal, resumoDoSubsetor])
 
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
@@ -4769,52 +4740,6 @@ const saveConfig = async () => {
                   </CardContent>
                 </Card>
 
-                {/* O card acima soma o setor e esconde de qual fila vem o número.
-                    Dois cards iguais, um por subsetor, mostram Suporte e Prime
-                    ao mesmo tempo. */}
-                {opcoesSubsetorTempoReal.length >= 2 && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium text-muted-foreground">
-                        Comparar subsetores em tempo real
-                      </p>
-                      <Button
-                        variant={mostrarCardsSubsetor ? 'default' : 'outline'}
-                        size="sm"
-                        className="h-8 gap-1.5 text-xs"
-                        onClick={() => setMostrarCardsSubsetor((v) => !v)}
-                      >
-                        <Layers className="h-3.5 w-3.5" />
-                        {mostrarCardsSubsetor ? 'Ocultar' : 'Mostrar'}
-                      </Button>
-                    </div>
-
-                    {mostrarCardsSubsetor && (
-                      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                        {resumoCardA && (
-                          <CardTempoRealSubsetor
-                            resumo={resumoCardA}
-                            workload={calculateWorkloadOs(resumoCardA.total, resumoCardA.atendentesOnline)}
-                            tomCarga={WORKLOAD_OS_TONES[calculateWorkloadOs(resumoCardA.total, resumoCardA.atendentesOnline).level]}
-                            opcoes={opcoesSubsetorTempoReal}
-                            subsetorSelecionado={cardSubsetorA}
-                            aoTrocarSubsetor={setCardSubsetorA}
-                          />
-                        )}
-                        {resumoCardB && (
-                          <CardTempoRealSubsetor
-                            resumo={resumoCardB}
-                            workload={calculateWorkloadOs(resumoCardB.total, resumoCardB.atendentesOnline)}
-                            tomCarga={WORKLOAD_OS_TONES[calculateWorkloadOs(resumoCardB.total, resumoCardB.atendentesOnline).level]}
-                            opcoes={opcoesSubsetorTempoReal}
-                            subsetorSelecionado={cardSubsetorB}
-                            aoTrocarSubsetor={setCardSubsetorB}
-                          />
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 {/* Status dos atendentes */}
                 <Card className="glass-card-elevated flex flex-col rounded-lg">
@@ -4855,6 +4780,16 @@ const saveConfig = async () => {
                         </div>
                       </div>
                     </div>
+
+                    {/* Ocupa o vão que sobrava nesta coluna. O card grande à
+                        esquerda soma o setor e não diz de qual fila vem o
+                        número — aqui o gestor vê Suporte e Prime separados,
+                        sem filtrar nem trocar de tela. */}
+                    {linhasSubsetorLateral.length > 0 && (
+                      <div className="mt-4 border-t border-border/70 pt-4">
+                        <PainelSubsetoresLateral linhas={linhasSubsetorLateral} />
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </div>
