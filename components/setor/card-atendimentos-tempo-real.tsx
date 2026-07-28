@@ -47,7 +47,7 @@ export function CardAtendimentosTempoReal({
   tempoMaximoFila: string
   tempoMaximoResposta: string
   /** Fila do DIA, no mesmo recorte do card. Sem isto, a faixa não aparece. */
-  fila?: Pick<ResumoFila, 'maiorEspera'>
+  fila?: Pick<ResumoFila, 'maiorEspera' | 'entraramNaFila'>
   /** Vezes que a fila se formou hoje. Depende de `atribuido_em`. */
   episodios?: EpisodiosDeFila
   opcoes?: OpcaoSubsetor[]
@@ -145,20 +145,34 @@ export function CardAtendimentosTempoReal({
         {fila && (
           <div className="grid grid-cols-2 gap-3 border-t border-border/70 pt-3 text-center">
             <div>
-              {/* Sem `atribuido_em` não há como saber quando o ticket saiu da
-                  fila, e um número aqui seria invenção. */}
-              <p className={cn(
-                'text-2xl font-bold tabular-nums',
-                episodios?.temDados ? 'text-orange-600 dark:text-orange-400' : 'text-muted-foreground',
-              )}>
-                {episodios?.temDados ? episodios.vezes : '—'}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">Vezes que deu fila hoje</p>
-              <p className="text-[11px] text-muted-foreground">
-                {episodios?.temDados
-                  ? `pico de ${episodios.pico} ${episodios.pico === 1 ? 'ticket' : 'tickets'}`
-                  : 'sem registro ainda'}
-              </p>
+              {/* Contar VEZES exige saber quando o ticket saiu da fila, e isso
+                  é o `atribuido_em`. Enquanto ele não existir para os tickets do
+                  dia, o card cai para quantos clientes esperaram — que é
+                  calculável e é outra pergunta, então vai com outro rótulo. */}
+              {episodios?.temDados ? (
+                <>
+                  <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
+                    {episodios.vezes}
+                  </p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">Vezes que deu fila hoje</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    pico de {episodios.pico} {episodios.pico === 1 ? 'ticket' : 'tickets'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
+                    {fila.entraramNaFila}
+                  </p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">Clientes que esperaram hoje</p>
+                  <p
+                    className="text-[11px] text-muted-foreground"
+                    title="Contar quantas VEZES a fila se formou depende do registro do momento em que cada ticket ganha atendente, que ainda não está gravado."
+                  >
+                    vezes que deu fila: sem registro
+                  </p>
+                </>
+              )}
             </div>
             <div className="min-w-0">
               <p className={cn(
