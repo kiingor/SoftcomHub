@@ -151,76 +151,91 @@ test('faixa de saúde separa boa, atenção e crítica', () => {
   assert.equal(faixaDeSaude(69), 'critica')
 })
 
-// --- episódios de fila (criado_em → atribuido_em) ---
+// --- episódios de fila (criado_em → primeira_resposta_em) ---
 
 const seg = (n) => new Date(AGORA - n * 1000).toISOString()
 
 test('clientes que chegam juntos são UM episódio, não vários', () => {
   // É a diferença entre a métrica pedida e a anterior: contar vezes, não gente.
   const r = contarEpisodiosDeFila([
-    { criado_em: seg(600), atribuido_em: seg(300) },
-    { criado_em: seg(590), atribuido_em: seg(280) },
-    { criado_em: seg(580), atribuido_em: seg(200) },
+    { criado_em: seg(600), primeira_resposta_em: seg(300) },
+    { criado_em: seg(590), primeira_resposta_em: seg(280) },
+    { criado_em: seg(580), primeira_resposta_em: seg(200) },
   ], { agoraMs: AGORA })
 
   assert.equal(r.vezes, 1)
   assert.equal(r.pico, 3)
 })
 
-test('filas separadas no tempo são episódios separados', () => {
+test('a fila esvaziar e voltar conta como dois episódios', () => {
+  // O caso que o gestor descreveu: uma fila absorve 40 clientes e acaba = 1;
+  // depois formou de novo com 7 = 2.
   const r = contarEpisodiosDeFila([
-    { criado_em: seg(900), atribuido_em: seg(800) },
-    { criado_em: seg(400), atribuido_em: seg(300) },
+    { criado_em: seg(900), primeira_resposta_em: seg(800) },
+    { criado_em: seg(400), primeira_resposta_em: seg(300) },
   ], { agoraMs: AGORA })
 
   assert.equal(r.vezes, 2)
   assert.equal(r.pico, 1)
 })
 
-test('ticket ainda aberto conta como fila correndo agora', () => {
-  const r = contarEpisodiosDeFila([
-    { criado_em: seg(120), atribuido_em: null, status: 'aberto' },
-  ], { agoraMs: AGORA })
+test('uma fila longa que absorve muita gente sem esvaziar é UMA vez', () => {
+  // Chegadas de 10 em 10s, cada uma esperando 120s: sempre sobra alguém
+  // esperando quando o próximo chega, então a fila nunca zera.
+  const tickets = Array.from({ length: 40 }, (_, i) => ({
+    criado_em: seg(900 - i * 10),
+    primeira_resposta_em: seg(780 - i * 10),
+  }))
+  const r = contarEpisodiosDeFila(tickets, { agoraMs: AGORA })
 
-  assert.equal(r.vezes, 1)
-  assert.equal(r.temDados, true)
+  assert.equal(r.vezes, 1, '40 clientes numa fila contínua são um episódio')
+  assert.ok(r.pico >= 2)
 })
 
-test('saída não registrada não entra na conta, e é contabilizada à parte', () => {
-  // Ticket que já saiu da fila mas sem `atribuido_em`: incluí-lo com uma saída
-  // chutada inventaria episódios.
+test('atendido dentro do limite não forma fila', () => {
+  // Sem isso, todo ticket respondido em 10s abriria um episódio e o número
+  // voltaria a ser contagem de cliente.
   const r = contarEpisodiosDeFila([
-    { criado_em: seg(600), atribuido_em: null, status: 'em_atendimento' },
-    { criado_em: seg(500), atribuido_em: null, status: 'encerrado' },
-  ], { agoraMs: AGORA })
-
-  assert.equal(r.semRegistro, 2)
-  assert.equal(r.vezes, 0)
-  assert.equal(r.temDados, false, 'sem nenhuma saída conhecida, não dá para afirmar o número')
-})
-
-test('temDados vira verdadeiro assim que existe uma saída conhecida', () => {
-  const r = contarEpisodiosDeFila([
-    { criado_em: seg(600), atribuido_em: null, status: 'encerrado' },
-    { criado_em: seg(500), atribuido_em: seg(400) },
-  ], { agoraMs: AGORA })
-
-  assert.equal(r.temDados, true)
-  assert.equal(r.semRegistro, 1)
-  assert.equal(r.vezes, 1)
-})
-
-test('atribuição no mesmo instante da criação não é fila', () => {
-  const r = contarEpisodiosDeFila([
-    { criado_em: seg(300), atribuido_em: seg(300) },
+    { criado_em: seg(310), primeira_resposta_em: seg(300) },
   ], { agoraMs: AGORA })
 
   assert.equal(r.vezes, 0)
   assert.equal(r.pico, 0)
-  assert.equal(r.temDados, true)
+  assert.equal(r.semEspera, 1)
 })
 
-test('lista vazia não afirma nada', () => {
+test('ticket ainda sem resposta conta como fila correndo agora', () => {
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(120), primeira_resposta_em: null },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 1)
+  assert.equal(r.pico, 1)
+})
+
+test('encerrado sem nenhuma resposta usa o encerramento como fim da espera', () => {
+  // O cliente esperou e desistiu (ou foi encerrado). A espera acabou ali, não
+  // agora — senão o episódio ficaria aberto para sempre.
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(900), primeira_resposta_em: null, encerrado_em: seg(600), status: 'encerrado' },
+    { criado_em: seg(300), primeira_resposta_em: seg(120) },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 2, 'a fila esvaziou entre os dois')
+})
+
+test('o limite de fila é configurável', () => {
+  const tickets = [{ criado_em: seg(180), primeira_resposta_em: seg(60) }] // 2min
+
+  assert.equal(contarEpisodiosDeFila(tickets, { agoraMs: AGORA }).vezes, 1)
+  assert.equal(
+    contarEpisodiosDeFila(tickets, { agoraMs: AGORA, limiteFilaMin: 5 }).vezes,
+    0,
+    'com limite de 5min, esperar 2min não é fila',
+  )
+})
+
+test('lista vazia não inventa episódio', () => {
   const r = contarEpisodiosDeFila([], { agoraMs: AGORA })
-  assert.deepEqual([r.vezes, r.pico, r.semRegistro, r.temDados], [0, 0, 0, false])
+  assert.deepEqual([r.vezes, r.pico, r.semEspera], [0, 0, 0])
 })

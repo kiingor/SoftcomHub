@@ -145,34 +145,25 @@ export function CardAtendimentosTempoReal({
         {fila && (
           <div className="grid grid-cols-2 gap-3 border-t border-border/70 pt-3 text-center">
             <div>
-              {/* Contar VEZES exige saber quando o ticket saiu da fila, e isso
-                  é o `atribuido_em`. Enquanto ele não existir para os tickets do
-                  dia, o card cai para quantos clientes esperaram — que é
-                  calculável e é outra pergunta, então vai com outro rótulo. */}
-              {episodios?.temDados ? (
-                <>
-                  <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
-                    {episodios.vezes}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">Vezes que deu fila hoje</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    pico de {episodios.pico} {episodios.pico === 1 ? 'ticket' : 'tickets'}
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
-                    {fila.entraramNaFila}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">Clientes que esperaram hoje</p>
-                  <p
-                    className="text-[11px] text-muted-foreground"
-                    title="Contar quantas VEZES a fila se formou depende do registro do momento em que cada ticket ganha atendente, que ainda não está gravado."
-                  >
-                    vezes que deu fila: sem registro
-                  </p>
-                </>
-              )}
+              <p className={cn(
+                'text-2xl font-bold tabular-nums',
+                episodios && episodios.vezes > 0
+                  ? 'text-orange-600 dark:text-orange-400'
+                  : 'text-foreground',
+              )}>
+                {episodios?.vezes ?? 0}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Vezes que deu fila hoje</p>
+              {/* O pico diz o tamanho da pior delas — sem isso, "8 vezes" não
+                  distingue oito filas de dois clientes de oito de vinte. */}
+              <p
+                className="text-[11px] text-muted-foreground"
+                title={`${fila.entraramNaFila} clientes esperaram mais que o limite hoje`}
+              >
+                {episodios && episodios.vezes > 0
+                  ? `pico de ${episodios.pico} ${episodios.pico === 1 ? 'cliente' : 'clientes'}`
+                  : 'ninguém esperou hoje'}
+              </p>
             </div>
             <div className="min-w-0">
               <p className={cn(

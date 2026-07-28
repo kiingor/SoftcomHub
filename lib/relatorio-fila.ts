@@ -6,11 +6,11 @@
  * `atribuido_em` só passou a ser gravado em 28/07/2026, e antes disso não há
  * registro de quando o ticket saiu da fila.
  *
- * "Quantas vezes a fila surgiu" foi descartado como métrica: medido sobre 8
- * dias do ServiceDesk, o resultado é 1 em todos os subsetores e em todos os
- * limiares testados (10, 15 e 30 min) — a fila nunca esvazia, então ela
- * "surgiu" uma vez e nunca acabou. O que informa é QUANTOS CLIENTES passaram do
- * limite, que é o que esta função conta.
+ * `resumirFila` conta CLIENTES que passaram do limite; `contarEpisodiosDeFila`
+ * conta VEZES que a fila se formou. Medir "vezes" sobre vários dias de uma vez
+ * degenera para 1 — a espera da madrugada emenda um dia no outro —, o que antes
+ * me levou a descartar a métrica como impossível. Por dia e por subsetor ela
+ * funciona: ver a nota naquela função.
  */
 
 type ClienteEmbed = { nome?: string | null }
@@ -156,8 +156,10 @@ export function faixaDeSaude(percentual: number): 'boa' | 'atencao' | 'critica' 
 
 export type TicketNaFila = {
   criado_em?: string | null
-  /** Instante em que ganhou atendente — a saída da fila. */
-  atribuido_em?: string | null
+  /** Saída da fila: o cliente deixou de esperar quando alguém respondeu. */
+  primeira_resposta_em?: string | null
+  /** Encerrado sem nenhuma resposta — a espera acabou aqui, mesmo assim. */
+  encerrado_em?: string | null
   status?: string | null
 }
 
@@ -166,53 +168,55 @@ export type EpisodiosDeFila = {
   vezes: number
   /** Máximo de tickets simultaneamente na fila. */
   pico: number
-  /** Tickets cuja saída não foi registrada — não entram na conta. */
-  semRegistro: number
-  /** Sem nenhum ticket com saída conhecida, o número não pode ser afirmado. */
-  temDados: boolean
+  /** Atendidos dentro do limite — nunca chegaram a formar fila. */
+  semEspera: number
 }
 
 /**
  * Quantas VEZES a fila se formou no período.
  *
- * Diferente de contar clientes: aqui a fila é o intervalo entre o ticket nascer
- * e ganhar atendente, e um episódio é uma janela em que havia alguém esperando.
- * Dez clientes chegando juntos são um episódio, não dez.
+ * Diferente de contar clientes: um episódio é uma janela em que havia pelo
+ * menos alguém esperando. Uma fila que nasce às 9h e absorve 40 clientes até
+ * esvaziar é UMA vez, não 40.
  *
- * Exige `atribuido_em`. A coluna existe desde sempre mas só passou a ser
- * gravada em 28/07/2026 — antes disso, 0 de 4.821 tickets de uma semana tinham
- * valor. Sem ela não há como saber quando o ticket saiu da fila, e o episódio
- * fica incalculável: daí `temDados`, para a tela dizer "sem registro" em vez de
- * mostrar um número inventado.
+ * A saída da fila é a PRIMEIRA RESPOSTA, não a atribuição. Duas razões: é o
+ * instante em que o cliente de fato deixou de esperar (ter dono e ainda não ter
+ * recebido mensagem é esperar), e é reconstruível para todo o histórico —
+ * `atribuido_em` só passou a ser gravado em 28/07/2026. Encerrado sem resposta
+ * usa `encerrado_em`; sem os dois, o cliente ainda está esperando agora.
  *
- * Ticket ainda em 'aberto' conta como fila aberta até agora — é justamente
- * quem está esperando neste momento.
+ * Quem foi atendido abaixo do limite não forma fila: sem isso, cada ticket
+ * respondido em 10 segundos abriria um episódio e o número viraria contagem de
+ * cliente de novo.
+ *
+ * O recorte importa. Medido em 28/07/2026: o subsetor Suporte no dia dá 8
+ * episódios, mas o SETOR INTEIRO dá 3 — misturando subsetores a fila quase não
+ * esvazia. Sobre vários dias seguidos degenera para 1, porque a espera da
+ * madrugada emenda um dia no outro. Use por dia e por subsetor.
  */
 export function contarEpisodiosDeFila(
   tickets: readonly TicketNaFila[],
-  opts: { agoraMs: number },
+  opts: { agoraMs: number; limiteFilaMin?: number },
 ): EpisodiosDeFila {
+  const filaMs = Math.max(0, opts.limiteFilaMin ?? LIMITE_FILA_PADRAO_MIN) * 60_000
   const eventos: Array<[number, number]> = []
-  let semRegistro = 0
-  let comSaida = 0
+  let semEspera = 0
 
   for (const ticket of tickets) {
     const entrada = ticket.criado_em ? Date.parse(ticket.criado_em) : Number.NaN
     if (!Number.isFinite(entrada)) continue
 
-    const registrada = ticket.atribuido_em ? Date.parse(ticket.atribuido_em) : Number.NaN
-    const aindaNaFila = ticket.status === 'aberto'
-    const saida = Number.isFinite(registrada)
-      ? registrada
-      : (aindaNaFila ? opts.agoraMs : Number.NaN)
+    const respondido = ticket.primeira_resposta_em ? Date.parse(ticket.primeira_resposta_em) : Number.NaN
+    const encerrado = ticket.encerrado_em ? Date.parse(ticket.encerrado_em) : Number.NaN
+    // Sem resposta e sem encerramento, a espera segue correndo agora.
+    const saida = Number.isFinite(respondido)
+      ? respondido
+      : (Number.isFinite(encerrado) ? encerrado : opts.agoraMs)
 
-    if (!Number.isFinite(saida)) {
-      // Já saiu da fila, mas ninguém anotou quando.
-      semRegistro += 1
+    if (saida - entrada < filaMs) {
+      semEspera += 1
       continue
     }
-    comSaida += 1
-    if (saida <= entrada) continue
     eventos.push([entrada, 1], [saida, -1])
   }
 
@@ -234,5 +238,5 @@ export function contarEpisodiosDeFila(
     if (simultaneos === 0) dentro = false
   }
 
-  return { vezes, pico, semRegistro, temDados: comSaida > 0 }
+  return { vezes, pico, semEspera }
 }
