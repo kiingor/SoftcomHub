@@ -611,15 +611,19 @@ const MONITOR_CARDS = [
   { id: 'statusTickets', label: 'Status dos tickets hoje' },
 ] as const
 
+// As larguras somam 12 por linha de propósito: é o que faz os cards nascerem
+// lado a lado em vez de empilhados.
 const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   tempoReal: { w: 7, h: 5 },
   statusAtendentes: { w: 5, h: 3 },
-  porSubsetor: { w: 5, h: 7 },
-  atendimentoHoje: { w: 7, h: 4 },
+  porSubsetor: { w: 5, h: 6 },
+  atendimentoHoje: { w: 7, h: 5 },
   statusTickets: { w: 5, h: 4 },
 }
 
-const MONITOR_LAYOUT_STORAGE_KEY = 'setor-monitor-layout-v1'
+// v2: a v1 nasceu com todos os cards empilhados em x=0. Trocar a chave dá a
+// todo mundo o arranjo corrigido, em vez de exigir "Restaurar padrão".
+const MONITOR_LAYOUT_STORAGE_KEY = 'setor-monitor-layout-v2'
 const MONITOR_COLLAPSED_STORAGE_KEY = 'setor-monitor-collapsed-v1'
 const MONITOR_COLLAPSED_H = 1
 
@@ -682,11 +686,14 @@ const RELATORIO_COLLAPSED_H = 1
 // Empacota os cards em "masonry" (skyline): cada card vai para o vão mais alto
 // disponível, preenchendo os buracos. Evita espaços vazios entre cards de
 // alturas diferentes; as bordas ficam alinhadas. A ordem define a prioridade.
-function buildDefaultLayout(orderedIds: string[]): Layout[] {
+function buildDefaultLayout(
+  orderedIds: string[],
+  sizeMap: Record<string, { w: number; h: number }> = RELATORIO_DEFAULT_SIZE,
+): Layout[] {
   const COLS = 12
   const colHeights = new Array(COLS).fill(0)
   return orderedIds.map((id) => {
-    const d = RELATORIO_DEFAULT_SIZE[id] || { w: 6, h: 4 }
+    const d = sizeMap[id] || { w: 6, h: 4 }
     const w = Math.min(d.w, COLS)
     // acha o x (0..COLS-w) cujo topo é o menor possível (preenche o vão mais alto)
     let bestX = 0, bestY = Infinity
@@ -2920,12 +2927,24 @@ function SetorPageInner() {
   ), [opcoesSubsetorTempoReal.length, painelSubsetorVisivel])
 
   const monitorBaseLayout = useMemo(() => {
-    const salvo = new Map((monitorLayout || []).map((l) => [l.i, l]))
-    let base = (monitorLayout || []).reduce((m, l) => Math.max(m, l.y + l.h), 0)
+    // Sem layout salvo, o arranjo vem do mesmo empacotador do relatório: cada
+    // card vai para o vão mais alto disponível, então os que somam 12 colunas
+    // ficam LADO A LADO. Posicionar tudo em x=0 empilhava a tela inteira numa
+    // coluna só.
+    if (!monitorLayout) return buildDefaultLayout(monitorVisibleIds, MONITOR_DEFAULT_SIZE)
+
+    const salvo = new Map(monitorLayout.map((l) => [l.i, l]))
+    const faltantes = monitorVisibleIds.filter((id) => !salvo.has(id))
+    if (faltantes.length === 0) {
+      return monitorVisibleIds.map((id) => salvo.get(id)!)
+    }
+
+    // Card novo (ex.: "Por subsetor" reexibido) entra abaixo do que já existe,
+    // para não cair em cima de nada que o gestor arrumou.
+    let base = monitorLayout.reduce((m, l) => Math.max(m, l.y + l.h), 0)
     return monitorVisibleIds.map((id) => {
       const existente = salvo.get(id)
       if (existente) return existente
-      // Card sem posição salva empilha abaixo de tudo, para não sobrepor.
       const tamanho = MONITOR_DEFAULT_SIZE[id] || { w: 6, h: 4 }
       const item = { i: id, x: 0, y: base, w: tamanho.w, h: tamanho.h }
       base += tamanho.h
