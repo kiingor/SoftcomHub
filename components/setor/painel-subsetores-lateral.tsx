@@ -3,6 +3,7 @@
 import { Activity, CheckCircle2, Headphones, Inbox, Layers, Timer, TrendingUp } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { formatarTempoMonitoramento, type ResumoTempoReal } from '@/lib/monitoramento-tempo-real'
 import { type WorkloadOs } from '@/lib/workload-os'
@@ -51,16 +52,18 @@ export function PainelSubsetoresLateral({
 }) {
   if (opcoes.length === 0) return null
 
-  // Sem wrapper de Card: fica DENTRO do card de status dos atendentes, e
-  // aninhar Card em Card renderiza borda e fundo duplicados.
+  // Card próprio, e não embutido no de status dos atendentes: lá o conteúdo é
+  // centralizado verticalmente, e acrescentar altura fazia os números daquele
+  // card flutuarem no meio do vão.
   return (
-    <section aria-label="Atendimento por subsetor">
-      <p className="mb-2 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-        <Layers className="h-4 w-4" aria-hidden="true" />
-        Por subsetor
-      </p>
-
-      <div className="space-y-3">
+    <Card className="glass-card-elevated min-w-0 rounded-lg">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+          <Layers className="h-4 w-4" aria-hidden="true" />
+          Por subsetor
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
         <Espaco
           rotulo="Primeiro subsetor"
           espaco={espacoA}
@@ -75,8 +78,8 @@ export function PainelSubsetoresLateral({
           aoTrocar={aoTrocarB}
           limiteEsperaMin={limiteEsperaMin}
         />
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -122,8 +125,8 @@ function Espaco({
           valor={resumo?.naFila ?? 0}
           tom={(resumo?.naFila ?? 0) > 0 ? 'alerta' : undefined}
         />
-        <Numero icone={Headphones} rotulo="Em atendimento" valor={resumo?.emAtendimento ?? 0} tom="destaque" />
-        <Numero icone={CheckCircle2} rotulo="Finalizados hoje" valor={resumo?.finalizadosHoje ?? 0} tom="bom" />
+        <Numero icone={Headphones} rotulo="Em atend." valor={resumo?.emAtendimento ?? 0} tom="destaque" />
+        <Numero icone={CheckCircle2} rotulo="Finalizados" valor={resumo?.finalizadosHoje ?? 0} tom="bom" />
       </div>
 
       <div className="space-y-2 px-3 py-3">

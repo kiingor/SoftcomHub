@@ -4672,8 +4672,11 @@ const saveConfig = async () => {
                 </div>
               )}
 
-              {/* Stats Cards Row 1 */}
-              <div className="grid gap-4 grid-cols-1 lg:grid-cols-[2fr_1fr]">
+              {/* Stats Cards Row 1 — a coluna da direita passou de 1fr para
+                  1.1fr: ela ganhou o recorte por subsetor, e no 2fr_1fr
+                  anterior os rótulos truncavam ("Em atendime...") enquanto o
+                  card da esquerda sobrava espaço vazio. */}
+              <div className="grid gap-4 grid-cols-1 lg:grid-cols-[1.6fr_1.1fr]">
                 {/* Atendimentos em tempo real */}
                 <Card className="glass-card-elevated rounded-lg border-l-4 border-l-primary">
                   <CardHeader className="pb-3">
@@ -4781,6 +4784,10 @@ const saveConfig = async () => {
                 </Card>
 
 
+                {/* Coluna da direita: status dos atendentes + o recorte por
+                    subsetor. `min-w-0` é obrigatório — sem ele o conteúdo
+                    empurra a coluna da grade e vaza para fora da tela. */}
+                <div className="flex min-w-0 flex-col gap-4">
                 {/* Status dos atendentes */}
                 <Card className="glass-card-elevated flex flex-col rounded-lg">
                   <CardHeader className="pb-2 flex flex-row items-center justify-between">
@@ -4820,34 +4827,33 @@ const saveConfig = async () => {
                         </div>
                       </div>
                     </div>
-
-                    {/* Ocupa o vão que sobrava nesta coluna. O card grande à
-                        esquerda soma o setor e não diz de qual fila vem o
-                        número — aqui o gestor vê Suporte e Prime separados,
-                        sem filtrar nem trocar de tela. */}
-                    {opcoesSubsetorTempoReal.length > 0 && (
-                      <div className="mt-4 border-t border-border/70 pt-4">
-                        <PainelSubsetoresLateral
-                          opcoes={opcoesSubsetorTempoReal}
-                          espacoA={{
-                            subsetorId: subsetorLateralA,
-                            resumo: resumoLateralA,
-                            workload: cargaLateralA,
-                            tomCarga: WORKLOAD_OS_TONES[cargaLateralA.level],
-                          }}
-                          espacoB={{
-                            subsetorId: subsetorLateralB,
-                            resumo: resumoLateralB,
-                            workload: cargaLateralB,
-                            tomCarga: WORKLOAD_OS_TONES[cargaLateralB.level],
-                          }}
-                          aoTrocarA={setSubsetorLateralA}
-                          aoTrocarB={setSubsetorLateralB}
-                        />
-                      </div>
-                    )}
                   </CardContent>
                 </Card>
+
+                {/* Card próprio, e não dentro do de atendentes: lá o
+                    `CardContent` é `flex flex-1 items-center`, então acrescentar
+                    conteúdo esticava o card e deixava os números 1/4/4
+                    flutuando no meio do vão. */}
+                {opcoesSubsetorTempoReal.length > 0 && (
+                  <PainelSubsetoresLateral
+                    opcoes={opcoesSubsetorTempoReal}
+                    espacoA={{
+                      subsetorId: subsetorLateralA,
+                      resumo: resumoLateralA,
+                      workload: cargaLateralA,
+                      tomCarga: WORKLOAD_OS_TONES[cargaLateralA.level],
+                    }}
+                    espacoB={{
+                      subsetorId: subsetorLateralB,
+                      resumo: resumoLateralB,
+                      workload: cargaLateralB,
+                      tomCarga: WORKLOAD_OS_TONES[cargaLateralB.level],
+                    }}
+                    aoTrocarA={setSubsetorLateralA}
+                    aoTrocarB={setSubsetorLateralB}
+                  />
+                )}
+                </div>
               </div>
 
               {/* Stats Cards Row 2 */}
