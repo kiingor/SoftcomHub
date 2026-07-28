@@ -605,22 +605,34 @@ temposHoje: (() => {
  * abas, paginação e altura própria, e virar célula de grade estouraria o
  * arranjo em vez de ajudar.
  */
+// A ORDEM é o que o empacotador usa para montar o arranjo padrão. Mudar aqui
+// muda o padrão; por isso ela segue a leitura da tela, e não a ordem em que os
+// cards foram criados.
 const MONITOR_CARDS = [
   { id: 'tempoReal', label: 'Atendimentos em tempo real' },
-  { id: 'statusAtendentes', label: 'Status dos atendentes' },
-  { id: 'porSubsetor', label: 'Por subsetor' },
+  { id: 'porSubsetor', label: 'Atendimentos em tempo real (2º card)' },
   { id: 'atendimentoHoje', label: 'Atendimento hoje' },
+  { id: 'statusAtendentes', label: 'Status dos atendentes' },
   { id: 'statusTickets', label: 'Status dos tickets hoje' },
 ] as const
 
-// As larguras somam 12 por linha de propósito: é o que faz os cards nascerem
-// lado a lado em vez de empilhados.
+/**
+ * Arranjo padrão do Monitoramento, na largura de 12 colunas.
+ *
+ *   linha 1   tempoReal (6)          porSubsetor (6)
+ *   linha 2   atendimentoHoje (7)  statusAtendentes (2)  statusTickets (3)
+ *
+ * As duas linhas somam 12 de propósito: é o que faz os cards nascerem lado a
+ * lado em vez de empilhados. Combinado com a ordem acima, o empacotador
+ * reproduz exatamente esse desenho — os dois cards de tempo real com a mesma
+ * largura, e a linha de baixo com o resumo do dia ocupando a maior parte.
+ */
 const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
-  tempoReal: { w: 7, h: 7 },
-  statusAtendentes: { w: 5, h: 3 },
-  porSubsetor: { w: 5, h: 7 },
-  atendimentoHoje: { w: 7, h: 5 },
-  statusTickets: { w: 5, h: 4 },
+  tempoReal: { w: 6, h: 6 },
+  porSubsetor: { w: 6, h: 6 },
+  atendimentoHoje: { w: 7, h: 3 },
+  statusAtendentes: { w: 2, h: 3 },
+  statusTickets: { w: 3, h: 3 },
 }
 
 // v2: a v1 nasceu com todos os cards empilhados em x=0. Trocar a chave dá a
@@ -630,18 +642,21 @@ const MONITOR_COLLAPSED_STORAGE_KEY = 'setor-monitor-collapsed-v1'
 const MONITOR_COLLAPSED_H = 1
 
 /**
- * Proporção da primeira linha do Monitoramento.
+ * Proporção da primeira linha do Monitoramento, em colunas da grade.
  *
- * As classes precisam existir LITERAIS no código: o Tailwind varre o fonte e
- * não geraria nada a partir de uma string montada em tempo de execução.
+ * Nasceu como classes `lg:grid-cols-[...]`, e virou letra morta quando os dois
+ * cards passaram a ser itens da grade arrastável: a largura deixou de vir do
+ * CSS e passou a vir do layout, então o controle mexia num valor que ninguém
+ * lia. Agora ele reescreve a largura dos dois cards no próprio layout — que é
+ * o mesmo que arrastar a borda, só que em um clique e sem desalinhar.
  */
-const PROPORCAO_LINHA1 = {
-  esquerda: 'lg:grid-cols-[2fr_1fr]',
-  equilibrado: 'lg:grid-cols-[1.6fr_1.1fr]',
-  direita: 'lg:grid-cols-[1.1fr_1.3fr]',
-} as const
+const LARGURA_LINHA1 = {
+  esquerda: [7, 5],
+  equilibrado: [6, 6],
+  direita: [5, 7],
+} as const satisfies Record<string, readonly [number, number]>
 
-type ProporcaoLinha1 = keyof typeof PROPORCAO_LINHA1
+type ProporcaoLinha1 = keyof typeof LARGURA_LINHA1
 
 const ROTULO_PROPORCAO: Record<ProporcaoLinha1, string> = {
   esquerda: 'Mais espaço à esquerda',
@@ -2992,9 +3007,9 @@ function SetorPageInner() {
     // `!== false` e não `?? true`: preferência antiga sem o campo nasce visível.
     setPainelSubsetorVisivel(salvo?.visivel !== false)
     // Valor desconhecido (preferência antiga ou adulterada) cai no padrão em
-    // vez de virar uma classe inexistente e quebrar a grade.
+    // vez de deixar o botão marcado numa proporção que não existe.
     setProporcaoLinha1(
-      salvo?.proporcao && salvo.proporcao in PROPORCAO_LINHA1
+      salvo?.proporcao && salvo.proporcao in LARGURA_LINHA1
         ? (salvo.proporcao as ProporcaoLinha1)
         : 'equilibrado',
     )
@@ -3110,6 +3125,30 @@ function SetorPageInner() {
    * — perder o recorte de Suporte/Prime num clique de "restaurar layout" seria
    * apagar justamente a configuração que o gestor montou.
    */
+  /**
+   * Aplica a proporção da linha 1 escrevendo no layout, e não numa classe.
+   *
+   * Só mexe em largura e x dos dois cards de tempo real; altura e o resto da
+   * grade ficam como estavam. Sem layout salvo, parte do arranjo padrão — senão
+   * o primeiro clique não teria em cima do que trabalhar.
+   */
+  const aplicarProporcaoLinha1 = (chave: ProporcaoLinha1) => {
+    setProporcaoLinha1(chave)
+    const [larguraPrincipal, larguraSecundario] = LARGURA_LINHA1[chave]
+    setMonitorLayout((atual) => {
+      const base = atual || buildDefaultLayout(monitorVisibleIds, MONITOR_DEFAULT_SIZE)
+      const proximo = base.map((item) => {
+        if (item.i === 'tempoReal') return { ...item, x: 0, w: larguraPrincipal }
+        if (item.i === 'porSubsetor') return { ...item, x: larguraPrincipal, w: larguraSecundario }
+        return item
+      })
+      try {
+        window.localStorage.setItem(MONITOR_LAYOUT_STORAGE_KEY, JSON.stringify(proximo))
+      } catch { /* navegador sem storage não impede ajustar em tela */ }
+      return proximo
+    })
+  }
+
   const resetarLayoutMonitor = () => {
     setMonitorLayout(null)
     setMonitorCollapsed({})
@@ -4986,13 +5025,13 @@ const saveConfig = async () => {
                       </p>
 
                       <div className="mt-3 grid grid-cols-3 gap-1.5">
-                        {(Object.keys(PROPORCAO_LINHA1) as ProporcaoLinha1[]).map((chave) => (
+                        {(Object.keys(LARGURA_LINHA1) as ProporcaoLinha1[]).map((chave) => (
                           <Button
                             key={chave}
                             variant={proporcaoLinha1 === chave ? 'default' : 'outline'}
                             size="sm"
                             className="h-auto whitespace-normal px-2 py-1.5 text-[11px] leading-tight"
-                            onClick={() => setProporcaoLinha1(chave)}
+                            onClick={() => aplicarProporcaoLinha1(chave)}
                           >
                             {ROTULO_PROPORCAO[chave]}
                           </Button>
