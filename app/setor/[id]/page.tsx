@@ -2,7 +2,7 @@
 
 import { useRef } from "react"
 
-import React, { useState, useMemo, useEffect, useTransition, Fragment, Suspense } from 'react'
+import React, { useState, useMemo, useCallback, useEffect, useTransition, Fragment, Suspense } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import useSWR from 'swr'
@@ -142,6 +142,8 @@ import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
+import { loadRowsByPages } from '@/lib/supabase/paginate'
+import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { toast } from 'sonner'
@@ -1040,9 +1042,12 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
 // Client-side filters applied over the already-loaded report tickets
 // (atendente + canal selects + cliente search). Shared by the current period
 // view and the previous-period comparison so the Δ stays consistent.
+/** Valor do filtro de subsetor para os tickets que não têm nenhum. */
+const RELATORIO_SEM_SUBSETOR = '__sem_subsetor__'
+
 function applyRelatorioFilters(
   list: any[],
-  opts: { searchCliente: string; atendente: string; canal: string },
+  opts: { searchCliente: string; atendente: string; canal: string; subsetor?: string },
 ): any[] {
   let out = list
   if (opts.atendente !== 'all') {
@@ -1050,6 +1055,11 @@ function applyRelatorioFilters(
   }
   if (opts.canal !== 'all') {
     out = out.filter((t) => (t.canal || 'desconhecido') === opts.canal)
+  }
+  if (opts.subsetor && opts.subsetor !== 'all') {
+    out = opts.subsetor === RELATORIO_SEM_SUBSETOR
+      ? out.filter((t) => !t.subsetor_id)
+      : out.filter((t) => t.subsetor_id === opts.subsetor)
   }
   const term = opts.searchCliente.trim().toLowerCase()
   if (term) {
@@ -1669,15 +1679,21 @@ function SetorPageInner() {
   const { data: relatorioData, isLoading: relatorioLoading } = useSWR(
     setorId ? ['setor-relatorio', setorId, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()] : null,
     async () => {
-      let query = supabase
-        .from('tickets')
-        .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ, PDV)')
-        .eq('setor_id', setorId)
-        .order('criado_em', { ascending: false })
-        .limit(1000)
-      if (dateFrom) query = query.gte('criado_em', dateFrom)
-      if (dateTo) query = query.lte('criado_em', dateTo)
-      const { data: tickets } = await query
+      // Paginado: o teto de 1.000 do PostgREST truncava o relatório em silêncio.
+      // O ServiceDesk fez 3.105 tickets em 7 dias — no período de uma semana o
+      // painel mostrava um terço dos dados e chamava de total, contaminando KPI,
+      // gráfico e NPS. O gestor decide com estes números.
+      const tickets = await loadRowsByPages(() => {
+        let query = supabase
+          .from('tickets')
+          .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ, PDV)')
+          .eq('setor_id', setorId)
+          .order('criado_em', { ascending: false })
+          .order('id', { ascending: false })
+        if (dateFrom) query = query.gte('criado_em', dateFrom)
+        if (dateTo) query = query.lte('criado_em', dateTo)
+        return query
+      })
       // Buscar avaliações separadamente (join direto não funciona via client RLS)
       const ticketIds = (tickets || []).map((t: any) => t.id)
       let avaliacoesMap = new Map<string, number>()
@@ -1735,14 +1751,17 @@ function SetorPageInner() {
   const { data: prevRelatorioData } = useSWR(
     setorId && prevPeriod ? ['setor-relatorio-prev', setorId, prevPeriod.from, prevPeriod.to] : null,
     async () => {
-      const { data } = await supabase
+      // `subsetor_id` é obrigatório aqui: sem ele o filtro de subsetor valeria só
+      // para o período atual, e as variações percentuais compaririam o Prime
+      // filtrado contra o setor inteiro. Paginado pelo mesmo motivo do período
+      // atual — o teto de 1.000 falseava a base de comparação.
+      return await loadRowsByPages(() => supabase
         .from('tickets')
-        .select('criado_em, status, primeira_resposta_em, encerrado_em, canal, colaboradores(nome), clientes(nome, telefone, CNPJ)')
+        .select('criado_em, status, primeira_resposta_em, encerrado_em, canal, subsetor_id, colaboradores(nome), clientes(nome, telefone, CNPJ)')
         .eq('setor_id', setorId)
         .gte('criado_em', prevPeriod!.from)
         .lte('criado_em', prevPeriod!.to)
-        .limit(1000)
-      return data || []
+        .order('id', { ascending: false }))
     },
     { revalidateOnFocus: false }
   )
@@ -1869,6 +1888,35 @@ function SetorPageInner() {
   const [searchCliente, setSearchCliente] = useState(() => searchParams.get('cliente') || '')
   const [relatorioAtendente, setRelatorioAtendente] = useState(() => searchParams.get('atendente') || 'all')
   const [relatorioCanal, setRelatorioCanal] = useState(() => searchParams.get('canal') || 'all')
+  const [relatorioSubsetor, setRelatorioSubsetor] = useState(() => searchParams.get('subsetor') || 'all')
+
+  // Comparação lado a lado: quando ativa, a área de cards é repetida em duas
+  // colunas, uma por subsetor. O gestor acompanha Suporte e Prime na mesma tela,
+  // com as mesmas métricas e o mesmo período.
+  const [comparandoSubsetores, setComparandoSubsetores] = useState(false)
+  const [subsetorEsquerda, setSubsetorEsquerda] = useState<string>('all')
+  const [subsetorDireita, setSubsetorDireita] = useState<string>('all')
+
+  const relatorioSubsetorOptions = useMemo(() => {
+    // Lê de `subsetores` e não de `subsetorNomeById`: aquele mapa é declarado
+    // bem mais abaixo no componente, e `const` não sobe — usá-lo aqui quebraria
+    // na primeira renderização.
+    const nomePorId = new Map((subsetores as any[]).map((s) => [s.id, s.nome]))
+    const usados = new Map<string, string>()
+    let temSemSubsetor = false
+    for (const t of ticketsRelatorioRaw) {
+      if (!t.subsetor_id) { temSemSubsetor = true; continue }
+      if (!usados.has(t.subsetor_id)) {
+        usados.set(t.subsetor_id, nomePorId.get(t.subsetor_id) || 'Subsetor')
+      }
+    }
+    const lista = [...usados.entries()]
+      .map(([id, nome]) => ({ id, nome }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+    // "Sem subsetor" só aparece quando existe de fato — evita opção morta.
+    if (temSemSubsetor) lista.push({ id: RELATORIO_SEM_SUBSETOR, nome: 'Sem subsetor' })
+    return lista
+  }, [ticketsRelatorioRaw, subsetores])
 
   // Opções dos selects derivadas dos próprios tickets do período
   const relatorioAtendentesOptions = useMemo(() => {
@@ -1885,17 +1933,67 @@ function SetorPageInner() {
   }, [ticketsRelatorioRaw])
 
   const ticketsRelatorio = useMemo(
-    () => applyRelatorioFilters(ticketsRelatorioRaw, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal }),
-    [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal]
+    () => applyRelatorioFilters(ticketsRelatorioRaw, {
+      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor: relatorioSubsetor,
+    }),
+    [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal, relatorioSubsetor]
   )
+
+  /** Tickets de uma coluna da comparação — mesmos filtros, subsetor próprio. */
+  const ticketsDoSubsetor = useCallback((subsetor: string) => (
+    applyRelatorioFilters(ticketsRelatorioRaw, {
+      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor,
+    })
+  ), [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal])
+
+  const ticketsEsquerda = useMemo(
+    () => (comparandoSubsetores ? ticketsDoSubsetor(subsetorEsquerda) : []),
+    [comparandoSubsetores, ticketsDoSubsetor, subsetorEsquerda],
+  )
+  const ticketsDireita = useMemo(
+    () => (comparandoSubsetores ? ticketsDoSubsetor(subsetorDireita) : []),
+    [comparandoSubsetores, ticketsDoSubsetor, subsetorDireita],
+  )
+
+  /**
+   * Indicadores de uma coluna da comparação.
+   *
+   * `bruto` acompanha o valor formatado porque quem lidera precisa ser decidido
+   * por número — comparar "00:11:00" com "00:46:48" como texto daria errado.
+   */
+  const indicadoresDe = useCallback((lista: any[]): IndicadorComparacao[] => {
+    const paraHhMmSs = (ms: number) => {
+      const horas = Math.floor(ms / 3_600_000)
+      const minutos = Math.floor((ms % 3_600_000) / 60_000)
+      const segundos = Math.floor((ms % 60_000) / 1000)
+      return [horas, minutos, segundos].map((n) => String(n).padStart(2, '0')).join(':')
+    }
+    const kpis = computeRelatorioKpis(lista)
+    const stats = calculateRelatorioStats(lista, paraHhMmSs)
+    return [
+      { chave: 'recebidos', rotulo: 'Tickets recebidos', valor: String(kpis.recebidos), bruto: kpis.recebidos, maiorEhMelhor: true },
+      { chave: 'resolvidos', rotulo: 'Tickets resolvidos', valor: String(kpis.resolvidos), bruto: kpis.resolvidos, maiorEhMelhor: true },
+      { chave: 'taxa', rotulo: 'Taxa de resolução', valor: `${Math.round(kpis.taxaResolucao)}%`, bruto: kpis.taxaResolucao, maiorEhMelhor: true },
+      // `bruto` zerado vira null: 0ms aqui significa "sem amostra", não "instantâneo".
+      { chave: 'primeiraResposta', rotulo: 'Tempo médio 1ª resposta', valor: stats.tempoMedioPrimeiraResposta, bruto: kpis.tmaPrimeiraRespostaMs || null, maiorEhMelhor: false },
+      { chave: 'resolucao', rotulo: 'Tempo médio resolução', valor: stats.tempoMedioResolucao, bruto: kpis.tmaResolucaoMs || null, maiorEhMelhor: false },
+    ]
+  }, [])
+
+  const indicadoresEsquerda = useMemo(() => indicadoresDe(ticketsEsquerda), [indicadoresDe, ticketsEsquerda])
+  const indicadoresDireita = useMemo(() => indicadoresDe(ticketsDireita), [indicadoresDe, ticketsDireita])
 
   // KPIs numéricos do período atual e do anterior (para o Δ%)
   const kpiAtual = useMemo(() => computeRelatorioKpis(ticketsRelatorio), [ticketsRelatorio])
   const kpiAnterior = useMemo(() => {
     if (!prevRelatorioData) return null
-    const filtered = applyRelatorioFilters(prevRelatorioData, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal })
+    // O mesmo filtro de subsetor precisa valer aqui, senão o Δ% compararia o
+    // subsetor escolhido contra o setor inteiro do período anterior.
+    const filtered = applyRelatorioFilters(prevRelatorioData, {
+      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor: relatorioSubsetor,
+    })
     return computeRelatorioKpis(filtered)
-  }, [prevRelatorioData, searchCliente, relatorioAtendente, relatorioCanal])
+  }, [prevRelatorioData, searchCliente, relatorioAtendente, relatorioCanal, relatorioSubsetor])
 
   // Base do nome do arquivo exportado (setor + data atual)
   const exportFilenameBase = useMemo(() => {
@@ -5469,12 +5567,58 @@ const saveConfig = async () => {
                   ))}
                 </SelectContent>
               </Select>
-              {(relatorioAtendente !== 'all' || relatorioCanal !== 'all') && (
+              {relatorioSubsetorOptions.length > 0 && (
+                <Select
+                  value={relatorioSubsetor}
+                  onValueChange={setRelatorioSubsetor}
+                  disabled={comparandoSubsetores}
+                >
+                  <SelectTrigger className="h-9 w-[190px] text-sm" aria-label="Subsetor">
+                    <SelectValue placeholder="Subsetor" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos os subsetores</SelectItem>
+                    {relatorioSubsetorOptions.map((sub) => (
+                      <SelectItem key={sub.id} value={sub.id}>{sub.nome}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
+              {/* A comparação precisa de pelo menos dois subsetores para fazer sentido. */}
+              {relatorioSubsetorOptions.length >= 2 && (
+                <Button
+                  variant={comparandoSubsetores ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => {
+                    setComparandoSubsetores((ativo) => {
+                      const proximo = !ativo
+                      if (proximo) {
+                        // Começa com os dois primeiros para a tela já nascer útil.
+                        setSubsetorEsquerda(relatorioSubsetorOptions[0].id)
+                        setSubsetorDireita(relatorioSubsetorOptions[1].id)
+                        setRelatorioSubsetor('all')
+                      }
+                      return proximo
+                    })
+                  }}
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  {comparandoSubsetores ? 'Sair da comparação' : 'Comparar subsetores'}
+                </Button>
+              )}
+
+              {(relatorioAtendente !== 'all' || relatorioCanal !== 'all' || relatorioSubsetor !== 'all') && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-9 gap-1.5 text-muted-foreground"
-                  onClick={() => { setRelatorioAtendente('all'); setRelatorioCanal('all') }}
+                  onClick={() => {
+                    setRelatorioAtendente('all')
+                    setRelatorioCanal('all')
+                    setRelatorioSubsetor('all')
+                  }}
                 >
                   <X className="h-3.5 w-3.5" />
                   Limpar filtros
@@ -5490,7 +5634,23 @@ const saveConfig = async () => {
                 Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior‑direito para redimensionar. Clique em <strong>Concluir</strong> para fixar.
               </div>
             )}
+            {/* Comparação substitui a grade em vez de conviver com ela: os cards
+                mostram o setor inteiro, e ver os dois números juntos na mesma
+                tela induziria a ler um pelo outro. */}
+            {comparandoSubsetores && (
+              <ComparacaoSubsetores
+                opcoes={relatorioSubsetorOptions}
+                esquerda={subsetorEsquerda}
+                direita={subsetorDireita}
+                aoTrocarEsquerda={setSubsetorEsquerda}
+                aoTrocarDireita={setSubsetorDireita}
+                indicadoresEsquerda={indicadoresEsquerda}
+                indicadoresDireita={indicadoresDireita}
+              />
+            )}
+
             {/* ===== Relatórios — cartões (fixos; editáveis no modo Personalizar) ===== */}
+            {!comparandoSubsetores && (
             <ResponsiveReactGridLayout
               layouts={{ lg: effectiveLgLayout }}
               breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
@@ -6376,6 +6536,7 @@ const saveConfig = async () => {
             )}
 
             </ResponsiveReactGridLayout>
+            )}
         </div>
       )}
 
