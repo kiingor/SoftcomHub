@@ -361,7 +361,6 @@ export async function POST(request: NextRequest) {
           .eq('ticket_id', ticketId)
           .in('remetente', ['cliente', 'cliente-nexus'])
           .eq('phone_number_id', requestedInstance)
-          .not('whatsapp_message_id', 'is', null)
           .limit(1)
 
         if (priorInboundError) throw priorInboundError

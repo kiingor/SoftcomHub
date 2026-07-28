@@ -173,7 +173,11 @@ async function lookupGetClientWebhook(cnpj: string): Promise<SoftcomClient | nul
   return record ? toSoftcomClient(record, cnpj) : null
 }
 
-/** Busca um cliente por CNPJ na Softcom Cloud, com fallback para o webhook legado. */
+/**
+ * Busca um cliente na Softcom Cloud, com fallback para o webhook legado.
+ * O documento pode ser CNPJ ou CPF (cliente MEI) — os dois trafegam no mesmo
+ * campo `cnpj` do contrato externo, que já responde aos dois formatos.
+ */
 export async function lookupSoftcomClientByCnpj(cnpj: string): Promise<SoftcomClient | null> {
   const apiKey = process.env.SOFTCOM_API_KEY
   const normalizedCnpj = cnpj.replace(/\D/g, '')

@@ -37,7 +37,8 @@ export function formatPausaElapsedLabel(pausaInfo: PausaInfo | null | undefined,
   if (getPausaStartMs(pausaInfo) === null || !Number.isFinite(elapsedMs) || elapsedMs < 0) return null
   const hours = String(Math.floor(elapsedMs / 3600000)).padStart(2, '0')
   const minutes = String(Math.floor((elapsedMs % 3600000) / 60000)).padStart(2, '0')
-  return `${hours}:${minutes}`
+  const seconds = String(Math.floor((elapsedMs % 60000) / 1000)).padStart(2, '0')
+  return `${hours}:${minutes}:${seconds}`
 }
 
 // Nunca retorna "Pausa · null" — se o tempo decorrido ainda não pôde ser

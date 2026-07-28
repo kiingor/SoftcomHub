@@ -6,6 +6,7 @@ import {
   formatNexusAttendanceType,
   getNexusConversationScopeKey,
   matchesNexusTicketConversationFilter,
+  resolveNexusConversationScopes,
   NEXUS_ATENDIMENTOS_PAGE_SIZE,
   NEXUS_NO_TICKET_IDLE_MS,
   paginateNexusAggregates,
@@ -779,24 +780,21 @@ function groupMessagesIntoSessions(
     messages: MessageMetadata[]
   }>()
 
-  for (const message of messages) {
-    const sector = message.phone_number_id
-      ? sectorsByChannel.get(message.phone_number_id)
-      : null
-    if (!sector) continue
+  // `messages` já chega ordenada por `enviado_em`, que é o que a resolução de
+  // escopo exige para a resposta do bot herdar o setor da fala do cliente.
+  const scopedMessages = resolveNexusConversationScopes(messages, {
+    getId: (message) => message.id,
+    getRemetente: (message) => message.remetente,
+    getClienteId: (message) => message.cliente_id,
+    getNormalizedPhone: (message) => (
+      normalizeBrazilianPhone(clientsById.get(message.cliente_id || '')?.telefone)
+    ),
+    resolveOwnSector: (message) => (
+      message.phone_number_id ? sectorsByChannel.get(message.phone_number_id) : null
+    ),
+  })
 
-    const client = message.cliente_id ? clientsById.get(message.cliente_id) : null
-    const normalizedPhone = normalizeBrazilianPhone(client?.telefone)
-    // A message without any stable client identity cannot be grouped into a
-    // conversation safely; using its own ID would count every row as a session.
-    if (!message.cliente_id && !normalizedPhone) continue
-    const groupKey = getNexusConversationScopeKey(
-      sector.id,
-      message.cliente_id,
-      normalizedPhone,
-      message.id,
-      sector.channelKey,
-    )
+  for (const { message, sector, clienteId, groupKey } of scopedMessages) {
     const current = groups.get(groupKey)
 
     if (current) {
@@ -804,8 +802,9 @@ function groupMessagesIntoSessions(
       continue
     }
 
+    const client = clienteId ? clientsById.get(clienteId) : null
     groups.set(groupKey, {
-      clienteId: message.cliente_id,
+      clienteId,
       contato: client?.nome || client?.telefone || 'Cliente sem nome',
       telefone: client?.telefone || null,
       setorId: sector.id,

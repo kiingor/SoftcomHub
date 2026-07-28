@@ -204,7 +204,11 @@ test('does not accept the newly inserted collaborator message as channel evidenc
   assert.equal(selected, null)
 })
 
-test('requires a provider id before an inbound client row proves channel history', () => {
+test('a fala do cliente prova o canal mesmo sem id do provedor — caso do transbordo', () => {
+  // Quando a fila de uma franquia fica sem atendente, o ticket passa para o
+  // ServiceDesk mas o cliente continua falando pela instância de origem, que o
+  // novo setor não possui. As mensagens do Evolution costumam chegar sem
+  // `whatsapp_message_id`; exigi-lo deixava o atendente sem conseguir responder.
   const selected = selectAuthorizedChannel({
     active: [{
       id: 'historical-channel',
@@ -214,6 +218,40 @@ test('requires a provider id before an inbound client row proves channel history
     evidence: [{
       sender: 'cliente',
       channelIdentifier: 'historical-phone-id',
+      providerMessageId: null,
+    }],
+  })
+
+  assert.equal(selected?.id, 'historical-channel')
+})
+
+test('só a fala do CLIENTE prova o canal — é o que sustenta a regra sem o id do provedor', () => {
+  for (const sender of ['colaborador', 'supervisor', 'sistema', 'bot', null]) {
+    assert.equal(
+      selectAuthorizedChannel({
+        active: [{
+          id: 'historical-channel',
+          sectorId: 'previous-sector',
+          identifier: 'historical-phone-id',
+        }],
+        evidence: [{ sender, channelIdentifier: 'historical-phone-id', providerMessageId: null }],
+      }),
+      null,
+      `remetente ${sender} não pode autorizar canal de outro setor`,
+    )
+  }
+})
+
+test('a evidência não vale para um canal diferente do pedido', () => {
+  const selected = selectAuthorizedChannel({
+    active: [{
+      id: 'historical-channel',
+      sectorId: 'previous-sector',
+      identifier: 'historical-phone-id',
+    }],
+    evidence: [{
+      sender: 'cliente',
+      channelIdentifier: 'outro-canal',
       providerMessageId: null,
     }],
   })

@@ -122,6 +122,118 @@ export function hasNexusBotResponse(messages: readonly NexusSessionMessage[]): b
   ))
 }
 
+export function isNexusBotRemetente(remetente: string | null | undefined): boolean {
+  return remetente?.trim().toLocaleLowerCase('pt-BR') === NEXUS_BOT_REMETENTE
+}
+
+/**
+ * Setor ao qual a mensagem pertence para fins de agrupamento da conversa.
+ *
+ * O Nexus é triagem inicial: atende por um número só e encaminha para
+ * Financeiro, Suporte, Ouvidoria ou Comercial conforme o caso. Esse número
+ * também é canal de atendimento de um setor, então resolver o setor pelo canal
+ * do BOT atribuía toda resposta dele àquele setor — e a conversa aparecia
+ * partida em duas linhas no painel: a fala do cliente num setor, a resposta do
+ * bot em outro. Medido em 27/07/2026: 95 de 117 conversas de 48h duplicadas,
+ * com 1.000 de 1.000 mensagens do bot num único canal.
+ *
+ * A resposta do bot pertence à conversa do cliente, então herda o setor da
+ * última fala dele. Sem fala anterior (bot abriu a conversa), cai no canal
+ * próprio, que é o comportamento antigo.
+ */
+export function resolveNexusMessageSector<TSector>(params: {
+  remetente: string | null | undefined
+  ownSector: TSector | null | undefined
+  lastClientSector: TSector | null | undefined
+}): TSector | null {
+  const { remetente, ownSector, lastClientSector } = params
+  if (isNexusBotRemetente(remetente)) return lastClientSector ?? ownSector ?? null
+  return ownSector ?? null
+}
+
+export type NexusSectorChannel = {
+  id: string
+  channelKey: string
+}
+
+export type NexusScopeAdapter<TMessage, TSector> = {
+  getId: (message: TMessage) => string
+  getRemetente: (message: TMessage) => string | null | undefined
+  getClienteId: (message: TMessage) => string | null | undefined
+  /** Telefone do cliente já normalizado, ou null quando não houver. */
+  getNormalizedPhone: (message: TMessage) => string | null | undefined
+  /** Setor do canal por onde a mensagem entrou, antes da regra do bot. */
+  resolveOwnSector: (message: TMessage) => TSector | null | undefined
+}
+
+export type NexusScopedMessage<TMessage, TSector> = {
+  message: TMessage
+  sector: TSector
+  clienteId: string | null
+  normalizedPhone: string | null
+  /** Identidade do cliente independente de canal. */
+  clientKey: string
+  groupKey: string
+}
+
+/**
+ * Resolve a que conversa cada mensagem do Nexus pertence.
+ *
+ * Regra única do painel, compartilhada pela lista "ao vivo" (client) e pelo
+ * histórico de atendimentos (server). Enquanto cada lado tinha a sua cópia, os
+ * dois divergiram: a correção do bot herdando o setor do cliente foi aplicada
+ * só no server, e a lista ao vivo continuou partindo a conversa em duas linhas.
+ *
+ * As mensagens PRECISAM vir em ordem cronológica crescente — a herança é uma
+ * passada só para frente, e uma resposta do bot só sabe de onde veio a fala que
+ * está respondendo se essa fala já tiver sido vista.
+ *
+ * Mensagens sem identidade estável de cliente são descartadas: usar o id da
+ * própria mensagem transformaria cada linha numa conversa.
+ */
+export function resolveNexusConversationScopes<TMessage, TSector extends NexusSectorChannel>(
+  messages: readonly TMessage[],
+  adapter: NexusScopeAdapter<TMessage, TSector>,
+): Array<NexusScopedMessage<TMessage, TSector>> {
+  const scopedMessages: Array<NexusScopedMessage<TMessage, TSector>> = []
+  const lastClientSectorByClient = new Map<string, TSector>()
+
+  for (const message of messages) {
+    const clienteId = adapter.getClienteId(message) ?? null
+    const normalizedPhone = adapter.getNormalizedPhone(message) ?? null
+    if (!clienteId && !normalizedPhone) continue
+
+    // A chave NÃO leva o canal: é justamente por o bot atender num número
+    // diferente do que o cliente usou que os dois lados precisam se encontrar.
+    const clientKey = normalizedPhone || clienteId!
+    const remetente = adapter.getRemetente(message)
+    const sector = resolveNexusMessageSector({
+      remetente,
+      ownSector: adapter.resolveOwnSector(message),
+      lastClientSector: lastClientSectorByClient.get(clientKey) ?? null,
+    })
+    if (!sector) continue
+    if (!isNexusBotRemetente(remetente)) lastClientSectorByClient.set(clientKey, sector)
+
+    scopedMessages.push({
+      message,
+      sector,
+      clienteId,
+      normalizedPhone,
+      clientKey,
+      groupKey: getNexusConversationScopeKey(
+        sector.id,
+        clienteId,
+        normalizedPhone,
+        adapter.getId(message),
+        sector.channelKey,
+      ),
+    })
+  }
+
+  return scopedMessages
+}
+
 export function classifyNexusSessionOutcome({
   messages,
   ticketId,
@@ -229,10 +341,15 @@ export function shouldStartNewNexusSession({
 }: NexusSessionBoundaryInput): boolean {
   if (!hasCurrentSession || gapMs >= maxGapMs) return true
 
-  // null -> ticket is the same conversation being converted. Once a session
-  // already belongs to a ticket, however, a different ticket or a new null
-  // message starts another contact and must not be attached to the old ticket.
-  return Boolean(currentTicketId && incomingTicketId !== currentTicketId)
+  // Só um ticket DIFERENTE prova que é outra conversa. Mensagem sem ticket não
+  // contradiz nada — é apenas não carimbada, e separar contatos é trabalho do
+  // intervalo acima.
+  //
+  // Tratar `null` como fronteira partia a última fala do bot ("Vou te passar
+  // pra um técnico"), que sai segundos depois de o n8n vincular o histórico ao
+  // ticket e não recebe o carimbo. Ela virava uma sessão à parte, de uma
+  // mensagem só, listada como "Encerrada sem ticket" ao lado da conversa real.
+  return Boolean(currentTicketId && incomingTicketId && incomingTicketId !== currentTicketId)
 }
 
 export function mergeNexusTicketTimeline<

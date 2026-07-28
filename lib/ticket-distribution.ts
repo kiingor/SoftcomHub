@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { escolherDestino, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 
@@ -200,20 +201,6 @@ export async function criarEDistribuirTicket(
       }
       const rawSetorColabs = (setorLinks || []).map((cs: any) => cs.colaboradores)
 
-      let rawCompatibleColabs = rawSetorColabs
-      if (subsetorId) {
-        const { data, error } = await supabase
-          .from('colaboradores_subsetores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat, last_ticket_received_at, setores_ativos_sessao)')
-          .eq('setor_id', setorId)
-          .eq('subsetor_id', subsetorId)
-        if (error) {
-          routingLookupFailed = true
-          console.error('[Distribution] Erro ao buscar colaboradores do subsetor:', error)
-        }
-        rawCompatibleColabs = (data || []).map((sl: any) => sl.colaboradores)
-      }
-
       const STALE_CLEANUP_MS = 5 * 60 * 1000 // 5 min — marcar offline automaticamente
       const toFresh = (raw: any[]) => [...new Map(
         raw
@@ -229,8 +216,9 @@ export async function criarEDistribuirTicket(
           }]),
       ).values()]
 
+      // Todos os atendentes disponíveis do setor. Quem atende o subsetor do
+      // ticket e quem entra por transbordo é decidido em `escolherDestino`.
       const fallbackColaboradores = toFresh(rawSetorColabs)
-      let compatibleColaboradores = toFresh(rawCompatibleColabs)
       const subsetoresByColaborador = new Map<string, string[]>()
       if (fallbackColaboradores.length > 0) {
         const fallbackIds = fallbackColaboradores.map((c) => c.id)
@@ -250,16 +238,10 @@ export async function criarEDistribuirTicket(
         }
       }
 
-      if (!subsetorId && compatibleColaboradores.length > 0) {
-        compatibleColaboradores = compatibleColaboradores.filter((c) =>
-          isExactSubsetorMatch(null, subsetoresByColaborador.get(c.id) || []),
-        )
-      }
-
       // Cleanup: marcar offline atendentes com heartbeat muito antigo (> 5 min).
       // NÃO toca em setores_ativos_sessao — é configuração permanente do admin.
       const allRawColabs = [...new Map(
-        [...rawSetorColabs, ...rawCompatibleColabs]
+        rawSetorColabs
           .filter(Boolean)
           .map((c: any) => [c.id, c]),
       ).values()]
@@ -275,9 +257,10 @@ export async function criarEDistribuirTicket(
           .in('id', staleIds)
       }
 
-      const hasCompatibleOnline = compatibleColaboradores.length > 0
-      let fallbackSemPrioridadePendente = fallbackColaboradores
-      if (!routingLookupFailed && !hasCompatibleOnline && fallbackColaboradores.length > 0) {
+      // Subsetores que ainda têm ticket esperando: quem tem fila própria não é
+      // puxado por transbordo (o Prime esvazia o Prime antes de ajudar o Suporte).
+      let subsetoresComFila: (string | null)[] = []
+      if (!routingLookupFailed && fallbackColaboradores.length > 0) {
         const { data: pendingTickets, error: pendingTicketsError } = await supabase
           .from('tickets')
           .select('id, subsetor_id')
@@ -290,59 +273,61 @@ export async function criarEDistribuirTicket(
           routingLookupFailed = true
           console.error('[Distribution] Erro ao verificar prioridades pendentes:', pendingTicketsError)
         } else {
-          fallbackSemPrioridadePendente = fallbackColaboradores.filter((colaborador) =>
-            !(pendingTickets || []).some((pendingTicket) =>
-              isExactSubsetorMatch(
-                pendingTicket.subsetor_id,
-                subsetoresByColaborador.get(colaborador.id) || [],
-              ),
-            ),
-          )
+          subsetoresComFila = [...new Set((pendingTickets || []).map((t) => t.subsetor_id ?? null))]
         }
       }
-      const finalColaboradores = routingLookupFailed
-        ? []
-        : hasCompatibleOnline
-        ? compatibleColaboradores
-        : fallbackSemPrioridadePendente
-      const fallbackReservados = fallbackColaboradores.length - fallbackSemPrioridadePendente.length
-      console.log(`[Distribution] Disponíveis: ${finalColaboradores.length}; compatíveis online: ${compatibleColaboradores.length}; fallback=${!hasCompatibleOnline}; reservados para fila compatível=${fallbackReservados}; setor=${setorId}; subsetor=${subsetorId || 'null'}`)
 
-      if (finalColaboradores.length > 0) {
-        // Get current ticket counts for each collaborator
-        const colaboradorIds = finalColaboradores.map(c => c.id)
+      // Quantos cada um já recebeu HOJE — é o que a regra equaliza. Carga aberta
+      // continua valendo, mas como teto, não como critério de ordem.
+      const inicioDoDia = new Date()
+      inicioDoDia.setHours(0, 0, 0, 0)
+      const colaboradorIds = fallbackColaboradores.map((c) => c.id)
+      const [abertosResult, recebidosHojeResult] = colaboradorIds.length > 0
+        ? await Promise.all([
+            supabase
+              .from('tickets')
+              .select('colaborador_id')
+              .in('colaborador_id', colaboradorIds)
+              .in('status', ['aberto', 'em_atendimento']),
+            supabase
+              .from('tickets')
+              .select('colaborador_id')
+              .in('colaborador_id', colaboradorIds)
+              .gte('criado_em', inicioDoDia.toISOString()),
+          ])
+        : [{ data: [] }, { data: [] }]
 
-        const { data: ticketCounts } = await supabase
-          .from('tickets')
-          .select('colaborador_id')
-          .in('colaborador_id', colaboradorIds)
-          .in('status', ['aberto', 'em_atendimento'])
+      const contar = (linhas: { colaborador_id: string | null }[] | null) => {
+        const mapa: Record<string, number> = {}
+        for (const l of linhas || []) {
+          if (l.colaborador_id) mapa[l.colaborador_id] = (mapa[l.colaborador_id] || 0) + 1
+        }
+        return mapa
+      }
+      const abertosPorColaborador = contar(abertosResult.data)
+      const recebidosHojePorColaborador = contar(recebidosHojeResult.data)
 
-        // Count tickets per collaborator
-        const countMap: Record<string, number> = {}
-        ticketCounts?.forEach(t => {
-          if (t.colaborador_id) {
-            countMap[t.colaborador_id] = (countMap[t.colaborador_id] || 0) + 1
-          }
-        })
-
-        // Ordenar: 1) menor quantidade de tickets, 2) quem recebeu ticket há MAIS tempo (round-robin real)
-        // Usa last_ticket_received_at (atualizado no momento da atribuição) em vez de criado_em do ticket
-        const sorted = finalColaboradores
-          .map(c => ({
-            id: c.id,
-            nome: c.nome,
-            count: countMap[c.id] || 0,
-            lastReceivedAt: c.last_ticket_received_at || '1970-01-01',
-          }))
-          .filter(c => c.count < maxTicketsPerAgent)
-          .sort((a, b) => {
-            if (a.count !== b.count) return a.count - b.count
-            // Empate: quem recebeu há MAIS tempo vai primeiro (round-robin real)
-            return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
+      const escolha = routingLookupFailed
+        ? { fila: [], origem: 'ninguem' as const }
+        : escolherDestino({
+            subsetorDoTicket: subsetorId,
+            candidatos: fallbackColaboradores.map((c) => ({
+              id: c.id,
+              nome: c.nome,
+              ticketsAbertos: abertosPorColaborador[c.id] || 0,
+              recebidosHoje: recebidosHojePorColaborador[c.id] || 0,
+              ultimaAtribuicaoEm: c.last_ticket_received_at || null,
+              subsetorIds: subsetoresByColaborador.get(c.id) || [],
+            })),
+            subsetoresComFila,
+            maxTicketsAbertos: maxTicketsPerAgent,
           })
 
-        console.log(`[Distribution] Ranking: ${sorted.map(c => `${c.nome}(${c.count}t, lastRcv=${c.lastReceivedAt.slice(0,19)})`).join(', ')}`)
+      const sorted = escolha.fila
+      console.log(`[Distribution] Origem=${escolha.origem}; candidatos=${sorted.length}; setor=${setorId}; subsetor=${subsetorId || 'null'}`)
+
+      if (sorted.length > 0) {
+        console.log(`[Distribution] Ranking: ${sorted.map(c => `${c.nome}(hoje=${c.recebidosHoje}, abertos=${c.ticketsAbertos})`).join(', ')}`)
 
         // Tentar atribuir via RPC atômica percorrendo `sorted`. Se o primeiro candidato
         // já saturou (race), tenta o próximo. Garante que max_tickets_per_agent é
@@ -370,7 +355,7 @@ export async function criarEDistribuirTicket(
                 colaborador_id: candidate.id,
                 setor_id: setorId,
                 action: 'auto_assigned',
-                assignment_reason: `Round-robin: ${candidate.count} tickets, último recebido em ${candidate.lastReceivedAt.slice(0,19)}`,
+                assignment_reason: `Equilíbrio (${escolha.origem}): recebidos hoje=${candidate.recebidosHoje}, abertos=${candidate.ticketsAbertos}`,
               })
             } catch { /* tabela pode não existir */ }
 
@@ -795,17 +780,32 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       subsetoresByColaborador.set(link.colaborador_id, ids)
     }
 
-    // Get current ticket counts for all collaborators
-    const { data: ticketCounts } = await supabase
-      .from('tickets')
-      .select('colaborador_id')
-      .in('colaborador_id', colaboradorIds)
-      .in('status', ['aberto', 'em_atendimento'])
+    // Carga aberta (teto) e volume recebido hoje (ordem).
+    const inicioDoDiaRedistrib = new Date()
+    inicioDoDiaRedistrib.setHours(0, 0, 0, 0)
+    const [ticketCountsRes, recebidosHojeRes] = await Promise.all([
+      supabase
+        .from('tickets')
+        .select('colaborador_id')
+        .in('colaborador_id', colaboradorIds)
+        .in('status', ['aberto', 'em_atendimento']),
+      supabase
+        .from('tickets')
+        .select('colaborador_id')
+        .in('colaborador_id', colaboradorIds)
+        .gte('criado_em', inicioDoDiaRedistrib.toISOString()),
+    ])
 
     const countMap: Record<string, number> = {}
-    ticketCounts?.forEach(t => {
+    ticketCountsRes.data?.forEach(t => {
       if (t.colaborador_id) {
         countMap[t.colaborador_id] = (countMap[t.colaborador_id] || 0) + 1
+      }
+    })
+    const recebidosHojeMap: Record<string, number> = {}
+    recebidosHojeRes.data?.forEach(t => {
+      if (t.colaborador_id) {
+        recebidosHojeMap[t.colaborador_id] = (recebidosHojeMap[t.colaborador_id] || 0) + 1
       }
     })
 
@@ -820,17 +820,17 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
       eligibleColaboradores: typeof allColaboradores,
       routingPass: 'compatible' | 'fallback',
     ): Promise<boolean> => {
-      const sorted = eligibleColaboradores
-        .map(c => ({
+      // Mesma regra dos outros caminhos: ordem por volume recebido hoje, teto
+      // por tickets abertos.
+      const sorted = ordenarPorEquilibrio(
+        eligibleColaboradores.map((c) => ({
           id: c.id,
-          count: countMap[c.id] || 0,
-          lastReceivedAt: lastReceivedMap[c.id] || '1970-01-01',
-        }))
-        .filter(c => c.count < maxTicketsPerAgent)
-        .sort((a, b) => {
-          if (a.count !== b.count) return a.count - b.count
-          return a.lastReceivedAt.localeCompare(b.lastReceivedAt)
-        })
+          ticketsAbertos: countMap[c.id] || 0,
+          recebidosHoje: recebidosHojeMap[c.id] || 0,
+          ultimaAtribuicaoEm: lastReceivedMap[c.id] || null,
+        })),
+        maxTicketsPerAgent,
+      ).map((c: { id: string; ticketsAbertos: number }) => ({ id: c.id, count: c.ticketsAbertos }))
 
       for (const candidate of sorted) {
         const { data: result, error: rpcError } = await supabase.rpc('try_atomic_assign_ticket', {
@@ -847,8 +847,12 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const assigned = (result as any)?.assigned === true
 
         if (assigned) {
-          // Update count map e lastReceivedMap para próximas iterações (ordenação do próximo ticket)
+          // Atualiza os contadores em memória para a ordenação do PRÓXIMO ticket
+          // deste mesmo lote. Sem incrementar `recebidosHojeMap` — que é o
+          // critério de ordem — o lote inteiro iria para a mesma pessoa até ela
+          // bater no teto, que é justamente o oposto de equilibrar.
           countMap[candidate.id] = (countMap[candidate.id] || 0) + 1
+          recebidosHojeMap[candidate.id] = (recebidosHojeMap[candidate.id] || 0) + 1
           lastReceivedMap[candidate.id] = new Date().toISOString()
           assignedCount++
 

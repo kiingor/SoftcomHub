@@ -8,6 +8,9 @@ import {
   getNexusMessageActorLabel,
   getNexusMessagePhase,
   hasNexusBotResponse,
+  isNexusBotRemetente,
+  resolveNexusConversationScopes,
+  resolveNexusMessageSector,
   matchesNexusTicketConversationFilter,
   mergeNexusTicketTimeline,
   paginateNexusAggregates,
@@ -215,13 +218,17 @@ test('keeps the same client isolated by canonical Nexus channel', () => {
   assert.notEqual(firstChannel, secondChannel)
 })
 
-test('starts a new session after a ticket but keeps null-to-ticket conversion together', () => {
+test('só um ticket diferente quebra a sessão; ausência de ticket não quebra', () => {
   const base = { hasCurrentSession: true, gapMs: 1_000, maxGapMs: 60_000 }
 
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: null, incomingTicketId: 'ticket-1' }), false)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: 'ticket-1' }), false)
-  assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: null }), true)
+  // A despedida do bot sai depois de o histórico ser vinculado e vem sem
+  // carimbo de ticket. Ela pertence à conversa, não é um contato novo.
+  assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: null }), false)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: 'ticket-2' }), true)
+  // Quem separa contatos é o intervalo, e ele continua separando.
+  assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: 'ticket-1', incomingTicketId: null, gapMs: 60_000 }), true)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: null, incomingTicketId: null, gapMs: 60_000 }), true)
   assert.equal(shouldStartNewNexusSession({ ...base, currentTicketId: null, incomingTicketId: null, gapMs: 61_000 }), true)
 })
@@ -272,4 +279,137 @@ test('keeps an empty aggregate on the normalized first page', () => {
     totalItems: 0,
     totalPages: 1,
   })
+})
+
+// --- Setor da mensagem do bot -----------------------------------------------
+// O Nexus responde sempre pelo mesmo número, que também é canal de atendimento
+// de um setor. Sem esta regra, a resposta do bot cai no setor daquele canal e a
+// conversa aparece duplicada no painel.
+
+test('resposta do bot herda o setor da última fala do cliente', () => {
+  const setor = resolveNexusMessageSector({
+    remetente: 'bot-nexus',
+    ownSector: { id: 'financeiro' },   // canal do bot
+    lastClientSector: { id: 'servicedesk' },
+  })
+  assert.deepEqual(setor, { id: 'servicedesk' })
+})
+
+test('fala do cliente usa sempre o próprio canal, mesmo com histórico de outro setor', () => {
+  const setor = resolveNexusMessageSector({
+    remetente: 'cliente-nexus',
+    ownSector: { id: 'ouvidoria' },
+    lastClientSector: { id: 'servicedesk' },
+  })
+  assert.deepEqual(setor, { id: 'ouvidoria' })
+})
+
+test('bot abrindo a conversa, sem fala anterior do cliente, cai no próprio canal', () => {
+  const setor = resolveNexusMessageSector({
+    remetente: 'bot-nexus',
+    ownSector: { id: 'financeiro' },
+    lastClientSector: null,
+  })
+  assert.deepEqual(setor, { id: 'financeiro' })
+})
+
+test('sem setor de nenhum lado devolve null em vez de undefined', () => {
+  assert.equal(resolveNexusMessageSector({ remetente: 'bot-nexus', ownSector: null, lastClientSector: null }), null)
+  assert.equal(resolveNexusMessageSector({ remetente: 'cliente-nexus', ownSector: undefined, lastClientSector: null }), null)
+})
+
+test('reconhece o remetente do bot ignorando caixa e espaços', () => {
+  assert.equal(isNexusBotRemetente('bot-nexus'), true)
+  assert.equal(isNexusBotRemetente('  BOT-NEXUS  '), true)
+  assert.equal(isNexusBotRemetente('cliente-nexus'), false)
+  assert.equal(isNexusBotRemetente(null), false)
+})
+
+const SERVICEDESK = { id: 'servicedesk', channelKey: 'channel:cli' }
+const FINANCEIRO = { id: 'financeiro', channelKey: 'channel:bot' }
+
+// O bot escreve sempre pelo canal da triagem, que pertence ao Financeiro.
+const scopeAdapter = {
+  getId: (message) => message.id,
+  getRemetente: (message) => message.remetente,
+  getClienteId: (message) => message.cliente_id,
+  getNormalizedPhone: (message) => message.telefone ?? null,
+  resolveOwnSector: (message) => (
+    message.remetente === 'bot-nexus' ? FINANCEIRO : message.canal ?? null
+  ),
+}
+
+test('a conversa fica numa linha só quando o bot responde por outro canal', () => {
+  const scoped = resolveNexusConversationScopes([
+    { id: '1', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: '83962753000', canal: SERVICEDESK },
+    { id: '2', remetente: 'bot-nexus', cliente_id: 'c1', telefone: '83962753000' },
+    { id: '3', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: '83962753000', canal: SERVICEDESK },
+  ], scopeAdapter)
+
+  assert.equal(scoped.length, 3)
+  assert.equal(new Set(scoped.map((entry) => entry.groupKey)).size, 1)
+  assert.deepEqual(scoped.map((entry) => entry.sector.id), ['servicedesk', 'servicedesk', 'servicedesk'])
+  // A ordem de entrada é preservada: é ela que dá a sequência da conversa.
+  assert.deepEqual(scoped.map((entry) => entry.message.id), ['1', '2', '3'])
+})
+
+test('clientes diferentes no mesmo canal não se misturam', () => {
+  const scoped = resolveNexusConversationScopes([
+    { id: '1', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: '8396275300', canal: SERVICEDESK },
+    { id: '2', remetente: 'cliente-nexus', cliente_id: 'c2', telefone: '8399990000', canal: SERVICEDESK },
+    { id: '3', remetente: 'bot-nexus', cliente_id: 'c2', telefone: '8399990000' },
+  ], scopeAdapter)
+
+  const porCliente = new Map(scoped.map((entry) => [entry.message.id, entry.groupKey]))
+  assert.notEqual(porCliente.get('1'), porCliente.get('2'))
+  assert.equal(porCliente.get('2'), porCliente.get('3'))
+})
+
+test('o bot que abre a conversa cai no próprio canal, sem fala anterior para herdar', () => {
+  const [scoped] = resolveNexusConversationScopes([
+    { id: '1', remetente: 'bot-nexus', cliente_id: 'c1', telefone: '8396275300' },
+  ], scopeAdapter)
+
+  assert.equal(scoped.sector.id, 'financeiro')
+})
+
+test('a herança acompanha o cliente quando ele muda de setor', () => {
+  const scoped = resolveNexusConversationScopes([
+    { id: '1', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: '8396275300', canal: SERVICEDESK },
+    { id: '2', remetente: 'bot-nexus', cliente_id: 'c1', telefone: '8396275300' },
+    { id: '3', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: '8396275300', canal: FINANCEIRO },
+    { id: '4', remetente: 'bot-nexus', cliente_id: 'c1', telefone: '8396275300' },
+  ], scopeAdapter)
+
+  assert.deepEqual(scoped.map((entry) => entry.sector.id), [
+    'servicedesk', 'servicedesk', 'financeiro', 'financeiro',
+  ])
+})
+
+test('mensagem sem identidade de cliente é descartada, não vira conversa própria', () => {
+  const scoped = resolveNexusConversationScopes([
+    { id: '1', remetente: 'cliente-nexus', cliente_id: null, telefone: null, canal: SERVICEDESK },
+    { id: '2', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: null, canal: SERVICEDESK },
+  ], scopeAdapter)
+
+  assert.deepEqual(scoped.map((entry) => entry.message.id), ['2'])
+  assert.equal(scoped[0].clientKey, 'c1')
+})
+
+test('mensagem de canal desconhecido é descartada em vez de cair num setor qualquer', () => {
+  const scoped = resolveNexusConversationScopes([
+    { id: '1', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: '8396275300', canal: null },
+  ], scopeAdapter)
+
+  assert.equal(scoped.length, 0)
+})
+
+test('o telefone identifica o cliente antes do id, para o mesmo número não duplicar', () => {
+  const scoped = resolveNexusConversationScopes([
+    { id: '1', remetente: 'cliente-nexus', cliente_id: 'c1', telefone: '8396275300', canal: SERVICEDESK },
+    { id: '2', remetente: 'bot-nexus', cliente_id: 'c2-duplicado', telefone: '8396275300' },
+  ], scopeAdapter)
+
+  assert.equal(new Set(scoped.map((entry) => entry.clientKey)).size, 1)
+  assert.equal(scoped[1].sector.id, 'servicedesk')
 })

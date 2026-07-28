@@ -32,14 +32,16 @@ import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import {
-  getNexusConversationScopeKey,
   getLatestNexusSessionMessages,
   getNexusMessageActorLabel,
   getNexusMessagePhase,
+  isNexusBotRemetente,
   mergeNexusTicketTimeline,
   NEXUS_NO_TICKET_IDLE_MS,
+  resolveNexusConversationScopes,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 import { cn, isClientMessage } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
@@ -49,7 +51,6 @@ const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
 const NEXUS_REMETENTES = [NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE]
 const NEXUS_TIMELINE_REMETENTES = [...NEXUS_REMETENTES, 'cliente', 'colaborador']
-const POSTGREST_IN_CHUNK_SIZE = 200
 
 const WORKLOAD_OS_TONES: Record<WorkloadOsLevel, { value: string; badge: string }> = {
   critical: {
@@ -353,48 +354,6 @@ const RANGE_OPTIONS = [
 
 type RangeValue = (typeof RANGE_OPTIONS)[number]['value']
 
-function chunkValues<T>(values: readonly T[], size = POSTGREST_IN_CHUNK_SIZE): T[][] {
-  const chunks: T[][] = []
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size))
-  }
-  return chunks
-}
-
-async function loadRowsByValues(
-  supabase: ReturnType<typeof createClient>,
-  table: string,
-  columns: string,
-  filterColumn: string,
-  values: readonly string[],
-  configure?: (query: any) => any,
-) {
-  const rows: any[] = []
-  for (const valueChunk of chunkValues(values)) {
-    let query: any = supabase.from(table).select(columns).in(filterColumn, valueChunk)
-    if (configure) query = configure(query)
-    const { data, error } = await query
-    if (error) throw error
-    rows.push(...(data || []))
-  }
-  return rows
-}
-
-async function loadRowsByPages(
-  createQuery: () => any,
-  pageSize = 1000,
-) {
-  const rows: any[] = []
-  for (let page = 0; ; page += 1) {
-    const { data, error } = await createQuery().range(page * pageSize, page * pageSize + pageSize - 1)
-    if (error) throw error
-    if (!data || data.length === 0) break
-    rows.push(...data)
-    if (data.length < pageSize) break
-  }
-  return rows
-}
-
 // Resolve os setores com IA acessíveis e devolve um mapeador mensagem→setor
 // pelo canal (phone_number_id / instancia). Compartilhado pelos fetchers
 // "ao vivo" e "atendimentos" para não duplicar a resolução.
@@ -585,7 +544,7 @@ export default function NexusPage() {
         ? await loadRowsByValues(
             supabase,
             'mensagens',
-            'ticket_id, phone_number_id',
+            'ticket_id, phone_number_id, remetente',
             'ticket_id',
             ticketIds,
             (query) => query.in('phone_number_id', channelIds),
@@ -595,6 +554,10 @@ export default function NexusPage() {
       const channelKeysByTicket = new Map<string, Set<string>>()
       for (const message of ticketChannelMessages) {
         if (!message.ticket_id) continue
+        // Abrir um ticket vincula o histórico do bot a ele. Como o bot escreve
+        // pelo número da triagem, contar esse canal daria dois canais para o
+        // mesmo ticket e o cliente continuaria listado como "sem ticket".
+        if (isNexusBotRemetente(message.remetente)) continue
         const setor = resolveSetor(message)
         if (!setor) continue
         const channelKeys = channelKeysByTicket.get(message.ticket_id) || new Set<string>()
@@ -616,37 +579,36 @@ export default function NexusPage() {
         if (telefone) telefonesComTicketAtivo.add(`${channelKey}::${telefone}`)
       }
 
-      const groups = new Map<string, Omit<NexusConversation, 'lastBotMessageAt'>>()
-      for (const message of nexusMessages) {
-        const setor = resolveSetor(message)
-        if (!setor) continue
+      // `nexusMessages` está em ordem crescente, que é o que a resolução de
+      // escopo exige para a resposta do bot herdar o setor da fala do cliente.
+      const scopedMessages = resolveNexusConversationScopes(nexusMessages, {
+        getId: (message: any) => message.id,
+        getRemetente: (message: any) => message.remetente,
+        getClienteId: (message: any) => message.cliente_id,
+        getNormalizedPhone: (message: any) => normalizeBrazilianPhone(message.clientes?.telefone),
+        resolveOwnSector: (message: any) => resolveSetor(message),
+      })
 
-        const cliente = (message as any).clientes
-        const telefoneNormalizado = normalizeBrazilianPhone(cliente?.telefone)
-        if (!message.cliente_id && !telefoneNormalizado) continue
-        const clienteKey = `${setor.channelKey}::${telefoneNormalizado || message.cliente_id || message.id}`
-        const scopedClientId = message.cliente_id ? `${setor.channelKey}::${message.cliente_id}` : null
-        const scopedPhone = telefoneNormalizado ? `${setor.channelKey}::${telefoneNormalizado}` : null
+      const groups = new Map<string, Omit<NexusConversation, 'lastBotMessageAt'>>()
+      for (const scoped of scopedMessages) {
+        const { message, sector, clienteId, normalizedPhone, groupKey } = scoped
+        const clienteKey = `${sector.channelKey}::${scoped.clientKey}`
+        const scopedClientId = clienteId ? `${sector.channelKey}::${clienteId}` : null
+        const scopedPhone = normalizedPhone ? `${sector.channelKey}::${normalizedPhone}` : null
 
         if (scopedClientId && clientesComTicketAtivo.has(scopedClientId)) continue
         if (scopedPhone && telefonesComTicketAtivo.has(scopedPhone)) continue
 
-        const groupKey = getNexusConversationScopeKey(
-          setor.id,
-          message.cliente_id,
-          telefoneNormalizado,
-          message.id,
-          setor.channelKey,
-        )
+        const cliente = (message as any).clientes
         const current = groups.get(groupKey)
 
         groups.set(groupKey, {
           clienteKey,
-          clienteId: message.cliente_id,
+          clienteId,
           contato: cliente?.nome || cliente?.telefone || 'Cliente sem nome',
           telefone: cliente?.telefone || null,
-          setorId: setor.id,
-          setorNome: setor.nome,
+          setorId: sector.id,
+          setorNome: sector.nome,
           lastMessageAt: message.enviado_em,
           lastRemetente: message.remetente,
           messages: [...(current?.messages || []), message],

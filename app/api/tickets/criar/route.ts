@@ -241,7 +241,13 @@ export async function POST(request: NextRequest) {
           // channel merely because both share the same client and sector.
           ? query.eq('id', NO_MATCH_TICKET_ID)
           : query.in('cliente_id', clientScope.clientIds).eq('setor_id', setor_id)
-      return query.maybeSingle()
+      // Ordena + limit(1) em vez de maybeSingle(): quando o cliente já tem mais
+      // de um ticket aberto — o que a duplicidade de 24/07 produziu, e que o
+      // escopo por telefone (clientScope.clientIds) torna mais provável —
+      // maybeSingle() devolve erro, o throw abaixo vira 500 e o atendimento não
+      // é criado nem reaproveitado. Pegar o mais antigo concentra a conversa no
+      // ticket original. Nos ramos por `id` o order é inócuo (busca por PK).
+      return query.order('criado_em', { ascending: true }).limit(1)
     }
 
     // Check if there's already an open ticket for this cliente in this setor
@@ -259,14 +265,14 @@ export async function POST(request: NextRequest) {
       ) as typeof existingTicketResult
     }
     if (existingTicketResult.error) throw existingTicketResult.error
-    const existingTicket = existingTicketResult.data as unknown as {
+    const existingTicket = (existingTicketResult.data as unknown as Array<{
       id: string
       setor_id: string
       status: string
       colaborador_id: string | null
       subsetor_id: string | null
       tipo_atendimento?: string | null
-    } | null
+    }> | null)?.[0] ?? null
 
     if (
       existingTicket

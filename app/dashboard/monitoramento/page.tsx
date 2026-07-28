@@ -1,10 +1,38 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { Fragment, useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
-import { computePausaElapsedMs, formatPausaStatusLabel, isPausaEstourada } from '@/lib/pausa-status'
+import { AtendenteCard } from '@/components/monitoramento/atendente-card'
+import { logError } from '@/lib/error-logger'
+import { idsComDuplicidade } from '@/lib/tickets-duplicados'
+import { AlertTriangle } from 'lucide-react'
+
+import { MensagemBubble, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
+import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
+
+/** Marca a linha cujo cliente tem outro atendimento aberto ao mesmo tempo. */
+function BadgeDuplicado() {
+  return (
+    <Badge
+      variant="outline"
+      className="h-5 gap-1 border-amber-300 bg-amber-50 px-1.5 text-[10px] text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+      title="Este cliente tem mais de um atendimento aberto. A conversa pode estar dividida entre atendentes."
+    >
+      <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+      Duplicado
+    </Badge>
+  )
+}
+
+type ConversationTab = 'atendimento' | 'transferir' | 'info'
+
+const CONVERSATION_TABS: { valor: ConversationTab; rotulo: string }[] = [
+  { valor: 'atendimento', rotulo: 'Atendimento' },
+  { valor: 'transferir', rotulo: 'Transferir' },
+  { valor: 'info', rotulo: 'Informações' },
+]
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -36,6 +64,7 @@ import {
   AlertCircle,
   Bot,
   MessageCircle,
+  Send,
   X,
   ArrowRightLeft,
   Megaphone,
@@ -43,16 +72,8 @@ import {
   History,
   Check,
   Layers,
-  XCircle,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -63,11 +84,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Label } from '@/components/ui/label'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { toast } from 'sonner'
-import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
+import { cn, isClientMessage } from '@/lib/utils'
 import { calcularOrigem, type SetorLookupEntry } from '@/lib/ticket-origem'
 import { OrigemBadge } from '@/components/origem-badge'
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
@@ -78,6 +97,7 @@ import {
   NEXUS_NO_TICKET_IDLE_MS,
 } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
@@ -87,48 +107,6 @@ const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
 const NEXUS_BOT_REMETENTE = 'bot-nexus'
 const SEM_SUBSETOR_ID = 'sem_subsetor'
 const NO_TRANSFER_SUBSETOR = '__sem_subsetor__'
-const POSTGREST_IN_CHUNK_SIZE = 200
-
-async function loadRowsByPages(createQuery: () => any, pageSize = 1000) {
-  const rows: any[] = []
-
-  for (let page = 0; ; page += 1) {
-    const { data, error } = await createQuery().range(page * pageSize, page * pageSize + pageSize - 1)
-    if (error) throw error
-    if (!data || data.length === 0) break
-    rows.push(...data)
-    if (data.length < pageSize) break
-  }
-
-  return rows
-}
-
-function chunkValues<T>(values: readonly T[], size = POSTGREST_IN_CHUNK_SIZE): T[][] {
-  const chunks: T[][] = []
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size))
-  }
-  return chunks
-}
-
-async function loadRowsByValues(
-  supabase: ReturnType<typeof createClient>,
-  table: string,
-  columns: string,
-  filterColumn: string,
-  values: readonly string[],
-  configure?: (query: any) => any,
-) {
-  const valueChunks = chunkValues([...new Set(values)])
-  const chunkRows = await Promise.all(valueChunks.map((valueChunk) => loadRowsByPages(() => {
-    let query: any = supabase.from(table).select(columns).in(filterColumn, valueChunk)
-    if (configure) query = configure(query)
-    return query
-  })))
-
-  return chunkRows.flat()
-}
-
 function getPhoneLookupVariants(phone: string) {
   const trimmedPhone = phone.trim()
   const normalizedPhone = normalizeBrazilianPhone(trimmedPhone)
@@ -285,7 +263,6 @@ export default function MonitoramentoPage() {
   const [filtroAtendenteSearch, setFiltroAtendenteSearch] = useState('')
   const [activeTab, setActiveTab] = useState('em-andamento')
   const [searchAtendente, setSearchAtendente] = useState('')
-  const [, setTick] = useState(0)
 
   // Mesmo critério usado pela distribuição e pela API de transferência:
   // ativo, online, sem pausa e com heartbeat recente.
@@ -302,36 +279,25 @@ export default function MonitoramentoPage() {
   const [expandedHistory, setExpandedHistory] = useState<string | null>(null)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
-  const [conversationTab, setConversationTab] = useState<'conversa' | 'historico'>('conversa')
+  const [conversationTab, setConversationTab] = useState<ConversationTab>('atendimento')
+  const [notaInterna, setNotaInterna] = useState('')
+  const [enviandoNota, setEnviandoNota] = useState(false)
   const [selectedNexusConversation, setSelectedNexusConversation] = useState<NexusConversation | null>(null)
   const nexusConversationScrollRef = useRef<HTMLDivElement>(null)
 
   // Transfer & finalize state
   const [encerrarDialogOpen, setEncerrarDialogOpen] = useState(false)
-  const [transferDialogOpen, setTransferDialogOpen] = useState(false)
-  const [transferLoading, setTransferLoading] = useState(false)
-  const [transferOptionsLoading, setTransferOptionsLoading] = useState(false)
-  const [transferTab, setTransferTab] = useState<TransferTab>('atendente')
-  const [atendentesDisponiveis, setAtendentesDisponiveis] = useState<TransferAtendente[]>([])
-  const [subsetoresTransfer, setSubsetoresTransfer] = useState<TransferSubsetor[]>([])
-  const [setoresTransfer, setSetoresTransfer] = useState<any[]>([])
-  const [selectedSetorTransfer, setSelectedSetorTransfer] = useState<string>('all')
-  const [selectedSubsetorTransfer, setSelectedSubsetorTransfer] = useState<string>('')
-  const [selectedAtendenteTransfer, setSelectedAtendenteTransfer] = useState<string>('all')
-  const [transferUnavailableConfirmOpen, setTransferUnavailableConfirmOpen] = useState(false)
-  const transferOptionsRequestIdRef = useRef(0)
 
-  // Tick every second for live times
-  useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 1000)
-    return () => clearInterval(interval)
-  }, [])
+  // Sem relógio global aqui: o único tempo que precisa de cadência de 1s é o de
+  // pausa, e ele tem o próprio tick dentro de <AtendenteCard />. Um tick nesta
+  // raiz re-renderizava as tabelas inteiras a cada segundo à toa — os tempos
+  // delas vêm de useMemo e só mudam quando os dados chegam.
 
   // Auto-scroll conversation to bottom when messages load.
   // Uses ResizeObserver to keep scrolling as images/audios load and resize the content.
   useEffect(() => {
     if (
-      conversationTab !== 'conversa' ||
+      conversationTab !== 'atendimento' ||
       loadingMessages ||
       conversationMessages.length === 0 ||
       !conversationScrollRef.current
@@ -946,6 +912,11 @@ export default function MonitoramentoPage() {
       )
   }, [atendentesRaw, isAtendenteOnline, tickets])
 
+  // Mesmo cliente com mais de um atendimento aberto. Calculado sobre TODOS os
+  // tickets ativos, não sobre a lista filtrada — senão um filtro de subsetor
+  // esconderia a outra metade do par e o aviso sumiria justamente quando importa.
+  const ticketsDuplicados = useMemo(() => idsComDuplicidade(tickets), [tickets])
+
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || (t.status === 'aberto' && t.colaborador_id))
@@ -963,21 +934,21 @@ export default function MonitoramentoPage() {
         id: t.id,
         cliente_id: t.cliente_id,
         setor_id: t.setor_id,
-        subsetor_id: t.subsetor_id,
+        // necessário para o diálogo de transferência pré-selecionar o subsetor
+        subsetor_id: t.subsetor_id ?? null,
+        // necessário para buscar o histórico do bot anterior ao ticket
+        criado_em: t.criado_em,
         colaborador_id: t.colaborador_id,
         setores: t.setores,
         subsetores: t.subsetores,
         colaboradores: t.colaboradores,
         numero: t.numero ?? null,
-        // Tempo na fila = criado_em → atribuido_em (tempo sem atendente)
-        // Se atribuido_em não foi registrado mas já tem colaborador, o dado não está disponível
-        tempoNaFila: t.atribuido_em
-          ? formatDuration(t.criado_em, t.atribuido_em)
-          : t.colaborador_id
-            ? '—'
-            : formatDuration(t.criado_em, null),
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
-        // Tempo de atendimento = atribuido_em (ou criado_em como fallback) → agora
+        // Medir desde `criado_em` está correto: o ticket nasce já com atendente
+        // (o n8n escolhe antes de inserir a linha), então não existe tempo de
+        // fila embutido aqui. Medido em 27/07/2026 sobre os 2.214 tickets que
+        // têm `atribuido_em`: gap criado→atribuído de 0s em 1.000 de 1.000 da
+        // amostra. O fallback só importa para os ~0,4% que nascem sem atendente.
         tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         telefone: t.clientes?.telefone || null,
@@ -1053,20 +1024,68 @@ export default function MonitoramentoPage() {
   // Open conversation panel
   const openConversation = async (ticket: any) => {
     setSelectedTicket(ticket)
-    setConversationTab('conversa')
+    setConversationTab('atendimento')
     setLoadingMessages(true)
     setLoadingHistory(true)
 
     try {
-      // Fetch messages for this ticket
-      const { data: messages } = await supabase
+      // Mensagens do ticket
+      const { data: ticketMsgs } = await supabase
         .from('mensagens')
         .select('*')
         .eq('ticket_id', ticket.id)
         .order('enviado_em', { ascending: true })
 
-      setConversationMessages(messages || [])
-    } catch {
+      // Mensagens órfãs do bot nas 24h antes do ticket — sem elas a conversa
+      // aparece vazia quando o atendimento nasceu de um papo com o Nexus.
+      // Mesmo critério usado em Setor → Monitoramento.
+      let preTicketMsgs: any[] = []
+      const clienteTelefone = ticket.telefone
+      if (clienteTelefone && ticket.criado_em) {
+        // Telefone duplicado gera mais de um cadastro; considera todos.
+        const { data: allClientes } = await supabase
+          .from('clientes')
+          .select('id')
+          .eq('telefone', clienteTelefone)
+        const clienteIds = allClientes?.map((c: any) => c.id) || [ticket.cliente_id].filter(Boolean)
+
+        if (clienteIds.length > 0) {
+          const before24h = new Date(new Date(ticket.criado_em).getTime() - 24 * 60 * 60 * 1000).toISOString()
+          const { data: orphanMsgs } = await supabase
+            .from('mensagens')
+            .select('*')
+            .in('cliente_id', clienteIds)
+            .is('ticket_id', null)
+            .gte('enviado_em', before24h)
+            .lt('enviado_em', ticket.criado_em)
+            .order('enviado_em', { ascending: true })
+          preTicketMsgs = orphanMsgs || []
+        }
+      }
+
+      const seen = new Set<string>()
+      const deduped = [...preTicketMsgs, ...(ticketMsgs || [])].filter((m) => {
+        if (seen.has(m.id)) return false
+        seen.add(m.id)
+        return true
+      })
+
+      // Só faz sentido separar quando existe algo antes do ticket.
+      if (preTicketMsgs.length > 0 && ticketMsgs && ticketMsgs.length > 0) {
+        ticketMsgs[0]._ticketStart = true
+      }
+
+      setConversationMessages(deduped)
+    } catch (error) {
+      // Sem log aqui, a conversa aparecia vazia e indistinguível de "ticket sem
+      // mensagens" — foi o que dificultou diagnosticar o painel em branco.
+      logError({
+        tela: 'Monitoramento',
+        error,
+        componente: 'openConversation',
+        metadata: { type: 'load_messages_error', ticketId: ticket?.id },
+      })
+      toast.error('Não foi possível carregar as mensagens deste ticket')
       setConversationMessages([])
     } finally {
       setLoadingMessages(false)
@@ -1083,15 +1102,59 @@ export default function MonitoramentoPage() {
         .limit(20)
 
       setTicketHistory(history || [])
-    } catch {
+    } catch (error) {
+      // Falha aqui mostrava "Nenhum atendimento anterior", que é uma afirmação
+      // falsa quando na verdade a consulta quebrou.
+      logError({
+        tela: 'Monitoramento',
+        error,
+        componente: 'openConversation',
+        metadata: { type: 'load_history_error', ticketId: ticket?.id },
+      })
       setTicketHistory([])
     } finally {
       setLoadingHistory(false)
     }
   }
 
+  // Nota interna: recado do supervisor que só o atendente do ticket enxerga.
+  const handleEnviarNotaInterna = async () => {
+    const texto = notaInterna.trim()
+    if (!selectedTicket?.id || !texto) return
+    setEnviandoNota(true)
+    try {
+      const res = await fetch('/api/tickets/nota-interna', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_id: selectedTicket.id, conteudo: texto, autor_nome: colaborador?.nome }),
+      })
+      const result = await res.json()
+      if (!res.ok) {
+        toast.error(result?.error || 'Erro ao enviar nota interna')
+        return
+      }
+      setConversationMessages((prev) => [...prev, result.message])
+      setNotaInterna('')
+      setTimeout(() => {
+        const el = conversationScrollRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      }, 50)
+    } catch (error) {
+      logError({
+        tela: 'Monitoramento',
+        error,
+        componente: 'handleEnviarNotaInterna',
+        metadata: { type: 'nota_interna_error', ticketId: selectedTicket?.id },
+      })
+      toast.error('Erro ao enviar nota interna')
+    } finally {
+      setEnviandoNota(false)
+    }
+  }
+
   const closeConversation = () => {
     setSelectedTicket(null)
+    setNotaInterna('')
     setConversationMessages([])
     setTicketHistory([])
     setHistoryMessages({})
@@ -1239,263 +1302,15 @@ export default function MonitoramentoPage() {
       setEncerrarDialogOpen(false)
       closeConversation()
       mutate()
-    } catch {
+    } catch (error) {
+      logError({
+        tela: 'Monitoramento',
+        error,
+        componente: 'handleEncerrarTicket',
+        metadata: { type: 'encerrar_ticket_error', ticketId: selectedTicket?.id },
+      })
       toast.error('Erro ao encerrar ticket')
     }
-  }
-
-  const selectedTransferSubsetorId = selectedSubsetorTransfer === NO_TRANSFER_SUBSETOR
-    ? null
-    : selectedSubsetorTransfer || null
-  const transferSubsetorSelectionReady = selectedSubsetorTransfer !== ''
-  const transferAtendentesCompativeis = transferSubsetorSelectionReady
-    ? atendentesDisponiveis.filter((atendente) => (
-        isExactSubsetorMatch(selectedTransferSubsetorId, atendente.subsetor_ids)
-      ))
-    : []
-  const selectedTransferAtendente = transferAtendentesCompativeis.find(
-    (atendente) => atendente.id === selectedAtendenteTransfer,
-  )
-
-  const loadTransferOptions = async (
-    targetSetorId: string,
-    initialSubsetorId: string | null = null,
-  ) => {
-    const requestId = ++transferOptionsRequestIdRef.current
-    setTransferOptionsLoading(true)
-    setSelectedAtendenteTransfer('all')
-    setAtendentesDisponiveis([])
-    setSubsetoresTransfer([])
-    setSelectedSubsetorTransfer('')
-
-    try {
-      const [subsetoresResult, atendentesResult, subsetorLinksResult] = await Promise.all([
-        supabase
-          .from('subsetores')
-          .select('id, nome, setor_id')
-          .eq('setor_id', targetSetorId)
-          .eq('ativo', true)
-          .order('nome'),
-        supabase
-          .from('colaboradores_setores')
-          .select('colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
-          .eq('setor_id', targetSetorId),
-        supabase
-          .from('colaboradores_subsetores')
-          .select('colaborador_id, subsetor_id')
-          .eq('setor_id', targetSetorId),
-      ])
-
-      if (subsetoresResult.error) throw subsetoresResult.error
-      if (atendentesResult.error) throw atendentesResult.error
-      if (subsetorLinksResult.error) throw subsetorLinksResult.error
-      if (requestId !== transferOptionsRequestIdRef.current) return
-
-      const subsetorIdsByAtendente = new Map<string, string[]>()
-      for (const link of subsetorLinksResult.data ?? []) {
-        const current = subsetorIdsByAtendente.get(link.colaborador_id) ?? []
-        current.push(link.subsetor_id)
-        subsetorIdsByAtendente.set(link.colaborador_id, current)
-      }
-
-      const atendentesMap = new Map<string, TransferAtendente>()
-      for (const row of atendentesResult.data ?? []) {
-        const relation = Array.isArray(row.colaboradores)
-          ? row.colaboradores[0]
-          : row.colaboradores
-        if (!relation?.ativo) continue
-        if (
-          targetSetorId === selectedTicket?.setor_id
-          && relation.id === selectedTicket?.colaborador_id
-        ) continue
-
-        atendentesMap.set(relation.id, {
-          ...relation,
-          subsetor_ids: subsetorIdsByAtendente.get(relation.id) ?? [],
-        })
-      }
-
-      const subsetores = (subsetoresResult.data ?? []) as TransferSubsetor[]
-      const initialSubsetorExists = initialSubsetorId
-        ? subsetores.some((subsetor) => subsetor.id === initialSubsetorId)
-        : false
-
-      setSubsetoresTransfer(subsetores)
-      setAtendentesDisponiveis(
-        [...atendentesMap.values()].sort((a, b) => a.nome.localeCompare(b.nome)),
-      )
-      setSelectedSubsetorTransfer(
-        initialSubsetorExists
-          ? initialSubsetorId!
-          : subsetores.length === 0
-            ? NO_TRANSFER_SUBSETOR
-            : '',
-      )
-    } catch (error) {
-      if (requestId !== transferOptionsRequestIdRef.current) return
-      console.error('[Monitoramento] Erro ao carregar opções de transferência:', error)
-      toast.error('Não foi possível carregar os destinos de transferência')
-    } finally {
-      if (requestId === transferOptionsRequestIdRef.current) {
-        setTransferOptionsLoading(false)
-      }
-    }
-  }
-
-  const handleTransferDialogOpenChange = (open: boolean) => {
-    setTransferDialogOpen(open)
-    if (open) return
-
-    transferOptionsRequestIdRef.current += 1
-    setTransferUnavailableConfirmOpen(false)
-    setTransferOptionsLoading(false)
-    setTransferLoading(false)
-  }
-
-  const openTransferDialog = async () => {
-    const currentSetorId = selectedTicket?.setor_id
-    if (!currentSetorId) {
-      toast.error('Setor atual do ticket não identificado')
-      return
-    }
-
-    setTransferTab('atendente')
-    setSelectedSetorTransfer('all')
-    setSelectedAtendenteTransfer('all')
-    setSetoresTransfer([])
-    setTransferDialogOpen(true)
-
-    const [destinosResult] = await Promise.all([
-      supabase
-        .from('setor_destinos_transferencia')
-        .select('setor_destino_id, setores:setor_destino_id(id, nome)')
-        .eq('setor_origem_id', currentSetorId),
-      loadTransferOptions(currentSetorId, selectedTicket.subsetor_id ?? null),
-    ])
-
-    if (destinosResult.error) {
-      console.error('[Monitoramento] Erro ao carregar setores de transferência:', destinosResult.error)
-      toast.error('Não foi possível carregar os setores de destino')
-      return
-    }
-
-    const destinos = (destinosResult.data ?? [])
-      .flatMap((row: any) => Array.isArray(row.setores) ? row.setores : [row.setores])
-      .filter(Boolean)
-      .sort((a: any, b: any) => a.nome.localeCompare(b.nome))
-    setSetoresTransfer(destinos)
-  }
-
-  const handleTransferTabChange = (value: string) => {
-    const nextTab = value as TransferTab
-    setTransferTab(nextTab)
-    setSelectedAtendenteTransfer('all')
-    setTransferUnavailableConfirmOpen(false)
-
-    if (nextTab === 'atendente' && selectedTicket?.setor_id) {
-      setSelectedSetorTransfer('all')
-      void loadTransferOptions(selectedTicket.setor_id, selectedTicket.subsetor_id ?? null)
-      return
-    }
-
-    transferOptionsRequestIdRef.current += 1
-    setTransferOptionsLoading(false)
-    setSelectedSetorTransfer('all')
-    setSelectedSubsetorTransfer('')
-    setSubsetoresTransfer([])
-    setAtendentesDisponiveis([])
-  }
-
-  const handleSetorTransferChange = (setorId: string) => {
-    setSelectedSetorTransfer(setorId)
-    setTransferUnavailableConfirmOpen(false)
-    void loadTransferOptions(setorId)
-  }
-
-  const handleSubsetorTransferChange = (subsetorId: string) => {
-    setSelectedSubsetorTransfer(subsetorId)
-    setSelectedAtendenteTransfer('all')
-    setTransferUnavailableConfirmOpen(false)
-  }
-
-  const handleTransferTicket = async (allowUnavailable = false) => {
-    if (!selectedTicket || !transferSubsetorSelectionReady) return
-
-    const targetSetorId = transferTab === 'setor'
-      ? selectedSetorTransfer
-      : selectedTicket.setor_id
-    const targetAtendente = selectedAtendenteTransfer !== 'all'
-      ? selectedTransferAtendente
-      : null
-
-    if (!targetSetorId || targetSetorId === 'all') {
-      toast.error('Selecione o setor de destino')
-      return
-    }
-    if (selectedAtendenteTransfer !== 'all' && !targetAtendente) {
-      toast.error('Selecione um atendente compatível com o subsetor')
-      return
-    }
-
-    setTransferLoading(true)
-    try {
-      const res = await fetch('/api/tickets/transferir', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ticket_id: selectedTicket.id,
-          setor_id: targetSetorId,
-          subsetor_id: selectedTransferSubsetorId,
-          colaborador_id: targetAtendente?.id ?? null,
-          allow_unavailable: allowUnavailable,
-          from_colaborador_nome: selectedTicket.colaboradores?.nome || 'Desconhecido',
-          from_setor_nome: selectedTicket.setores?.nome || 'Desconhecido',
-        }),
-      })
-
-      const result = await res.json().catch(() => null)
-      if (!res.ok) {
-        if (result?.code === 'TARGET_UNAVAILABLE' && targetAtendente) {
-          setTransferUnavailableConfirmOpen(true)
-        } else {
-          toast.error(result?.error || 'Erro ao transferir ticket')
-        }
-        return
-      }
-
-      if (result?.queued) {
-        toast.info(result.message || 'Ticket enviado para a fila')
-        fetch('/api/tickets/auto-assign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        }).catch(() => {})
-      } else {
-        toast.success(result?.message || 'Ticket transferido com sucesso')
-      }
-
-      handleTransferDialogOpenChange(false)
-      closeConversation()
-      mutate()
-    } catch (error) {
-      console.error('[Monitoramento] Erro ao transferir ticket:', error)
-      toast.error('Erro ao transferir ticket')
-    } finally {
-      setTransferLoading(false)
-    }
-  }
-
-  const attemptTransferTicket = () => {
-    if (selectedTransferAtendente && !isAtendenteOnline(selectedTransferAtendente)) {
-      setTransferUnavailableConfirmOpen(true)
-      return
-    }
-    void handleTransferTicket()
-  }
-
-  const confirmUnavailableTransfer = () => {
-    setTransferUnavailableConfirmOpen(false)
-    void handleTransferTicket(true)
   }
 
 
@@ -1961,7 +1776,10 @@ export default function MonitoramentoPage() {
                             </TableCell>
                             <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
                             <TableCell className="text-sm tabular-nums text-foreground font-medium">
-                              {ticket.numero ? `#${ticket.numero}` : '—'}
+                              <span className="flex items-center gap-1.5">
+                                {ticket.numero ? `#${ticket.numero}` : '—'}
+                                {ticketsDuplicados.has(ticket.id) && <BadgeDuplicado />}
+                              </span>
                             </TableCell>
                             <TableCell className="text-sm text-foreground">
                               {ticket.canal === 'discord' ? '—' : formatPhone(ticket.telefone)}
@@ -2039,57 +1857,16 @@ export default function MonitoramentoPage() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {atendentesLista.map((atendente: any) => {
-                      const isOnline = isAtendenteOnline(atendente) && !atendente.pausa_atual_id
-                      const isPausa = !!atendente.pausa_atual_id
-                      const pausaElapsedMs = isPausa
-                        ? computePausaElapsedMs(atendente.pausaInfo, monitoringNowMs)
-                        : 0
-                      const pausaEstourada = isPausa
-                        && isPausaEstourada(atendente.pausaInfo, pausaElapsedMs)
-                      const pausaLabel = isPausa
-                        ? formatPausaStatusLabel(atendente.pausaInfo, pausaElapsedMs)
-                        : null
-                      return (
-                        <div
-                          key={atendente.id}
-                          className="flex items-center gap-3 rounded-xl border bg-card/60 px-4 py-3 transition-colors hover:bg-muted/40"
-                        >
-                          <span
-                            className={cn(
-                              'h-3 w-3 shrink-0 rounded-full',
-                              isOnline
-                                ? 'bg-green-500'
-                                : pausaEstourada
-                                  ? 'bg-red-500'
-                                  : isPausa
-                                    ? 'bg-yellow-500'
-                                    : 'bg-gray-400'
-                            )}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium text-foreground">{atendente.nome}</p>
-                            <p className={cn(
-                              'text-xs',
-                              isOnline
-                                ? 'text-green-600 dark:text-green-400'
-                                : pausaEstourada
-                                  ? 'font-medium text-red-600 dark:text-red-400'
-                                  : isPausa
-                                    ? 'text-yellow-600 dark:text-yellow-400'
-                                    : 'text-muted-foreground'
-                            )}>
-                              {isOnline ? 'Online' : pausaLabel || 'Offline'}
-                            </p>
-                          </div>
-                          {atendente.ticketsAtivos > 0 && (
-                            <Badge variant="secondary" className="shrink-0 text-[10px]">
-                              {atendente.ticketsAtivos} {atendente.ticketsAtivos === 1 ? 'ticket' : 'tickets'}
-                            </Badge>
-                          )}
-                        </div>
-                      )
-                    })}
+                    {atendentesLista.map((atendente: any) => (
+                      <AtendenteCard
+                        key={atendente.id}
+                        nome={atendente.nome}
+                        isOnline={isAtendenteOnline(atendente) && !atendente.pausa_atual_id}
+                        emPausa={!!atendente.pausa_atual_id}
+                        pausaInfo={atendente.pausaInfo}
+                        ticketsAtivos={atendente.ticketsAtivos}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
@@ -2137,7 +1914,10 @@ export default function MonitoramentoPage() {
                         <TableRow key={ticket.id} className="bg-orange-50/50 dark:bg-orange-950/20">
                           <TableCell className="text-sm tabular-nums text-orange-600 font-medium">{ticket.tempoEspera}</TableCell>
                           <TableCell className="text-sm tabular-nums text-foreground font-medium">
-                            {ticket.numero ? `#${ticket.numero}` : '—'}
+                            <span className="flex items-center gap-1.5">
+                              {ticket.numero ? `#${ticket.numero}` : '—'}
+                              {ticketsDuplicados.has(ticket.id) && <BadgeDuplicado />}
+                            </span>
                           </TableCell>
                           <TableCell className="text-sm text-foreground">
                             {ticket.canal === 'discord' ? '—' : formatPhone(ticket.telefone)}
@@ -2300,259 +2080,19 @@ export default function MonitoramentoPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Transfer Dialog */}
-      <Dialog open={transferDialogOpen} onOpenChange={handleTransferDialogOpenChange}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <ArrowRightLeft className="h-5 w-5" />
-              Transferir Ticket
-            </DialogTitle>
-            <DialogDescription>
-              Selecione o subsetor e envie para a fila ou para um atendente compatível.
-            </DialogDescription>
-          </DialogHeader>
-
-          <Tabs value={transferTab} onValueChange={handleTransferTabChange} className="w-full">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="atendente">👤 Atendente</TabsTrigger>
-              <TabsTrigger value="setor">🏢 Setor</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="atendente" className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <Label>Subsetor do atendimento</Label>
-                {transferOptionsLoading ? (
-                  <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Carregando opções...
-                  </p>
-                ) : subsetoresTransfer.length > 0 ? (
-                  <Select value={selectedSubsetorTransfer} onValueChange={handleSubsetorTransferChange}>
-                    <SelectTrigger aria-label="Subsetor do atendimento">
-                      <SelectValue placeholder="Escolha um subsetor..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {subsetoresTransfer.map((subsetor) => (
-                        <SelectItem key={subsetor.id} value={subsetor.id}>
-                          {subsetor.nome}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-                    Este setor não possui subsetores ativos. Será usada a fila geral.
-                  </p>
-                )}
-              </div>
-
-              {transferSubsetorSelectionReady && !transferOptionsLoading && (
-                <div className="space-y-2">
-                  <Label>Atendente compatível</Label>
-                  <Select
-                    value={selectedAtendenteTransfer === 'all' ? '' : selectedAtendenteTransfer}
-                    onValueChange={setSelectedAtendenteTransfer}
-                    disabled={transferAtendentesCompativeis.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Escolha um atendente..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {transferAtendentesCompativeis.map((atendente) => {
-                        const online = isAtendenteOnline(atendente)
-                        const status = atendente.pausa_atual_id
-                          ? 'Em pausa'
-                          : online ? 'Online' : 'Offline'
-                        return (
-                          <SelectItem key={atendente.id} value={atendente.id}>
-                            <div className="flex items-center gap-2">
-                              <span className={cn(
-                                'h-2 w-2 rounded-full',
-                                online ? 'bg-green-500' : atendente.pausa_atual_id ? 'bg-amber-500' : 'bg-gray-400',
-                              )} />
-                              <span>{atendente.nome}</span>
-                              <span className="text-xs text-muted-foreground">· {status}</span>
-                            </div>
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                  {transferAtendentesCompativeis.length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                      Nenhum outro atendente compatível com este subsetor.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <Button
-                onClick={attemptTransferTicket}
-                disabled={
-                  !transferSubsetorSelectionReady
-                  || selectedAtendenteTransfer === 'all'
-                  || !selectedTransferAtendente
-                  || transferLoading
-                  || transferOptionsLoading
-                }
-                className="w-full"
-              >
-                {transferLoading ? 'Transferindo...' : 'Transferir para Atendente'}
-              </Button>
-            </TabsContent>
-
-            <TabsContent value="setor" className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <Label>Selecione o setor de destino</Label>
-                <Select value={selectedSetorTransfer} onValueChange={handleSetorTransferChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Escolha um setor..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {setoresTransfer.length === 0 ? (
-                      <div className="p-3 text-sm text-muted-foreground text-center">
-                        Nenhum setor habilitado para transferência. Configure em Configurações do Setor.
-                      </div>
-                    ) : (
-                      setoresTransfer.map((setor) => (
-                        <SelectItem key={setor.id} value={setor.id}>{setor.nome}</SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {selectedSetorTransfer !== 'all' && (
-                <div className="space-y-2">
-                  <Label>Subsetor de destino</Label>
-                  {transferOptionsLoading ? (
-                    <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Carregando opções...
-                    </p>
-                  ) : subsetoresTransfer.length > 0 ? (
-                    <Select value={selectedSubsetorTransfer} onValueChange={handleSubsetorTransferChange}>
-                      <SelectTrigger aria-label="Subsetor de destino">
-                        <SelectValue placeholder="Escolha um subsetor..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {subsetoresTransfer.map((subsetor) => (
-                          <SelectItem key={subsetor.id} value={subsetor.id}>
-                            {subsetor.nome}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-                      Este setor não possui subsetores ativos. O ticket ficará na fila geral.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {selectedSetorTransfer !== 'all' && transferSubsetorSelectionReady && !transferOptionsLoading && (
-                <div className="space-y-2">
-                  <Label>Destino final</Label>
-                  <Select value={selectedAtendenteTransfer} onValueChange={setSelectedAtendenteTransfer}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Deixar na fila..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">
-                        <div className="flex items-center gap-2">
-                          <span className="h-2 w-2 rounded-full bg-blue-500" />
-                          {selectedTransferSubsetorId
-                            ? 'Deixar na fila do subsetor'
-                            : 'Deixar na fila geral'}
-                        </div>
-                      </SelectItem>
-                      {transferAtendentesCompativeis.map((atendente) => {
-                        const online = isAtendenteOnline(atendente)
-                        const status = atendente.pausa_atual_id
-                          ? 'Em pausa'
-                          : online ? 'Online' : 'Offline'
-                        return (
-                          <SelectItem key={atendente.id} value={atendente.id}>
-                            <div className="flex items-center gap-2">
-                              <span className={cn(
-                                'h-2 w-2 rounded-full',
-                                online ? 'bg-green-500' : atendente.pausa_atual_id ? 'bg-amber-500' : 'bg-gray-400',
-                              )} />
-                              <span>{atendente.nome}</span>
-                              <span className="text-xs text-muted-foreground">· {status}</span>
-                            </div>
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                  {transferAtendentesCompativeis.length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                      Nenhum atendente compatível. O ticket permanecerá na fila selecionada.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <Button
-                onClick={attemptTransferTicket}
-                disabled={
-                  selectedSetorTransfer === 'all'
-                  || !transferSubsetorSelectionReady
-                  || transferLoading
-                  || transferOptionsLoading
-                }
-                className="w-full"
-              >
-                {transferLoading
-                  ? 'Transferindo...'
-                  : selectedAtendenteTransfer === 'all'
-                    ? 'Enviar para a Fila'
-                    : 'Transferir para Atendente'}
-              </Button>
-            </TabsContent>
-          </Tabs>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog
-        open={transferUnavailableConfirmOpen}
-        onOpenChange={setTransferUnavailableConfirmOpen}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Transferir para atendente indisponível?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              <strong>{selectedTransferAtendente?.nome}</strong> está{' '}
-              {selectedTransferAtendente?.pausa_atual_id ? 'em pausa' : 'offline'}
-              {' '}no momento. O ticket será atribuído diretamente mesmo assim.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmUnavailableTransfer}>
-              Transferir mesmo assim
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Conversation Slide-out Panel */}
+      {/* Conversa — mesmo balão centralizado de Setor → Monitoramento */}
       {selectedTicket && (
-        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-lg">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="fixed inset-0 bg-black/20 backdrop-blur-sm" onClick={closeConversation} />
 
-          <div className="absolute inset-0 flex flex-col bg-background shadow-xl">
+          {/* Altura fixa para a caixa não pular conforme a aba aberta */}
+          <div className="relative flex h-[85vh] max-h-[760px] w-full max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
-                <h2 className="font-semibold">Ticket #{selectedTicket.numero}</h2>
+                <h2 className="font-semibold">Ticket <span className="font-mono tabnums">#{selectedTicket.numero}</span></h2>
                 <p className="text-sm text-muted-foreground">
-                  {selectedTicket.contato} - {selectedTicket.setor}
+                  Conversa com {selectedTicket.contato || 'Cliente'}
                 </p>
               </div>
               <Button
@@ -2569,133 +2109,117 @@ export default function MonitoramentoPage() {
             {/* Tabs */}
             <div className="border-b">
               <div className="flex">
-                <button
-                  onClick={() => setConversationTab('conversa')}
-                  className={cn(
-                    "flex-1 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors",
-                    conversationTab === 'conversa'
-                      ? "border-primary text-primary"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  <MessageCircle className="inline h-3.5 w-3.5 mr-1.5" />
-                  Conversa
-                </button>
-                <button
-                  onClick={() => setConversationTab('historico')}
-                  className={cn(
-                    "flex-1 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors",
-                    conversationTab === 'historico'
-                      ? "border-primary text-primary"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  <History className="inline h-3.5 w-3.5 mr-1.5" />
-                  Historico ({ticketHistory.length})
-                </button>
+                {CONVERSATION_TABS.map(({ valor, rotulo }) => (
+                  <button
+                    key={valor}
+                    onClick={() => setConversationTab(valor)}
+                    className={cn(
+                      'flex-1 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
+                      conversationTab === valor
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {rotulo}{valor === 'info' ? ' (' + ticketHistory.length + ')' : ''}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* Action Buttons */}
-            {(selectedTicket.status === 'em_atendimento' || selectedTicket.status === 'aberto') && (
-              <div className="flex gap-2 border-b px-4 py-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={openTransferDialog}
-                  className="flex-1 gap-1 bg-transparent"
-                >
-                  <ArrowRightLeft className="h-4 w-4" />
-                  Transferir
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => setEncerrarDialogOpen(true)}
-                  className="flex-1 gap-1"
-                >
-                  <XCircle className="h-4 w-4" />
-                  Encerrar
-                </Button>
-              </div>
-            )}
-
             {/* Tab Content */}
-            <div ref={conversationScrollRef} className="flex-1 overflow-y-auto">
-              {/* Conversa Tab */}
-              {conversationTab === 'conversa' && (
-                <div className="p-4 space-y-3">
-                  {loadingMessages ? (
-                    <div className="flex items-center justify-center py-8">
-                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : conversationMessages.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
-                      <MessageCircle className="mb-2 h-8 w-8" />
-                      <p>Nenhuma mensagem ainda</p>
-                    </div>
-                  ) : (
-                    conversationMessages.map((msg: any) => (
-                      msg.remetente === 'sistema' ? (
-                        <div key={msg.id} className="flex justify-center">
-                          <div className={cn(
-                            "flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[11px] max-w-[90%]",
-                            msg.conteudo.startsWith('Transferido')
-                              ? "bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300"
-                              : "bg-muted/80 border-border text-muted-foreground"
-                          )}>
-                            {msg.conteudo.startsWith('Transferido') ? (
-                              <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
-                            ) : (
-                              <Megaphone className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <div className="flex-1 overflow-hidden">
+              {/* Atendimento */}
+              {conversationTab === 'atendimento' && (
+                <div className="flex h-full flex-col">
+                  <div ref={conversationScrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+                    {loadingMessages ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : conversationMessages.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+                        <MessageCircle className="mb-2 h-8 w-8" />
+                        <p>Nenhuma mensagem ainda</p>
+                      </div>
+                    ) : (
+                      conversationMessages.map((msg: any) => (
+                        <Fragment key={msg.id}>
+                          {msg._ticketStart && <SeparadorInicioTicket numero={selectedTicket?.numero} />}
+                          <MensagemBubble
+                            variant="supervisao"
+                            mensagem={msg}
+                            media={(
+                              <MessageMediaPreview
+                                url={msg.url_imagem}
+                                mediaType={msg.media_type}
+                                tipo={msg.tipo}
+                                conteudo={msg.conteudo}
+                              />
                             )}
-                            <span>{msg.conteudo}</span>
-                            <span className="shrink-0 ml-1 opacity-60">
-                              {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div
-                          key={msg.id}
-                          className={cn(
-                            "flex",
-                            isClientMessage(msg.remetente) ? "justify-start" : "justify-end"
-                          )}
+                          />
+                        </Fragment>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="border-t p-3 space-y-2">
+                    {/* Nota interna: só o atendente do ticket enxerga */}
+                    {selectedTicket.colaborador_id && (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={notaInterna}
+                          onChange={(e) => setNotaInterna(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault()
+                              handleEnviarNotaInterna()
+                            }
+                          }}
+                          placeholder="Mensagem para o atendente..."
+                          disabled={enviandoNota}
+                          className="h-9 text-sm"
+                        />
+                        <Button
+                          size="icon"
+                          className="h-9 w-9 shrink-0 bg-amber-500 text-white hover:bg-amber-600"
+                          onClick={handleEnviarNotaInterna}
+                          disabled={enviandoNota || !notaInterna.trim()}
+                          title="Enviar nota interna (só o atendente vê)"
                         >
-                          <div
-                            className={cn(
-                              "max-w-[80%] rounded-lg px-3 py-2 text-sm",
-                              isClientMessage(msg.remetente)
-                                ? "bg-muted"
-                                : isBotMessage(msg.remetente)
-                                ? "bg-blue-100 dark:bg-blue-900/30"
-                                : "bg-primary text-primary-foreground"
-                            )}
-                          >
-                            <MessageMediaPreview
-                              url={msg.url_imagem}
-                              mediaType={msg.media_type}
-                              tipo={msg.tipo}
-                              conteudo={msg.conteudo}
-                            />
-                            <TextoMensagem conteudo={msg.conteudo} />
-                            <p className={cn(
-                              "text-[10px] mt-1",
-                              isClientMessage(msg.remetente) ? "text-muted-foreground" : "opacity-70"
-                            )}>
-                              {new Date(msg.enviado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                            </p>
-                          </div>
-                        </div>
-                      )
-                    ))
-                  )}
+                          {enviandoNota ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                        </Button>
+                      </div>
+                    )}
+                    <Button
+                      variant="destructive"
+                      className="w-full"
+                      onClick={() => setEncerrarDialogOpen(true)}
+                    >
+                      Finalizar Atendimento
+                    </Button>
+                  </div>
                 </div>
               )}
 
-              {/* Historico Tab */}
-              {conversationTab === 'historico' && (
+              {/* Transferir — mesmo fluxo do WorkDesk, embutido na aba */}
+              {conversationTab === 'transferir' && (
+                <div className="flex h-full flex-col">
+                  <TransferirTicketForm
+                    active
+                    ticket={selectedTicket}
+                    colaborador={null}
+                    tela="Monitoramento"
+                    onTransferSuccess={() => {
+                      closeConversation()
+                      mutate()
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Informações — histórico de atendimentos deste cliente */}
+              {conversationTab === 'info' && (
+                <div className="h-full overflow-y-auto">
                 <div className="p-4 space-y-3">
                   {loadingHistory ? (
                     <div className="flex items-center justify-center py-8">
@@ -2796,6 +2320,7 @@ export default function MonitoramentoPage() {
                       </div>
                     ))
                   )}
+                </div>
                 </div>
               )}
             </div>
