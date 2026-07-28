@@ -2622,6 +2622,12 @@ function SetorPageInner() {
         colaborador_id: t.colaborador_id,
         clientes: t.clientes,
         colaboradores: t.colaboradores,
+        // Esta tela é de um setor só, então estes campos eram implícitos — mas o
+        // diálogo de transferência os exige. Sem `setor_id` ele aborta o
+        // carregamento e a lista de destinos aparece vazia, sem erro nenhum.
+        setor_id: t.setor_id ?? setorId,
+        subsetor_id: t.subsetor_id ?? null,
+        setores: { nome: setor?.nome ?? null },
       }))
   }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter, monitoringTick, subsetorNomeById])
 
@@ -2712,6 +2718,10 @@ function SetorPageInner() {
         colaborador_id: t.colaborador_id,
         clientes: t.clientes,
         colaboradores: t.colaboradores,
+        // Mesmos campos exigidos pelo diálogo de transferência — ver acima.
+        setor_id: t.setor_id ?? setorId,
+        subsetor_id: t.subsetor_id ?? null,
+        setores: { nome: setor?.nome ?? null },
       }))
   }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
 

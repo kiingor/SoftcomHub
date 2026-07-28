@@ -526,6 +526,16 @@ export function TransferirTicketForm({
                       </span>
                       Setor de destino
                     </legend>
+                    {sectorOptions.length === 0 ? (
+                      // Lista vazia só acontece quando o ticket chega sem
+                      // `setor_id` — o carregamento aborta e o campo ficava em
+                      // branco, sem erro, sem explicação. Dizer isso em texto.
+                      <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                        Não foi possível identificar o setor deste atendimento, então
+                        não há destinos para listar. Reabra a conversa; se continuar,
+                        avise o suporte.
+                      </p>
+                    ) : (
                     <Select value={selectedSetor} onValueChange={handleSetorChange}>
                       <SelectTrigger id="transfer-setor" className="h-11 w-full" aria-label="Setor de destino">
                         <SelectValue placeholder="Escolha um setor…" />
@@ -545,6 +555,7 @@ export function TransferirTicketForm({
                         ))}
                       </SelectContent>
                     </Select>
+                    )}
                   </fieldset>
 
                   {hasSelectedSector && (
