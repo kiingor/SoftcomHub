@@ -4970,83 +4970,83 @@ const saveConfig = async () => {
                   </div>
                 </div>
 
-                {/* Fica no cabeçalho, e não no card: com o painel oculto não
-                    haveria de onde trazê-lo de volta se o controle morasse
-                    dentro dele. */}
-                <div className="flex items-center gap-2">
-                <Button
-                  variant={monitorEditMode ? 'default' : 'outline'}
-                  size="sm"
-                  className="h-9 gap-1.5"
-                  onClick={() => setMonitorEditMode((v) => !v)}
-                >
-                  <GripVertical className="h-3.5 w-3.5" />
-                  {monitorEditMode ? 'Concluir' : 'Ajustar tamanho'}
-                </Button>
-
-                {monitorEditMode && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-9 text-xs text-muted-foreground"
-                    onClick={resetarLayoutMonitor}
-                  >
-                    Restaurar padrão
-                  </Button>
-                )}
-
-                {opcoesSubsetorTempoReal.length > 0 && (
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" size="sm" className="h-9 gap-1.5">
-                        <Settings className="h-3.5 w-3.5" />
-                        Personalizar
+                {/* Um botão só. O modo de arrastar mora dentro dele: eram três
+                    controles para a mesma coisa — arranjo da tela — e o
+                    cabeçalho é do monitoramento, não da personalização.
+                    O popover é incondicional de propósito: preso ao
+                    `opcoesSubsetorTempoReal`, um setor sem subsetor ficava sem
+                    NENHUM acesso a ajustar tamanho ou restaurar padrão. */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant={monitorEditMode ? 'default' : 'outline'}
+                      size="sm"
+                      className="h-9 gap-1.5"
+                    >
+                      <Settings className="h-3.5 w-3.5" />
+                      Personalizar
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-80">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium">Arranjo da tela</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1.5 text-xs text-muted-foreground"
+                        onClick={resetarLayoutMonitor}
+                        title="Voltar ao arranjo padrão: posições, tamanhos, largura e segundo card"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Restaurar padrão
                       </Button>
-                    </PopoverTrigger>
-                    <PopoverContent align="end" className="w-80">
-                      {/* O reset mora aqui, e não só no modo de ajuste: quem
-                          desarrumou a tela pelo Personalizar procura o conserto
-                          no mesmo lugar. Mesmo padrão do relatório. */}
-                      <div className="flex items-center justify-between gap-2">
+                    </div>
+
+                    <label className="mt-3 flex items-center justify-between gap-3">
+                      <span className="text-sm">
+                        Mover e redimensionar
+                        <span className="mt-0.5 block text-xs text-muted-foreground">
+                          Arraste pelo punho e use o canto do card.
+                        </span>
+                      </span>
+                      <Switch
+                        checked={monitorEditMode}
+                        onCheckedChange={setMonitorEditMode}
+                        aria-label="Mover e redimensionar os cards"
+                      />
+                    </label>
+
+                    {opcoesSubsetorTempoReal.length > 0 && (
+                      <>
+                        <div className="my-4 border-t" />
+
                         <p className="text-sm font-medium">Largura dos cards</p>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 gap-1.5 text-xs text-muted-foreground"
-                          onClick={resetarLayoutMonitor}
-                          title="Voltar ao arranjo padrão: posições, tamanhos, largura e segundo card"
-                        >
-                          <RotateCcw className="h-3.5 w-3.5" />
-                          Restaurar padrão
-                        </Button>
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        Divide o espaço entre o card de tempo real e a coluna da direita.
-                      </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Divide o espaço entre os dois cards de tempo real.
+                        </p>
 
-                      <div className="mt-3 grid grid-cols-3 gap-1.5">
-                        {(Object.keys(LARGURA_LINHA1) as ProporcaoLinha1[]).map((chave) => (
-                          <Button
-                            key={chave}
-                            variant={proporcaoLinha1 === chave ? 'default' : 'outline'}
-                            size="sm"
-                            className="h-auto whitespace-normal px-2 py-1.5 text-[11px] leading-tight"
-                            onClick={() => aplicarProporcaoLinha1(chave)}
-                          >
-                            {ROTULO_PROPORCAO[chave]}
-                          </Button>
-                        ))}
-                      </div>
+                        <div className="mt-3 grid grid-cols-3 gap-1.5">
+                          {(Object.keys(LARGURA_LINHA1) as ProporcaoLinha1[]).map((chave) => (
+                            <Button
+                              key={chave}
+                              variant={proporcaoLinha1 === chave ? 'default' : 'outline'}
+                              size="sm"
+                              className="h-auto whitespace-normal px-2 py-1.5 text-[11px] leading-tight"
+                              onClick={() => aplicarProporcaoLinha1(chave)}
+                            >
+                              {ROTULO_PROPORCAO[chave]}
+                            </Button>
+                          ))}
+                        </div>
 
-                      <div className="my-4 border-t" />
+                        <div className="my-4 border-t" />
 
-                      <p className="text-sm font-medium">Segundo card de tempo real</p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        Uma segunda cópia do card, com seu próprio filtro de subsetor.
-                      </p>
+                        <p className="text-sm font-medium">Segundo card de tempo real</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Uma segunda cópia do card, com seu próprio filtro de subsetor.
+                        </p>
 
-                      <div className="mt-4 space-y-4">
-                        <label className="flex items-center justify-between gap-3">
+                        <label className="mt-4 flex items-center justify-between gap-3">
                           <span className="text-sm">Mostrar segundo card</span>
                           <Switch
                             checked={painelSubsetorVisivel}
@@ -5054,12 +5054,10 @@ const saveConfig = async () => {
                             aria-label="Mostrar segundo card de tempo real"
                           />
                         </label>
-
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                )}
-                </div>
+                      </>
+                    )}
+                  </PopoverContent>
+                </Popover>
               </div>
 
               {/* Quick Filters */}
@@ -5085,9 +5083,16 @@ const saveConfig = async () => {
                 </div>
               )}
 
+              {/* O "Concluir" vive aqui porque o botão que ligou o modo saiu do
+                  cabeçalho: sem isto, sair exigiria reabrir o Personalizar. */}
               {monitorEditMode && (
-                <div className="rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
-                  Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior-direito para redimensionar. Clique em <strong>Concluir</strong> para fixar.
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                  <span>
+                    Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior-direito para redimensionar.
+                  </span>
+                  <Button size="sm" className="h-7 shrink-0 text-xs" onClick={() => setMonitorEditMode(false)}>
+                    Concluir
+                  </Button>
                 </div>
               )}
 
