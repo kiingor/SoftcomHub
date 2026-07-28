@@ -143,7 +143,7 @@ import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
-import { resumirFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN } from '@/lib/relatorio-fila'
+import { resumirFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
 import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
 import { formatarTempoMonitoramento } from '@/lib/monitoramento-tempo-real'
@@ -6336,7 +6336,7 @@ const saveConfig = async () => {
                     Saúde da fila
                   </CardTitle>
                   <p className="text-xs text-muted-foreground">
-                    Clientes atendidos em até {LIMITE_FILA_MIN} min no período.
+                    Fila a partir de {LIMITE_FILA_MIN} min · SLA em {LIMITE_SLA_MIN} min.
                   </p>
                 </CardHeader>
                 <CardContent className="flex flex-1 flex-col justify-between gap-4">
@@ -6346,7 +6346,7 @@ const saveConfig = async () => {
                         {resumoFilaPeriodo.saudePercentual}%
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {resumoFilaPeriodo.dentroDoLimite} de {resumoFilaPeriodo.total}
+                        {resumoFilaPeriodo.dentroDoSla} de {resumoFilaPeriodo.total} no SLA
                       </p>
                     </div>
                     <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
@@ -6360,10 +6360,10 @@ const saveConfig = async () => {
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
                       <p className="text-2xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
-                        {resumoFilaPeriodo.acimaDoLimite}
+                        {resumoFilaPeriodo.entraramNaFila}
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        Esperaram mais de {LIMITE_FILA_MIN} min
+                        Entraram na fila
                       </p>
                     </div>
                     <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
@@ -6373,6 +6373,13 @@ const saveConfig = async () => {
                       <p className="mt-0.5 text-xs text-muted-foreground">Pico simultâneo</p>
                     </div>
                   </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground tabular-nums">
+                      {resumoFilaPeriodo.acimaDoSla}
+                    </span>
+                    {' '}passaram do SLA de {LIMITE_SLA_MIN} min.
+                  </p>
                 </CardContent>
               </Card>
             </ReportWidget>

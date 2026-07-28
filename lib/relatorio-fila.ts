@@ -33,27 +33,39 @@ export type MaiorEspera = {
 export type ResumoFila = {
   /** Tickets do período com data de criação válida. */
   total: number
-  /** Responderam dentro do limite (ou ainda estão dentro dele). */
-  dentroDoLimite: number
-  /** Passaram do limite — cada um é um cliente que esperou demais. */
-  acimaDoLimite: number
-  /** 0 a 100. Sem tickets no período, 100: não houve fila para falhar. */
+  /** Esperaram mais que o limite de fila — cada um é um cliente que ficou. */
+  entraramNaFila: number
+  /** Passaram do SLA. É o que a saúde mede. */
+  acimaDoSla: number
+  dentroDoSla: number
+  /** 0 a 100, sobre o SLA. Sem tickets no período, 100: nada falhou. */
   saudePercentual: number
-  /** Máximo de clientes simultaneamente acima do limite. */
+  /** Máximo de clientes simultaneamente na fila. */
   picoSimultaneo: number
   maiorEspera: MaiorEspera | null
 }
 
-export const LIMITE_FILA_PADRAO_MIN = 15
+/**
+ * Entrar na fila e estar atrasado são coisas diferentes.
+ *
+ * Um minuto define FILA: a operação considera que o cliente já está esperando.
+ * Quinze minutos definem o SLA, e é o que a saúde mede — usar 1 minuto nos dois
+ * deixaria a barra permanentemente vermelha (19% no ServiceDesk hoje), e barra
+ * sempre vermelha é barra que ninguém olha.
+ */
+export const LIMITE_FILA_PADRAO_MIN = 1
+export const LIMITE_SLA_PADRAO_MIN = 15
 
 export function resumirFila(
   tickets: readonly TicketFila[],
-  opts: { agoraMs: number; limiteMin?: number },
+  opts: { agoraMs: number; limiteFilaMin?: number; limiteSlaMin?: number },
 ): ResumoFila {
-  const limiteMs = Math.max(0, (opts.limiteMin ?? LIMITE_FILA_PADRAO_MIN)) * 60_000
+  const filaMs = Math.max(0, opts.limiteFilaMin ?? LIMITE_FILA_PADRAO_MIN) * 60_000
+  const slaMs = Math.max(0, opts.limiteSlaMin ?? LIMITE_SLA_PADRAO_MIN) * 60_000
 
   let total = 0
-  let acima = 0
+  let naFila = 0
+  let acimaSla = 0
   let maior: MaiorEspera | null = null
   const eventos: Array<[number, number]> = []
 
@@ -72,10 +84,11 @@ export function resumirFila(
     const espera = fim - inicio
     if (!Number.isFinite(espera) || espera < 0) continue
 
-    if (espera > limiteMs) {
-      acima += 1
-      eventos.push([inicio + limiteMs, 1], [fim, -1])
+    if (espera > filaMs) {
+      naFila += 1
+      eventos.push([inicio + filaMs, 1], [fim, -1])
     }
+    if (espera > slaMs) acimaSla += 1
 
     if (!maior || espera > maior.esperaMs) {
       maior = {
@@ -100,9 +113,10 @@ export function resumirFila(
 
   return {
     total,
-    dentroDoLimite: total - acima,
-    acimaDoLimite: acima,
-    saudePercentual: total > 0 ? Math.round(((total - acima) / total) * 100) : 100,
+    entraramNaFila: naFila,
+    acimaDoSla: acimaSla,
+    dentroDoSla: total - acimaSla,
+    saudePercentual: total > 0 ? Math.round(((total - acimaSla) / total) * 100) : 100,
     picoSimultaneo: pico,
     maiorEspera: maior,
   }

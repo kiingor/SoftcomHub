@@ -5,40 +5,57 @@ import {
   formatarEsperaLonga,
   faixaDeSaude,
   LIMITE_FILA_PADRAO_MIN,
+  LIMITE_SLA_PADRAO_MIN,
 } from '../lib/relatorio-fila.ts'
 
 const AGORA = Date.parse('2026-07-28T18:00:00.000Z')
 const min = (n) => new Date(AGORA - n * 60_000).toISOString()
 const base = { agoraMs: AGORA }
 
-test('conta quem passou do limite, que é o cliente que esperou demais', () => {
+test('separa entrar na fila de estourar o SLA', () => {
+  // A operação considera fila a partir de 1 min; o SLA é 15. Um cliente que
+  // esperou 5min entrou na fila mas está dentro do prazo.
   const r = resumirFila([
-    { criado_em: min(20), primeira_resposta_em: min(15) },  // esperou 5min
-    { criado_em: min(60), primeira_resposta_em: min(30) },  // esperou 30min
-    { criado_em: min(90), primeira_resposta_em: min(20) },  // esperou 70min
+    { criado_em: min(20), primeira_resposta_em: min(15) },  // 5min
+    { criado_em: min(60), primeira_resposta_em: min(30) },  // 30min
+    { criado_em: min(90), primeira_resposta_em: min(20) },  // 70min
   ], base)
 
   assert.equal(r.total, 3)
-  assert.equal(r.acimaDoLimite, 2)
-  assert.equal(r.dentroDoLimite, 1)
-  assert.equal(r.saudePercentual, 33)
+  assert.equal(r.entraramNaFila, 3, 'os três esperaram mais de 1 min')
+  assert.equal(r.acimaDoSla, 2)
+  assert.equal(r.dentroDoSla, 1)
+  assert.equal(r.saudePercentual, 33, 'a saúde mede o SLA, não a fila')
+})
+
+test('resposta em menos de 1 minuto não entra na fila', () => {
+  const r = resumirFila([
+    { criado_em: new Date(AGORA - 40_000).toISOString(), primeira_resposta_em: min(0) },
+  ], base)
+
+  assert.equal(r.entraramNaFila, 0)
+  assert.equal(r.acimaDoSla, 0)
+  assert.equal(r.saudePercentual, 100)
 })
 
 test('ticket sem resposta conta a espera até agora — é quem ainda espera', () => {
   const r = resumirFila([{ criado_em: min(45), primeira_resposta_em: null }], base)
 
-  assert.equal(r.acimaDoLimite, 1)
+  assert.equal(r.entraramNaFila, 1)
+  assert.equal(r.acimaDoSla, 1)
   assert.equal(r.maiorEspera.esperaMs, 45 * 60_000)
   assert.equal(r.maiorEspera.emAndamento, true)
 })
 
-test('exatamente no limite não conta como atraso', () => {
-  const r = resumirFila([
-    { criado_em: min(LIMITE_FILA_PADRAO_MIN), primeira_resposta_em: min(0) },
-  ], base)
-
-  assert.equal(r.acimaDoLimite, 0)
-  assert.equal(r.saudePercentual, 100)
+test('exatamente no limite não conta — nem na fila, nem no SLA', () => {
+  assert.equal(
+    resumirFila([{ criado_em: min(LIMITE_FILA_PADRAO_MIN), primeira_resposta_em: min(0) }], base).entraramNaFila,
+    0,
+  )
+  assert.equal(
+    resumirFila([{ criado_em: min(LIMITE_SLA_PADRAO_MIN), primeira_resposta_em: min(0) }], base).acimaDoSla,
+    0,
+  )
 })
 
 test('a maior espera traz ticket, cliente e entrada', () => {
@@ -71,7 +88,7 @@ test('esperas que não se sobrepõem não viram pico', () => {
     { criado_em: min(100), primeira_resposta_em: min(60) },
   ], base)
 
-  assert.equal(r.acimaDoLimite, 2)
+  assert.equal(r.entraramNaFila, 2)
   assert.equal(r.picoSimultaneo, 1)
 })
 
@@ -90,15 +107,16 @@ test('data inválida ou no futuro não entra na conta', () => {
     { criado_em: new Date(AGORA + 600_000).toISOString(), primeira_resposta_em: null },
   ], base)
 
-  assert.equal(r.acimaDoLimite, 0)
+  assert.equal(r.entraramNaFila, 0)
   assert.equal(r.maiorEspera, null)
 })
 
-test('o limite é configurável', () => {
+test('os dois limiares são configuráveis e independentes', () => {
   const tickets = [{ criado_em: min(20), primeira_resposta_em: min(0) }]
 
-  assert.equal(resumirFila(tickets, { ...base, limiteMin: 15 }).acimaDoLimite, 1)
-  assert.equal(resumirFila(tickets, { ...base, limiteMin: 30 }).acimaDoLimite, 0)
+  assert.equal(resumirFila(tickets, { ...base, limiteSlaMin: 15 }).acimaDoSla, 1)
+  assert.equal(resumirFila(tickets, { ...base, limiteSlaMin: 30 }).acimaDoSla, 0)
+  assert.equal(resumirFila(tickets, { ...base, limiteFilaMin: 25 }).entraramNaFila, 0)
 })
 
 test('formata a espera como o painel de referência', () => {
