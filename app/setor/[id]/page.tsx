@@ -144,7 +144,8 @@ import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorF
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
-import { PainelSubsetoresLateral } from '@/components/setor/painel-subsetores-lateral'
+import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
+import { formatarTempoMonitoramento } from '@/lib/monitoramento-tempo-real'
 import { calcularTempoReal } from '@/lib/monitoramento-tempo-real'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
@@ -1257,9 +1258,11 @@ function SetorPageInner() {
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
   // Subsetor acompanhado na coluna lateral do Monitoramento. Guardado por
   // gestor + setor, como o filtro rápido — a escolha é dele.
-  const [subsetorLateral, setSubsetorLateral] = useState<string>('')
+  // Cada card de tempo real tem o seu recorte. O principal nasce sem filtro
+  // (setor inteiro); o segundo, no primeiro subsetor.
+  const [subsetorCardPrincipal, setSubsetorCardPrincipal] = useState<string>(TODOS_SUBSETORES)
+  const [subsetorCardSecundario, setSubsetorCardSecundario] = useState<string>('')
   const [painelSubsetorVisivel, setPainelSubsetorVisivel] = useState(true)
-  const [painelSubsetorCompacto, setPainelSubsetorCompacto] = useState(false)
   const [proporcaoLinha1, setProporcaoLinha1] = useState<ProporcaoLinha1>('equilibrado')
 
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
@@ -2845,16 +2848,44 @@ function SetorPageInner() {
     })
   ), [tickets, ticketsMonitoramentoHoje, atendentes, monitoringTick])
 
-  const resumoLateral = useMemo(
-    () => (subsetorLateral ? resumoDoSubsetor(subsetorLateral) : null),
-    [subsetorLateral, resumoDoSubsetor],
+  const resumoCardSecundario = useMemo(
+    () => resumoDoSubsetor(subsetorCardSecundario),
+    [subsetorCardSecundario, resumoDoSubsetor],
   )
 
   // A carga é calculada aqui porque `calculateWorkloadOs` e a tabela de cores
   // vivem nesta página — o componente não precisa conhecer nenhuma das duas.
-  const cargaLateral = useMemo(
-    () => calculateWorkloadOs(resumoLateral?.total ?? 0, resumoLateral?.atendentesOnline ?? 0),
-    [resumoLateral],
+  /**
+   * O card principal tem seletor próprio: em "Todos os subsetores" ele respeita
+   * o filtro rápido da tela, como sempre fez; com um subsetor escolhido, ele
+   * recorta só nele e ignora o filtro rápido — senão os dois se combinariam e o
+   * número não bateria com o que o seletor diz.
+   */
+  const resumoCardPrincipal = useMemo(() => calcularTempoReal({
+    tickets,
+    ticketsDeHoje: ticketsMonitoramentoHoje,
+    atendentes,
+    aceitaTicket: (t: any) => (
+      subsetorCardPrincipal === TODOS_SUBSETORES
+        ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
+        : t.subsetor_id === subsetorCardPrincipal
+    ),
+    aceitaAtendente: (a: any) => isAtendenteOnline(a) && (
+      subsetorCardPrincipal === TODOS_SUBSETORES
+        ? matchesAtendenteSubsetorFilter(subsetorFilter, a.subsetor_ids)
+        : (a.subsetor_ids || []).includes(subsetorCardPrincipal)
+    ),
+    agoraMs: monitoringTick,
+  }), [tickets, ticketsMonitoramentoHoje, atendentes, subsetorCardPrincipal, subsetorFilter, monitoringTick])
+
+  const cargaCardPrincipal = useMemo(
+    () => calculateWorkloadOs(resumoCardPrincipal.total, resumoCardPrincipal.atendentesOnline),
+    [resumoCardPrincipal],
+  )
+
+  const cargaCardSecundario = useMemo(
+    () => calculateWorkloadOs(resumoCardSecundario.total, resumoCardSecundario.atendentesOnline),
+    [resumoCardSecundario],
   )
 
   // Identidade estável da lista: sem isto, qualquer atualização de `subsetores`
@@ -2867,17 +2898,23 @@ function SetorPageInner() {
 
   useEffect(() => {
     if (!lateralStorageKey || opcoesSubsetorTempoReal.length === 0) return
-    let salvo: { id?: string; visivel?: boolean; compacto?: boolean; proporcao?: string } | null = null
+    let salvo: { id?: string; principal?: string; visivel?: boolean; compacto?: boolean; proporcao?: string } | null = null
     try {
       salvo = JSON.parse(window.localStorage.getItem(lateralStorageKey) || 'null')
     } catch { /* preferência corrompida cai no padrão */ }
 
     // Subsetor apagado não pode deixar o painel preso num id morto.
-    const existe = Boolean(salvo?.id) && opcoesSubsetorTempoReal.some((o) => o.id === salvo!.id)
-    setSubsetorLateral(existe ? salvo!.id! : (opcoesSubsetorTempoReal[0]?.id || ''))
+    const conhecido = (id?: string) => Boolean(id) && opcoesSubsetorTempoReal.some((o) => o.id === id)
+    setSubsetorCardPrincipal(
+      salvo?.principal === TODOS_SUBSETORES || conhecido(salvo?.principal)
+        ? salvo!.principal!
+        : TODOS_SUBSETORES,
+    )
+    setSubsetorCardSecundario(
+      conhecido(salvo?.id) ? salvo!.id! : (opcoesSubsetorTempoReal[0]?.id || ''),
+    )
     // `!== false` e não `?? true`: preferência antiga sem o campo nasce visível.
     setPainelSubsetorVisivel(salvo?.visivel !== false)
-    setPainelSubsetorCompacto(salvo?.compacto === true)
     // Valor desconhecido (preferência antiga ou adulterada) cai no padrão em
     // vez de virar uma classe inexistente e quebrar a grade.
     setProporcaoLinha1(
@@ -2889,16 +2926,16 @@ function SetorPageInner() {
   }, [lateralStorageKey, chaveOpcoesSubsetor])
 
   useEffect(() => {
-    if (!lateralStorageKey || !subsetorLateral) return
+    if (!lateralStorageKey || !subsetorCardSecundario) return
     try {
       window.localStorage.setItem(lateralStorageKey, JSON.stringify({
-        id: subsetorLateral,
+        id: subsetorCardSecundario,
+        principal: subsetorCardPrincipal,
         visivel: painelSubsetorVisivel,
-        compacto: painelSubsetorCompacto,
         proporcao: proporcaoLinha1,
       }))
     } catch { /* navegador sem storage não impede usar a tela */ }
-  }, [lateralStorageKey, subsetorLateral, painelSubsetorVisivel, painelSubsetorCompacto, proporcaoLinha1])
+  }, [lateralStorageKey, subsetorCardSecundario, subsetorCardPrincipal, painelSubsetorVisivel, proporcaoLinha1])
 
   // Grade ajustável do Monitoramento — mesmo mecanismo do relatório.
   const [monitorEditMode, setMonitorEditMode] = useState(false)
@@ -4857,38 +4894,21 @@ const saveConfig = async () => {
 
                       <div className="my-4 border-t" />
 
-                      <p className="text-sm font-medium">Painel por subsetor</p>
+                      <p className="text-sm font-medium">Segundo card de tempo real</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        O recorte que aparece ao lado do status dos atendentes.
+                        Uma segunda cópia do card, com seu próprio filtro de subsetor.
                       </p>
 
                       <div className="mt-4 space-y-4">
                         <label className="flex items-center justify-between gap-3">
-                          <span className="text-sm">Mostrar painel</span>
+                          <span className="text-sm">Mostrar segundo card</span>
                           <Switch
                             checked={painelSubsetorVisivel}
                             onCheckedChange={setPainelSubsetorVisivel}
-                            aria-label="Mostrar painel por subsetor"
+                            aria-label="Mostrar segundo card de tempo real"
                           />
                         </label>
 
-                        <label className={cn(
-                          'flex items-center justify-between gap-3',
-                          !painelSubsetorVisivel && 'pointer-events-none opacity-50',
-                        )}>
-                          <span className="min-w-0">
-                            <span className="block text-sm">Modo compacto</span>
-                            <span className="block text-xs text-muted-foreground">
-                              Só os quatro números, sem esperas e carga
-                            </span>
-                          </span>
-                          <Switch
-                            checked={painelSubsetorCompacto}
-                            onCheckedChange={setPainelSubsetorCompacto}
-                            disabled={!painelSubsetorVisivel}
-                            aria-label="Modo compacto do painel por subsetor"
-                          />
-                        </label>
                       </div>
                     </PopoverContent>
                   </Popover>
@@ -4939,113 +4959,16 @@ const saveConfig = async () => {
               >
                 <div key="tempoReal" className="overflow-hidden">
                 <ReportWidget {...monitorWidget('tempoReal')}>
-                {/* Atendimentos em tempo real */}
-                <Card className="glass-card-elevated h-full overflow-auto rounded-lg border-l-4 border-l-primary">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                      <Activity className="h-4 w-4 text-primary" aria-hidden="true" />
-                      Atendimentos em tempo real
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/80 bg-border/80 sm:grid-cols-4">
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Activity className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                          <span>Total ativos</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground tabular-nums">
-                          {realtimeStats.total}
-                        </p>
-                      </div>
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Inbox className="h-3.5 w-3.5 shrink-0 text-orange-500" aria-hidden="true" />
-                          <span>Na fila</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-orange-500 tabular-nums">
-                          {realtimeStats.naFila}
-                        </p>
-                      </div>
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Headphones className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-                          <span>Em atendimento</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-primary tabular-nums">
-                          {realtimeStats.emAtendimento}
-                        </p>
-                      </div>
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <CheckCircle className="h-3.5 w-3.5 shrink-0 text-green-500" aria-hidden="true" />
-                          <span>Finalizados hoje</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-green-500 tabular-nums">
-                          {realtimeStats.finalizadosHoje}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(190px,0.8fr)]">
-                      <section
-                        className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3"
-                        aria-label="Maiores esperas atuais"
-                      >
-                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          <Timer className="h-3.5 w-3.5" aria-hidden="true" />
-                          <span>Maiores esperas atuais</span>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 divide-x divide-border/70">
-                          <div className="min-w-0 pr-3">
-                            <p className="whitespace-nowrap text-lg font-semibold tracking-tight text-foreground tabular-nums">
-                              {realtimeStats.tempoMaximoFila}
-                            </p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">Na fila</p>
-                          </div>
-                          <div className="min-w-0 pl-3">
-                            <p className="whitespace-nowrap text-lg font-semibold tracking-tight text-foreground tabular-nums">
-                              {realtimeStats.tempoMaximoResposta}
-                            </p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">Sem 1ª resposta</p>
-                          </div>
-                        </div>
-                      </section>
-
-                      <section
-                        className={cn('rounded-lg border px-4 py-3', workloadTone.badge)}
-                        title={`${realtimeStats.total} tickets ativos ÷ ${realtimeStats.onlineAttendants} atendentes online compatíveis`}
-                        aria-label={realtimeStats.workload.ratio === null
-                          ? `${realtimeStats.workload.label}: ${realtimeStats.total} tickets ativos e nenhum atendente online compatível`
-                          : `${realtimeStats.workload.formattedRatio} tickets por atendente online: ${realtimeStats.workload.label}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                            <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
-                            <span>Carga por atendente</span>
-                          </div>
-                          <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', workloadTone.badge)}>
-                            {realtimeStats.workload.label}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 flex items-end justify-between gap-3">
-                          <div>
-                            <p className={cn('text-2xl font-semibold tracking-tight tabular-nums', workloadTone.value)}>
-                              {realtimeStats.workload.formattedRatio}
-                            </p>
-                            <p className="text-xs text-muted-foreground">Média/OS</p>
-                          </div>
-                          <p className="pb-0.5 text-right text-[11px] leading-tight text-muted-foreground tabular-nums">
-                            {realtimeStats.onlineAttendants} online
-                          </p>
-                        </div>
-                      </section>
-                    </div>
-
-                  </CardContent>
-                </Card>
-
-
+                <CardAtendimentosTempoReal
+                  resumo={resumoCardPrincipal}
+                  workload={cargaCardPrincipal}
+                  tomCarga={WORKLOAD_OS_TONES[cargaCardPrincipal.level]}
+                  tempoMaximoFila={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaFilaMs)}
+                  tempoMaximoResposta={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaRespostaMs)}
+                  opcoes={opcoesSubsetorTempoReal}
+                  subsetorSelecionado={subsetorCardPrincipal}
+                  aoTrocarSubsetor={setSubsetorCardPrincipal}
+                />
                 </ReportWidget>
                 </div>
 
@@ -5099,16 +5022,18 @@ const saveConfig = async () => {
                 {opcoesSubsetorTempoReal.length > 0 && painelSubsetorVisivel && (
                 <div key="porSubsetor" className="overflow-hidden">
                 <ReportWidget {...monitorWidget('porSubsetor')}>
-                  <PainelSubsetoresLateral
-                    compacto={painelSubsetorCompacto}
+                  {/* Mesmo componente do card acima: o gestor mantém um com o
+                      setor inteiro e outro recortado, sem risco de os dois
+                      divergirem na apresentação. */}
+                  <CardAtendimentosTempoReal
+                    resumo={resumoCardSecundario}
+                    workload={cargaCardSecundario}
+                    tomCarga={WORKLOAD_OS_TONES[cargaCardSecundario.level]}
+                    tempoMaximoFila={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaFilaMs)}
+                    tempoMaximoResposta={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaRespostaMs)}
                     opcoes={opcoesSubsetorTempoReal}
-                    espaco={{
-                      subsetorId: subsetorLateral,
-                      resumo: resumoLateral,
-                      workload: cargaLateral,
-                      tomCarga: WORKLOAD_OS_TONES[cargaLateral.level],
-                    }}
-                    aoTrocar={setSubsetorLateral}
+                    subsetorSelecionado={subsetorCardSecundario}
+                    aoTrocarSubsetor={setSubsetorCardSecundario}
                   />
                 </ReportWidget>
                 </div>
