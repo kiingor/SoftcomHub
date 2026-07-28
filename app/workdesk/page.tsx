@@ -813,6 +813,9 @@ export default function WorkdeskPage() {
 
   // Recorded audio awaiting preview/confirmation before send.
   const [recordedAudio, setRecordedAudio] = useState<File | null>(null)
+  /** Rascunho não enviado de cada ticket, para sobreviver à troca de conversa. */
+  const rascunhosRef = useRef<Map<string, string>>(new Map())
+  const ticketDoRascunhoRef = useRef<string | null>(null)
   const recordedAudioUrl = useMemo(
     () => (recordedAudio ? URL.createObjectURL(recordedAudio) : null),
     [recordedAudio],
@@ -2363,9 +2366,35 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       // conversation while new messages load. Re-clicking the same ticket must NOT clear
       // messages because the useEffect won't re-fire (selectedTicketId didn't change).
       setMensagens([])
-      // Also clear the typed message so each ticket starts clean
-      setMessageInput('')
       setShowTemplates(false)
+
+      // O texto digitado fica guardado por ticket: quem escreve metade da
+      // resposta para um cliente, atende outro e volta, encontra o rascunho
+      // onde parou. Antes ele era descartado na troca.
+      setMessageInput((rascunhoAtual) => {
+        const ticketAnterior = ticketDoRascunhoRef.current
+        if (ticketAnterior && ticketAnterior !== ticket.id) {
+          const proximos = new Map(rascunhosRef.current)
+          if (rascunhoAtual.trim()) proximos.set(ticketAnterior, rascunhoAtual)
+          else proximos.delete(ticketAnterior)
+          rascunhosRef.current = proximos
+        }
+        ticketDoRascunhoRef.current = ticket.id
+        return rascunhosRef.current.get(ticket.id) || ''
+      })
+
+      // Anexo, áudio gravado e citação NÃO são rascunho: pertencem ao ticket em
+      // que foram preparados. Sem limpar, o boleto de um cliente seguia na fila
+      // e ia para o próximo que o atendente respondesse.
+      setAttachments((anteriores) => {
+        // Mesmo cuidado do resto do arquivo: `preview` só é object URL às vezes.
+        anteriores.forEach((anexo) => {
+          if (anexo.preview.startsWith('blob:')) URL.revokeObjectURL(anexo.preview)
+        })
+        return []
+      })
+      setRecordedAudio(null)
+      setReplyingTo(null)
     }
 
     setMobileDrawerOpen(false)
