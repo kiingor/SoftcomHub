@@ -6,6 +6,7 @@ import {
   faixaDeSaude,
   LIMITE_FILA_PADRAO_MIN,
   LIMITE_SLA_PADRAO_MIN,
+  contarEpisodiosDeFila,
 } from '../lib/relatorio-fila.ts'
 
 const AGORA = Date.parse('2026-07-28T18:00:00.000Z')
@@ -148,4 +149,78 @@ test('faixa de saúde separa boa, atenção e crítica', () => {
   assert.equal(faixaDeSaude(89), 'atencao')
   assert.equal(faixaDeSaude(70), 'atencao')
   assert.equal(faixaDeSaude(69), 'critica')
+})
+
+// --- episódios de fila (criado_em → atribuido_em) ---
+
+const seg = (n) => new Date(AGORA - n * 1000).toISOString()
+
+test('clientes que chegam juntos são UM episódio, não vários', () => {
+  // É a diferença entre a métrica pedida e a anterior: contar vezes, não gente.
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(600), atribuido_em: seg(300) },
+    { criado_em: seg(590), atribuido_em: seg(280) },
+    { criado_em: seg(580), atribuido_em: seg(200) },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 1)
+  assert.equal(r.pico, 3)
+})
+
+test('filas separadas no tempo são episódios separados', () => {
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(900), atribuido_em: seg(800) },
+    { criado_em: seg(400), atribuido_em: seg(300) },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 2)
+  assert.equal(r.pico, 1)
+})
+
+test('ticket ainda aberto conta como fila correndo agora', () => {
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(120), atribuido_em: null, status: 'aberto' },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 1)
+  assert.equal(r.temDados, true)
+})
+
+test('saída não registrada não entra na conta, e é contabilizada à parte', () => {
+  // Ticket que já saiu da fila mas sem `atribuido_em`: incluí-lo com uma saída
+  // chutada inventaria episódios.
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(600), atribuido_em: null, status: 'em_atendimento' },
+    { criado_em: seg(500), atribuido_em: null, status: 'encerrado' },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.semRegistro, 2)
+  assert.equal(r.vezes, 0)
+  assert.equal(r.temDados, false, 'sem nenhuma saída conhecida, não dá para afirmar o número')
+})
+
+test('temDados vira verdadeiro assim que existe uma saída conhecida', () => {
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(600), atribuido_em: null, status: 'encerrado' },
+    { criado_em: seg(500), atribuido_em: seg(400) },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.temDados, true)
+  assert.equal(r.semRegistro, 1)
+  assert.equal(r.vezes, 1)
+})
+
+test('atribuição no mesmo instante da criação não é fila', () => {
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(300), atribuido_em: seg(300) },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 0)
+  assert.equal(r.pico, 0)
+  assert.equal(r.temDados, true)
+})
+
+test('lista vazia não afirma nada', () => {
+  const r = contarEpisodiosDeFila([], { agoraMs: AGORA })
+  assert.deepEqual([r.vezes, r.pico, r.semRegistro, r.temDados], [0, 0, 0, false])
 })

@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { type ResumoTempoReal } from '@/lib/monitoramento-tempo-real'
-import { formatarEsperaLonga, LIMITE_FILA_PADRAO_MIN, type ResumoFila } from '@/lib/relatorio-fila'
+import { formatarEsperaLonga, type EpisodiosDeFila, type ResumoFila } from '@/lib/relatorio-fila'
 import { type WorkloadOs } from '@/lib/workload-os'
 import { cn } from '@/lib/utils'
 
@@ -35,6 +35,7 @@ export function CardAtendimentosTempoReal({
   tempoMaximoFila,
   tempoMaximoResposta,
   fila,
+  episodios,
   opcoes,
   subsetorSelecionado = TODOS_SUBSETORES,
   aoTrocarSubsetor,
@@ -46,7 +47,9 @@ export function CardAtendimentosTempoReal({
   tempoMaximoFila: string
   tempoMaximoResposta: string
   /** Fila do DIA, no mesmo recorte do card. Sem isto, a faixa não aparece. */
-  fila?: Pick<ResumoFila, 'entraramNaFila' | 'maiorEspera'>
+  fila?: Pick<ResumoFila, 'maiorEspera'>
+  /** Vezes que a fila se formou hoje. Depende de `atribuido_em`. */
+  episodios?: EpisodiosDeFila
   opcoes?: OpcaoSubsetor[]
   subsetorSelecionado?: string
   aoTrocarSubsetor?: (id: string) => void
@@ -142,12 +145,19 @@ export function CardAtendimentosTempoReal({
         {fila && (
           <div className="grid grid-cols-2 gap-3 border-t border-border/70 pt-3 text-center">
             <div>
-              <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
-                {fila.entraramNaFila}
+              {/* Sem `atribuido_em` não há como saber quando o ticket saiu da
+                  fila, e um número aqui seria invenção. */}
+              <p className={cn(
+                'text-2xl font-bold tabular-nums',
+                episodios?.temDados ? 'text-orange-600 dark:text-orange-400' : 'text-muted-foreground',
+              )}>
+                {episodios?.temDados ? episodios.vezes : '—'}
               </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">Entraram na fila hoje</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Vezes que deu fila hoje</p>
               <p className="text-[11px] text-muted-foreground">
-                acima de {LIMITE_FILA_PADRAO_MIN} min
+                {episodios?.temDados
+                  ? `pico de ${episodios.pico} ${episodios.pico === 1 ? 'ticket' : 'tickets'}`
+                  : 'sem registro ainda'}
               </p>
             </div>
             <div className="min-w-0">

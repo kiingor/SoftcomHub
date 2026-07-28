@@ -143,7 +143,7 @@ import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
-import { resumirFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
+import { resumirFila, contarEpisodiosDeFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
 import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
 import { formatarTempoMonitoramento } from '@/lib/monitoramento-tempo-real'
@@ -2431,6 +2431,10 @@ function SetorPageInner() {
     resumirFila(ticketsMonitoramentoHoje.filter(aceitaTicket), { agoraMs: monitoringTick })
   ), [ticketsMonitoramentoHoje, monitoringTick])
 
+  const episodiosDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
+    contarEpisodiosDeFila(ticketsMonitoramentoHoje.filter(aceitaTicket), { agoraMs: monitoringTick })
+  ), [ticketsMonitoramentoHoje, monitoringTick])
+
   const filaCardPrincipal = useMemo(() => filaDeHoje((t: any) => (
     subsetorCardPrincipal === TODOS_SUBSETORES
       ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
@@ -2440,6 +2444,17 @@ function SetorPageInner() {
   const filaCardSecundario = useMemo(
     () => filaDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
     [filaDeHoje, subsetorCardSecundario],
+  )
+
+  const episodiosPrincipal = useMemo(() => episodiosDeHoje((t: any) => (
+    subsetorCardPrincipal === TODOS_SUBSETORES
+      ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
+      : t.subsetor_id === subsetorCardPrincipal
+  )), [episodiosDeHoje, subsetorCardPrincipal, subsetorFilter])
+
+  const episodiosSecundario = useMemo(
+    () => episodiosDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
+    [episodiosDeHoje, subsetorCardSecundario],
   )
 
   const ticketsHoje = useMemo(() => {
@@ -5027,6 +5042,7 @@ const saveConfig = async () => {
                   tempoMaximoFila={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaFilaMs)}
                   tempoMaximoResposta={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaRespostaMs)}
                   fila={filaCardPrincipal}
+                  episodios={episodiosPrincipal}
                   opcoes={opcoesSubsetorTempoReal}
                   subsetorSelecionado={subsetorCardPrincipal}
                   aoTrocarSubsetor={setSubsetorCardPrincipal}
@@ -5094,6 +5110,7 @@ const saveConfig = async () => {
                     tempoMaximoFila={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaFilaMs)}
                     tempoMaximoResposta={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaRespostaMs)}
                     fila={filaCardSecundario}
+                    episodios={episodiosSecundario}
                     opcoes={opcoesSubsetorTempoReal}
                     subsetorSelecionado={subsetorCardSecundario}
                     aoTrocarSubsetor={setSubsetorCardSecundario}

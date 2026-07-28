@@ -153,3 +153,86 @@ export function faixaDeSaude(percentual: number): 'boa' | 'atencao' | 'critica' 
   if (percentual >= 70) return 'atencao'
   return 'critica'
 }
+
+export type TicketNaFila = {
+  criado_em?: string | null
+  /** Instante em que ganhou atendente — a saída da fila. */
+  atribuido_em?: string | null
+  status?: string | null
+}
+
+export type EpisodiosDeFila = {
+  /** Vezes que a fila saiu de vazia e voltou a ter alguém. */
+  vezes: number
+  /** Máximo de tickets simultaneamente na fila. */
+  pico: number
+  /** Tickets cuja saída não foi registrada — não entram na conta. */
+  semRegistro: number
+  /** Sem nenhum ticket com saída conhecida, o número não pode ser afirmado. */
+  temDados: boolean
+}
+
+/**
+ * Quantas VEZES a fila se formou no período.
+ *
+ * Diferente de contar clientes: aqui a fila é o intervalo entre o ticket nascer
+ * e ganhar atendente, e um episódio é uma janela em que havia alguém esperando.
+ * Dez clientes chegando juntos são um episódio, não dez.
+ *
+ * Exige `atribuido_em`. A coluna existe desde sempre mas só passou a ser
+ * gravada em 28/07/2026 — antes disso, 0 de 4.821 tickets de uma semana tinham
+ * valor. Sem ela não há como saber quando o ticket saiu da fila, e o episódio
+ * fica incalculável: daí `temDados`, para a tela dizer "sem registro" em vez de
+ * mostrar um número inventado.
+ *
+ * Ticket ainda em 'aberto' conta como fila aberta até agora — é justamente
+ * quem está esperando neste momento.
+ */
+export function contarEpisodiosDeFila(
+  tickets: readonly TicketNaFila[],
+  opts: { agoraMs: number },
+): EpisodiosDeFila {
+  const eventos: Array<[number, number]> = []
+  let semRegistro = 0
+  let comSaida = 0
+
+  for (const ticket of tickets) {
+    const entrada = ticket.criado_em ? Date.parse(ticket.criado_em) : Number.NaN
+    if (!Number.isFinite(entrada)) continue
+
+    const registrada = ticket.atribuido_em ? Date.parse(ticket.atribuido_em) : Number.NaN
+    const aindaNaFila = ticket.status === 'aberto'
+    const saida = Number.isFinite(registrada)
+      ? registrada
+      : (aindaNaFila ? opts.agoraMs : Number.NaN)
+
+    if (!Number.isFinite(saida)) {
+      // Já saiu da fila, mas ninguém anotou quando.
+      semRegistro += 1
+      continue
+    }
+    comSaida += 1
+    if (saida <= entrada) continue
+    eventos.push([entrada, 1], [saida, -1])
+  }
+
+  // Saída antes de entrada no empate: dois tickets encostados são dois
+  // episódios, não um só com pico 2.
+  eventos.sort((primeiro, segundo) => primeiro[0] - segundo[0] || primeiro[1] - segundo[1])
+
+  let simultaneos = 0
+  let pico = 0
+  let vezes = 0
+  let dentro = false
+  for (const [, delta] of eventos) {
+    simultaneos += delta
+    if (simultaneos > pico) pico = simultaneos
+    if (simultaneos >= 1 && !dentro) {
+      vezes += 1
+      dentro = true
+    }
+    if (simultaneos === 0) dentro = false
+  }
+
+  return { vezes, pico, semRegistro, temDados: comSaida > 0 }
+}
