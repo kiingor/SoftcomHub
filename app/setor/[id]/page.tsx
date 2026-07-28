@@ -616,11 +616,11 @@ const MONITOR_CARDS = [
 // As larguras somam 12 por linha de propósito: é o que faz os cards nascerem
 // lado a lado em vez de empilhados.
 const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
-  tempoReal: { w: 7, h: 5 },
+  tempoReal: { w: 7, h: 7 },
   statusAtendentes: { w: 5, h: 3 },
-  porSubsetor: { w: 5, h: 6 },
+  porSubsetor: { w: 5, h: 7 },
   atendimentoHoje: { w: 7, h: 5 },
-  statusTickets: { w: 5, h: 6 },
+  statusTickets: { w: 5, h: 4 },
 }
 
 // v2: a v1 nasceu com todos os cards empilhados em x=0. Trocar a chave dá a
@@ -2421,9 +2421,25 @@ function SetorPageInner() {
    * relatório — `resumirFila` — para os dois números não divergirem entre as
    * telas. `monitoringTick` porque a espera de quem não foi respondido corre.
    */
-  const filaHoje = useMemo(
-    () => resumirFila(scopedTicketsHoje, { agoraMs: monitoringTick }),
-    [scopedTicketsHoje, monitoringTick],
+  /**
+   * Fila de hoje sob o mesmo recorte de cada card de tempo real. Recebe o
+   * predicado em vez de um subsetor para servir aos dois casos: o principal
+   * respeita o filtro rápido quando está em "todos", o secundário é sempre um
+   * subsetor.
+   */
+  const filaDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
+    resumirFila(ticketsMonitoramentoHoje.filter(aceitaTicket), { agoraMs: monitoringTick })
+  ), [ticketsMonitoramentoHoje, monitoringTick])
+
+  const filaCardPrincipal = useMemo(() => filaDeHoje((t: any) => (
+    subsetorCardPrincipal === TODOS_SUBSETORES
+      ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
+      : t.subsetor_id === subsetorCardPrincipal
+  )), [filaDeHoje, subsetorCardPrincipal, subsetorFilter])
+
+  const filaCardSecundario = useMemo(
+    () => filaDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
+    [filaDeHoje, subsetorCardSecundario],
   )
 
   const ticketsHoje = useMemo(() => {
@@ -5010,6 +5026,7 @@ const saveConfig = async () => {
                   tomCarga={WORKLOAD_OS_TONES[cargaCardPrincipal.level]}
                   tempoMaximoFila={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaFilaMs)}
                   tempoMaximoResposta={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaRespostaMs)}
+                  fila={filaCardPrincipal}
                   opcoes={opcoesSubsetorTempoReal}
                   subsetorSelecionado={subsetorCardPrincipal}
                   aoTrocarSubsetor={setSubsetorCardPrincipal}
@@ -5076,6 +5093,7 @@ const saveConfig = async () => {
                     tomCarga={WORKLOAD_OS_TONES[cargaCardSecundario.level]}
                     tempoMaximoFila={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaFilaMs)}
                     tempoMaximoResposta={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaRespostaMs)}
+                    fila={filaCardSecundario}
                     opcoes={opcoesSubsetorTempoReal}
                     subsetorSelecionado={subsetorCardSecundario}
                     aoTrocarSubsetor={setSubsetorCardSecundario}
@@ -5149,39 +5167,6 @@ const saveConfig = async () => {
                     </div>
                   </div>
 
-                  {/* Fila do dia — mesmo cálculo do relatório, para os dois
-                      números não se contradizerem entre as telas. */}
-                  <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/70 pt-3 text-center">
-                    <div className="space-y-1">
-                      <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
-                        {filaHoje.entraramNaFila}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Entraram na fila hoje
-                      </p>
-                      <p className="text-[11px] text-muted-foreground">
-                        acima de {LIMITE_FILA_MIN} min
-                      </p>
-                    </div>
-                    <div className="min-w-0 space-y-1">
-                      <p className={cn(
-                        'whitespace-nowrap text-2xl font-bold tabular-nums',
-                        filaHoje.maiorEspera?.emAndamento
-                          ? 'text-red-600 dark:text-red-400'
-                          : 'text-foreground',
-                      )}>
-                        {filaHoje.maiorEspera
-                          ? formatarEsperaLonga(filaHoje.maiorEspera.esperaMs)
-                          : '—'}
-                      </p>
-                      <p className="text-xs text-muted-foreground">Maior tempo em fila</p>
-                      <p className="truncate text-[11px] text-muted-foreground" title={filaHoje.maiorEspera?.cliente || ''}>
-                        {filaHoje.maiorEspera
-                          ? `#${filaHoje.maiorEspera.ticket ?? '?'} · ${filaHoje.maiorEspera.cliente || 'Cliente desconhecido'}${filaHoje.maiorEspera.emAndamento ? ' · ainda esperando' : ''}`
-                          : 'sem atendimento hoje'}
-                      </p>
-                    </div>
-                  </div>
                 </CardContent>
               </Card>
                 </ReportWidget>

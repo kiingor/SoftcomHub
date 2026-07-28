@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { type ResumoTempoReal } from '@/lib/monitoramento-tempo-real'
+import { formatarEsperaLonga, LIMITE_FILA_PADRAO_MIN, type ResumoFila } from '@/lib/relatorio-fila'
 import { type WorkloadOs } from '@/lib/workload-os'
 import { cn } from '@/lib/utils'
 
@@ -33,6 +34,7 @@ export function CardAtendimentosTempoReal({
   tomCarga,
   tempoMaximoFila,
   tempoMaximoResposta,
+  fila,
   opcoes,
   subsetorSelecionado = TODOS_SUBSETORES,
   aoTrocarSubsetor,
@@ -43,6 +45,8 @@ export function CardAtendimentosTempoReal({
   /** Já formatados em hh:mm:ss pela página. */
   tempoMaximoFila: string
   tempoMaximoResposta: string
+  /** Fila do DIA, no mesmo recorte do card. Sem isto, a faixa não aparece. */
+  fila?: Pick<ResumoFila, 'entraramNaFila' | 'maiorEspera'>
   opcoes?: OpcaoSubsetor[]
   subsetorSelecionado?: string
   aoTrocarSubsetor?: (id: string) => void
@@ -134,6 +138,37 @@ export function CardAtendimentosTempoReal({
             </div>
           </section>
         </div>
+
+        {fila && (
+          <div className="grid grid-cols-2 gap-3 border-t border-border/70 pt-3 text-center">
+            <div>
+              <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
+                {fila.entraramNaFila}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Entraram na fila hoje</p>
+              <p className="text-[11px] text-muted-foreground">
+                acima de {LIMITE_FILA_PADRAO_MIN} min
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className={cn(
+                'whitespace-nowrap text-2xl font-bold tabular-nums',
+                fila.maiorEspera?.emAndamento ? 'text-red-600 dark:text-red-400' : 'text-foreground',
+              )}>
+                {fila.maiorEspera ? formatarEsperaLonga(fila.maiorEspera.esperaMs) : '—'}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Maior tempo em fila</p>
+              <p
+                className="truncate text-[11px] text-muted-foreground"
+                title={fila.maiorEspera?.cliente || ''}
+              >
+                {fila.maiorEspera
+                  ? `#${fila.maiorEspera.ticket ?? '?'} · ${fila.maiorEspera.cliente || 'Cliente desconhecido'}${fila.maiorEspera.emAndamento ? ' · ainda esperando' : ''}`
+                  : 'sem atendimento hoje'}
+              </p>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   )
