@@ -144,6 +144,8 @@ import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorF
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
+import { FaixasSubsetor } from '@/components/setor/faixas-subsetor'
+import { resumirPorSubsetor } from '@/lib/monitoramento-subsetores'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { toast } from 'sonner'
@@ -2756,6 +2758,21 @@ function SetorPageInner() {
     [subsetores],
   )
 
+  /**
+   * Os mesmos números do card acima, abertos por subsetor.
+   *
+   * Respeita o filtro rápido para não contradizer o card — com o filtro vazio
+   * (padrão) todas as faixas aparecem, que é o caso do gestor acompanhando
+   * Suporte e Prime ao mesmo tempo. `monitoringTick` entra nas dependências
+   * porque a maior espera cresce com o relógio, não com os dados.
+   */
+  const resumosPorSubsetor = useMemo(() => (
+    resumirPorSubsetor(
+      tickets.filter((t: any) => matchesSubsetorFilter(subsetorFilter, t.subsetor_id)),
+      { agoraMs: Date.now(), nomePorId: subsetorNomeById },
+    )
+  ), [tickets, subsetorFilter, subsetorNomeById, monitoringTick])
+
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
       matchesSubsetorFilter(subsetorFilter, item.subsetor_id)
@@ -4692,6 +4709,15 @@ const saveConfig = async () => {
                         </div>
                       </section>
                     </div>
+
+                    {/* O card acima soma o setor; estas faixas dizem de qual fila
+                        vem o número. Sempre visíveis — só somem quando o setor
+                        não tem subsetor nenhum. */}
+                    {resumosPorSubsetor.length > 0 && (
+                      <div className="mt-4">
+                        <FaixasSubsetor resumos={resumosPorSubsetor} />
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 

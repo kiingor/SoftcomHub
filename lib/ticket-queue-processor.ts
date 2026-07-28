@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
@@ -346,6 +347,7 @@ async function tryAssignTicket(
     const assigned = (result as any)?.assigned === true
 
     if (assigned) {
+      await marcarSaidaDaFila(supabase, ticketId)
       logAssignment(
         ticketId,
         candidate.id,
