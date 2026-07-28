@@ -2796,6 +2796,17 @@ function SetorPageInner() {
     [subsetorLateralB, resumoDoSubsetor],
   )
 
+  // A carga é calculada aqui porque `calculateWorkloadOs` e a tabela de cores
+  // vivem nesta página — o componente não precisa conhecer nenhuma das duas.
+  const cargaLateralA = useMemo(
+    () => calculateWorkloadOs(resumoLateralA?.total ?? 0, resumoLateralA?.atendentesOnline ?? 0),
+    [resumoLateralA],
+  )
+  const cargaLateralB = useMemo(
+    () => calculateWorkloadOs(resumoLateralB?.total ?? 0, resumoLateralB?.atendentesOnline ?? 0),
+    [resumoLateralB],
+  )
+
   // Identidade estável da lista: sem isto, qualquer atualização de `subsetores`
   // recriaria o array e o efeito de carga sobrescreveria a escolha do gestor.
   const chaveOpcoesSubsetor = opcoesSubsetorTempoReal.map((o) => o.id).join(',')
@@ -4818,8 +4829,18 @@ const saveConfig = async () => {
                       <div className="mt-4 border-t border-border/70 pt-4">
                         <PainelSubsetoresLateral
                           opcoes={opcoesSubsetorTempoReal}
-                          espacoA={{ subsetorId: subsetorLateralA, resumo: resumoLateralA }}
-                          espacoB={{ subsetorId: subsetorLateralB, resumo: resumoLateralB }}
+                          espacoA={{
+                            subsetorId: subsetorLateralA,
+                            resumo: resumoLateralA,
+                            workload: cargaLateralA,
+                            tomCarga: WORKLOAD_OS_TONES[cargaLateralA.level],
+                          }}
+                          espacoB={{
+                            subsetorId: subsetorLateralB,
+                            resumo: resumoLateralB,
+                            workload: cargaLateralB,
+                            tomCarga: WORKLOAD_OS_TONES[cargaLateralB.level],
+                          }}
                           aoTrocarA={setSubsetorLateralA}
                           aoTrocarB={setSubsetorLateralB}
                         />
