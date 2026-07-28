@@ -70,6 +70,21 @@ test('a maior espera traz ticket, cliente e entrada', () => {
   assert.equal(r.maiorEspera.entradaISO, min(200))
 })
 
+test('aceita o cliente como objeto ou como array', () => {
+  // O PostgREST devolve as duas formas conforme a consulta; aceitar só uma
+  // faria o nome sumir calado numa das telas.
+  const comObjeto = resumirFila([
+    { numero: 1, criado_em: min(30), primeira_resposta_em: min(5), clientes: { nome: 'ALFA' } },
+  ], base)
+  const comArray = resumirFila([
+    { numero: 1, criado_em: min(30), primeira_resposta_em: min(5), clientes: [{ nome: 'ALFA' }] },
+  ], base)
+
+  assert.equal(comObjeto.maiorEspera.cliente, 'ALFA')
+  assert.equal(comArray.maiorEspera.cliente, 'ALFA')
+  assert.equal(resumirFila([{ criado_em: min(30), clientes: [] }], base).maiorEspera.cliente, null)
+})
+
 test('pico simultâneo conta só quem está acima do limite ao mesmo tempo', () => {
   // Três esperas longas sobrepostas, uma curta fora do limite.
   const r = resumirFila([

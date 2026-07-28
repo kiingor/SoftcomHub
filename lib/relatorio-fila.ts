@@ -13,11 +13,24 @@
  * limite, que é o que esta função conta.
  */
 
+type ClienteEmbed = { nome?: string | null }
+
 export type TicketFila = {
   numero?: number | string | null
   criado_em?: string | null
   primeira_resposta_em?: string | null
-  clientes?: { nome?: string | null } | null
+  /**
+   * O PostgREST devolve o embed como objeto ou como array conforme infere a
+   * relação: no relatório vem objeto, na consulta do monitoramento vem array.
+   * Aceitar só uma das formas faria o nome do cliente sumir calado numa das
+   * telas.
+   */
+  clientes?: ClienteEmbed | ClienteEmbed[] | null
+}
+
+function nomeDoCliente(clientes: TicketFila['clientes']): string | null {
+  const registro = Array.isArray(clientes) ? clientes[0] : clientes
+  return registro?.nome || null
 }
 
 export type MaiorEspera = {
@@ -94,7 +107,7 @@ export function resumirFila(
       maior = {
         esperaMs: espera,
         ticket: ticket.numero != null ? String(ticket.numero) : null,
-        cliente: ticket.clientes?.nome || null,
+        cliente: nomeDoCliente(ticket.clientes),
         entradaISO: ticket.criado_em ?? null,
         emAndamento,
       }

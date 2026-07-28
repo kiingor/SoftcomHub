@@ -414,7 +414,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
     // Tickets de hoje (para estatisticas)
-    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id, colaborador_id').eq('setor_id', setorId).gte('criado_em', startOfDay),
+    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id, colaborador_id, clientes(nome)').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
     supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
@@ -620,7 +620,7 @@ const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   statusAtendentes: { w: 5, h: 3 },
   porSubsetor: { w: 5, h: 6 },
   atendimentoHoje: { w: 7, h: 5 },
-  statusTickets: { w: 5, h: 4 },
+  statusTickets: { w: 5, h: 6 },
 }
 
 // v2: a v1 nasceu com todos os cards empilhados em x=0. Trocar a chave dá a
@@ -2414,6 +2414,16 @@ function SetorPageInner() {
           matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
         )),
     [subsetorFilter, ticketsMonitoramentoHoje],
+  )
+
+  /**
+   * Fila de hoje, sobre os tickets que a tela já carregou. Mesmo cálculo do
+   * relatório — `resumirFila` — para os dois números não divergirem entre as
+   * telas. `monitoringTick` porque a espera de quem não foi respondido corre.
+   */
+  const filaHoje = useMemo(
+    () => resumirFila(scopedTicketsHoje, { agoraMs: monitoringTick }),
+    [scopedTicketsHoje, monitoringTick],
   )
 
   const ticketsHoje = useMemo(() => {
@@ -5136,6 +5146,40 @@ const saveConfig = async () => {
                     <div className="space-y-1">
                       <p className="text-2xl font-bold text-blue-500 tabular-nums">{ticketsHoje.fechados}</p>
                       <p className="text-xs text-muted-foreground">Fechados</p>
+                    </div>
+                  </div>
+
+                  {/* Fila do dia — mesmo cálculo do relatório, para os dois
+                      números não se contradizerem entre as telas. */}
+                  <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/70 pt-3 text-center">
+                    <div className="space-y-1">
+                      <p className="text-2xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
+                        {filaHoje.entraramNaFila}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Entraram na fila hoje
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        acima de {LIMITE_FILA_MIN} min
+                      </p>
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <p className={cn(
+                        'whitespace-nowrap text-2xl font-bold tabular-nums',
+                        filaHoje.maiorEspera?.emAndamento
+                          ? 'text-red-600 dark:text-red-400'
+                          : 'text-foreground',
+                      )}>
+                        {filaHoje.maiorEspera
+                          ? formatarEsperaLonga(filaHoje.maiorEspera.esperaMs)
+                          : '—'}
+                      </p>
+                      <p className="text-xs text-muted-foreground">Maior tempo em fila</p>
+                      <p className="truncate text-[11px] text-muted-foreground" title={filaHoje.maiorEspera?.cliente || ''}>
+                        {filaHoje.maiorEspera
+                          ? `#${filaHoje.maiorEspera.ticket ?? '?'} · ${filaHoje.maiorEspera.cliente || 'Cliente desconhecido'}${filaHoje.maiorEspera.emAndamento ? ' · ainda esperando' : ''}`
+                          : 'sem atendimento hoje'}
+                      </p>
                     </div>
                   </div>
                 </CardContent>
