@@ -1200,6 +1200,10 @@ function SetorPageInner() {
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
+  // Os dois subsetores acompanhados na coluna lateral do Monitoramento.
+  // Guardados por gestor + setor, como o filtro rápido — a escolha é dele.
+  const [subsetorLateralA, setSubsetorLateralA] = useState<string>('')
+  const [subsetorLateralB, setSubsetorLateralB] = useState<string>('')
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
   const [monitoringPageSize, setMonitoringPageSize] = useState(5)
   const [monitoringPage, setMonitoringPage] = useState(1)
@@ -2783,22 +2787,47 @@ function SetorPageInner() {
     })
   ), [tickets, ticketsMonitoramentoHoje, atendentes, monitoringTick])
 
-  /**
-   * Uma linha por subsetor para a coluna lateral, na mesma ordem de urgência do
-   * resto do painel: quem tem mais gente na fila primeiro, depois quem espera há
-   * mais tempo. É onde o gestor age.
-   */
-  const linhasSubsetorLateral = useMemo(() => (
-    opcoesSubsetorTempoReal
-      .map((opcao) => ({ id: opcao.id, nome: opcao.nome, resumo: resumoDoSubsetor(opcao.id) }))
-      // Subsetor sem nada ativo só ocuparia espaço na coluna estreita.
-      .filter((linha) => linha.resumo.total > 0)
-      .sort((a, b) => (
-        b.resumo.naFila - a.resumo.naFila
-        || b.resumo.maiorEsperaFilaMs - a.resumo.maiorEsperaFilaMs
-        || a.nome.localeCompare(b.nome)
-      ))
-  ), [opcoesSubsetorTempoReal, resumoDoSubsetor])
+  const resumoLateralA = useMemo(
+    () => (subsetorLateralA ? resumoDoSubsetor(subsetorLateralA) : null),
+    [subsetorLateralA, resumoDoSubsetor],
+  )
+  const resumoLateralB = useMemo(
+    () => (subsetorLateralB ? resumoDoSubsetor(subsetorLateralB) : null),
+    [subsetorLateralB, resumoDoSubsetor],
+  )
+
+  // Identidade estável da lista: sem isto, qualquer atualização de `subsetores`
+  // recriaria o array e o efeito de carga sobrescreveria a escolha do gestor.
+  const chaveOpcoesSubsetor = opcoesSubsetorTempoReal.map((o) => o.id).join(',')
+
+  const lateralStorageKey = colaboradorLogado?.id && setorId
+    ? `setor-subsetores-lateral-v1:${setorId}:${colaboradorLogado.id}`
+    : null
+
+  useEffect(() => {
+    if (!lateralStorageKey || opcoesSubsetorTempoReal.length === 0) return
+    let salvo: { a?: string; b?: string } | null = null
+    try {
+      salvo = JSON.parse(window.localStorage.getItem(lateralStorageKey) || 'null')
+    } catch { /* preferência corrompida cai no padrão */ }
+
+    // Subsetor apagado não pode deixar o espaço preso num id morto.
+    const existe = (id?: string) => Boolean(id) && opcoesSubsetorTempoReal.some((o) => o.id === id)
+    const primeiro = opcoesSubsetorTempoReal[0]?.id || ''
+    const segundo = opcoesSubsetorTempoReal[1]?.id || primeiro
+    setSubsetorLateralA(existe(salvo?.a) ? salvo!.a! : primeiro)
+    setSubsetorLateralB(existe(salvo?.b) ? salvo!.b! : segundo)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lateralStorageKey, chaveOpcoesSubsetor])
+
+  useEffect(() => {
+    if (!lateralStorageKey || !subsetorLateralA || !subsetorLateralB) return
+    try {
+      window.localStorage.setItem(lateralStorageKey, JSON.stringify({
+        a: subsetorLateralA, b: subsetorLateralB,
+      }))
+    } catch { /* navegador sem storage não impede usar a tela */ }
+  }, [lateralStorageKey, subsetorLateralA, subsetorLateralB])
 
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
@@ -4785,9 +4814,15 @@ const saveConfig = async () => {
                         esquerda soma o setor e não diz de qual fila vem o
                         número — aqui o gestor vê Suporte e Prime separados,
                         sem filtrar nem trocar de tela. */}
-                    {linhasSubsetorLateral.length > 0 && (
+                    {opcoesSubsetorTempoReal.length > 0 && (
                       <div className="mt-4 border-t border-border/70 pt-4">
-                        <PainelSubsetoresLateral linhas={linhasSubsetorLateral} />
+                        <PainelSubsetoresLateral
+                          opcoes={opcoesSubsetorTempoReal}
+                          espacoA={{ subsetorId: subsetorLateralA, resumo: resumoLateralA }}
+                          espacoB={{ subsetorId: subsetorLateralB, resumo: resumoLateralB }}
+                          aoTrocarA={setSubsetorLateralA}
+                          aoTrocarB={setSubsetorLateralB}
+                        />
                       </div>
                     )}
                   </CardContent>

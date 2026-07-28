@@ -2,35 +2,48 @@
 
 import { Layers, Timer } from 'lucide-react'
 
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { type ResumoTempoReal } from '@/lib/monitoramento-tempo-real'
 import { cn } from '@/lib/utils'
 
-export interface LinhaSubsetor {
+export interface OpcaoSubsetor {
   id: string
   nome: string
-  resumo: ResumoTempoReal
+}
+
+export interface EspacoSubsetor {
+  subsetorId: string
+  resumo: ResumoTempoReal | null
 }
 
 /**
- * Acompanhamento por subsetor, na coluna lateral do Monitoramento.
+ * Acompanhamento de dois subsetores, na coluna lateral do Monitoramento.
  *
  * Fica ao lado do "Status dos atendentes", ocupando o vão que sobrava ali. O
- * card grande da esquerda soma o setor inteiro: "43 ativos, 0 na fila" não diz
- * se o Suporte está tranquilo e o Prime afogado. Esta lista responde isso sem
- * precisar filtrar nem trocar de tela.
+ * card grande da esquerda soma o setor inteiro: "2 ativos, 0 na fila" não diz
+ * se é o Suporte ou o Prime.
  *
- * Formato compacto de propósito — a coluna tem um terço da largura, e repetir
- * o card inteiro aqui espremeria os números até ficarem ilegíveis.
+ * Só DOIS espaços, escolhidos pelo gestor. Listar todos os subsetores enchia a
+ * coluna e afogava justamente os dois que ele acompanha; o formato é compacto
+ * porque a coluna tem um terço da largura.
  */
 export function PainelSubsetoresLateral({
-  linhas,
+  opcoes,
+  espacoA,
+  espacoB,
+  aoTrocarA,
+  aoTrocarB,
   limiteEsperaMin = 15,
 }: {
-  linhas: LinhaSubsetor[]
+  opcoes: OpcaoSubsetor[]
+  espacoA: EspacoSubsetor
+  espacoB: EspacoSubsetor
+  aoTrocarA: (id: string) => void
+  aoTrocarB: (id: string) => void
   /** Acima disto a espera aparece destacada. */
   limiteEsperaMin?: number
 }) {
-  if (linhas.length === 0) return null
+  if (opcoes.length === 0) return null
 
   // Sem wrapper de Card: fica DENTRO do card de status dos atendentes, e
   // aninhar Card em Card renderiza borda e fundo duplicados.
@@ -42,40 +55,76 @@ export function PainelSubsetoresLateral({
       </p>
 
       <div className="space-y-2">
-        {linhas.map((linha) => {
-          const esperaAlta = linha.resumo.maiorEsperaFilaMs > limiteEsperaMin * 60_000
-
-          return (
-            <div
-              key={linha.id}
-              className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5"
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <p className="truncate text-sm font-medium text-foreground">{linha.nome}</p>
-                <p className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {linha.resumo.total} ativos
-                </p>
-              </div>
-
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                <Valor
-                  rotulo="Na fila"
-                  valor={String(linha.resumo.naFila)}
-                  tom={linha.resumo.naFila > 0 ? 'alerta' : undefined}
-                />
-                <Valor rotulo="Atendendo" valor={String(linha.resumo.emAtendimento)} />
-                <Valor
-                  rotulo="Maior espera"
-                  valor={formatarEsperaCurta(linha.resumo.maiorEsperaFilaMs)}
-                  tom={esperaAlta ? 'critico' : undefined}
-                  icone={esperaAlta}
-                />
-              </div>
-            </div>
-          )
-        })}
+        <Espaco
+          rotulo="Primeiro subsetor"
+          espaco={espacoA}
+          opcoes={opcoes}
+          aoTrocar={aoTrocarA}
+          limiteEsperaMin={limiteEsperaMin}
+        />
+        <Espaco
+          rotulo="Segundo subsetor"
+          espaco={espacoB}
+          opcoes={opcoes}
+          aoTrocar={aoTrocarB}
+          limiteEsperaMin={limiteEsperaMin}
+        />
       </div>
     </section>
+  )
+}
+
+function Espaco({
+  rotulo,
+  espaco,
+  opcoes,
+  aoTrocar,
+  limiteEsperaMin,
+}: {
+  rotulo: string
+  espaco: EspacoSubsetor
+  opcoes: OpcaoSubsetor[]
+  aoTrocar: (id: string) => void
+  limiteEsperaMin: number
+}) {
+  const esperaAlta = (espaco.resumo?.maiorEsperaFilaMs ?? 0) > limiteEsperaMin * 60_000
+
+  return (
+    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <Select value={espaco.subsetorId} onValueChange={aoTrocar}>
+          <SelectTrigger
+            className="h-7 w-[150px] border-0 bg-transparent px-1 text-sm font-medium shadow-none focus:ring-0"
+            aria-label={rotulo}
+          >
+            <SelectValue placeholder="Escolher" />
+          </SelectTrigger>
+          <SelectContent>
+            {opcoes.map((opcao) => (
+              <SelectItem key={opcao.id} value={opcao.id}>{opcao.nome}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="shrink-0 text-xs text-muted-foreground tabular-nums">
+          {espaco.resumo?.total ?? 0} ativos
+        </p>
+      </div>
+
+      <div className="mt-2 grid grid-cols-3 gap-2">
+        <Valor
+          rotulo="Na fila"
+          valor={String(espaco.resumo?.naFila ?? 0)}
+          tom={(espaco.resumo?.naFila ?? 0) > 0 ? 'alerta' : undefined}
+        />
+        <Valor rotulo="Atendendo" valor={String(espaco.resumo?.emAtendimento ?? 0)} />
+        <Valor
+          rotulo="Maior espera"
+          valor={formatarEsperaCurta(espaco.resumo?.maiorEsperaFilaMs ?? 0)}
+          tom={esperaAlta ? 'critico' : undefined}
+          icone={esperaAlta}
+        />
+      </div>
+    </div>
   )
 }
 
