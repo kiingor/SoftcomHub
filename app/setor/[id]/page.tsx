@@ -1200,10 +1200,9 @@ function SetorPageInner() {
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
-  // Os dois subsetores acompanhados na coluna lateral do Monitoramento.
-  // Guardados por gestor + setor, como o filtro rápido — a escolha é dele.
-  const [subsetorLateralA, setSubsetorLateralA] = useState<string>('')
-  const [subsetorLateralB, setSubsetorLateralB] = useState<string>('')
+  // Subsetor acompanhado na coluna lateral do Monitoramento. Guardado por
+  // gestor + setor, como o filtro rápido — a escolha é dele.
+  const [subsetorLateral, setSubsetorLateral] = useState<string>('')
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
   const [monitoringPageSize, setMonitoringPageSize] = useState(5)
   const [monitoringPage, setMonitoringPage] = useState(1)
@@ -2787,24 +2786,16 @@ function SetorPageInner() {
     })
   ), [tickets, ticketsMonitoramentoHoje, atendentes, monitoringTick])
 
-  const resumoLateralA = useMemo(
-    () => (subsetorLateralA ? resumoDoSubsetor(subsetorLateralA) : null),
-    [subsetorLateralA, resumoDoSubsetor],
-  )
-  const resumoLateralB = useMemo(
-    () => (subsetorLateralB ? resumoDoSubsetor(subsetorLateralB) : null),
-    [subsetorLateralB, resumoDoSubsetor],
+  const resumoLateral = useMemo(
+    () => (subsetorLateral ? resumoDoSubsetor(subsetorLateral) : null),
+    [subsetorLateral, resumoDoSubsetor],
   )
 
   // A carga é calculada aqui porque `calculateWorkloadOs` e a tabela de cores
   // vivem nesta página — o componente não precisa conhecer nenhuma das duas.
-  const cargaLateralA = useMemo(
-    () => calculateWorkloadOs(resumoLateralA?.total ?? 0, resumoLateralA?.atendentesOnline ?? 0),
-    [resumoLateralA],
-  )
-  const cargaLateralB = useMemo(
-    () => calculateWorkloadOs(resumoLateralB?.total ?? 0, resumoLateralB?.atendentesOnline ?? 0),
-    [resumoLateralB],
+  const cargaLateral = useMemo(
+    () => calculateWorkloadOs(resumoLateral?.total ?? 0, resumoLateral?.atendentesOnline ?? 0),
+    [resumoLateral],
   )
 
   // Identidade estável da lista: sem isto, qualquer atualização de `subsetores`
@@ -2817,28 +2808,23 @@ function SetorPageInner() {
 
   useEffect(() => {
     if (!lateralStorageKey || opcoesSubsetorTempoReal.length === 0) return
-    let salvo: { a?: string; b?: string } | null = null
+    let salvo: { id?: string } | null = null
     try {
       salvo = JSON.parse(window.localStorage.getItem(lateralStorageKey) || 'null')
     } catch { /* preferência corrompida cai no padrão */ }
 
-    // Subsetor apagado não pode deixar o espaço preso num id morto.
-    const existe = (id?: string) => Boolean(id) && opcoesSubsetorTempoReal.some((o) => o.id === id)
-    const primeiro = opcoesSubsetorTempoReal[0]?.id || ''
-    const segundo = opcoesSubsetorTempoReal[1]?.id || primeiro
-    setSubsetorLateralA(existe(salvo?.a) ? salvo!.a! : primeiro)
-    setSubsetorLateralB(existe(salvo?.b) ? salvo!.b! : segundo)
+    // Subsetor apagado não pode deixar o painel preso num id morto.
+    const existe = Boolean(salvo?.id) && opcoesSubsetorTempoReal.some((o) => o.id === salvo!.id)
+    setSubsetorLateral(existe ? salvo!.id! : (opcoesSubsetorTempoReal[0]?.id || ''))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lateralStorageKey, chaveOpcoesSubsetor])
 
   useEffect(() => {
-    if (!lateralStorageKey || !subsetorLateralA || !subsetorLateralB) return
+    if (!lateralStorageKey || !subsetorLateral) return
     try {
-      window.localStorage.setItem(lateralStorageKey, JSON.stringify({
-        a: subsetorLateralA, b: subsetorLateralB,
-      }))
+      window.localStorage.setItem(lateralStorageKey, JSON.stringify({ id: subsetorLateral }))
     } catch { /* navegador sem storage não impede usar a tela */ }
-  }, [lateralStorageKey, subsetorLateralA, subsetorLateralB])
+  }, [lateralStorageKey, subsetorLateral])
 
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
@@ -4837,20 +4823,13 @@ const saveConfig = async () => {
                 {opcoesSubsetorTempoReal.length > 0 && (
                   <PainelSubsetoresLateral
                     opcoes={opcoesSubsetorTempoReal}
-                    espacoA={{
-                      subsetorId: subsetorLateralA,
-                      resumo: resumoLateralA,
-                      workload: cargaLateralA,
-                      tomCarga: WORKLOAD_OS_TONES[cargaLateralA.level],
+                    espaco={{
+                      subsetorId: subsetorLateral,
+                      resumo: resumoLateral,
+                      workload: cargaLateral,
+                      tomCarga: WORKLOAD_OS_TONES[cargaLateral.level],
                     }}
-                    espacoB={{
-                      subsetorId: subsetorLateralB,
-                      resumo: resumoLateralB,
-                      workload: cargaLateralB,
-                      tomCarga: WORKLOAD_OS_TONES[cargaLateralB.level],
-                    }}
-                    aoTrocarA={setSubsetorLateralA}
-                    aoTrocarB={setSubsetorLateralB}
+                    aoTrocar={setSubsetorLateral}
                   />
                 )}
                 </div>

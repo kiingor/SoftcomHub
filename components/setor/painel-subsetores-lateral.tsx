@@ -23,30 +23,26 @@ export interface EspacoSubsetor {
 }
 
 /**
- * Os mesmos indicadores do card "Atendimentos em tempo real", recortados em
- * dois subsetores, na coluna lateral do Monitoramento.
+ * Os mesmos indicadores do card "Atendimentos em tempo real", recortados num
+ * subsetor, na coluna lateral do Monitoramento.
  *
  * O card grande soma o setor: "3 ativos, 0 na fila" não diz se é o Prime ou o
- * Sped. Aqui o gestor escolhe dois e acompanha os dois ao mesmo tempo, com o
- * conjunto completo — total, fila, em atendimento, finalizados, as duas
- * maiores esperas e a carga por atendente.
+ * Sped. Aqui o gestor escolhe QUAL subsetor quer acompanhar e vê o conjunto
+ * completo dele — total, fila, em atendimento, finalizados, as duas maiores
+ * esperas e a carga por atendente.
  *
  * Os números vão em duas colunas, e não nas quatro do card original, porque
  * esta coluna tem um terço da largura da tela.
  */
 export function PainelSubsetoresLateral({
   opcoes,
-  espacoA,
-  espacoB,
-  aoTrocarA,
-  aoTrocarB,
+  espaco,
+  aoTrocar,
   limiteEsperaMin = 15,
 }: {
   opcoes: OpcaoSubsetor[]
-  espacoA: EspacoSubsetor
-  espacoB: EspacoSubsetor
-  aoTrocarA: (id: string) => void
-  aoTrocarB: (id: string) => void
+  espaco: EspacoSubsetor
+  aoTrocar: (id: string) => void
   /** Acima disto a espera na fila aparece destacada. */
   limiteEsperaMin?: number
 }) {
@@ -63,19 +59,12 @@ export function PainelSubsetoresLateral({
           Por subsetor
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent>
         <Espaco
-          rotulo="Primeiro subsetor"
-          espaco={espacoA}
+          rotulo="Subsetor acompanhado"
+          espaco={espaco}
           opcoes={opcoes}
-          aoTrocar={aoTrocarA}
-          limiteEsperaMin={limiteEsperaMin}
-        />
-        <Espaco
-          rotulo="Segundo subsetor"
-          espaco={espacoB}
-          opcoes={opcoes}
-          aoTrocar={aoTrocarB}
+          aoTrocar={aoTrocar}
           limiteEsperaMin={limiteEsperaMin}
         />
       </CardContent>
