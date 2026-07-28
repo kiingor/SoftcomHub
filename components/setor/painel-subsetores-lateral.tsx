@@ -38,11 +38,14 @@ export function PainelSubsetoresLateral({
   opcoes,
   espaco,
   aoTrocar,
+  compacto = false,
   limiteEsperaMin = 15,
 }: {
   opcoes: OpcaoSubsetor[]
   espaco: EspacoSubsetor
   aoTrocar: (id: string) => void
+  /** Só os quatro números, sem as esperas nem a carga. */
+  compacto?: boolean
   /** Acima disto a espera na fila aparece destacada. */
   limiteEsperaMin?: number
 }) {
@@ -65,6 +68,7 @@ export function PainelSubsetoresLateral({
           espaco={espaco}
           opcoes={opcoes}
           aoTrocar={aoTrocar}
+          compacto={compacto}
           limiteEsperaMin={limiteEsperaMin}
         />
       </CardContent>
@@ -77,12 +81,14 @@ function Espaco({
   espaco,
   opcoes,
   aoTrocar,
+  compacto,
   limiteEsperaMin,
 }: {
   rotulo: string
   espaco: EspacoSubsetor
   opcoes: OpcaoSubsetor[]
   aoTrocar: (id: string) => void
+  compacto: boolean
   limiteEsperaMin: number
 }) {
   const resumo = espaco.resumo
@@ -118,6 +124,9 @@ function Espaco({
         <Numero icone={CheckCircle2} rotulo="Finalizados" valor={resumo?.finalizadosHoje ?? 0} tom="bom" />
       </div>
 
+      {/* No modo compacto ficam só os quatro números — é o suficiente para
+          quem quer a coluna curta e olha o resto no card do setor. */}
+      {!compacto && (
       <div className="space-y-2 px-3 py-3">
         <section className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5" aria-label="Maiores esperas atuais">
           <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
@@ -167,6 +176,7 @@ function Espaco({
           </div>
         </section>
       </div>
+      )}
     </div>
   )
 }

@@ -1203,6 +1203,8 @@ function SetorPageInner() {
   // Subsetor acompanhado na coluna lateral do Monitoramento. Guardado por
   // gestor + setor, como o filtro rápido — a escolha é dele.
   const [subsetorLateral, setSubsetorLateral] = useState<string>('')
+  const [painelSubsetorVisivel, setPainelSubsetorVisivel] = useState(true)
+  const [painelSubsetorCompacto, setPainelSubsetorCompacto] = useState(false)
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
   const [monitoringPageSize, setMonitoringPageSize] = useState(5)
   const [monitoringPage, setMonitoringPage] = useState(1)
@@ -2808,7 +2810,7 @@ function SetorPageInner() {
 
   useEffect(() => {
     if (!lateralStorageKey || opcoesSubsetorTempoReal.length === 0) return
-    let salvo: { id?: string } | null = null
+    let salvo: { id?: string; visivel?: boolean; compacto?: boolean } | null = null
     try {
       salvo = JSON.parse(window.localStorage.getItem(lateralStorageKey) || 'null')
     } catch { /* preferência corrompida cai no padrão */ }
@@ -2816,15 +2818,22 @@ function SetorPageInner() {
     // Subsetor apagado não pode deixar o painel preso num id morto.
     const existe = Boolean(salvo?.id) && opcoesSubsetorTempoReal.some((o) => o.id === salvo!.id)
     setSubsetorLateral(existe ? salvo!.id! : (opcoesSubsetorTempoReal[0]?.id || ''))
+    // `!== false` e não `?? true`: preferência antiga sem o campo nasce visível.
+    setPainelSubsetorVisivel(salvo?.visivel !== false)
+    setPainelSubsetorCompacto(salvo?.compacto === true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lateralStorageKey, chaveOpcoesSubsetor])
 
   useEffect(() => {
     if (!lateralStorageKey || !subsetorLateral) return
     try {
-      window.localStorage.setItem(lateralStorageKey, JSON.stringify({ id: subsetorLateral }))
+      window.localStorage.setItem(lateralStorageKey, JSON.stringify({
+        id: subsetorLateral,
+        visivel: painelSubsetorVisivel,
+        compacto: painelSubsetorCompacto,
+      }))
     } catch { /* navegador sem storage não impede usar a tela */ }
-  }, [lateralStorageKey, subsetorLateral])
+  }, [lateralStorageKey, subsetorLateral, painelSubsetorVisivel, painelSubsetorCompacto])
 
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
@@ -4633,6 +4642,55 @@ const saveConfig = async () => {
                     <span className="text-xs font-medium text-muted-foreground">Ao vivo</span>
                   </div>
                 </div>
+
+                {/* Fica no cabeçalho, e não no card: com o painel oculto não
+                    haveria de onde trazê-lo de volta se o controle morasse
+                    dentro dele. */}
+                {opcoesSubsetorTempoReal.length > 0 && (
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" size="sm" className="h-9 gap-1.5">
+                        <Settings className="h-3.5 w-3.5" />
+                        Personalizar
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-72">
+                      <p className="text-sm font-medium">Painel por subsetor</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        O recorte que aparece ao lado do status dos atendentes.
+                      </p>
+
+                      <div className="mt-4 space-y-4">
+                        <label className="flex items-center justify-between gap-3">
+                          <span className="text-sm">Mostrar painel</span>
+                          <Switch
+                            checked={painelSubsetorVisivel}
+                            onCheckedChange={setPainelSubsetorVisivel}
+                            aria-label="Mostrar painel por subsetor"
+                          />
+                        </label>
+
+                        <label className={cn(
+                          'flex items-center justify-between gap-3',
+                          !painelSubsetorVisivel && 'pointer-events-none opacity-50',
+                        )}>
+                          <span className="min-w-0">
+                            <span className="block text-sm">Modo compacto</span>
+                            <span className="block text-xs text-muted-foreground">
+                              Só os quatro números, sem esperas e carga
+                            </span>
+                          </span>
+                          <Switch
+                            checked={painelSubsetorCompacto}
+                            onCheckedChange={setPainelSubsetorCompacto}
+                            disabled={!painelSubsetorVisivel}
+                            aria-label="Modo compacto do painel por subsetor"
+                          />
+                        </label>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                )}
               </div>
 
               {/* Quick Filters */}
@@ -4820,8 +4878,9 @@ const saveConfig = async () => {
                     `CardContent` é `flex flex-1 items-center`, então acrescentar
                     conteúdo esticava o card e deixava os números 1/4/4
                     flutuando no meio do vão. */}
-                {opcoesSubsetorTempoReal.length > 0 && (
+                {opcoesSubsetorTempoReal.length > 0 && painelSubsetorVisivel && (
                   <PainelSubsetoresLateral
+                    compacto={painelSubsetorCompacto}
                     opcoes={opcoesSubsetorTempoReal}
                     espaco={{
                       subsetorId: subsetorLateral,
