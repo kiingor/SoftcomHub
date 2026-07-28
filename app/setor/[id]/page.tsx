@@ -143,6 +143,7 @@ import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
+import { resumirFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN } from '@/lib/relatorio-fila'
 import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
 import { formatarTempoMonitoramento } from '@/lib/monitoramento-tempo-real'
@@ -669,6 +670,8 @@ const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   kpiResolvidos: { w: 4, h: 2 },
   kpiTaxa: { w: 4, h: 2 },
   kpiNps: { w: 4, h: 2 },
+  saudeFila: { w: 6, h: 4 },
+  maiorEspera: { w: 6, h: 4 },
   volume: { w: 6, h: 5 },
   heatmap: { w: 6, h: 5 },
   sla: { w: 6, h: 5 },
@@ -683,6 +686,13 @@ const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   tabela: { w: 12, h: 7 },
 }
 const RELATORIO_COLLAPSED_H = 1
+
+/** Cores por faixa de saúde da fila, para o limiar não se espalhar pela tela. */
+const TOM_SAUDE = {
+  boa: { texto: 'text-green-600 dark:text-green-400', barra: 'bg-green-500' },
+  atencao: { texto: 'text-amber-600 dark:text-amber-400', barra: 'bg-amber-500' },
+  critica: { texto: 'text-red-600 dark:text-red-400', barra: 'bg-red-500' },
+} as const
 
 // Empacota os cards em "masonry" (skyline): cada card vai para o vão mais alto
 // disponível, preenchendo os buracos. Evita espaços vazios entre cards de
@@ -718,6 +728,8 @@ const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
   { id: 'volume', label: 'Atendimentos ao longo do tempo' },
   { id: 'heatmap', label: 'Padrão horário por dia' },
   { id: 'sla', label: 'SLA de 1ª resposta' },
+  { id: 'saudeFila', label: 'Saúde da fila' },
+  { id: 'maiorEspera', label: 'Maior espera do período' },
   { id: 'nps', label: 'Satisfação (NPS)' },
   { id: 'canal', label: 'Por canal' },
   { id: 'status', label: 'Por resultado' },
@@ -2049,6 +2061,18 @@ function SetorPageInner() {
 
   const indicadoresEsquerda = useMemo(() => indicadoresDe(ticketsEsquerda), [indicadoresDe, ticketsEsquerda])
   const indicadoresDireita = useMemo(() => indicadoresDe(ticketsDireita), [indicadoresDe, ticketsDireita])
+
+  /**
+   * Fila do período — calculada sobre `ticketsRelatorio`, que já respeita
+   * período, atendente, canal e subsetor. Sem consulta nova.
+   *
+   * `monitoringTick` entra porque a espera de quem ainda não foi respondido
+   * corre com o relógio.
+   */
+  const resumoFilaPeriodo = useMemo(
+    () => resumirFila(ticketsRelatorio, { agoraMs: monitoringTick }),
+    [ticketsRelatorio, monitoringTick],
+  )
 
   // KPIs numéricos do período atual e do anterior (para o Δ%)
   const kpiAtual = useMemo(() => computeRelatorioKpis(ticketsRelatorio), [ticketsRelatorio])
@@ -6297,6 +6321,121 @@ const saveConfig = async () => {
                     )}
                   </CardContent>
                 </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Saúde da fila — quantos clientes passaram do limite no período */}
+            {visibleCards.saudeFila && (
+            <div key="saudeFila" className="overflow-hidden">
+            <ReportWidget {...wprops('saudeFila')}>
+              <Card className="glass-card-elevated flex h-full flex-col rounded-lg">
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                    <Timer className="h-4 w-4" aria-hidden="true" />
+                    Saúde da fila
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Clientes atendidos em até {LIMITE_FILA_MIN} min no período.
+                  </p>
+                </CardHeader>
+                <CardContent className="flex flex-1 flex-col justify-between gap-4">
+                  <div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className={cn('text-3xl font-semibold tabular-nums', TOM_SAUDE[faixaDeSaude(resumoFilaPeriodo.saudePercentual)].texto)}>
+                        {resumoFilaPeriodo.saudePercentual}%
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {resumoFilaPeriodo.dentroDoLimite} de {resumoFilaPeriodo.total}
+                      </p>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={cn('h-full rounded-full transition-all', TOM_SAUDE[faixaDeSaude(resumoFilaPeriodo.saudePercentual)].barra)}
+                        style={{ width: `${resumoFilaPeriodo.saudePercentual}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
+                      <p className="text-2xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
+                        {resumoFilaPeriodo.acimaDoLimite}
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Esperaram mais de {LIMITE_FILA_MIN} min
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
+                      <p className="text-2xl font-semibold tabular-nums text-foreground">
+                        {resumoFilaPeriodo.picoSimultaneo}
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">Pico simultâneo</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Maior espera do período */}
+            {visibleCards.maiorEspera && (
+            <div key="maiorEspera" className="overflow-hidden">
+            <ReportWidget {...wprops('maiorEspera')}>
+              <Card className="glass-card-elevated flex h-full flex-col rounded-lg">
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                    <Timer className="h-4 w-4" aria-hidden="true" />
+                    Maior espera do período
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Da criação até a primeira resposta.
+                  </p>
+                </CardHeader>
+                <CardContent className="flex flex-1 flex-col justify-center gap-3">
+                  {resumoFilaPeriodo.maiorEspera ? (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <p className="text-3xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
+                          {formatarEsperaLonga(resumoFilaPeriodo.maiorEspera.esperaMs)}
+                        </p>
+                        {resumoFilaPeriodo.maiorEspera.emAndamento && (
+                          <Badge variant="outline" className="h-5 border-red-500/40 px-1.5 text-[10px] text-red-600 dark:text-red-400">
+                            ainda esperando
+                          </Badge>
+                        )}
+                      </div>
+                      <dl className="space-y-1 text-sm">
+                        <div className="flex gap-2">
+                          <dt className="font-medium text-foreground">Ticket:</dt>
+                          <dd className="text-muted-foreground tabular-nums">
+                            {resumoFilaPeriodo.maiorEspera.ticket ?? '—'}
+                          </dd>
+                        </div>
+                        <div className="flex min-w-0 gap-2">
+                          <dt className="shrink-0 font-medium text-foreground">Cliente:</dt>
+                          <dd className="truncate text-muted-foreground">
+                            {resumoFilaPeriodo.maiorEspera.cliente || 'Cliente desconhecido'}
+                          </dd>
+                        </div>
+                        <div className="flex gap-2">
+                          <dt className="shrink-0 font-medium text-foreground">Entrada:</dt>
+                          <dd className="text-muted-foreground tabular-nums">
+                            {resumoFilaPeriodo.maiorEspera.entradaISO
+                              ? new Date(resumoFilaPeriodo.maiorEspera.entradaISO).toLocaleString('pt-BR')
+                              : '—'}
+                          </dd>
+                        </div>
+                      </dl>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Nenhum atendimento no período selecionado.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
             </ReportWidget>
             </div>
             )}
