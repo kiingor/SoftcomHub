@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
+import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { escolherDestino, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
@@ -87,8 +88,13 @@ export async function criarEDistribuirTicket(
       ticketData.id = metadata.idempotency.ticketId
     }
 
-    if (subsetorId) {
-      ticketData.subsetor_id = subsetorId
+    // Sem subsetor informado, cai no padrão derivado do cadastro do setor.
+    // Ticket órfão só casa com atendente sem vínculo de subsetor no passe
+    // compatível — no ServiceDesk, 4 de 75 pessoas. Medido em 28/07/2026: 41%
+    // dos tickets do setor chegavam assim, e 98% em Suporte a Franquias.
+    const subsetorEfetivo = subsetorId || await resolverSubsetorPadrao(supabase, setorId)
+    if (subsetorEfetivo) {
+      ticketData.subsetor_id = subsetorEfetivo
     }
     const tipoAtendimento = metadata.tipoAtendimento?.trim()
     if (tipoAtendimento) {
