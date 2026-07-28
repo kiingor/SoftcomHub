@@ -3098,13 +3098,29 @@ function SetorPageInner() {
     onToggleCollapse: () => toggleMonitorCollapse(id),
   })
 
+  /**
+   * Restaurar padrão do Monitoramento — mesmo alcance do relatório.
+   *
+   * Antes só limpava posições e recolhidos, e a tela continuava fora do padrão:
+   * a proporção da linha 1 e o segundo card ficam noutra chave
+   * (`lateralStorageKey`), então sobreviviam ao reset e o gestor não tinha como
+   * voltar ao arranjo do time sem mexer card a card.
+   *
+   * O subsetor escolhido em cada card NÃO volta: é filtro de dado, não arranjo
+   * — perder o recorte de Suporte/Prime num clique de "restaurar layout" seria
+   * apagar justamente a configuração que o gestor montou.
+   */
   const resetarLayoutMonitor = () => {
     setMonitorLayout(null)
     setMonitorCollapsed({})
+    setProporcaoLinha1('equilibrado')
+    setPainelSubsetorVisivel(true)
     try {
       window.localStorage.removeItem(MONITOR_LAYOUT_STORAGE_KEY)
       window.localStorage.removeItem(MONITOR_COLLAPSED_STORAGE_KEY)
-    } catch {}
+    } catch { /* navegador sem storage não impede o reset em tela */ }
+    // A chave lateral guarda proporção e visibilidade junto do subsetor; o
+    // efeito que a persiste reescreve com os valores novos.
   }
 
   const realtimeStats = useMemo(() => {
@@ -4949,7 +4965,22 @@ const saveConfig = async () => {
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent align="end" className="w-80">
-                      <p className="text-sm font-medium">Largura dos cards</p>
+                      {/* O reset mora aqui, e não só no modo de ajuste: quem
+                          desarrumou a tela pelo Personalizar procura o conserto
+                          no mesmo lugar. Mesmo padrão do relatório. */}
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium">Largura dos cards</p>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1.5 text-xs text-muted-foreground"
+                          onClick={resetarLayoutMonitor}
+                          title="Voltar ao arranjo padrão: posições, tamanhos, largura e segundo card"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          Restaurar padrão
+                        </Button>
+                      </div>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         Divide o espaço entre o card de tempo real e a coluna da direita.
                       </p>
