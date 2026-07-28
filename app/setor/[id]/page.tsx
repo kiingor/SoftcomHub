@@ -595,6 +595,26 @@ temposHoje: (() => {
   }
   }
 
+/**
+ * Proporção da primeira linha do Monitoramento.
+ *
+ * As classes precisam existir LITERAIS no código: o Tailwind varre o fonte e
+ * não geraria nada a partir de uma string montada em tempo de execução.
+ */
+const PROPORCAO_LINHA1 = {
+  esquerda: 'lg:grid-cols-[2fr_1fr]',
+  equilibrado: 'lg:grid-cols-[1.6fr_1.1fr]',
+  direita: 'lg:grid-cols-[1.1fr_1.3fr]',
+} as const
+
+type ProporcaoLinha1 = keyof typeof PROPORCAO_LINHA1
+
+const ROTULO_PROPORCAO: Record<ProporcaoLinha1, string> = {
+  esquerda: 'Mais espaço à esquerda',
+  equilibrado: 'Equilibrado',
+  direita: 'Mais espaço à direita',
+}
+
 // Cards selecionáveis no relatório (mostrar/ocultar via "Personalizar")
 const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
 const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
@@ -1205,6 +1225,7 @@ function SetorPageInner() {
   const [subsetorLateral, setSubsetorLateral] = useState<string>('')
   const [painelSubsetorVisivel, setPainelSubsetorVisivel] = useState(true)
   const [painelSubsetorCompacto, setPainelSubsetorCompacto] = useState(false)
+  const [proporcaoLinha1, setProporcaoLinha1] = useState<ProporcaoLinha1>('equilibrado')
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
   const [monitoringPageSize, setMonitoringPageSize] = useState(5)
   const [monitoringPage, setMonitoringPage] = useState(1)
@@ -2810,7 +2831,7 @@ function SetorPageInner() {
 
   useEffect(() => {
     if (!lateralStorageKey || opcoesSubsetorTempoReal.length === 0) return
-    let salvo: { id?: string; visivel?: boolean; compacto?: boolean } | null = null
+    let salvo: { id?: string; visivel?: boolean; compacto?: boolean; proporcao?: string } | null = null
     try {
       salvo = JSON.parse(window.localStorage.getItem(lateralStorageKey) || 'null')
     } catch { /* preferência corrompida cai no padrão */ }
@@ -2821,6 +2842,13 @@ function SetorPageInner() {
     // `!== false` e não `?? true`: preferência antiga sem o campo nasce visível.
     setPainelSubsetorVisivel(salvo?.visivel !== false)
     setPainelSubsetorCompacto(salvo?.compacto === true)
+    // Valor desconhecido (preferência antiga ou adulterada) cai no padrão em
+    // vez de virar uma classe inexistente e quebrar a grade.
+    setProporcaoLinha1(
+      salvo?.proporcao && salvo.proporcao in PROPORCAO_LINHA1
+        ? (salvo.proporcao as ProporcaoLinha1)
+        : 'equilibrado',
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lateralStorageKey, chaveOpcoesSubsetor])
 
@@ -2831,9 +2859,10 @@ function SetorPageInner() {
         id: subsetorLateral,
         visivel: painelSubsetorVisivel,
         compacto: painelSubsetorCompacto,
+        proporcao: proporcaoLinha1,
       }))
     } catch { /* navegador sem storage não impede usar a tela */ }
-  }, [lateralStorageKey, subsetorLateral, painelSubsetorVisivel, painelSubsetorCompacto])
+  }, [lateralStorageKey, subsetorLateral, painelSubsetorVisivel, painelSubsetorCompacto, proporcaoLinha1])
 
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
@@ -4654,7 +4683,28 @@ const saveConfig = async () => {
                         Personalizar
                       </Button>
                     </PopoverTrigger>
-                    <PopoverContent align="end" className="w-72">
+                    <PopoverContent align="end" className="w-80">
+                      <p className="text-sm font-medium">Largura dos cards</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Divide o espaço entre o card de tempo real e a coluna da direita.
+                      </p>
+
+                      <div className="mt-3 grid grid-cols-3 gap-1.5">
+                        {(Object.keys(PROPORCAO_LINHA1) as ProporcaoLinha1[]).map((chave) => (
+                          <Button
+                            key={chave}
+                            variant={proporcaoLinha1 === chave ? 'default' : 'outline'}
+                            size="sm"
+                            className="h-auto whitespace-normal px-2 py-1.5 text-[11px] leading-tight"
+                            onClick={() => setProporcaoLinha1(chave)}
+                          >
+                            {ROTULO_PROPORCAO[chave]}
+                          </Button>
+                        ))}
+                      </div>
+
+                      <div className="my-4 border-t" />
+
                       <p className="text-sm font-medium">Painel por subsetor</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         O recorte que aparece ao lado do status dos atendentes.
@@ -4720,7 +4770,7 @@ const saveConfig = async () => {
                   1.1fr: ela ganhou o recorte por subsetor, e no 2fr_1fr
                   anterior os rótulos truncavam ("Em atendime...") enquanto o
                   card da esquerda sobrava espaço vazio. */}
-              <div className="grid gap-4 grid-cols-1 lg:grid-cols-[1.6fr_1.1fr]">
+              <div className={cn('grid gap-4 grid-cols-1', PROPORCAO_LINHA1[proporcaoLinha1])}>
                 {/* Atendimentos em tempo real */}
                 <Card className="glass-card-elevated rounded-lg border-l-4 border-l-primary">
                   <CardHeader className="pb-3">
