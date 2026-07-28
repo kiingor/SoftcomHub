@@ -596,6 +596,34 @@ temposHoje: (() => {
   }
 
 /**
+ * Cards do Monitoramento que entram na grade ajustável — mesmo mecanismo da
+ * tela de Relatórios: punho para arrastar, canto para redimensionar.
+ *
+ * A tabela de "Monitoramento detalhado" fica de fora de propósito: ela tem
+ * abas, paginação e altura própria, e virar célula de grade estouraria o
+ * arranjo em vez de ajudar.
+ */
+const MONITOR_CARDS = [
+  { id: 'tempoReal', label: 'Atendimentos em tempo real' },
+  { id: 'statusAtendentes', label: 'Status dos atendentes' },
+  { id: 'porSubsetor', label: 'Por subsetor' },
+  { id: 'atendimentoHoje', label: 'Atendimento hoje' },
+  { id: 'statusTickets', label: 'Status dos tickets hoje' },
+] as const
+
+const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
+  tempoReal: { w: 7, h: 5 },
+  statusAtendentes: { w: 5, h: 3 },
+  porSubsetor: { w: 5, h: 7 },
+  atendimentoHoje: { w: 7, h: 4 },
+  statusTickets: { w: 5, h: 4 },
+}
+
+const MONITOR_LAYOUT_STORAGE_KEY = 'setor-monitor-layout-v1'
+const MONITOR_COLLAPSED_STORAGE_KEY = 'setor-monitor-collapsed-v1'
+const MONITOR_COLLAPSED_H = 1
+
+/**
  * Proporção da primeira linha do Monitoramento.
  *
  * As classes precisam existir LITERAIS no código: o Tailwind varre o fonte e
@@ -1226,6 +1254,7 @@ function SetorPageInner() {
   const [painelSubsetorVisivel, setPainelSubsetorVisivel] = useState(true)
   const [painelSubsetorCompacto, setPainelSubsetorCompacto] = useState(false)
   const [proporcaoLinha1, setProporcaoLinha1] = useState<ProporcaoLinha1>('equilibrado')
+
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
   const [monitoringPageSize, setMonitoringPageSize] = useState(5)
   const [monitoringPage, setMonitoringPage] = useState(1)
@@ -2863,6 +2892,88 @@ function SetorPageInner() {
       }))
     } catch { /* navegador sem storage não impede usar a tela */ }
   }, [lateralStorageKey, subsetorLateral, painelSubsetorVisivel, painelSubsetorCompacto, proporcaoLinha1])
+
+  // Grade ajustável do Monitoramento — mesmo mecanismo do relatório.
+  const [monitorEditMode, setMonitorEditMode] = useState(false)
+  const [monitorLayout, setMonitorLayout] = useState<Layout[] | null>(null)
+  const [monitorCollapsed, setMonitorCollapsed] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    try {
+      const layout = window.localStorage.getItem(MONITOR_LAYOUT_STORAGE_KEY)
+      if (layout) setMonitorLayout(JSON.parse(layout))
+      const colapsados = window.localStorage.getItem(MONITOR_COLLAPSED_STORAGE_KEY)
+      if (colapsados) setMonitorCollapsed(JSON.parse(colapsados))
+    } catch { /* preferência corrompida cai no padrão */ }
+  }, [])
+
+  /**
+   * Ids visíveis na grade. "Por subsetor" some quando o setor não tem subsetor,
+   * ou quando o gestor o ocultou no Personalizar — e a grade precisa saber,
+   * senão guarda um buraco no lugar dele.
+   */
+  const monitorVisibleIds = useMemo(() => (
+    MONITOR_CARDS
+      .filter((card) => card.id !== 'porSubsetor'
+        || (opcoesSubsetorTempoReal.length > 0 && painelSubsetorVisivel))
+      .map((card) => card.id as string)
+  ), [opcoesSubsetorTempoReal.length, painelSubsetorVisivel])
+
+  const monitorBaseLayout = useMemo(() => {
+    const salvo = new Map((monitorLayout || []).map((l) => [l.i, l]))
+    let base = (monitorLayout || []).reduce((m, l) => Math.max(m, l.y + l.h), 0)
+    return monitorVisibleIds.map((id) => {
+      const existente = salvo.get(id)
+      if (existente) return existente
+      // Card sem posição salva empilha abaixo de tudo, para não sobrepor.
+      const tamanho = MONITOR_DEFAULT_SIZE[id] || { w: 6, h: 4 }
+      const item = { i: id, x: 0, y: base, w: tamanho.w, h: tamanho.h }
+      base += tamanho.h
+      return item
+    })
+  }, [monitorLayout, monitorVisibleIds])
+
+  const monitorEffectiveLayout = useMemo(
+    () => monitorBaseLayout.map((l) => (
+      monitorCollapsed[l.i] ? { ...l, h: MONITOR_COLLAPSED_H, isResizable: false } : l
+    )),
+    [monitorBaseLayout, monitorCollapsed],
+  )
+
+  const handleMonitorLayoutChange = (atual: Layout[]) => {
+    // Não persiste a altura reduzida de um card minimizado: ao expandir, ele
+    // voltaria com uma linha de altura.
+    const anterior = new Map(monitorBaseLayout.map((l) => [l.i, l]))
+    const merged = atual.map((l) => (
+      monitorCollapsed[l.i] ? { ...l, h: anterior.get(l.i)?.h ?? l.h } : l
+    ))
+    setMonitorLayout(merged)
+    try { window.localStorage.setItem(MONITOR_LAYOUT_STORAGE_KEY, JSON.stringify(merged)) } catch {}
+  }
+
+  const toggleMonitorCollapse = (id: string) => {
+    setMonitorCollapsed((anterior) => {
+      const proximo = { ...anterior, [id]: !anterior[id] }
+      try { window.localStorage.setItem(MONITOR_COLLAPSED_STORAGE_KEY, JSON.stringify(proximo)) } catch {}
+      return proximo
+    })
+  }
+
+  const monitorWidget = (id: string) => ({
+    editMode: monitorEditMode,
+    label: MONITOR_CARDS.find((c) => c.id === id)?.label || id,
+    collapsed: !!monitorCollapsed[id],
+    onToggleCollapse: () => toggleMonitorCollapse(id),
+  })
+
+  const resetarLayoutMonitor = () => {
+    setMonitorLayout(null)
+    setMonitorCollapsed({})
+    try {
+      window.localStorage.removeItem(MONITOR_LAYOUT_STORAGE_KEY)
+      window.localStorage.removeItem(MONITOR_COLLAPSED_STORAGE_KEY)
+    } catch {}
+  }
 
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
@@ -4675,6 +4786,28 @@ const saveConfig = async () => {
                 {/* Fica no cabeçalho, e não no card: com o painel oculto não
                     haveria de onde trazê-lo de volta se o controle morasse
                     dentro dele. */}
+                <div className="flex items-center gap-2">
+                <Button
+                  variant={monitorEditMode ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => setMonitorEditMode((v) => !v)}
+                >
+                  <GripVertical className="h-3.5 w-3.5" />
+                  {monitorEditMode ? 'Concluir' : 'Ajustar tamanho'}
+                </Button>
+
+                {monitorEditMode && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-9 text-xs text-muted-foreground"
+                    onClick={resetarLayoutMonitor}
+                  >
+                    Restaurar padrão
+                  </Button>
+                )}
+
                 {opcoesSubsetorTempoReal.length > 0 && (
                   <Popover>
                     <PopoverTrigger asChild>
@@ -4741,6 +4874,7 @@ const saveConfig = async () => {
                     </PopoverContent>
                   </Popover>
                 )}
+                </div>
               </div>
 
               {/* Quick Filters */}
@@ -4766,13 +4900,28 @@ const saveConfig = async () => {
                 </div>
               )}
 
-              {/* Stats Cards Row 1 — a coluna da direita passou de 1fr para
-                  1.1fr: ela ganhou o recorte por subsetor, e no 2fr_1fr
-                  anterior os rótulos truncavam ("Em atendime...") enquanto o
-                  card da esquerda sobrava espaço vazio. */}
-              <div className={cn('grid gap-4 grid-cols-1', PROPORCAO_LINHA1[proporcaoLinha1])}>
+              {monitorEditMode && (
+                <div className="rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                  Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior-direito para redimensionar. Clique em <strong>Concluir</strong> para fixar.
+                </div>
+              )}
+
+              <ResponsiveReactGridLayout
+                layouts={{ lg: monitorEffectiveLayout }}
+                breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+                cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+                rowHeight={64}
+                margin={[16, 16]}
+                isDraggable={monitorEditMode}
+                isResizable={monitorEditMode}
+                draggableHandle=".report-drag-handle"
+                resizeHandles={['se']}
+                onLayoutChange={(_cur, all) => handleMonitorLayoutChange(all.lg || _cur)}
+              >
+                <div key="tempoReal" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('tempoReal')}>
                 {/* Atendimentos em tempo real */}
-                <Card className="glass-card-elevated rounded-lg border-l-4 border-l-primary">
+                <Card className="glass-card-elevated h-full overflow-auto rounded-lg border-l-4 border-l-primary">
                   <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                       <Activity className="h-4 w-4 text-primary" aria-hidden="true" />
@@ -4878,10 +5027,11 @@ const saveConfig = async () => {
                 </Card>
 
 
-                {/* Coluna da direita: status dos atendentes + o recorte por
-                    subsetor. `min-w-0` é obrigatório — sem ele o conteúdo
-                    empurra a coluna da grade e vaza para fora da tela. */}
-                <div className="flex min-w-0 flex-col gap-4">
+                </ReportWidget>
+                </div>
+
+                <div key="statusAtendentes" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('statusAtendentes')}>
                 {/* Status dos atendentes */}
                 <Card className="glass-card-elevated flex flex-col rounded-lg">
                   <CardHeader className="pb-2 flex flex-row items-center justify-between">
@@ -4924,11 +5074,12 @@ const saveConfig = async () => {
                   </CardContent>
                 </Card>
 
-                {/* Card próprio, e não dentro do de atendentes: lá o
-                    `CardContent` é `flex flex-1 items-center`, então acrescentar
-                    conteúdo esticava o card e deixava os números 1/4/4
-                    flutuando no meio do vão. */}
+                </ReportWidget>
+                </div>
+
                 {opcoesSubsetorTempoReal.length > 0 && painelSubsetorVisivel && (
+                <div key="porSubsetor" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('porSubsetor')}>
                   <PainelSubsetoresLateral
                     compacto={painelSubsetorCompacto}
                     opcoes={opcoesSubsetorTempoReal}
@@ -4940,14 +5091,14 @@ const saveConfig = async () => {
                     }}
                     aoTrocar={setSubsetorLateral}
                   />
-                )}
+                </ReportWidget>
                 </div>
-              </div>
+                )}
 
-              {/* Stats Cards Row 2 */}
-              <div className="grid gap-4 lg:grid-cols-2">
-{/* Atendimento hoje */}
-              <Card className="glass-card-elevated rounded-lg">
+                <div key="atendimentoHoje" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('atendimentoHoje')}>
+              {/* Atendimento hoje */}
+              <Card className="glass-card-elevated h-full overflow-auto rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Atendimento hoje
@@ -4975,8 +5126,15 @@ const saveConfig = async () => {
                 </CardContent>
               </Card>
 
+                </ReportWidget>
+                </div>
+
+                <div key="statusTickets" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('statusTickets')}>
+
+
 {/* Status dos tickets hoje */}
-              <Card className="glass-card-elevated rounded-lg">
+              <Card className="glass-card-elevated h-full overflow-auto rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Status dos tickets hoje
@@ -5003,7 +5161,9 @@ const saveConfig = async () => {
                   </div>
                 </CardContent>
               </Card>
-            </div>
+                </ReportWidget>
+                </div>
+              </ResponsiveReactGridLayout>
 
             {/* Monitoramento Detalhado - Blip Style */}
             <Card className="glass-card-elevated rounded-lg">
