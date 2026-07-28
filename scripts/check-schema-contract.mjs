@@ -19,7 +19,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 
 const VERBOSE = process.argv.includes('--verbose')
@@ -114,7 +114,10 @@ const arquivos = execSync('git ls-files "app/*.ts" "app/*.tsx" "lib/*.ts" "compo
 const usos = new Map()
 
 for (const arquivo of arquivos) {
-  const texto = readFileSync(arquivo, 'utf8')
+  // Arquivo listado pelo git mas ausente em disco (renomeado ou apagado
+    // sem stage) não pode derrubar a verificação inteira no CI.
+    if (!existsSync(arquivo)) continue
+    const texto = readFileSync(arquivo, 'utf8')
   let indice = 0
   while ((indice = texto.indexOf('.from(', indice)) !== -1) {
     const cadeia = extrairCadeia(texto, indice)

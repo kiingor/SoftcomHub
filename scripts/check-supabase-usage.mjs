@@ -60,7 +60,10 @@ function extrairCadeia(texto, inicio) {
 const achados = []
 
 for (const arquivo of arquivos) {
-  const texto = readFileSync(arquivo, 'utf8')
+  // Arquivo listado pelo git mas ausente em disco (renomeado ou apagado
+    // sem stage) não pode derrubar a verificação inteira no CI.
+    if (!existsSync(arquivo)) continue
+    const texto = readFileSync(arquivo, 'utf8')
   let indice = 0
 
   while ((indice = texto.indexOf('.from(', indice)) !== -1) {
