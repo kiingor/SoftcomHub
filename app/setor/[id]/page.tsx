@@ -764,7 +764,18 @@ const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
   { i: 'tabela', x: 0, y: 27, w: 12, h: 7 },
 ]
 // ids presentes no arranjo padrão = visíveis por padrão (os demais começam ocultos)
-const RELATORIO_DEFAULT_VISIBLE_IDS = new Set(RELATORIO_DEFAULT_LAYOUT.map((l) => l.i))
+/**
+ * Visíveis por padrão.
+ *
+ * Sai do arranjo padrão mais os cards acrescentados depois dele. Card novo que
+ * não entre aqui nasce DESMARCADO: existe na lista do Personalizar e não
+ * aparece na tela — foi o que aconteceu com os dois de fila.
+ */
+const RELATORIO_DEFAULT_VISIBLE_IDS = new Set([
+  ...RELATORIO_DEFAULT_LAYOUT.map((l) => l.i),
+  'saudeFila',
+  'maiorEspera',
+])
 // ordem padrão para o painel "Reordenar": ordem de leitura do arranjo + ocultos no fim
 const RELATORIO_DEFAULT_ORDER: string[] = [
   ...RELATORIO_DEFAULT_LAYOUT.map((l) => l.i),
