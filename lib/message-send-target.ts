@@ -192,11 +192,18 @@ export function selectAuthorizedTicketChannel<T>({
   const belongsToCurrentSector = currentActiveChannels.some(
     (channel) => getIdentifier(channel) === requestedIdentifier,
   )
+  // A prova de que o canal pertence a esta conversa é a fala do CLIENTE por ele
+  // DENTRO DESTE TICKET — quem consulta já restringe por `ticket_id`.
+  //
+  // Exigir também o id do provedor quebrava o transbordo: quando a fila de uma
+  // franquia fica sem atendente, o ticket muda de setor mas o cliente continua
+  // falando pela instância de origem, que o novo setor não possui. As mensagens
+  // do Evolution frequentemente chegam sem esse id, então a evidência sumia e o
+  // atendente ficava impedido de responder — 18 tickets em 28/07/2026.
   const hasTrustedHistory = historicalEvidence.some(
     (evidence) => (
       isTrustedInboundClient(evidence.sender)
       && evidence.channelIdentifier === requestedIdentifier
-      && Boolean(evidence.providerMessageId)
     ),
   )
   if (!belongsToCurrentSector && !hasTrustedHistory) {
