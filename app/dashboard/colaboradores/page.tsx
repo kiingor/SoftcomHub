@@ -71,6 +71,32 @@ interface Colaborador {
   setores_ativos_sessao?: string[]
 }
 
+/**
+ * Recorta quem pertence a esta tela.
+ *
+ * Com vínculo em `colaboradores_setores`, entra sempre — inclusive o supervisor
+ * que também atende. Sem vínculo, entra quem não é usuário de dashboard: o
+ * supervisor puro é gerido em /dashboard/usuarios, mas o ATENDENTE sem vínculo
+ * não aparecia em tela nenhuma, e esta é justamente a única onde o setor dele
+ * poderia ser atribuído. Eram 23 pessoas ativas nesse limbo em 29/07/2026.
+ */
+function filtrarAtendentes(
+  colaboradores: Colaborador[],
+  vinculos: { colaborador_id: string }[],
+  permissoes: Permissao[],
+): Colaborador[] {
+  const comSetor = new Set(vinculos.map((vinculo) => vinculo.colaborador_id))
+  const permissaoPorId = new Map(permissoes.map((permissao) => [permissao.id, permissao]))
+
+  return colaboradores.filter((colaborador) => {
+    if (comSetor.has(colaborador.id)) return true
+    const permissao = colaborador.permissao_id
+      ? permissaoPorId.get(colaborador.permissao_id)
+      : null
+    return !colaborador.is_master && !permissao?.can_view_dashboard
+  })
+}
+
 const MAX_VISIBLE_SETORES = 3
 const ELEVATED_PERMISSION_NAMES = new Set(['admin', 'supervisor'])
 
@@ -217,12 +243,12 @@ export default function ColaboradoresPage() {
           }).then((r) =>
             r.ok ? r.json() : Promise.reject(new Error(`${r.status} em ${path.split('?')[0]}`)),
           )
-        // Atendentes: TODOS com vínculo em colaboradores_setores (inclui
-        // supervisores que também atendem). Supervisor puro (sem vínculo) só
-        // aparece em /dashboard/usuarios.
+        // O recorte de quem é atendente é feito em `filtrarAtendentes`, depois
+        // de carregar os vínculos — um `!inner` aqui escondia o atendente sem
+        // setor da única tela onde ele poderia ser corrigido.
         const r = await Promise.all([
           rest(
-            'colaboradores?select=*,setor:setores(id,nome),permissao:permissoes(id,nome),colaboradores_setores!inner(setor_id)&order=created_at.desc',
+            'colaboradores?select=*,setor:setores(id,nome),permissao:permissoes(id,nome)&order=created_at.desc',
           ),
           rest('setores?select=id,nome&order=nome'),
           rest('permissoes?select=id,nome,can_view_dashboard&order=nome'),
@@ -239,7 +265,7 @@ export default function ColaboradoresPage() {
           await Promise.all([
             supabase
               .from('colaboradores')
-              .select('*, setor:setores(id, nome), permissao:permissoes(id, nome), colaboradores_setores!inner(setor_id)')
+              .select('*, setor:setores(id, nome), permissao:permissoes(id, nome)')
               .order('created_at', { ascending: false }),
             supabase.from('setores').select('id, nome').order('nome'),
             supabase.from('permissoes').select('id, nome, can_view_dashboard').order('nome'),
@@ -253,12 +279,7 @@ export default function ColaboradoresPage() {
         avaliacoesData = (avaliacoesRes.data as { colaborador_id: string; nota: number }[]) || []
       }
 
-      // Deduplica (inner join retorna 1 linha por vínculo)
-      const uniqueMap = new Map<string, any>()
-      for (const c of colaboradoresData) {
-        if (!uniqueMap.has(c.id)) uniqueMap.set(c.id, c)
-      }
-      setColaboradores(Array.from(uniqueMap.values()))
+      setColaboradores(filtrarAtendentes(colaboradoresData, colabSetoresData, permissoesData))
       setSetores(setoresData)
       setPermissoes(permissoesData)
       setColaboradorSetores(colabSetoresData)
@@ -726,7 +747,16 @@ export default function ColaboradoresPage() {
                         <TableCell className="text-muted-foreground">
                           {(() => {
                             const setorIds = getSetoresDoColaborador(colaborador.id)
-                            if (setorIds.length === 0) return <span className="text-muted-foreground">Nenhum</span>
+                            // Sem setor o atendente não recebe ticket nem
+                            // aparece no monitoramento — vale destacar, não
+                            // registrar como um "Nenhum" qualquer.
+                            if (setorIds.length === 0) {
+                              return (
+                                <Badge variant="outline" className="text-xs border-destructive/40 text-destructive">
+                                  Sem setor
+                                </Badge>
+                              )
+                            }
                             const ativos = Array.isArray(colaborador.setores_ativos_sessao)
                               ? new Set(colaborador.setores_ativos_sessao)
                               : new Set<string>()
