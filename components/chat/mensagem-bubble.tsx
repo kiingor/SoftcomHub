@@ -16,7 +16,7 @@ import {
 
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { parseConteudoContato } from '@/lib/contato-vcard'
-import { isConteudoProtocolo } from '@/lib/mensagem-conteudo'
+import { interpretarConteudo } from '@/lib/mensagem-conteudo'
 import { cn, isBotMessage, isClientMessage } from '@/lib/utils'
 
 /**
@@ -374,9 +374,12 @@ export function MensagemBubbleBox<T extends MensagemBubbleData>({
       {isContato ? (
         <ContactCard conteudo={mensagem.conteudo as string} isOutgoing={outgoing} />
       ) : mostraTexto && (
-        isConteudoProtocolo(mensagem.conteudo!)
-          ? <TextoMensagem conteudo={mensagem.conteudo} className="text-sm whitespace-pre-wrap" />
-          : <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(mensagem.conteudo!, outgoing)}</p>
+        // Texto puro segue pelo caminho que reconhece links. O resto — resposta
+        // de botão, reação, blob de protocolo — vai para o TextoMensagem, que
+        // sabe traduzir cada um em vez de despejar o JSON na conversa.
+        interpretarConteudo(mensagem.conteudo).tipo === 'texto'
+          ? <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(mensagem.conteudo!, outgoing)}</p>
+          : <TextoMensagem conteudo={mensagem.conteudo} className="text-sm whitespace-pre-wrap" />
       )}
 
       {isFailedSend && (
