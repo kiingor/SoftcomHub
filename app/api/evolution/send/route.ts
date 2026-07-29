@@ -13,6 +13,7 @@ import {
   REPLYABLE_TICKET_SENDERS,
   canUseLegacyChannelFallback,
   isConfiguredLegacyEvolutionChannel,
+  resolveReplyQuote,
   selectAuthorizedTicketChannel,
   validateOutboundMediaUrl,
 } from '@/lib/message-send-target'
@@ -245,29 +246,31 @@ export async function POST(request: NextRequest) {
         .in('remetente', [...REPLYABLE_TICKET_SENDERS])
         .maybeSingle()
 
-      if (parentError || !parent?.whatsapp_message_id) {
-        const error = 'A mensagem respondida não pertence a este ticket ou não pode ser citada'
-        const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      const replyQuote = resolveReplyQuote(parent, Boolean(parentError))
+      if (!replyQuote.ok) {
+        const persistenceFailure = await persistFailure(serviceClient, sendAttempt, replyQuote.error)
         if (persistenceFailure) return persistenceFailure
         sendAttempt = null
         return NextResponse.json(
           {
-            error,
-            code: 'REPLY_MESSAGE_INVALID',
+            error: replyQuote.error,
+            code: replyQuote.code,
             status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
           },
           { status: 422 },
         )
       }
 
-      quotedPayload = {
-        key: {
-          id: parent.whatsapp_message_id,
-          fromMe: parent.remetente === 'colaborador',
-        },
-        message: {
-          conversation: parent.conteudo || '',
-        },
+      if (replyQuote.providerMessageId) {
+        quotedPayload = {
+          key: {
+            id: replyQuote.providerMessageId,
+            fromMe: parent?.remetente === 'colaborador',
+          },
+          message: {
+            conversation: parent?.conteudo || '',
+          },
+        }
       }
     }
 

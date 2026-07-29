@@ -330,6 +330,12 @@ export function DisponibilidadePanel({
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
   }
 
+  // Em pausa, a própria pausa atual sai da lista: o seletor serve para TROCAR,
+  // e reescolher a mesma só zeraria o cronômetro.
+  const pausasDisponiveis = pausaAtual
+    ? pausas.filter((pausa) => pausa.id !== pausaAtual.pausa_id)
+    : pausas
+
   // Determine current status
   const currentStatus = pausaAtual ? 'pausa' : isOnline ? 'online' : 'offline'
   const statusLabel = pausaAtual ? `Ausente - ${pausaAtual.pausas.nome}` : isOnline ? 'Online' : 'Offline'
@@ -430,56 +436,57 @@ export function DisponibilidadePanel({
               </Button>
             </div>
           ) : (
-            <>
-              {/* Toggle Button */}
-              <Button
-                onClick={toggleStatus}
-                disabled={loading}
-                className={cn(
-                  'w-full gap-2 transition-all',
-                  isOnline ? 'bg-gray-600 hover:bg-gray-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white'
-                )}
-              >
-                <Power className="h-4 w-4" />
-                {loading ? 'Alterando...' : isOnline ? 'Ficar Offline' : 'Ficar Online'}
-              </Button>
-
-              {/* Seletor de pausa — disponível também offline.
-                  Antes exigia estar online, então quem chegava e já ia almoçar
-                  precisava ficar online só para poder entrar em pausa, e nesse
-                  intervalo recebia ticket. `startPausa` já grava is_online=false,
-                  então entrar em pausa direto do offline é coerente. */}
-              {pausas.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-border">
-                  <p className="text-sm text-muted-foreground mb-2 flex items-center gap-2">
-                    <Coffee className="h-4 w-4" />
-                    Entrar em pausa
-                  </p>
-                  <div className="flex gap-2">
-                    <Select value={selectedPausa} onValueChange={setSelectedPausa}>
-                      <SelectTrigger className="flex-1">
-                        <SelectValue placeholder="Selecione a pausa..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {pausas.map((pausa) => (
-                          <SelectItem key={pausa.id} value={pausa.id}>
-                            {pausa.nome}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      onClick={() => startPausa(selectedPausa)}
-                      disabled={!selectedPausa || loading}
-                      variant="outline"
-                      className="bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
-                    >
-                      <Coffee className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+            /* Toggle Button */
+            <Button
+              onClick={toggleStatus}
+              disabled={loading}
+              className={cn(
+                'w-full gap-2 transition-all',
+                isOnline ? 'bg-gray-600 hover:bg-gray-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white'
               )}
-            </>
+            >
+              <Power className="h-4 w-4" />
+              {loading ? 'Alterando...' : isOnline ? 'Ficar Offline' : 'Ficar Online'}
+            </Button>
+          )}
+
+          {/* Seletor de pausa — disponível nos TRÊS estados.
+              Offline: quem chega e já vai almoçar não precisa ficar online só
+              para poder pausar, evitando receber ticket nesse intervalo.
+              Em pausa: trocar de pausa não exige mais passar por "Voltar ao
+              Atendimento", que colocava a pessoa online e elegível a ticket no
+              meio do caminho. `startPausa` já encerra a pausa anterior e grava
+              is_online=false, então os dois casos usam o mesmo fluxo. */}
+          {pausasDisponiveis.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-border">
+              <p className="text-sm text-muted-foreground mb-2 flex items-center gap-2">
+                <Coffee className="h-4 w-4" />
+                {pausaAtual ? 'Trocar de pausa' : 'Entrar em pausa'}
+              </p>
+              <div className="flex gap-2">
+                <Select value={selectedPausa} onValueChange={setSelectedPausa}>
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder={pausaAtual ? 'Selecione a nova pausa...' : 'Selecione a pausa...'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {pausasDisponiveis.map((pausa) => (
+                      <SelectItem key={pausa.id} value={pausa.id}>
+                        {pausa.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  onClick={() => startPausa(selectedPausa)}
+                  disabled={!selectedPausa || loading}
+                  variant="outline"
+                  aria-label={pausaAtual ? 'Trocar de pausa' : 'Entrar em pausa'}
+                  className="bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                >
+                  <Coffee className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
           )}
 
           {/* History Toggle */}

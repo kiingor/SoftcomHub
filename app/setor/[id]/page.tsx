@@ -2,7 +2,7 @@
 
 import { useRef } from "react"
 
-import React, { useState, useMemo, useEffect, useTransition, Fragment, Suspense } from 'react'
+import React, { useState, useMemo, useCallback, useEffect, useTransition, Fragment, Suspense } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import useSWR from 'swr'
@@ -142,6 +142,12 @@ import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
+import { loadRowsByPages } from '@/lib/supabase/paginate'
+import { resumirFila, contarEpisodiosDeFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
+import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
+import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
+import { formatarTempoMonitoramento } from '@/lib/monitoramento-tempo-real'
+import { calcularTempoReal } from '@/lib/monitoramento-tempo-real'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { toast } from 'sonner'
@@ -408,7 +414,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     // Tickets ativos (aberto ou em_atendimento)
     supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
     // Tickets de hoje (para estatisticas)
-    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id, colaborador_id').eq('setor_id', setorId).gte('criado_em', startOfDay),
+    supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id, colaborador_id, clientes(nome)').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
     supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
@@ -591,6 +597,108 @@ temposHoje: (() => {
   }
   }
 
+/**
+ * Cards do Monitoramento que entram na grade ajustável — mesmo mecanismo da
+ * tela de Relatórios: punho para arrastar, canto para redimensionar.
+ *
+ * A tabela de "Monitoramento detalhado" fica de fora de propósito: ela tem
+ * abas, paginação e altura própria, e virar célula de grade estouraria o
+ * arranjo em vez de ajudar.
+ */
+// A ORDEM é o que o empacotador usa para montar o arranjo padrão. Mudar aqui
+// muda o padrão; por isso ela segue a leitura da tela, e não a ordem em que os
+// cards foram criados.
+const MONITOR_CARDS = [
+  { id: 'tempoReal', label: 'Atendimentos em tempo real' },
+  { id: 'porSubsetor', label: 'Atendimentos em tempo real (2º card)' },
+  { id: 'atendimentoHoje', label: 'Atendimento hoje' },
+  { id: 'statusAtendentes', label: 'Status dos atendentes' },
+  { id: 'statusTickets', label: 'Status dos tickets hoje' },
+] as const
+
+/**
+ * Arranjo padrão do Monitoramento, na largura de 12 colunas.
+ *
+ *   linha 1   tempoReal (6)          porSubsetor (6)
+ *   linha 2   atendimentoHoje (7)  statusAtendentes (2)  statusTickets (3)
+ *
+ * As duas linhas somam 12 de propósito: é o que faz os cards nascerem lado a
+ * lado em vez de empilhados. Combinado com a ordem acima, o empacotador
+ * reproduz exatamente esse desenho — os dois cards de tempo real com a mesma
+ * largura, e a linha de baixo com o resumo do dia ocupando a maior parte.
+ */
+const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
+  tempoReal: { w: 6, h: 6 },
+  porSubsetor: { w: 6, h: 6 },
+  atendimentoHoje: { w: 7, h: 3 },
+  statusAtendentes: { w: 2, h: 3 },
+  statusTickets: { w: 3, h: 3 },
+}
+
+/**
+ * Arranjo padrão sem o segundo card de tempo real.
+ *
+ *   linha 1   tempoReal (8)        statusAtendentes (4, na mesma altura)
+ *   linha 2   atendimentoHoje (7)  statusTickets (5)
+ *
+ * Não basta esconder o `porSubsetor`: as larguras do caso com dois cards
+ * deixariam metade da primeira linha vazia. Aqui o card de tempo real ocupa a
+ * folga e o status dos atendentes sobe para o lado dele, com a mesma altura.
+ */
+const MONITOR_DEFAULT_SIZE_SEM_SEGUNDO: Record<string, { w: number; h: number }> = {
+  tempoReal: { w: 8, h: 6 },
+  atendimentoHoje: { w: 7, h: 3 },
+  statusAtendentes: { w: 4, h: 6 },
+  statusTickets: { w: 5, h: 3 },
+}
+
+// v2: a v1 nasceu com todos os cards empilhados em x=0. Trocar a chave dá a
+// todo mundo o arranjo corrigido, em vez de exigir "Restaurar padrão".
+const MONITOR_LAYOUT_STORAGE_KEY = 'setor-monitor-layout-v2'
+const MONITOR_COLLAPSED_STORAGE_KEY = 'setor-monitor-collapsed-v1'
+const MONITOR_PAGE_SIZE_STORAGE_KEY = 'setor-monitor-page-size-v1'
+const ATENDENTES_PAGE_SIZE_STORAGE_KEY = 'setor-atendentes-page-size-v1'
+
+/** Opções de "Resultados por página" das tabelas do setor. */
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const
+const PAGE_SIZE_PADRAO = 5
+
+/** Valor guardado só vale se for uma das opções — o resto cai no padrão. */
+function lerPageSizeSalvo(chave: string): number | null {
+  try {
+    const salvo = Number(window.localStorage.getItem(chave))
+    return PAGE_SIZE_OPTIONS.includes(salvo as typeof PAGE_SIZE_OPTIONS[number])
+      ? salvo
+      : null
+  } catch {
+    return null
+  }
+}
+const MONITOR_COLLAPSED_H = 1
+
+/**
+ * Proporção da primeira linha do Monitoramento, em colunas da grade.
+ *
+ * Nasceu como classes `lg:grid-cols-[...]`, e virou letra morta quando os dois
+ * cards passaram a ser itens da grade arrastável: a largura deixou de vir do
+ * CSS e passou a vir do layout, então o controle mexia num valor que ninguém
+ * lia. Agora ele reescreve a largura dos dois cards no próprio layout — que é
+ * o mesmo que arrastar a borda, só que em um clique e sem desalinhar.
+ */
+const LARGURA_LINHA1 = {
+  esquerda: [7, 5],
+  equilibrado: [6, 6],
+  direita: [5, 7],
+} as const satisfies Record<string, readonly [number, number]>
+
+type ProporcaoLinha1 = keyof typeof LARGURA_LINHA1
+
+const ROTULO_PROPORCAO: Record<ProporcaoLinha1, string> = {
+  esquerda: 'Mais espaço à esquerda',
+  equilibrado: 'Equilibrado',
+  direita: 'Mais espaço à direita',
+}
+
 // Cards selecionáveis no relatório (mostrar/ocultar via "Personalizar")
 const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
 const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
@@ -612,6 +720,8 @@ const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   kpiResolvidos: { w: 4, h: 2 },
   kpiTaxa: { w: 4, h: 2 },
   kpiNps: { w: 4, h: 2 },
+  saudeFila: { w: 6, h: 4 },
+  maiorEspera: { w: 6, h: 4 },
   volume: { w: 6, h: 5 },
   heatmap: { w: 6, h: 5 },
   sla: { w: 6, h: 5 },
@@ -627,14 +737,24 @@ const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
 }
 const RELATORIO_COLLAPSED_H = 1
 
+/** Cores por faixa de saúde da fila, para o limiar não se espalhar pela tela. */
+const TOM_SAUDE = {
+  boa: { texto: 'text-green-600 dark:text-green-400', barra: 'bg-green-500' },
+  atencao: { texto: 'text-amber-600 dark:text-amber-400', barra: 'bg-amber-500' },
+  critica: { texto: 'text-red-600 dark:text-red-400', barra: 'bg-red-500' },
+} as const
+
 // Empacota os cards em "masonry" (skyline): cada card vai para o vão mais alto
 // disponível, preenchendo os buracos. Evita espaços vazios entre cards de
 // alturas diferentes; as bordas ficam alinhadas. A ordem define a prioridade.
-function buildDefaultLayout(orderedIds: string[]): Layout[] {
+function buildDefaultLayout(
+  orderedIds: string[],
+  sizeMap: Record<string, { w: number; h: number }> = RELATORIO_DEFAULT_SIZE,
+): Layout[] {
   const COLS = 12
   const colHeights = new Array(COLS).fill(0)
   return orderedIds.map((id) => {
-    const d = RELATORIO_DEFAULT_SIZE[id] || { w: 6, h: 4 }
+    const d = sizeMap[id] || { w: 6, h: 4 }
     const w = Math.min(d.w, COLS)
     // acha o x (0..COLS-w) cujo topo é o menor possível (preenche o vão mais alto)
     let bestX = 0, bestY = Infinity
@@ -658,6 +778,8 @@ const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
   { id: 'volume', label: 'Atendimentos ao longo do tempo' },
   { id: 'heatmap', label: 'Padrão horário por dia' },
   { id: 'sla', label: 'SLA de 1ª resposta' },
+  { id: 'saudeFila', label: 'Saúde da fila' },
+  { id: 'maiorEspera', label: 'Maior espera do período' },
   { id: 'nps', label: 'Satisfação (NPS)' },
   { id: 'canal', label: 'Por canal' },
   { id: 'status', label: 'Por resultado' },
@@ -692,7 +814,18 @@ const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
   { i: 'tabela', x: 0, y: 27, w: 12, h: 7 },
 ]
 // ids presentes no arranjo padrão = visíveis por padrão (os demais começam ocultos)
-const RELATORIO_DEFAULT_VISIBLE_IDS = new Set(RELATORIO_DEFAULT_LAYOUT.map((l) => l.i))
+/**
+ * Visíveis por padrão.
+ *
+ * Sai do arranjo padrão mais os cards acrescentados depois dele. Card novo que
+ * não entre aqui nasce DESMARCADO: existe na lista do Personalizar e não
+ * aparece na tela — foi o que aconteceu com os dois de fila.
+ */
+const RELATORIO_DEFAULT_VISIBLE_IDS = new Set([
+  ...RELATORIO_DEFAULT_LAYOUT.map((l) => l.i),
+  'saudeFila',
+  'maiorEspera',
+])
 // ordem padrão para o painel "Reordenar": ordem de leitura do arranjo + ocultos no fim
 const RELATORIO_DEFAULT_ORDER: string[] = [
   ...RELATORIO_DEFAULT_LAYOUT.map((l) => l.i),
@@ -1040,9 +1173,12 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
 // Client-side filters applied over the already-loaded report tickets
 // (atendente + canal selects + cliente search). Shared by the current period
 // view and the previous-period comparison so the Δ stays consistent.
+/** Valor do filtro de subsetor para os tickets que não têm nenhum. */
+const RELATORIO_SEM_SUBSETOR = '__sem_subsetor__'
+
 function applyRelatorioFilters(
   list: any[],
-  opts: { searchCliente: string; atendente: string; canal: string },
+  opts: { searchCliente: string; atendente: string; canal: string; subsetor?: string },
 ): any[] {
   let out = list
   if (opts.atendente !== 'all') {
@@ -1050,6 +1186,11 @@ function applyRelatorioFilters(
   }
   if (opts.canal !== 'all') {
     out = out.filter((t) => (t.canal || 'desconhecido') === opts.canal)
+  }
+  if (opts.subsetor && opts.subsetor !== 'all') {
+    out = opts.subsetor === RELATORIO_SEM_SUBSETOR
+      ? out.filter((t) => !t.subsetor_id)
+      : out.filter((t) => t.subsetor_id === opts.subsetor)
   }
   const term = opts.searchCliente.trim().toLowerCase()
   if (term) {
@@ -1188,11 +1329,46 @@ function SetorPageInner() {
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
+  // Subsetor acompanhado na coluna lateral do Monitoramento. Guardado por
+  // gestor + setor, como o filtro rápido — a escolha é dele.
+  // Cada card de tempo real tem o seu recorte. O principal nasce sem filtro
+  // (setor inteiro); o segundo, no primeiro subsetor.
+  const [subsetorCardPrincipal, setSubsetorCardPrincipal] = useState<string>(TODOS_SUBSETORES)
+  const [subsetorCardSecundario, setSubsetorCardSecundario] = useState<string>('')
+  // Nasce oculto: o segundo card de tempo real é um extra que o gestor liga no
+  // Personalizar quando quer acompanhar dois subsetores lado a lado.
+  const [painelSubsetorVisivel, setPainelSubsetorVisivel] = useState(false)
+  const [proporcaoLinha1, setProporcaoLinha1] = useState<ProporcaoLinha1>('equilibrado')
+
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
-  const [monitoringPageSize, setMonitoringPageSize] = useState(5)
+  // Começam no padrão e são substituídos pelo valor salvo logo após a montagem:
+  // ler o storage no inicializador quebraria a renderização no servidor.
+  const [monitoringPageSize, setMonitoringPageSize] = useState<number>(PAGE_SIZE_PADRAO)
   const [monitoringPage, setMonitoringPage] = useState(1)
-  const [attendantsPageSize, setAttendantsPageSize] = useState(5)
+  const [attendantsPageSize, setAttendantsPageSize] = useState<number>(PAGE_SIZE_PADRAO)
   const [attendantsPage, setAttendantsPage] = useState(1)
+
+  useEffect(() => {
+    const monitoramento = lerPageSizeSalvo(MONITOR_PAGE_SIZE_STORAGE_KEY)
+    if (monitoramento) setMonitoringPageSize(monitoramento)
+    const atendentes = lerPageSizeSalvo(ATENDENTES_PAGE_SIZE_STORAGE_KEY)
+    if (atendentes) setAttendantsPageSize(atendentes)
+  }, [])
+
+  /** Troca o tamanho da página, guarda a escolha e volta para a primeira. */
+  const escolherPageSize = (
+    valor: string,
+    aplicar: (n: number) => void,
+    irParaPrimeira: () => void,
+    chave: string,
+  ) => {
+    const tamanho = Number(valor)
+    aplicar(tamanho)
+    irParaPrimeira()
+    try {
+      window.localStorage.setItem(chave, String(tamanho))
+    } catch { /* navegador sem storage não impede paginar */ }
+  }
   // Timestamp, não contador: o cálculo de tempo decorrido lê `monitoringTick`
   // direto como "agora" (ver uso em computePausaElapsedMs e no tempo de fila).
   const [monitoringTick, setTick] = useState(() => Date.now())
@@ -1669,15 +1845,21 @@ function SetorPageInner() {
   const { data: relatorioData, isLoading: relatorioLoading } = useSWR(
     setorId ? ['setor-relatorio', setorId, dateFilter, customRange?.from?.toISOString(), customRange?.to?.toISOString()] : null,
     async () => {
-      let query = supabase
-        .from('tickets')
-        .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ, PDV)')
-        .eq('setor_id', setorId)
-        .order('criado_em', { ascending: false })
-        .limit(1000)
-      if (dateFrom) query = query.gte('criado_em', dateFrom)
-      if (dateTo) query = query.lte('criado_em', dateTo)
-      const { data: tickets } = await query
+      // Paginado: o teto de 1.000 do PostgREST truncava o relatório em silêncio.
+      // O ServiceDesk fez 3.105 tickets em 7 dias — no período de uma semana o
+      // painel mostrava um terço dos dados e chamava de total, contaminando KPI,
+      // gráfico e NPS. O gestor decide com estes números.
+      const tickets = await loadRowsByPages(() => {
+        let query = supabase
+          .from('tickets')
+          .select('*, numero, colaboradores(nome), clientes(nome, telefone, CNPJ, PDV)')
+          .eq('setor_id', setorId)
+          .order('criado_em', { ascending: false })
+          .order('id', { ascending: false })
+        if (dateFrom) query = query.gte('criado_em', dateFrom)
+        if (dateTo) query = query.lte('criado_em', dateTo)
+        return query
+      })
       // Buscar avaliações separadamente (join direto não funciona via client RLS)
       const ticketIds = (tickets || []).map((t: any) => t.id)
       let avaliacoesMap = new Map<string, number>()
@@ -1735,14 +1917,17 @@ function SetorPageInner() {
   const { data: prevRelatorioData } = useSWR(
     setorId && prevPeriod ? ['setor-relatorio-prev', setorId, prevPeriod.from, prevPeriod.to] : null,
     async () => {
-      const { data } = await supabase
+      // `subsetor_id` é obrigatório aqui: sem ele o filtro de subsetor valeria só
+      // para o período atual, e as variações percentuais compaririam o Prime
+      // filtrado contra o setor inteiro. Paginado pelo mesmo motivo do período
+      // atual — o teto de 1.000 falseava a base de comparação.
+      return await loadRowsByPages(() => supabase
         .from('tickets')
-        .select('criado_em, status, primeira_resposta_em, encerrado_em, canal, colaboradores(nome), clientes(nome, telefone, CNPJ)')
+        .select('criado_em, status, primeira_resposta_em, encerrado_em, canal, subsetor_id, colaboradores(nome), clientes(nome, telefone, CNPJ)')
         .eq('setor_id', setorId)
         .gte('criado_em', prevPeriod!.from)
         .lte('criado_em', prevPeriod!.to)
-        .limit(1000)
-      return data || []
+        .order('id', { ascending: false }))
     },
     { revalidateOnFocus: false }
   )
@@ -1869,6 +2054,35 @@ function SetorPageInner() {
   const [searchCliente, setSearchCliente] = useState(() => searchParams.get('cliente') || '')
   const [relatorioAtendente, setRelatorioAtendente] = useState(() => searchParams.get('atendente') || 'all')
   const [relatorioCanal, setRelatorioCanal] = useState(() => searchParams.get('canal') || 'all')
+  const [relatorioSubsetor, setRelatorioSubsetor] = useState(() => searchParams.get('subsetor') || 'all')
+
+  // Comparação lado a lado: quando ativa, a área de cards é repetida em duas
+  // colunas, uma por subsetor. O gestor acompanha Suporte e Prime na mesma tela,
+  // com as mesmas métricas e o mesmo período.
+  const [comparandoSubsetores, setComparandoSubsetores] = useState(false)
+  const [subsetorEsquerda, setSubsetorEsquerda] = useState<string>('all')
+  const [subsetorDireita, setSubsetorDireita] = useState<string>('all')
+
+  const relatorioSubsetorOptions = useMemo(() => {
+    // Lê de `subsetores` e não de `subsetorNomeById`: aquele mapa é declarado
+    // bem mais abaixo no componente, e `const` não sobe — usá-lo aqui quebraria
+    // na primeira renderização.
+    const nomePorId = new Map((subsetores as any[]).map((s) => [s.id, s.nome]))
+    const usados = new Map<string, string>()
+    let temSemSubsetor = false
+    for (const t of ticketsRelatorioRaw) {
+      if (!t.subsetor_id) { temSemSubsetor = true; continue }
+      if (!usados.has(t.subsetor_id)) {
+        usados.set(t.subsetor_id, nomePorId.get(t.subsetor_id) || 'Subsetor')
+      }
+    }
+    const lista = [...usados.entries()]
+      .map(([id, nome]) => ({ id, nome }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+    // "Sem subsetor" só aparece quando existe de fato — evita opção morta.
+    if (temSemSubsetor) lista.push({ id: RELATORIO_SEM_SUBSETOR, nome: 'Sem subsetor' })
+    return lista
+  }, [ticketsRelatorioRaw, subsetores])
 
   // Opções dos selects derivadas dos próprios tickets do período
   const relatorioAtendentesOptions = useMemo(() => {
@@ -1885,17 +2099,79 @@ function SetorPageInner() {
   }, [ticketsRelatorioRaw])
 
   const ticketsRelatorio = useMemo(
-    () => applyRelatorioFilters(ticketsRelatorioRaw, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal }),
-    [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal]
+    () => applyRelatorioFilters(ticketsRelatorioRaw, {
+      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor: relatorioSubsetor,
+    }),
+    [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal, relatorioSubsetor]
+  )
+
+  /** Tickets de uma coluna da comparação — mesmos filtros, subsetor próprio. */
+  const ticketsDoSubsetor = useCallback((subsetor: string) => (
+    applyRelatorioFilters(ticketsRelatorioRaw, {
+      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor,
+    })
+  ), [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal])
+
+  const ticketsEsquerda = useMemo(
+    () => (comparandoSubsetores ? ticketsDoSubsetor(subsetorEsquerda) : []),
+    [comparandoSubsetores, ticketsDoSubsetor, subsetorEsquerda],
+  )
+  const ticketsDireita = useMemo(
+    () => (comparandoSubsetores ? ticketsDoSubsetor(subsetorDireita) : []),
+    [comparandoSubsetores, ticketsDoSubsetor, subsetorDireita],
+  )
+
+  /**
+   * Indicadores de uma coluna da comparação.
+   *
+   * `bruto` acompanha o valor formatado porque quem lidera precisa ser decidido
+   * por número — comparar "00:11:00" com "00:46:48" como texto daria errado.
+   */
+  const indicadoresDe = useCallback((lista: any[]): IndicadorComparacao[] => {
+    const paraHhMmSs = (ms: number) => {
+      const horas = Math.floor(ms / 3_600_000)
+      const minutos = Math.floor((ms % 3_600_000) / 60_000)
+      const segundos = Math.floor((ms % 60_000) / 1000)
+      return [horas, minutos, segundos].map((n) => String(n).padStart(2, '0')).join(':')
+    }
+    const kpis = computeRelatorioKpis(lista)
+    const stats = calculateRelatorioStats(lista, paraHhMmSs)
+    return [
+      { chave: 'recebidos', rotulo: 'Tickets recebidos', valor: String(kpis.recebidos), bruto: kpis.recebidos, maiorEhMelhor: true },
+      { chave: 'resolvidos', rotulo: 'Tickets resolvidos', valor: String(kpis.resolvidos), bruto: kpis.resolvidos, maiorEhMelhor: true },
+      { chave: 'taxa', rotulo: 'Taxa de resolução', valor: `${Math.round(kpis.taxaResolucao)}%`, bruto: kpis.taxaResolucao, maiorEhMelhor: true },
+      // `bruto` zerado vira null: 0ms aqui significa "sem amostra", não "instantâneo".
+      { chave: 'primeiraResposta', rotulo: 'Tempo médio 1ª resposta', valor: stats.tempoMedioPrimeiraResposta, bruto: kpis.tmaPrimeiraRespostaMs || null, maiorEhMelhor: false },
+      { chave: 'resolucao', rotulo: 'Tempo médio resolução', valor: stats.tempoMedioResolucao, bruto: kpis.tmaResolucaoMs || null, maiorEhMelhor: false },
+    ]
+  }, [])
+
+  const indicadoresEsquerda = useMemo(() => indicadoresDe(ticketsEsquerda), [indicadoresDe, ticketsEsquerda])
+  const indicadoresDireita = useMemo(() => indicadoresDe(ticketsDireita), [indicadoresDe, ticketsDireita])
+
+  /**
+   * Fila do período — calculada sobre `ticketsRelatorio`, que já respeita
+   * período, atendente, canal e subsetor. Sem consulta nova.
+   *
+   * `monitoringTick` entra porque a espera de quem ainda não foi respondido
+   * corre com o relógio.
+   */
+  const resumoFilaPeriodo = useMemo(
+    () => resumirFila(ticketsRelatorio, { agoraMs: monitoringTick }),
+    [ticketsRelatorio, monitoringTick],
   )
 
   // KPIs numéricos do período atual e do anterior (para o Δ%)
   const kpiAtual = useMemo(() => computeRelatorioKpis(ticketsRelatorio), [ticketsRelatorio])
   const kpiAnterior = useMemo(() => {
     if (!prevRelatorioData) return null
-    const filtered = applyRelatorioFilters(prevRelatorioData, { searchCliente, atendente: relatorioAtendente, canal: relatorioCanal })
+    // O mesmo filtro de subsetor precisa valer aqui, senão o Δ% compararia o
+    // subsetor escolhido contra o setor inteiro do período anterior.
+    const filtered = applyRelatorioFilters(prevRelatorioData, {
+      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor: relatorioSubsetor,
+    })
     return computeRelatorioKpis(filtered)
-  }, [prevRelatorioData, searchCliente, relatorioAtendente, relatorioCanal])
+  }, [prevRelatorioData, searchCliente, relatorioAtendente, relatorioCanal, relatorioSubsetor])
 
   // Base do nome do arquivo exportado (setor + data atual)
   const exportFilenameBase = useMemo(() => {
@@ -2073,6 +2349,7 @@ function SetorPageInner() {
   // Estado minimizado + layout (posição/tamanho) dos cards — persistido no navegador
   const [collapsedCards, setCollapsedCards] = useState<Record<string, boolean>>({})
   const [savedLgLayout, setSavedLgLayout] = useState<Layout[] | null>(null)
+  const [layoutRestaurado, setLayoutRestaurado] = useState(false)
   useEffect(() => {
     try {
       const savedCollapsed = window.localStorage.getItem(RELATORIO_COLLAPSED_STORAGE_KEY)
@@ -2080,6 +2357,7 @@ function SetorPageInner() {
       const savedLayout = window.localStorage.getItem(RELATORIO_LAYOUT_STORAGE_KEY)
       if (savedLayout) setSavedLgLayout(JSON.parse(savedLayout))
     } catch {}
+    setLayoutRestaurado(true)
   }, [])
 
   const toggleCollapse = (id: string) => {
@@ -2131,11 +2409,21 @@ function SetorPageInner() {
     [baseLgLayout, collapsedCards]
   )
   const handleLayoutChange = (current: Layout[]) => {
+    // A grade avisa a posição dos cards já na montagem, e o efeito que lê o
+    // storage roda depois dela. Persistir nesse instante gravaria o arranjo
+    // padrão por cima do que o gestor montou — a tela voltava ao padrão a cada
+    // atualização da página.
+    if (!layoutRestaurado) return
     // não persiste a altura reduzida de cards minimizados (preserva a expandida)
     const prevById = new Map(baseLgLayout.map((l) => [l.i, l]))
     const merged = current.map((l) => (collapsedCards[l.i] ? { ...l, h: prevById.get(l.i)?.h ?? l.h } : l))
-    setSavedLgLayout(merged)
-    try { window.localStorage.setItem(RELATORIO_LAYOUT_STORAGE_KEY, JSON.stringify(merged)) } catch {}
+    // Card oculto no Personalizar não é relatado pela grade. Preservar a posição
+    // dele evita que volte para o rodapé quando for reexibido.
+    const emTela = new Set(merged.map((l) => l.i))
+    const ocultos = (savedLgLayout || []).filter((l) => !emTela.has(l.i))
+    const proximo = [...merged, ...ocultos]
+    setSavedLgLayout(proximo)
+    try { window.localStorage.setItem(RELATORIO_LAYOUT_STORAGE_KEY, JSON.stringify(proximo)) } catch {}
   }
   const wprops = (id: string) => ({
     editMode,
@@ -2214,6 +2502,47 @@ function SetorPageInner() {
           matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
         )),
     [subsetorFilter, ticketsMonitoramentoHoje],
+  )
+
+  /**
+   * Fila de hoje, sobre os tickets que a tela já carregou. Mesmo cálculo do
+   * relatório — `resumirFila` — para os dois números não divergirem entre as
+   * telas. `monitoringTick` porque a espera de quem não foi respondido corre.
+   */
+  /**
+   * Fila de hoje sob o mesmo recorte de cada card de tempo real. Recebe o
+   * predicado em vez de um subsetor para servir aos dois casos: o principal
+   * respeita o filtro rápido quando está em "todos", o secundário é sempre um
+   * subsetor.
+   */
+  const filaDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
+    resumirFila(ticketsMonitoramentoHoje.filter(aceitaTicket), { agoraMs: monitoringTick })
+  ), [ticketsMonitoramentoHoje, monitoringTick])
+
+  const episodiosDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
+    contarEpisodiosDeFila(ticketsMonitoramentoHoje.filter(aceitaTicket), { agoraMs: monitoringTick })
+  ), [ticketsMonitoramentoHoje, monitoringTick])
+
+  const filaCardPrincipal = useMemo(() => filaDeHoje((t: any) => (
+    subsetorCardPrincipal === TODOS_SUBSETORES
+      ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
+      : t.subsetor_id === subsetorCardPrincipal
+  )), [filaDeHoje, subsetorCardPrincipal, subsetorFilter])
+
+  const filaCardSecundario = useMemo(
+    () => filaDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
+    [filaDeHoje, subsetorCardSecundario],
+  )
+
+  const episodiosPrincipal = useMemo(() => episodiosDeHoje((t: any) => (
+    subsetorCardPrincipal === TODOS_SUBSETORES
+      ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
+      : t.subsetor_id === subsetorCardPrincipal
+  )), [episodiosDeHoje, subsetorCardPrincipal, subsetorFilter])
+
+  const episodiosSecundario = useMemo(
+    () => episodiosDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
+    [episodiosDeHoje, subsetorCardSecundario],
   )
 
   const ticketsHoje = useMemo(() => {
@@ -2657,6 +2986,293 @@ function SetorPageInner() {
     ],
     [subsetores],
   )
+
+  /** Subsetores do setor, base das linhas da coluna lateral. */
+  const opcoesSubsetorTempoReal = useMemo(() => (
+    (subsetores as any[]).map((s) => ({ id: s.id, nome: s.nome }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+  ), [subsetores])
+
+  /**
+   * Um resumo por subsetor, usando o MESMO cálculo do card do setor.
+   *
+   * `monitoringTick` entra nas dependências porque a maior espera cresce com o
+   * relógio, não com a chegada de dados — sem ele o número congelaria.
+   */
+  const resumoDoSubsetor = useCallback((subsetorId: string) => (
+    calcularTempoReal({
+      tickets,
+      ticketsDeHoje: ticketsMonitoramentoHoje,
+      atendentes,
+      aceitaTicket: (t: any) => t.subsetor_id === subsetorId,
+      aceitaAtendente: (a: any) => (
+        isAtendenteOnline(a) && (a.subsetor_ids || []).includes(subsetorId)
+      ),
+      agoraMs: monitoringTick,
+    })
+  ), [tickets, ticketsMonitoramentoHoje, atendentes, monitoringTick])
+
+  const resumoCardSecundario = useMemo(
+    () => resumoDoSubsetor(subsetorCardSecundario),
+    [subsetorCardSecundario, resumoDoSubsetor],
+  )
+
+  // A carga é calculada aqui porque `calculateWorkloadOs` e a tabela de cores
+  // vivem nesta página — o componente não precisa conhecer nenhuma das duas.
+  /**
+   * O card principal tem seletor próprio: em "Todos os subsetores" ele respeita
+   * o filtro rápido da tela, como sempre fez; com um subsetor escolhido, ele
+   * recorta só nele e ignora o filtro rápido — senão os dois se combinariam e o
+   * número não bateria com o que o seletor diz.
+   */
+  const resumoCardPrincipal = useMemo(() => calcularTempoReal({
+    tickets,
+    ticketsDeHoje: ticketsMonitoramentoHoje,
+    atendentes,
+    aceitaTicket: (t: any) => (
+      subsetorCardPrincipal === TODOS_SUBSETORES
+        ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
+        : t.subsetor_id === subsetorCardPrincipal
+    ),
+    aceitaAtendente: (a: any) => isAtendenteOnline(a) && (
+      subsetorCardPrincipal === TODOS_SUBSETORES
+        ? matchesAtendenteSubsetorFilter(subsetorFilter, a.subsetor_ids)
+        : (a.subsetor_ids || []).includes(subsetorCardPrincipal)
+    ),
+    agoraMs: monitoringTick,
+  }), [tickets, ticketsMonitoramentoHoje, atendentes, subsetorCardPrincipal, subsetorFilter, monitoringTick])
+
+  const cargaCardPrincipal = useMemo(
+    () => calculateWorkloadOs(resumoCardPrincipal.total, resumoCardPrincipal.atendentesOnline),
+    [resumoCardPrincipal],
+  )
+
+  const cargaCardSecundario = useMemo(
+    () => calculateWorkloadOs(resumoCardSecundario.total, resumoCardSecundario.atendentesOnline),
+    [resumoCardSecundario],
+  )
+
+  // Identidade estável da lista: sem isto, qualquer atualização de `subsetores`
+  // recriaria o array e o efeito de carga sobrescreveria a escolha do gestor.
+  const chaveOpcoesSubsetor = opcoesSubsetorTempoReal.map((o) => o.id).join(',')
+
+  // v2: o segundo card passou a nascer OCULTO. A v1 o mostrava por padrão, e
+  // como a preferência é gravada assim que a tela abre, todo mundo tinha
+  // `visivel: true` guardado — mudar só o valor inicial não alcançaria ninguém.
+  const lateralStorageKey = colaboradorLogado?.id && setorId
+    ? `setor-subsetores-lateral-v2:${setorId}:${colaboradorLogado.id}`
+    : null
+  const lateralStorageKeyV1 = colaboradorLogado?.id && setorId
+    ? `setor-subsetores-lateral-v1:${setorId}:${colaboradorLogado.id}`
+    : null
+
+  useEffect(() => {
+    if (!lateralStorageKey || opcoesSubsetorTempoReal.length === 0) return
+    let salvo: { id?: string; principal?: string; visivel?: boolean; compacto?: boolean; proporcao?: string } | null = null
+    try {
+      salvo = JSON.parse(window.localStorage.getItem(lateralStorageKey) || 'null')
+      if (!salvo && lateralStorageKeyV1) {
+        // Migra o que o gestor escolheu — filtro dos cards e proporção da linha
+        // — e só reverte a visibilidade, que é o padrão que mudou.
+        const antigo = JSON.parse(window.localStorage.getItem(lateralStorageKeyV1) || 'null')
+        if (antigo) salvo = { ...antigo, visivel: false }
+      }
+    } catch { /* preferência corrompida cai no padrão */ }
+
+    // Subsetor apagado não pode deixar o painel preso num id morto.
+    const conhecido = (id?: string) => Boolean(id) && opcoesSubsetorTempoReal.some((o) => o.id === id)
+    setSubsetorCardPrincipal(
+      salvo?.principal === TODOS_SUBSETORES || conhecido(salvo?.principal)
+        ? salvo!.principal!
+        : TODOS_SUBSETORES,
+    )
+    setSubsetorCardSecundario(
+      conhecido(salvo?.id) ? salvo!.id! : (opcoesSubsetorTempoReal[0]?.id || ''),
+    )
+    // `=== true` e não `!== false`: o segundo card só aparece quando o gestor
+    // pediu por ele no Personalizar. Sem preferência, nasce oculto.
+    setPainelSubsetorVisivel(salvo?.visivel === true)
+    // Valor desconhecido (preferência antiga ou adulterada) cai no padrão em
+    // vez de deixar o botão marcado numa proporção que não existe.
+    setProporcaoLinha1(
+      salvo?.proporcao && salvo.proporcao in LARGURA_LINHA1
+        ? (salvo.proporcao as ProporcaoLinha1)
+        : 'equilibrado',
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lateralStorageKey, chaveOpcoesSubsetor])
+
+  useEffect(() => {
+    if (!lateralStorageKey || !subsetorCardSecundario) return
+    try {
+      window.localStorage.setItem(lateralStorageKey, JSON.stringify({
+        id: subsetorCardSecundario,
+        principal: subsetorCardPrincipal,
+        visivel: painelSubsetorVisivel,
+        proporcao: proporcaoLinha1,
+      }))
+    } catch { /* navegador sem storage não impede usar a tela */ }
+  }, [lateralStorageKey, subsetorCardSecundario, subsetorCardPrincipal, painelSubsetorVisivel, proporcaoLinha1])
+
+  // Grade ajustável do Monitoramento — mesmo mecanismo do relatório.
+  const [monitorEditMode, setMonitorEditMode] = useState(false)
+  const [monitorLayout, setMonitorLayout] = useState<Layout[] | null>(null)
+  const [monitorCollapsed, setMonitorCollapsed] = useState<Record<string, boolean>>({})
+  const [monitorLayoutRestaurado, setMonitorLayoutRestaurado] = useState(false)
+
+  useEffect(() => {
+    try {
+      const layout = window.localStorage.getItem(MONITOR_LAYOUT_STORAGE_KEY)
+      if (layout) setMonitorLayout(JSON.parse(layout))
+      const colapsados = window.localStorage.getItem(MONITOR_COLLAPSED_STORAGE_KEY)
+      if (colapsados) setMonitorCollapsed(JSON.parse(colapsados))
+    } catch { /* preferência corrompida cai no padrão */ }
+    setMonitorLayoutRestaurado(true)
+  }, [])
+
+  /**
+   * Ids visíveis na grade. "Por subsetor" some quando o setor não tem subsetor,
+   * ou quando o gestor o ocultou no Personalizar — e a grade precisa saber,
+   * senão guarda um buraco no lugar dele.
+   */
+  const monitorVisibleIds = useMemo(() => (
+    MONITOR_CARDS
+      .filter((card) => card.id !== 'porSubsetor'
+        || (opcoesSubsetorTempoReal.length > 0 && painelSubsetorVisivel))
+      .map((card) => card.id as string)
+  ), [opcoesSubsetorTempoReal.length, painelSubsetorVisivel])
+
+  // Com ou sem o segundo card a primeira linha se reorganiza inteira, então
+  // cada estado tem o seu próprio conjunto de larguras.
+  const monitorSizeMap = monitorVisibleIds.includes('porSubsetor')
+    ? MONITOR_DEFAULT_SIZE
+    : MONITOR_DEFAULT_SIZE_SEM_SEGUNDO
+
+  const monitorBaseLayout = useMemo(() => {
+    // Sem layout salvo, o arranjo vem do mesmo empacotador do relatório: cada
+    // card vai para o vão mais alto disponível, então os que somam 12 colunas
+    // ficam LADO A LADO. Posicionar tudo em x=0 empilhava a tela inteira numa
+    // coluna só.
+    if (!monitorLayout) return buildDefaultLayout(monitorVisibleIds, monitorSizeMap)
+
+    const salvo = new Map(monitorLayout.map((l) => [l.i, l]))
+    const faltantes = monitorVisibleIds.filter((id) => !salvo.has(id))
+    if (faltantes.length === 0) {
+      return monitorVisibleIds.map((id) => salvo.get(id)!)
+    }
+
+    // Card novo (ex.: "Por subsetor" reexibido) entra abaixo do que já existe,
+    // para não cair em cima de nada que o gestor arrumou.
+    let base = monitorLayout.reduce((m, l) => Math.max(m, l.y + l.h), 0)
+    return monitorVisibleIds.map((id) => {
+      const existente = salvo.get(id)
+      if (existente) return existente
+      const tamanho = monitorSizeMap[id] || { w: 6, h: 4 }
+      const item = { i: id, x: 0, y: base, w: tamanho.w, h: tamanho.h }
+      base += tamanho.h
+      return item
+    })
+  }, [monitorLayout, monitorVisibleIds, monitorSizeMap])
+
+  const monitorEffectiveLayout = useMemo(
+    () => monitorBaseLayout.map((l) => (
+      monitorCollapsed[l.i] ? { ...l, h: MONITOR_COLLAPSED_H, isResizable: false } : l
+    )),
+    [monitorBaseLayout, monitorCollapsed],
+  )
+
+  const handleMonitorLayoutChange = (atual: Layout[]) => {
+    // Mesma armadilha do relatório: a grade avisa a posição na montagem, antes
+    // de o storage ter sido lido. Gravar aí apagava o arranjo do gestor.
+    if (!monitorLayoutRestaurado) return
+    // Não persiste a altura reduzida de um card minimizado: ao expandir, ele
+    // voltaria com uma linha de altura.
+    const anterior = new Map(monitorBaseLayout.map((l) => [l.i, l]))
+    const merged = atual.map((l) => (
+      monitorCollapsed[l.i] ? { ...l, h: anterior.get(l.i)?.h ?? l.h } : l
+    ))
+    // A grade só relata o que está em tela, e a visibilidade do segundo card
+    // chega depois do layout — ela depende dos subsetores virem do servidor.
+    // Sem guardar a posição do card oculto, esse instante o apagava do arranjo
+    // e ele reaparecia no rodapé assim que a preferência era lida.
+    const emTela = new Set(merged.map((l) => l.i))
+    const ocultos = (monitorLayout || []).filter((l) => !emTela.has(l.i))
+    const proximo = [...merged, ...ocultos]
+    setMonitorLayout(proximo)
+    try { window.localStorage.setItem(MONITOR_LAYOUT_STORAGE_KEY, JSON.stringify(proximo)) } catch {}
+  }
+
+  const toggleMonitorCollapse = (id: string) => {
+    setMonitorCollapsed((anterior) => {
+      const proximo = { ...anterior, [id]: !anterior[id] }
+      try { window.localStorage.setItem(MONITOR_COLLAPSED_STORAGE_KEY, JSON.stringify(proximo)) } catch {}
+      return proximo
+    })
+  }
+
+  const monitorWidget = (id: string) => ({
+    editMode: monitorEditMode,
+    label: MONITOR_CARDS.find((c) => c.id === id)?.label || id,
+    collapsed: !!monitorCollapsed[id],
+    onToggleCollapse: () => toggleMonitorCollapse(id),
+  })
+
+  /**
+   * Restaurar padrão do Monitoramento — mesmo alcance do relatório.
+   *
+   * Antes só limpava posições e recolhidos, e a tela continuava fora do padrão:
+   * a proporção da linha 1 e o segundo card ficam noutra chave
+   * (`lateralStorageKey`), então sobreviviam ao reset e o gestor não tinha como
+   * voltar ao arranjo do time sem mexer card a card.
+   *
+   * O subsetor escolhido em cada card NÃO volta: é filtro de dado, não arranjo
+   * — perder o recorte de Suporte/Prime num clique de "restaurar layout" seria
+   * apagar justamente a configuração que o gestor montou.
+   */
+  /**
+   * Aplica a proporção da linha 1 escrevendo no layout, e não numa classe.
+   *
+   * Só mexe em largura e x dos dois cards de tempo real; altura e o resto da
+   * grade ficam como estavam. Sem layout salvo, parte do arranjo padrão — senão
+   * o primeiro clique não teria em cima do que trabalhar.
+   */
+  const aplicarProporcaoLinha1 = (chave: ProporcaoLinha1) => {
+    setProporcaoLinha1(chave)
+    const [larguraPrincipal, larguraSecundario] = LARGURA_LINHA1[chave]
+    setMonitorLayout((atual) => {
+      const base = atual || buildDefaultLayout(monitorVisibleIds, monitorSizeMap)
+      const proximo = base.map((item) => {
+        if (item.i === 'tempoReal') return { ...item, x: 0, w: larguraPrincipal }
+        if (item.i === 'porSubsetor') return { ...item, x: larguraPrincipal, w: larguraSecundario }
+        return item
+      })
+      try {
+        window.localStorage.setItem(MONITOR_LAYOUT_STORAGE_KEY, JSON.stringify(proximo))
+      } catch { /* navegador sem storage não impede ajustar em tela */ }
+      return proximo
+    })
+  }
+
+  /**
+   * Volta ao arranjo padrão do estado ATUAL do segundo card.
+   *
+   * Antes isto forçava o segundo card a aparecer, então quem o tinha desligado
+   * clicava em "restaurar" e recebia o arranjo de duas colunas de volta —
+   * ligando um card que não havia pedido. Mostrar ou não o segundo card é
+   * escolha do gestor, não parte do arranjo: o botão devolve as posições e
+   * tamanhos, e o padrão que se aplica é o do estado em que a tela está.
+   */
+  const resetarLayoutMonitor = () => {
+    setMonitorLayout(null)
+    setMonitorCollapsed({})
+    setProporcaoLinha1('equilibrado')
+    try {
+      window.localStorage.removeItem(MONITOR_LAYOUT_STORAGE_KEY)
+      window.localStorage.removeItem(MONITOR_COLLAPSED_STORAGE_KEY)
+    } catch { /* navegador sem storage não impede o reset em tela */ }
+    // A chave lateral guarda proporção e visibilidade junto do subsetor; o
+    // efeito que a persiste reescreve com os valores novos.
+  }
 
   const realtimeStats = useMemo(() => {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
@@ -4465,6 +5081,105 @@ const saveConfig = async () => {
                     <span className="text-xs font-medium text-muted-foreground">Ao vivo</span>
                   </div>
                 </div>
+
+                {/* Um botão só. O modo de arrastar mora dentro dele: eram três
+                    controles para a mesma coisa — arranjo da tela — e o
+                    cabeçalho é do monitoramento, não da personalização.
+                    O popover é incondicional de propósito: preso ao
+                    `opcoesSubsetorTempoReal`, um setor sem subsetor ficava sem
+                    NENHUM acesso a ajustar tamanho ou restaurar padrão. */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant={monitorEditMode ? 'default' : 'outline'}
+                      size="sm"
+                      className="h-9 gap-1.5"
+                    >
+                      <Settings className="h-3.5 w-3.5" />
+                      Personalizar
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-80">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium">Arranjo da tela</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1.5 text-xs text-muted-foreground"
+                        onClick={resetarLayoutMonitor}
+                        title="Voltar ao arranjo padrão: posições, tamanhos e largura"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Restaurar padrão
+                      </Button>
+                    </div>
+
+                    <label className="mt-3 flex items-center justify-between gap-3">
+                      <span className="text-sm">
+                        Mover e redimensionar
+                        <span className="mt-0.5 block text-xs text-muted-foreground">
+                          Arraste pelo punho e use o canto do card.
+                        </span>
+                      </span>
+                      <Switch
+                        checked={monitorEditMode}
+                        onCheckedChange={setMonitorEditMode}
+                        aria-label="Mover e redimensionar os cards"
+                      />
+                    </label>
+
+                    {opcoesSubsetorTempoReal.length > 0 && (
+                      <>
+                        <div className="my-4 border-t" />
+
+                        <p className="text-sm font-medium">Largura dos cards</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Divide o espaço entre os dois cards de tempo real.
+                        </p>
+
+                        <div className="mt-3 grid grid-cols-3 gap-1.5">
+                          {(Object.keys(LARGURA_LINHA1) as ProporcaoLinha1[]).map((chave) => (
+                            <Button
+                              key={chave}
+                              variant={proporcaoLinha1 === chave ? 'default' : 'outline'}
+                              size="sm"
+                              className="h-auto whitespace-normal px-2 py-1.5 text-[11px] leading-tight"
+                              onClick={() => aplicarProporcaoLinha1(chave)}
+                            >
+                              {ROTULO_PROPORCAO[chave]}
+                            </Button>
+                          ))}
+                        </div>
+
+                        <div className="my-4 border-t" />
+
+                        <p className="text-sm font-medium">Segundo card de tempo real</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Uma segunda cópia do card, com seu próprio filtro de subsetor.
+                        </p>
+
+                        <label className="mt-4 flex items-center justify-between gap-3">
+                          <span className="text-sm">Mostrar segundo card</span>
+                          <Switch
+                            checked={painelSubsetorVisivel}
+                            onCheckedChange={(marcado) => {
+                              setPainelSubsetorVisivel(marcado)
+                              // Ligar ou desligar o segundo card reorganiza a
+                              // primeira linha inteira. Sem voltar ao padrão do
+                              // novo estado, o card reexibido caía no rodapé e o
+                              // desligado deixava metade da linha vazia.
+                              setMonitorLayout(null)
+                              try {
+                                window.localStorage.removeItem(MONITOR_LAYOUT_STORAGE_KEY)
+                              } catch { /* navegador sem storage não impede ajustar em tela */ }
+                            }}
+                            aria-label="Mostrar segundo card de tempo real"
+                          />
+                        </label>
+                      </>
+                    )}
+                  </PopoverContent>
+                </Popover>
               </div>
 
               {/* Quick Filters */}
@@ -4490,113 +5205,50 @@ const saveConfig = async () => {
                 </div>
               )}
 
-              {/* Stats Cards Row 1 */}
-              <div className="grid gap-4 grid-cols-1 lg:grid-cols-[2fr_1fr]">
-                {/* Atendimentos em tempo real */}
-                <Card className="glass-card-elevated rounded-lg border-l-4 border-l-primary">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                      <Activity className="h-4 w-4 text-primary" aria-hidden="true" />
-                      Atendimentos em tempo real
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/80 bg-border/80 sm:grid-cols-4">
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Activity className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                          <span>Total ativos</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground tabular-nums">
-                          {realtimeStats.total}
-                        </p>
-                      </div>
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Inbox className="h-3.5 w-3.5 shrink-0 text-orange-500" aria-hidden="true" />
-                          <span>Na fila</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-orange-500 tabular-nums">
-                          {realtimeStats.naFila}
-                        </p>
-                      </div>
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <Headphones className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-                          <span>Em atendimento</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-primary tabular-nums">
-                          {realtimeStats.emAtendimento}
-                        </p>
-                      </div>
-                      <div className="min-w-0 bg-background/60 px-3 py-3">
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <CheckCircle className="h-3.5 w-3.5 shrink-0 text-green-500" aria-hidden="true" />
-                          <span>Finalizados hoje</span>
-                        </div>
-                        <p className="mt-2 text-2xl font-semibold tracking-tight text-green-500 tabular-nums">
-                          {realtimeStats.finalizadosHoje}
-                        </p>
-                      </div>
-                    </div>
+              {/* O "Concluir" vive aqui porque o botão que ligou o modo saiu do
+                  cabeçalho: sem isto, sair exigiria reabrir o Personalizar. */}
+              {monitorEditMode && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                  <span>
+                    Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior-direito para redimensionar.
+                  </span>
+                  <Button size="sm" className="h-7 shrink-0 text-xs" onClick={() => setMonitorEditMode(false)}>
+                    Concluir
+                  </Button>
+                </div>
+              )}
 
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(190px,0.8fr)]">
-                      <section
-                        className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3"
-                        aria-label="Maiores esperas atuais"
-                      >
-                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          <Timer className="h-3.5 w-3.5" aria-hidden="true" />
-                          <span>Maiores esperas atuais</span>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 divide-x divide-border/70">
-                          <div className="min-w-0 pr-3">
-                            <p className="whitespace-nowrap text-lg font-semibold tracking-tight text-foreground tabular-nums">
-                              {realtimeStats.tempoMaximoFila}
-                            </p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">Na fila</p>
-                          </div>
-                          <div className="min-w-0 pl-3">
-                            <p className="whitespace-nowrap text-lg font-semibold tracking-tight text-foreground tabular-nums">
-                              {realtimeStats.tempoMaximoResposta}
-                            </p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">Sem 1ª resposta</p>
-                          </div>
-                        </div>
-                      </section>
+              <ResponsiveReactGridLayout
+                layouts={{ lg: monitorEffectiveLayout }}
+                breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+                cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+                rowHeight={64}
+                margin={[16, 16]}
+                isDraggable={monitorEditMode}
+                isResizable={monitorEditMode}
+                draggableHandle=".report-drag-handle"
+                resizeHandles={['se']}
+                onLayoutChange={(_cur, all) => handleMonitorLayoutChange(all.lg || _cur)}
+              >
+                <div key="tempoReal" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('tempoReal')}>
+                <CardAtendimentosTempoReal
+                  resumo={resumoCardPrincipal}
+                  workload={cargaCardPrincipal}
+                  tomCarga={WORKLOAD_OS_TONES[cargaCardPrincipal.level]}
+                  tempoMaximoFila={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaFilaMs)}
+                  tempoMaximoResposta={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaRespostaMs)}
+                  fila={filaCardPrincipal}
+                  episodios={episodiosPrincipal}
+                  opcoes={opcoesSubsetorTempoReal}
+                  subsetorSelecionado={subsetorCardPrincipal}
+                  aoTrocarSubsetor={setSubsetorCardPrincipal}
+                />
+                </ReportWidget>
+                </div>
 
-                      <section
-                        className={cn('rounded-lg border px-4 py-3', workloadTone.badge)}
-                        title={`${realtimeStats.total} tickets ativos ÷ ${realtimeStats.onlineAttendants} atendentes online compatíveis`}
-                        aria-label={realtimeStats.workload.ratio === null
-                          ? `${realtimeStats.workload.label}: ${realtimeStats.total} tickets ativos e nenhum atendente online compatível`
-                          : `${realtimeStats.workload.formattedRatio} tickets por atendente online: ${realtimeStats.workload.label}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                            <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
-                            <span>Carga por atendente</span>
-                          </div>
-                          <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', workloadTone.badge)}>
-                            {realtimeStats.workload.label}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 flex items-end justify-between gap-3">
-                          <div>
-                            <p className={cn('text-2xl font-semibold tracking-tight tabular-nums', workloadTone.value)}>
-                              {realtimeStats.workload.formattedRatio}
-                            </p>
-                            <p className="text-xs text-muted-foreground">Média/OS</p>
-                          </div>
-                          <p className="pb-0.5 text-right text-[11px] leading-tight text-muted-foreground tabular-nums">
-                            {realtimeStats.onlineAttendants} online
-                          </p>
-                        </div>
-                      </section>
-                    </div>
-                  </CardContent>
-                </Card>
-
+                <div key="statusAtendentes" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('statusAtendentes')}>
                 {/* Status dos atendentes */}
                 <Card className="glass-card-elevated flex flex-col rounded-lg">
                   <CardHeader className="pb-2 flex flex-row items-center justify-between">
@@ -4638,12 +5290,36 @@ const saveConfig = async () => {
                     </div>
                   </CardContent>
                 </Card>
-              </div>
 
-              {/* Stats Cards Row 2 */}
-              <div className="grid gap-4 lg:grid-cols-2">
-{/* Atendimento hoje */}
-              <Card className="glass-card-elevated rounded-lg">
+                </ReportWidget>
+                </div>
+
+                {opcoesSubsetorTempoReal.length > 0 && painelSubsetorVisivel && (
+                <div key="porSubsetor" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('porSubsetor')}>
+                  {/* Mesmo componente do card acima: o gestor mantém um com o
+                      setor inteiro e outro recortado, sem risco de os dois
+                      divergirem na apresentação. */}
+                  <CardAtendimentosTempoReal
+                    resumo={resumoCardSecundario}
+                    workload={cargaCardSecundario}
+                    tomCarga={WORKLOAD_OS_TONES[cargaCardSecundario.level]}
+                    tempoMaximoFila={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaFilaMs)}
+                    tempoMaximoResposta={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaRespostaMs)}
+                    fila={filaCardSecundario}
+                    episodios={episodiosSecundario}
+                    opcoes={opcoesSubsetorTempoReal}
+                    subsetorSelecionado={subsetorCardSecundario}
+                    aoTrocarSubsetor={setSubsetorCardSecundario}
+                  />
+                </ReportWidget>
+                </div>
+                )}
+
+                <div key="atendimentoHoje" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('atendimentoHoje')}>
+              {/* Atendimento hoje */}
+              <Card className="glass-card-elevated h-full overflow-auto rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Atendimento hoje
@@ -4671,8 +5347,15 @@ const saveConfig = async () => {
                 </CardContent>
               </Card>
 
+                </ReportWidget>
+                </div>
+
+                <div key="statusTickets" className="overflow-hidden">
+                <ReportWidget {...monitorWidget('statusTickets')}>
+
+
 {/* Status dos tickets hoje */}
-              <Card className="glass-card-elevated rounded-lg">
+              <Card className="glass-card-elevated h-full overflow-auto rounded-lg">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Status dos tickets hoje
@@ -4697,9 +5380,12 @@ const saveConfig = async () => {
                       <p className="text-xs text-muted-foreground">Fechados</p>
                     </div>
                   </div>
+
                 </CardContent>
               </Card>
-            </div>
+                </ReportWidget>
+                </div>
+              </ResponsiveReactGridLayout>
 
             {/* Monitoramento Detalhado - Blip Style */}
             <Card className="glass-card-elevated rounded-lg">
@@ -5226,18 +5912,20 @@ const saveConfig = async () => {
                     <span>Resultados por página:</span>
                     <Select
                       value={String(monitoringPageSize)}
-                      onValueChange={(value) => {
-                        setMonitoringPageSize(Number(value))
-                        setMonitoringPage(1)
-                      }}
+                      onValueChange={(value) => escolherPageSize(
+                        value,
+                        setMonitoringPageSize,
+                        () => setMonitoringPage(1),
+                        MONITOR_PAGE_SIZE_STORAGE_KEY,
+                      )}
                     >
-                      <SelectTrigger className="h-8 w-16" aria-label="Resultados por página do monitoramento">
+                      <SelectTrigger className="h-8 w-[4.5rem]" aria-label="Resultados por página do monitoramento">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="5">5</SelectItem>
-                        <SelectItem value="10">10</SelectItem>
-                        <SelectItem value="20">20</SelectItem>
+                        {PAGE_SIZE_OPTIONS.map((tamanho) => (
+                          <SelectItem key={tamanho} value={String(tamanho)}>{tamanho}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -5469,12 +6157,58 @@ const saveConfig = async () => {
                   ))}
                 </SelectContent>
               </Select>
-              {(relatorioAtendente !== 'all' || relatorioCanal !== 'all') && (
+              {relatorioSubsetorOptions.length > 0 && (
+                <Select
+                  value={relatorioSubsetor}
+                  onValueChange={setRelatorioSubsetor}
+                  disabled={comparandoSubsetores}
+                >
+                  <SelectTrigger className="h-9 w-[190px] text-sm" aria-label="Subsetor">
+                    <SelectValue placeholder="Subsetor" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos os subsetores</SelectItem>
+                    {relatorioSubsetorOptions.map((sub) => (
+                      <SelectItem key={sub.id} value={sub.id}>{sub.nome}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
+              {/* A comparação precisa de pelo menos dois subsetores para fazer sentido. */}
+              {relatorioSubsetorOptions.length >= 2 && (
+                <Button
+                  variant={comparandoSubsetores ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => {
+                    setComparandoSubsetores((ativo) => {
+                      const proximo = !ativo
+                      if (proximo) {
+                        // Começa com os dois primeiros para a tela já nascer útil.
+                        setSubsetorEsquerda(relatorioSubsetorOptions[0].id)
+                        setSubsetorDireita(relatorioSubsetorOptions[1].id)
+                        setRelatorioSubsetor('all')
+                      }
+                      return proximo
+                    })
+                  }}
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  {comparandoSubsetores ? 'Sair da comparação' : 'Comparar subsetores'}
+                </Button>
+              )}
+
+              {(relatorioAtendente !== 'all' || relatorioCanal !== 'all' || relatorioSubsetor !== 'all') && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-9 gap-1.5 text-muted-foreground"
-                  onClick={() => { setRelatorioAtendente('all'); setRelatorioCanal('all') }}
+                  onClick={() => {
+                    setRelatorioAtendente('all')
+                    setRelatorioCanal('all')
+                    setRelatorioSubsetor('all')
+                  }}
                 >
                   <X className="h-3.5 w-3.5" />
                   Limpar filtros
@@ -5490,7 +6224,23 @@ const saveConfig = async () => {
                 Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior‑direito para redimensionar. Clique em <strong>Concluir</strong> para fixar.
               </div>
             )}
+            {/* Comparação substitui a grade em vez de conviver com ela: os cards
+                mostram o setor inteiro, e ver os dois números juntos na mesma
+                tela induziria a ler um pelo outro. */}
+            {comparandoSubsetores && (
+              <ComparacaoSubsetores
+                opcoes={relatorioSubsetorOptions}
+                esquerda={subsetorEsquerda}
+                direita={subsetorDireita}
+                aoTrocarEsquerda={setSubsetorEsquerda}
+                aoTrocarDireita={setSubsetorDireita}
+                indicadoresEsquerda={indicadoresEsquerda}
+                indicadoresDireita={indicadoresDireita}
+              />
+            )}
+
             {/* ===== Relatórios — cartões (fixos; editáveis no modo Personalizar) ===== */}
+            {!comparandoSubsetores && (
             <ResponsiveReactGridLayout
               layouts={{ lg: effectiveLgLayout }}
               breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
@@ -5827,6 +6577,128 @@ const saveConfig = async () => {
                     )}
                   </CardContent>
                 </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Saúde da fila — quantos clientes passaram do limite no período */}
+            {visibleCards.saudeFila && (
+            <div key="saudeFila" className="overflow-hidden">
+            <ReportWidget {...wprops('saudeFila')}>
+              <Card className="glass-card-elevated flex h-full flex-col rounded-lg">
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                    <Timer className="h-4 w-4" aria-hidden="true" />
+                    Saúde da fila
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Fila a partir de {LIMITE_FILA_MIN} min · SLA em {LIMITE_SLA_MIN} min.
+                  </p>
+                </CardHeader>
+                <CardContent className="flex flex-1 flex-col justify-between gap-4">
+                  <div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className={cn('text-3xl font-semibold tabular-nums', TOM_SAUDE[faixaDeSaude(resumoFilaPeriodo.saudePercentual)].texto)}>
+                        {resumoFilaPeriodo.saudePercentual}%
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {resumoFilaPeriodo.dentroDoSla} de {resumoFilaPeriodo.total} no SLA
+                      </p>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={cn('h-full rounded-full transition-all', TOM_SAUDE[faixaDeSaude(resumoFilaPeriodo.saudePercentual)].barra)}
+                        style={{ width: `${resumoFilaPeriodo.saudePercentual}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
+                      <p className="text-2xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
+                        {resumoFilaPeriodo.entraramNaFila}
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Entraram na fila
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
+                      <p className="text-2xl font-semibold tabular-nums text-foreground">
+                        {resumoFilaPeriodo.picoSimultaneo}
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">Pico simultâneo</p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground tabular-nums">
+                      {resumoFilaPeriodo.acimaDoSla}
+                    </span>
+                    {' '}passaram do SLA de {LIMITE_SLA_MIN} min.
+                  </p>
+                </CardContent>
+              </Card>
+            </ReportWidget>
+            </div>
+            )}
+
+            {/* Maior espera do período */}
+            {visibleCards.maiorEspera && (
+            <div key="maiorEspera" className="overflow-hidden">
+            <ReportWidget {...wprops('maiorEspera')}>
+              <Card className="glass-card-elevated flex h-full flex-col rounded-lg">
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                    <Timer className="h-4 w-4" aria-hidden="true" />
+                    Maior espera do período
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Da criação até a primeira resposta.
+                  </p>
+                </CardHeader>
+                <CardContent className="flex flex-1 flex-col justify-center gap-3">
+                  {resumoFilaPeriodo.maiorEspera ? (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <p className="text-3xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
+                          {formatarEsperaLonga(resumoFilaPeriodo.maiorEspera.esperaMs)}
+                        </p>
+                        {resumoFilaPeriodo.maiorEspera.emAndamento && (
+                          <Badge variant="outline" className="h-5 border-red-500/40 px-1.5 text-[10px] text-red-600 dark:text-red-400">
+                            ainda esperando
+                          </Badge>
+                        )}
+                      </div>
+                      <dl className="space-y-1 text-sm">
+                        <div className="flex gap-2">
+                          <dt className="font-medium text-foreground">Ticket:</dt>
+                          <dd className="text-muted-foreground tabular-nums">
+                            {resumoFilaPeriodo.maiorEspera.ticket ?? '—'}
+                          </dd>
+                        </div>
+                        <div className="flex min-w-0 gap-2">
+                          <dt className="shrink-0 font-medium text-foreground">Cliente:</dt>
+                          <dd className="truncate text-muted-foreground">
+                            {resumoFilaPeriodo.maiorEspera.cliente || 'Cliente desconhecido'}
+                          </dd>
+                        </div>
+                        <div className="flex gap-2">
+                          <dt className="shrink-0 font-medium text-foreground">Entrada:</dt>
+                          <dd className="text-muted-foreground tabular-nums">
+                            {resumoFilaPeriodo.maiorEspera.entradaISO
+                              ? new Date(resumoFilaPeriodo.maiorEspera.entradaISO).toLocaleString('pt-BR')
+                              : '—'}
+                          </dd>
+                        </div>
+                      </dl>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Nenhum atendimento no período selecionado.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
             </ReportWidget>
             </div>
             )}
@@ -6376,6 +7248,7 @@ const saveConfig = async () => {
             )}
 
             </ResponsiveReactGridLayout>
+            )}
         </div>
       )}
 
@@ -6673,18 +7546,20 @@ const saveConfig = async () => {
                 <span>Resultados por página:</span>
                 <Select
                   value={String(attendantsPageSize)}
-                  onValueChange={(value) => {
-                    setAttendantsPageSize(Number(value))
-                    setAttendantsPage(1)
-                  }}
+                  onValueChange={(value) => escolherPageSize(
+                    value,
+                    setAttendantsPageSize,
+                    () => setAttendantsPage(1),
+                    ATENDENTES_PAGE_SIZE_STORAGE_KEY,
+                  )}
                 >
-                  <SelectTrigger className="h-8 w-16" aria-label="Resultados por página de atendentes">
+                  <SelectTrigger className="h-8 w-[4.5rem]" aria-label="Resultados por página de atendentes">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="5">5</SelectItem>
-                    <SelectItem value="10">10</SelectItem>
-                    <SelectItem value="20">20</SelectItem>
+                    {PAGE_SIZE_OPTIONS.map((tamanho) => (
+                      <SelectItem key={tamanho} value={String(tamanho)}>{tamanho}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

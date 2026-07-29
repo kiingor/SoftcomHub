@@ -1,4 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
+import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
@@ -346,6 +348,7 @@ async function tryAssignTicket(
     const assigned = (result as any)?.assigned === true
 
     if (assigned) {
+      await marcarSaidaDaFila(supabase, ticketId)
       logAssignment(
         ticketId,
         candidate.id,
@@ -602,7 +605,12 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
             .from('tickets')
             .update({
               setor_id: receptorId,
-              subsetor_id: null,
+              // O subsetor da origem não existe no destino, mas entregar `null`
+              // deixava o ticket órfão: no passe compatível ele só casa com
+              // atendente sem vínculo de subsetor. Agora cai no padrão do
+              // destino — e volta a `null` quando o destino não tem padrão
+              // seguro, que é o comportamento antigo.
+              subsetor_id: await resolverSubsetorPadrao(supabase, receptorId),
               transbordo_hops: currentHops + 1,
             })
             .eq('id', ticketId)

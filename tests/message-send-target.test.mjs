@@ -7,6 +7,7 @@ import {
   isTicketReplySenderAllowed,
   readResponseBodyWithLimit,
   resolvePersistedRecipient,
+  resolveReplyQuote,
   selectAuthorizedTicketChannel,
   selectRequestedActiveChannel,
   validateOutboundMediaUrl,
@@ -345,4 +346,35 @@ test('rejects media immediately when content-length exceeds the limit', async ()
   const result = await readResponseBodyWithLimit(response, 10)
 
   assert.equal(result, null)
+})
+
+test('quotes the parent message when it carries a provider id', () => {
+  const result = resolveReplyQuote({ whatsapp_message_id: 'wamid.ABC' })
+
+  assert.deepEqual(result, { ok: true, providerMessageId: 'wamid.ABC' })
+})
+
+test('sends without a quote when the parent has no provider id', () => {
+  // Mensagens do Nexus (cliente-nexus/bot-nexus) nunca têm whatsapp_message_id.
+  // Antes isso devolvia 422 e a mensagem encalhava em "falhou", porque o retry
+  // reenviava a mesma citação.
+  const result = resolveReplyQuote({ whatsapp_message_id: null })
+
+  assert.deepEqual(result, { ok: true, providerMessageId: null })
+})
+
+test('rejects a reply whose parent is not in the ticket', () => {
+  // A consulta já filtra por ticket_id e REPLYABLE_TICKET_SENDERS, então não
+  // achar o pai significa citação de outro ticket ou remetente não citável.
+  const result = resolveReplyQuote(null)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'REPLY_MESSAGE_INVALID')
+})
+
+test('rejects a reply when the parent lookup itself failed', () => {
+  const result = resolveReplyQuote({ whatsapp_message_id: 'wamid.ABC' }, true)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'REPLY_MESSAGE_INVALID')
 })

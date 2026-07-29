@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { processTicketQueue } from '@/lib/ticket-queue-processor'
+import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
 import { canTransferTicket, isTransferTargetAvailable } from '@/lib/transfer-authorization'
 
 const transferRequestSchema = z.object({
@@ -321,6 +322,11 @@ export async function POST(request: Request) {
     }
 
     if (targetColaborador) {
+      // Transferir direto para um atendente também tira o cliente da fila. O
+      // helper só grava quando ainda está vazio, então transferência de ticket
+      // já atribuído não reescreve a espera original.
+      await marcarSaidaDaFila(supabase, ticket.id)
+
       const { error: receivedAtError } = await supabase
         .from('colaboradores')
         .update({ last_ticket_received_at: new Date().toISOString() })

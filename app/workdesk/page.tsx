@@ -55,6 +55,7 @@ import {
   Ticket,
   Hash,
   Download,
+  ExternalLink,
   Music,
   Play,
   FileIcon,
@@ -107,6 +108,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Checkbox } from '@/components/ui/checkbox'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
+import { getFileDownloadUrl, isViewableInBrowser } from '@/lib/anexo-url'
 import { isConteudoProtocolo } from '@/lib/mensagem-conteudo'
 import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/cliente-softcom'
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
@@ -460,19 +462,6 @@ function getFileInfo(ext: string, mediaType?: string | null) {
   return { icon: FileIcon, label: e.toUpperCase() || 'Arquivo', color: 'text-muted-foreground', bg: 'bg-muted/50', border: 'border-border' }
 }
 
-function getFileDownloadUrl(url: string) {
-  try {
-    const downloadUrl = new URL(url)
-
-    if (downloadUrl.hostname.endsWith('.blob.vercel-storage.com')) {
-      downloadUrl.searchParams.set('download', '1')
-    }
-
-    return downloadUrl.toString()
-  } catch {
-    return url
-  }
-}
 
 function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, setorId, setorIAAtivo, onTranscricao }: MessageMediaProps) {
   const urlLower = url.toLowerCase().split('?')[0]
@@ -574,24 +563,49 @@ function MessageMedia({ url, mediaType, tipo, conteudo, isOutgoing, mensagemId, 
     )
   }
 
-  // Qualquer outro arquivo com URL → card de download
+  // Qualquer outro arquivo com URL → card de anexo
   const { icon: Icon, label, color, bg, border } = getFileInfo(ext, mediaType)
+  // O clique no card baixa; ao lado fica o atalho para abrir em outra guia, que
+  // é o que resolve consultar o documento sem perder o atendimento de vista. No
+  // PDF a ordem se inverte, porque ali ler é o uso normal. Os dois levam
+  // `target`, então nenhum anexo substitui a tela.
+  const leituraPrimeiro = isViewableInBrowser(ext, mediaType)
   return (
-    <a
-      href={getFileDownloadUrl(url)}
-      download={fileName}
+    <div
       className={cn(
-        'mb-2 flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors hover:opacity-80',
-        bg, border
+        'mb-2 flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors',
+        bg, border,
       )}
     >
-      <Icon className={cn('h-6 w-6 shrink-0', color)} />
-      <div className="flex flex-col min-w-0 flex-1">
-        <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
-        <span className="text-[10px] text-muted-foreground">{label} · Clique para baixar</span>
-      </div>
-      <Download className="h-4 w-4 text-muted-foreground shrink-0" />
-    </a>
+      <a
+        href={leituraPrimeiro ? url : getFileDownloadUrl(url)}
+        {...(leituraPrimeiro ? {} : { download: fileName })}
+        target="_blank"
+        rel="noreferrer"
+        className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer hover:opacity-80"
+      >
+        <Icon className={cn('h-6 w-6 shrink-0', color)} />
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="text-sm font-medium text-foreground truncate">{fileName}</span>
+          <span className="text-[10px] text-muted-foreground">
+            {label} · {leituraPrimeiro ? 'Clique para abrir' : 'Clique para baixar'}
+          </span>
+        </div>
+      </a>
+      <a
+        href={leituraPrimeiro ? getFileDownloadUrl(url) : url}
+        {...(leituraPrimeiro ? { download: fileName } : {})}
+        target="_blank"
+        rel="noreferrer"
+        title={leituraPrimeiro ? 'Baixar arquivo' : 'Abrir em nova guia'}
+        aria-label={leituraPrimeiro ? 'Baixar arquivo' : 'Abrir em nova guia'}
+        className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+      >
+        {leituraPrimeiro
+          ? <Download className="h-4 w-4" />
+          : <ExternalLink className="h-4 w-4" />}
+      </a>
+    </div>
   )
 }
 // ──────────────────────────────────────────────────────────────────────────────

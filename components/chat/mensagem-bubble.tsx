@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
+import { parseConteudoContato } from '@/lib/contato-vcard'
 import { isConteudoProtocolo } from '@/lib/mensagem-conteudo'
 import { cn, isBotMessage, isClientMessage } from '@/lib/utils'
 
@@ -49,9 +50,7 @@ export function isOutgoingMessage(remetente: string): boolean {
 }
 
 // ─── Contato compartilhado via WhatsApp (media_type === 'contact') ────────────
-// Suporta 2 formatos:
-//   1) API oficial (array): [{"name":{"formatted_name":"X"},"phones":[{"phone":"+55..."}]}]
-//   2) Evolution (vcard):   {"displayName":"X","vcard":"BEGIN:VCARD\n...END:VCARD"}
+// Os formatos aceitos estão documentados em `lib/contato-vcard.ts`.
 
 /** Heurística: detecta vCard quando o integrador não setou media_type. */
 export function isContactMessage(m: { media_type?: string | null; conteudo?: string | null }): boolean {
@@ -70,14 +69,6 @@ export function isContactMessage(m: { media_type?: string | null; conteudo?: str
   } catch {
     return false
   }
-}
-
-function parseVCard(vcard: string): { name: string; phone: string } {
-  const fnMatch = vcard.match(/FN[;:](.+)/i)
-  const name = fnMatch ? fnMatch[1].trim() : 'Sem nome'
-  const telMatch = vcard.match(/TEL[^:]*:([^\n]+)/i)
-  const phone = telMatch ? telMatch[1].trim() : ''
-  return { name, phone }
 }
 
 function copyText(text: string) {
@@ -102,30 +93,23 @@ function fallbackCopy(text: string) {
 export function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutgoing: boolean }) {
   const [copied, setCopied] = useState(false)
 
-  const contactList: { name: string; phone: string }[] = []
-  try {
-    const parsed = JSON.parse(conteudo)
-    const items = Array.isArray(parsed) ? parsed : [parsed]
-    for (const item of items) {
-      if (item.vcard) {
-        const vc = parseVCard(item.vcard)
-        contactList.push({ name: item.displayName || vc.name, phone: vc.phone })
-      } else if (item.name) {
-        const name = item.name?.formatted_name || item.name?.first_name || 'Sem nome'
-        const phones = item.phones || []
-        contactList.push({ name, phone: phones[0]?.phone || phones[0]?.wa_id || '' })
-      }
-    }
-  } catch {
+  const { contatos: contactList, texto } = parseConteudoContato(conteudo)
+
+  // Conteúdo que não é contato reconhecível cai no texto puro, em vez de sumir.
+  if (contactList.length === 0) {
     return <p className="text-sm whitespace-pre-wrap">{conteudo}</p>
   }
 
-  if (contactList.length === 0) return null
-
   return (
     <div className="space-y-2">
+      {/* O cliente costuma escrever antes e depois de anexar o contato — o
+          recado dele tem que continuar visível, não só o cartão. */}
+      {texto && <p className="text-sm whitespace-pre-wrap">{texto}</p>}
       {contactList.map((contact, idx) => {
-        const formattedPhone = contact.phone.startsWith('+') ? contact.phone : `+${contact.phone}`
+        // Sem telefone não monta "+" sozinho nem oferece o botão de copiar.
+        const formattedPhone = !contact.phone
+          ? ''
+          : contact.phone.startsWith('+') ? contact.phone : `+${contact.phone}`
 
         return (
           <div
@@ -145,10 +129,13 @@ export function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutg
               <p className={cn('text-sm font-semibold truncate', isOutgoing ? 'text-white' : 'text-foreground')}>
                 {contact.name}
               </p>
-              <p className={cn('text-xs truncate', isOutgoing ? 'text-white/70' : 'text-muted-foreground')}>
-                {formattedPhone}
-              </p>
+              {formattedPhone && (
+                <p className={cn('text-xs truncate', isOutgoing ? 'text-white/70' : 'text-muted-foreground')}>
+                  {formattedPhone}
+                </p>
+              )}
             </div>
+            {formattedPhone && (
             <button
               type="button"
               onClick={() => {
@@ -166,6 +153,7 @@ export function ContactCard({ conteudo, isOutgoing }: { conteudo: string; isOutg
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? 'Copiado!' : 'Copiar'}
             </button>
+            )}
           </div>
         )
       })}

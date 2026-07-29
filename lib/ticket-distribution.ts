@@ -1,4 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
+import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { escolherDestino, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
@@ -86,8 +88,13 @@ export async function criarEDistribuirTicket(
       ticketData.id = metadata.idempotency.ticketId
     }
 
-    if (subsetorId) {
-      ticketData.subsetor_id = subsetorId
+    // Sem subsetor informado, cai no padrão derivado do cadastro do setor.
+    // Ticket órfão só casa com atendente sem vínculo de subsetor no passe
+    // compatível — no ServiceDesk, 4 de 75 pessoas. Medido em 28/07/2026: 41%
+    // dos tickets do setor chegavam assim, e 98% em Suporte a Franquias.
+    const subsetorEfetivo = subsetorId || await resolverSubsetorPadrao(supabase, setorId)
+    if (subsetorEfetivo) {
+      ticketData.subsetor_id = subsetorEfetivo
     }
     const tipoAtendimento = metadata.tipoAtendimento?.trim()
     if (tipoAtendimento) {
@@ -348,6 +355,7 @@ export async function criarEDistribuirTicket(
 
           if (assigned) {
             assignedColaboradorId = candidate.id
+            await marcarSaidaDaFila(supabase, ticket.id)
 
             try {
               await supabase.from('ticket_assignment_logs').insert({
@@ -614,6 +622,7 @@ async function _tentarDistribuirNoSetor(
     const assigned = (result as any)?.assigned === true
 
     if (assigned) {
+      await marcarSaidaDaFila(supabase, ticketId)
       try {
         await supabase.from('ticket_assignment_logs').insert({
           ticket_id: ticketId,
@@ -847,6 +856,7 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const assigned = (result as any)?.assigned === true
 
         if (assigned) {
+          await marcarSaidaDaFila(supabase, ticket.id)
           // Atualiza os contadores em memória para a ordenação do PRÓXIMO ticket
           // deste mesmo lote. Sem incrementar `recebidosHojeMap` — que é o
           // critério de ordem — o lote inteiro iria para a mesma pessoa até ela

@@ -165,6 +165,52 @@ export interface ProcessDispatchResult {
   falhas: Array<{ telefone: string; motivo: string }>
 }
 
+/**
+ * Subsetor que o disparo herda de quem o criou.
+ *
+ * Só devolve quando a escolha é inequívoca — o criador ligado a exatamente um
+ * subsetor daquele setor. Com dois ou mais, preencher seria adivinhar o
+ * roteamento, mesma linha de `escolherSubsetorPadrao`.
+ */
+export function escolherSubsetorDoCriador(
+  subsetorIds: readonly (string | null | undefined)[],
+): string | null {
+  const unicos = new Set(subsetorIds.filter((id): id is string => Boolean(id)))
+  return unicos.size === 1 ? [...unicos][0] : null
+}
+
+/**
+ * Sem isto o ticket de disparo nascia sem subsetor sempre que o destino eram
+ * atendentes — 11.923 dos 11.931 tickets de disparo até 29/07/2026. Ticket órfão
+ * só casa com atendente sem vínculo de subsetor, então ele ficava fora da
+ * distribuição normal e dos filtros por subsetor.
+ */
+async function buscarSubsetoresDoCriador(
+  supabase: SupabaseClient,
+  setorId: string,
+  colaboradorId: string | null,
+): Promise<string[]> {
+  if (!colaboradorId) return []
+
+  // O teto é explícito porque é UM colaborador dentro de UM setor — são poucas
+  // linhas, 50 sobra. Sem limite, o corte silencioso de 1.000 do PostgREST
+  // passaria despercebido se o vínculo algum dia crescer.
+  const { data, error } = await supabase
+    .from('colaboradores_subsetores')
+    .select('subsetor_id, subsetores(ativo)')
+    .eq('colaborador_id', colaboradorId)
+    .eq('setor_id', setorId)
+    .limit(50)
+
+  // Falha aqui não pode derrubar o disparo: sem o vínculo, o ticket segue como
+  // era antes, sem subsetor.
+  if (error || !data) return []
+
+  return data
+    .filter((vinculo: any) => vinculo.subsetores?.ativo !== false)
+    .map((vinculo: any) => vinculo.subsetor_id as string)
+}
+
 export async function processarDisparoLote(
   params: ProcessDispatchParams,
 ): Promise<ProcessDispatchResult> {
@@ -184,6 +230,13 @@ export async function processarDisparoLote(
   let enviados = 0
   let falhados = 0
   const falhas: ProcessDispatchResult['falhas'] = []
+
+  // Resolvido uma vez: é o mesmo criador para todos os destinatários do lote.
+  const subsetorEscolhido = destinoTipo === 'subsetor' && subsetorId
+    ? subsetorId
+    : escolherSubsetorDoCriador(
+      await buscarSubsetoresDoCriador(supabase, setorId, colaboradorCriadorId),
+    )
 
   for (let i = 0; i < destinatarios.length; i++) {
     const dest = destinatarios[i]
@@ -211,7 +264,7 @@ export async function processarDisparoLote(
       disparo_lote_id: loteId,
     }
     if (colaboradorId) ticketData.colaborador_id = colaboradorId
-    if (destinoTipo === 'subsetor' && subsetorId) ticketData.subsetor_id = subsetorId
+    if (subsetorEscolhido) ticketData.subsetor_id = subsetorEscolhido
 
     const { data: ticket, error: ticketErr } = await supabase
       .from('tickets')

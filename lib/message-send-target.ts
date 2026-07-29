@@ -6,6 +6,10 @@ export type OutboundMediaUrlResult =
   | { ok: true; url: string }
   | { ok: false; code: 'MEDIA_URL_NOT_ALLOWED'; error: string }
 
+export type ReplyQuoteResult =
+  | { ok: true; providerMessageId: string | null }
+  | { ok: false; code: 'REPLY_MESSAGE_INVALID'; error: string }
+
 export const REPLYABLE_TICKET_SENDERS = [
   'cliente',
   'colaborador',
@@ -151,6 +155,35 @@ export function resolvePersistedRecipient(
   }
 
   return { ok: true, phone: authoritativePhone }
+}
+
+/**
+ * Decide se a mensagem citada pode virar quote no provedor.
+ *
+ * Não achar o pai é erro de verdade: quem consulta já restringe por `ticket_id`
+ * e por `REPLYABLE_TICKET_SENDERS`, então a ausência significa que a citação não
+ * é deste ticket ou aponta para um remetente não citável.
+ *
+ * Pai sem id do provedor é rotina, não erro: as mensagens do Nexus
+ * (`cliente-nexus`/`bot-nexus`) são gravadas 100% sem ele e 12% das do cliente
+ * também. Derrubar o envio nesse caso encalhava a mensagem em "falhou" para
+ * sempre, porque o retry reenvia a mesma citação — 6 de 6 falhas em 29/07/2026.
+ * Segue sem o quote: o WorkDesk continua exibindo o trecho citado, que ele monta
+ * a partir de `reply_to_message_id`, e só o app do cliente deixa de mostrá-lo.
+ */
+export function resolveReplyQuote(
+  parent: { whatsapp_message_id?: string | null } | null | undefined,
+  lookupFailed = false,
+): ReplyQuoteResult {
+  if (lookupFailed || !parent) {
+    return {
+      ok: false,
+      code: 'REPLY_MESSAGE_INVALID',
+      error: 'A mensagem respondida não pertence a este ticket',
+    }
+  }
+
+  return { ok: true, providerMessageId: parent.whatsapp_message_id || null }
 }
 
 export function selectRequestedActiveChannel<T>(
