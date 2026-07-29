@@ -1300,7 +1300,9 @@ function SetorPageInner() {
   // (setor inteiro); o segundo, no primeiro subsetor.
   const [subsetorCardPrincipal, setSubsetorCardPrincipal] = useState<string>(TODOS_SUBSETORES)
   const [subsetorCardSecundario, setSubsetorCardSecundario] = useState<string>('')
-  const [painelSubsetorVisivel, setPainelSubsetorVisivel] = useState(true)
+  // Nasce oculto: o segundo card de tempo real é um extra que o gestor liga no
+  // Personalizar quando quer acompanhar dois subsetores lado a lado.
+  const [painelSubsetorVisivel, setPainelSubsetorVisivel] = useState(false)
   const [proporcaoLinha1, setProporcaoLinha1] = useState<ProporcaoLinha1>('equilibrado')
 
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
@@ -2983,7 +2985,13 @@ function SetorPageInner() {
   // recriaria o array e o efeito de carga sobrescreveria a escolha do gestor.
   const chaveOpcoesSubsetor = opcoesSubsetorTempoReal.map((o) => o.id).join(',')
 
+  // v2: o segundo card passou a nascer OCULTO. A v1 o mostrava por padrão, e
+  // como a preferência é gravada assim que a tela abre, todo mundo tinha
+  // `visivel: true` guardado — mudar só o valor inicial não alcançaria ninguém.
   const lateralStorageKey = colaboradorLogado?.id && setorId
+    ? `setor-subsetores-lateral-v2:${setorId}:${colaboradorLogado.id}`
+    : null
+  const lateralStorageKeyV1 = colaboradorLogado?.id && setorId
     ? `setor-subsetores-lateral-v1:${setorId}:${colaboradorLogado.id}`
     : null
 
@@ -2992,6 +3000,12 @@ function SetorPageInner() {
     let salvo: { id?: string; principal?: string; visivel?: boolean; compacto?: boolean; proporcao?: string } | null = null
     try {
       salvo = JSON.parse(window.localStorage.getItem(lateralStorageKey) || 'null')
+      if (!salvo && lateralStorageKeyV1) {
+        // Migra o que o gestor escolheu — filtro dos cards e proporção da linha
+        // — e só reverte a visibilidade, que é o padrão que mudou.
+        const antigo = JSON.parse(window.localStorage.getItem(lateralStorageKeyV1) || 'null')
+        if (antigo) salvo = { ...antigo, visivel: false }
+      }
     } catch { /* preferência corrompida cai no padrão */ }
 
     // Subsetor apagado não pode deixar o painel preso num id morto.
@@ -3004,8 +3018,9 @@ function SetorPageInner() {
     setSubsetorCardSecundario(
       conhecido(salvo?.id) ? salvo!.id! : (opcoesSubsetorTempoReal[0]?.id || ''),
     )
-    // `!== false` e não `?? true`: preferência antiga sem o campo nasce visível.
-    setPainelSubsetorVisivel(salvo?.visivel !== false)
+    // `=== true` e não `!== false`: o segundo card só aparece quando o gestor
+    // pediu por ele no Personalizar. Sem preferência, nasce oculto.
+    setPainelSubsetorVisivel(salvo?.visivel === true)
     // Valor desconhecido (preferência antiga ou adulterada) cai no padrão em
     // vez de deixar o botão marcado numa proporção que não existe.
     setProporcaoLinha1(
