@@ -635,10 +635,45 @@ const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   statusTickets: { w: 3, h: 3 },
 }
 
+/**
+ * Arranjo padrão sem o segundo card de tempo real.
+ *
+ *   linha 1   tempoReal (8)        statusAtendentes (4, na mesma altura)
+ *   linha 2   atendimentoHoje (7)  statusTickets (5)
+ *
+ * Não basta esconder o `porSubsetor`: as larguras do caso com dois cards
+ * deixariam metade da primeira linha vazia. Aqui o card de tempo real ocupa a
+ * folga e o status dos atendentes sobe para o lado dele, com a mesma altura.
+ */
+const MONITOR_DEFAULT_SIZE_SEM_SEGUNDO: Record<string, { w: number; h: number }> = {
+  tempoReal: { w: 8, h: 6 },
+  atendimentoHoje: { w: 7, h: 3 },
+  statusAtendentes: { w: 4, h: 6 },
+  statusTickets: { w: 5, h: 3 },
+}
+
 // v2: a v1 nasceu com todos os cards empilhados em x=0. Trocar a chave dá a
 // todo mundo o arranjo corrigido, em vez de exigir "Restaurar padrão".
 const MONITOR_LAYOUT_STORAGE_KEY = 'setor-monitor-layout-v2'
 const MONITOR_COLLAPSED_STORAGE_KEY = 'setor-monitor-collapsed-v1'
+const MONITOR_PAGE_SIZE_STORAGE_KEY = 'setor-monitor-page-size-v1'
+const ATENDENTES_PAGE_SIZE_STORAGE_KEY = 'setor-atendentes-page-size-v1'
+
+/** Opções de "Resultados por página" das tabelas do setor. */
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const
+const PAGE_SIZE_PADRAO = 5
+
+/** Valor guardado só vale se for uma das opções — o resto cai no padrão. */
+function lerPageSizeSalvo(chave: string): number | null {
+  try {
+    const salvo = Number(window.localStorage.getItem(chave))
+    return PAGE_SIZE_OPTIONS.includes(salvo as typeof PAGE_SIZE_OPTIONS[number])
+      ? salvo
+      : null
+  } catch {
+    return null
+  }
+}
 const MONITOR_COLLAPSED_H = 1
 
 /**
@@ -1306,10 +1341,34 @@ function SetorPageInner() {
   const [proporcaoLinha1, setProporcaoLinha1] = useState<ProporcaoLinha1>('equilibrado')
 
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
-  const [monitoringPageSize, setMonitoringPageSize] = useState(5)
+  // Começam no padrão e são substituídos pelo valor salvo logo após a montagem:
+  // ler o storage no inicializador quebraria a renderização no servidor.
+  const [monitoringPageSize, setMonitoringPageSize] = useState<number>(PAGE_SIZE_PADRAO)
   const [monitoringPage, setMonitoringPage] = useState(1)
-  const [attendantsPageSize, setAttendantsPageSize] = useState(5)
+  const [attendantsPageSize, setAttendantsPageSize] = useState<number>(PAGE_SIZE_PADRAO)
   const [attendantsPage, setAttendantsPage] = useState(1)
+
+  useEffect(() => {
+    const monitoramento = lerPageSizeSalvo(MONITOR_PAGE_SIZE_STORAGE_KEY)
+    if (monitoramento) setMonitoringPageSize(monitoramento)
+    const atendentes = lerPageSizeSalvo(ATENDENTES_PAGE_SIZE_STORAGE_KEY)
+    if (atendentes) setAttendantsPageSize(atendentes)
+  }, [])
+
+  /** Troca o tamanho da página, guarda a escolha e volta para a primeira. */
+  const escolherPageSize = (
+    valor: string,
+    aplicar: (n: number) => void,
+    irParaPrimeira: () => void,
+    chave: string,
+  ) => {
+    const tamanho = Number(valor)
+    aplicar(tamanho)
+    irParaPrimeira()
+    try {
+      window.localStorage.setItem(chave, String(tamanho))
+    } catch { /* navegador sem storage não impede paginar */ }
+  }
   // Timestamp, não contador: o cálculo de tempo decorrido lê `monitoringTick`
   // direto como "agora" (ver uso em computePausaElapsedMs e no tempo de fila).
   const [monitoringTick, setTick] = useState(() => Date.now())
@@ -2358,8 +2417,13 @@ function SetorPageInner() {
     // não persiste a altura reduzida de cards minimizados (preserva a expandida)
     const prevById = new Map(baseLgLayout.map((l) => [l.i, l]))
     const merged = current.map((l) => (collapsedCards[l.i] ? { ...l, h: prevById.get(l.i)?.h ?? l.h } : l))
-    setSavedLgLayout(merged)
-    try { window.localStorage.setItem(RELATORIO_LAYOUT_STORAGE_KEY, JSON.stringify(merged)) } catch {}
+    // Card oculto no Personalizar não é relatado pela grade. Preservar a posição
+    // dele evita que volte para o rodapé quando for reexibido.
+    const emTela = new Set(merged.map((l) => l.i))
+    const ocultos = (savedLgLayout || []).filter((l) => !emTela.has(l.i))
+    const proximo = [...merged, ...ocultos]
+    setSavedLgLayout(proximo)
+    try { window.localStorage.setItem(RELATORIO_LAYOUT_STORAGE_KEY, JSON.stringify(proximo)) } catch {}
   }
   const wprops = (id: string) => ({
     editMode,
@@ -3078,12 +3142,18 @@ function SetorPageInner() {
       .map((card) => card.id as string)
   ), [opcoesSubsetorTempoReal.length, painelSubsetorVisivel])
 
+  // Com ou sem o segundo card a primeira linha se reorganiza inteira, então
+  // cada estado tem o seu próprio conjunto de larguras.
+  const monitorSizeMap = monitorVisibleIds.includes('porSubsetor')
+    ? MONITOR_DEFAULT_SIZE
+    : MONITOR_DEFAULT_SIZE_SEM_SEGUNDO
+
   const monitorBaseLayout = useMemo(() => {
     // Sem layout salvo, o arranjo vem do mesmo empacotador do relatório: cada
     // card vai para o vão mais alto disponível, então os que somam 12 colunas
     // ficam LADO A LADO. Posicionar tudo em x=0 empilhava a tela inteira numa
     // coluna só.
-    if (!monitorLayout) return buildDefaultLayout(monitorVisibleIds, MONITOR_DEFAULT_SIZE)
+    if (!monitorLayout) return buildDefaultLayout(monitorVisibleIds, monitorSizeMap)
 
     const salvo = new Map(monitorLayout.map((l) => [l.i, l]))
     const faltantes = monitorVisibleIds.filter((id) => !salvo.has(id))
@@ -3097,12 +3167,12 @@ function SetorPageInner() {
     return monitorVisibleIds.map((id) => {
       const existente = salvo.get(id)
       if (existente) return existente
-      const tamanho = MONITOR_DEFAULT_SIZE[id] || { w: 6, h: 4 }
+      const tamanho = monitorSizeMap[id] || { w: 6, h: 4 }
       const item = { i: id, x: 0, y: base, w: tamanho.w, h: tamanho.h }
       base += tamanho.h
       return item
     })
-  }, [monitorLayout, monitorVisibleIds])
+  }, [monitorLayout, monitorVisibleIds, monitorSizeMap])
 
   const monitorEffectiveLayout = useMemo(
     () => monitorBaseLayout.map((l) => (
@@ -3121,8 +3191,15 @@ function SetorPageInner() {
     const merged = atual.map((l) => (
       monitorCollapsed[l.i] ? { ...l, h: anterior.get(l.i)?.h ?? l.h } : l
     ))
-    setMonitorLayout(merged)
-    try { window.localStorage.setItem(MONITOR_LAYOUT_STORAGE_KEY, JSON.stringify(merged)) } catch {}
+    // A grade só relata o que está em tela, e a visibilidade do segundo card
+    // chega depois do layout — ela depende dos subsetores virem do servidor.
+    // Sem guardar a posição do card oculto, esse instante o apagava do arranjo
+    // e ele reaparecia no rodapé assim que a preferência era lida.
+    const emTela = new Set(merged.map((l) => l.i))
+    const ocultos = (monitorLayout || []).filter((l) => !emTela.has(l.i))
+    const proximo = [...merged, ...ocultos]
+    setMonitorLayout(proximo)
+    try { window.localStorage.setItem(MONITOR_LAYOUT_STORAGE_KEY, JSON.stringify(proximo)) } catch {}
   }
 
   const toggleMonitorCollapse = (id: string) => {
@@ -3163,7 +3240,7 @@ function SetorPageInner() {
     setProporcaoLinha1(chave)
     const [larguraPrincipal, larguraSecundario] = LARGURA_LINHA1[chave]
     setMonitorLayout((atual) => {
-      const base = atual || buildDefaultLayout(monitorVisibleIds, MONITOR_DEFAULT_SIZE)
+      const base = atual || buildDefaultLayout(monitorVisibleIds, monitorSizeMap)
       const proximo = base.map((item) => {
         if (item.i === 'tempoReal') return { ...item, x: 0, w: larguraPrincipal }
         if (item.i === 'porSubsetor') return { ...item, x: larguraPrincipal, w: larguraSecundario }
@@ -3176,11 +3253,19 @@ function SetorPageInner() {
     })
   }
 
+  /**
+   * Volta ao arranjo padrão do estado ATUAL do segundo card.
+   *
+   * Antes isto forçava o segundo card a aparecer, então quem o tinha desligado
+   * clicava em "restaurar" e recebia o arranjo de duas colunas de volta —
+   * ligando um card que não havia pedido. Mostrar ou não o segundo card é
+   * escolha do gestor, não parte do arranjo: o botão devolve as posições e
+   * tamanhos, e o padrão que se aplica é o do estado em que a tela está.
+   */
   const resetarLayoutMonitor = () => {
     setMonitorLayout(null)
     setMonitorCollapsed({})
     setProporcaoLinha1('equilibrado')
-    setPainelSubsetorVisivel(true)
     try {
       window.localStorage.removeItem(MONITOR_LAYOUT_STORAGE_KEY)
       window.localStorage.removeItem(MONITOR_COLLAPSED_STORAGE_KEY)
@@ -5022,7 +5107,7 @@ const saveConfig = async () => {
                         size="sm"
                         className="h-7 gap-1.5 text-xs text-muted-foreground"
                         onClick={resetarLayoutMonitor}
-                        title="Voltar ao arranjo padrão: posições, tamanhos, largura e segundo card"
+                        title="Voltar ao arranjo padrão: posições, tamanhos e largura"
                       >
                         <RotateCcw className="h-3.5 w-3.5" />
                         Restaurar padrão
@@ -5077,7 +5162,17 @@ const saveConfig = async () => {
                           <span className="text-sm">Mostrar segundo card</span>
                           <Switch
                             checked={painelSubsetorVisivel}
-                            onCheckedChange={setPainelSubsetorVisivel}
+                            onCheckedChange={(marcado) => {
+                              setPainelSubsetorVisivel(marcado)
+                              // Ligar ou desligar o segundo card reorganiza a
+                              // primeira linha inteira. Sem voltar ao padrão do
+                              // novo estado, o card reexibido caía no rodapé e o
+                              // desligado deixava metade da linha vazia.
+                              setMonitorLayout(null)
+                              try {
+                                window.localStorage.removeItem(MONITOR_LAYOUT_STORAGE_KEY)
+                              } catch { /* navegador sem storage não impede ajustar em tela */ }
+                            }}
                             aria-label="Mostrar segundo card de tempo real"
                           />
                         </label>
@@ -5817,18 +5912,20 @@ const saveConfig = async () => {
                     <span>Resultados por página:</span>
                     <Select
                       value={String(monitoringPageSize)}
-                      onValueChange={(value) => {
-                        setMonitoringPageSize(Number(value))
-                        setMonitoringPage(1)
-                      }}
+                      onValueChange={(value) => escolherPageSize(
+                        value,
+                        setMonitoringPageSize,
+                        () => setMonitoringPage(1),
+                        MONITOR_PAGE_SIZE_STORAGE_KEY,
+                      )}
                     >
-                      <SelectTrigger className="h-8 w-16" aria-label="Resultados por página do monitoramento">
+                      <SelectTrigger className="h-8 w-[4.5rem]" aria-label="Resultados por página do monitoramento">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="5">5</SelectItem>
-                        <SelectItem value="10">10</SelectItem>
-                        <SelectItem value="20">20</SelectItem>
+                        {PAGE_SIZE_OPTIONS.map((tamanho) => (
+                          <SelectItem key={tamanho} value={String(tamanho)}>{tamanho}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -7449,18 +7546,20 @@ const saveConfig = async () => {
                 <span>Resultados por página:</span>
                 <Select
                   value={String(attendantsPageSize)}
-                  onValueChange={(value) => {
-                    setAttendantsPageSize(Number(value))
-                    setAttendantsPage(1)
-                  }}
+                  onValueChange={(value) => escolherPageSize(
+                    value,
+                    setAttendantsPageSize,
+                    () => setAttendantsPage(1),
+                    ATENDENTES_PAGE_SIZE_STORAGE_KEY,
+                  )}
                 >
-                  <SelectTrigger className="h-8 w-16" aria-label="Resultados por página de atendentes">
+                  <SelectTrigger className="h-8 w-[4.5rem]" aria-label="Resultados por página de atendentes">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="5">5</SelectItem>
-                    <SelectItem value="10">10</SelectItem>
-                    <SelectItem value="20">20</SelectItem>
+                    {PAGE_SIZE_OPTIONS.map((tamanho) => (
+                      <SelectItem key={tamanho} value={String(tamanho)}>{tamanho}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
