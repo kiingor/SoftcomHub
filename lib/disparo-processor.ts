@@ -185,7 +185,7 @@ export function escolherSubsetorDoCriador(
  * só casa com atendente sem vínculo de subsetor, então ele ficava fora da
  * distribuição normal e dos filtros por subsetor.
  */
-async function buscarSubsetoresDoCriador(
+export async function buscarSubsetoresDoCriador(
   supabase: SupabaseClient,
   setorId: string,
   colaboradorId: string | null,

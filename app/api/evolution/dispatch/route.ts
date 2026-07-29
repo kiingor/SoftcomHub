@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { buscarSubsetoresDoCriador, escolherSubsetorDoCriador } from '@/lib/disparo-processor'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { createClient } from '@/lib/supabase/server'
 
 const EVOLUTION_BASE_URL = 'https://whatsapi.mensageria.softcomtecnologia.com'
@@ -132,6 +134,13 @@ export async function POST(request: NextRequest) {
         atendente: atendenteName,
       })
     } else {
+      // Mesmo caso da rota de disparo por template: o ticket é montado à mão e
+      // ficava sem subsetor, o que o deixa fora da distribuição e dos filtros.
+      // Herda de quem disparou, ou cai no padrão do setor.
+      const subsetorDoDisparo = escolherSubsetorDoCriador(
+        await buscarSubsetoresDoCriador(supabase, setorId, colaborador.id),
+      ) ?? await resolverSubsetorPadrao(supabase, setorId)
+
       // Create ticket — no is_disparo flag (agent can reply immediately, no lock)
       const { data: ticket, error: ticketError } = await supabase
         .from('tickets')
@@ -142,6 +151,7 @@ export async function POST(request: NextRequest) {
           status: 'em_atendimento',
           prioridade: 'normal',
           canal: 'whatsapp',
+          ...(subsetorDoDisparo ? { subsetor_id: subsetorDoDisparo } : {}),
         })
         .select('id, numero')
         .single()
