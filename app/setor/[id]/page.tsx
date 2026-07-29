@@ -2290,6 +2290,7 @@ function SetorPageInner() {
   // Estado minimizado + layout (posição/tamanho) dos cards — persistido no navegador
   const [collapsedCards, setCollapsedCards] = useState<Record<string, boolean>>({})
   const [savedLgLayout, setSavedLgLayout] = useState<Layout[] | null>(null)
+  const [layoutRestaurado, setLayoutRestaurado] = useState(false)
   useEffect(() => {
     try {
       const savedCollapsed = window.localStorage.getItem(RELATORIO_COLLAPSED_STORAGE_KEY)
@@ -2297,6 +2298,7 @@ function SetorPageInner() {
       const savedLayout = window.localStorage.getItem(RELATORIO_LAYOUT_STORAGE_KEY)
       if (savedLayout) setSavedLgLayout(JSON.parse(savedLayout))
     } catch {}
+    setLayoutRestaurado(true)
   }, [])
 
   const toggleCollapse = (id: string) => {
@@ -2348,6 +2350,11 @@ function SetorPageInner() {
     [baseLgLayout, collapsedCards]
   )
   const handleLayoutChange = (current: Layout[]) => {
+    // A grade avisa a posição dos cards já na montagem, e o efeito que lê o
+    // storage roda depois dela. Persistir nesse instante gravaria o arranjo
+    // padrão por cima do que o gestor montou — a tela voltava ao padrão a cada
+    // atualização da página.
+    if (!layoutRestaurado) return
     // não persiste a altura reduzida de cards minimizados (preserva a expandida)
     const prevById = new Map(baseLgLayout.map((l) => [l.i, l]))
     const merged = current.map((l) => (collapsedCards[l.i] ? { ...l, h: prevById.get(l.i)?.h ?? l.h } : l))
@@ -3047,6 +3054,7 @@ function SetorPageInner() {
   const [monitorEditMode, setMonitorEditMode] = useState(false)
   const [monitorLayout, setMonitorLayout] = useState<Layout[] | null>(null)
   const [monitorCollapsed, setMonitorCollapsed] = useState<Record<string, boolean>>({})
+  const [monitorLayoutRestaurado, setMonitorLayoutRestaurado] = useState(false)
 
   useEffect(() => {
     try {
@@ -3055,6 +3063,7 @@ function SetorPageInner() {
       const colapsados = window.localStorage.getItem(MONITOR_COLLAPSED_STORAGE_KEY)
       if (colapsados) setMonitorCollapsed(JSON.parse(colapsados))
     } catch { /* preferência corrompida cai no padrão */ }
+    setMonitorLayoutRestaurado(true)
   }, [])
 
   /**
@@ -3103,6 +3112,9 @@ function SetorPageInner() {
   )
 
   const handleMonitorLayoutChange = (atual: Layout[]) => {
+    // Mesma armadilha do relatório: a grade avisa a posição na montagem, antes
+    // de o storage ter sido lido. Gravar aí apagava o arranjo do gestor.
+    if (!monitorLayoutRestaurado) return
     // Não persiste a altura reduzida de um card minimizado: ao expandir, ele
     // voltaria com uma linha de altura.
     const anterior = new Map(monitorBaseLayout.map((l) => [l.i, l]))
