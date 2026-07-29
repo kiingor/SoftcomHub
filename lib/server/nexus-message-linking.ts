@@ -5,7 +5,9 @@ import { resolveSharedChannelOwnerId } from '@/lib/nexus-channel-resolution'
 import { NEXUS_NO_TICKET_IDLE_MS } from '@/lib/nexus-monitoring'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 
-const NEXUS_REMETENTES = new Set(['cliente-nexus', 'bot-nexus'])
+const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
+const NEXUS_BOT_REMETENTE = 'bot-nexus'
+const NEXUS_REMETENTES = new Set([NEXUS_CLIENT_REMETENTE, NEXUS_BOT_REMETENTE])
 const QUERY_CHUNK_SIZE = 200
 const UPDATE_CHUNK_SIZE = 200
 const SESSION_MESSAGE_LIMIT = 10_000
@@ -367,49 +369,77 @@ async function loadAdjacentNexusMessages({
   ascending: boolean
   budget: SessionScanBudget
 }) {
-  const messages: NexusMessageRow[] = []
-  let offset = 0
+  const collected = new Map<string, NexusMessageRow>()
 
-  while (true) {
-    const pageSize = Math.min(1000, SESSION_MESSAGE_LIMIT + 1 - budget.count)
-    if (pageSize <= 0) {
-      throw new NexusSessionLinkValidationError(
-        'A sessão Nexus excedeu o limite seguro de mensagens para vínculo.',
-      )
-    }
-
-    let query = supabase
+  const buildPageQuery = (offset: number, pageSize: number) => {
+    const query = supabase
       .from('mensagens')
       .select('id, cliente_id, enviado_em, phone_number_id, remetente, ticket_id, clientes(telefone)')
-      .in('phone_number_id', sourceChannelIds)
-      .in('remetente', [...NEXUS_REMETENTES])
       .gte('enviado_em', since)
       .lte('enviado_em', until)
       .order('enviado_em', { ascending })
       .order('id', { ascending })
       .range(offset, offset + pageSize - 1)
-    if (allowedClientIds.length > 0) {
-      query = query.in('cliente_id', allowedClientIds)
-    }
-
-    const { data, error } = await query
-    if (error) throw error
-    const rows = (data || []) as NexusMessageRow[]
-    if (rows.length === 0) break
-
-    messages.push(...rows)
-    budget.count += rows.length
-    if (budget.count > SESSION_MESSAGE_LIMIT) {
-      throw new NexusSessionLinkValidationError(
-        'A sessão Nexus excedeu o limite seguro de mensagens para vínculo.',
-      )
-    }
-
-    offset += rows.length
-    if (rows.length < pageSize) break
+    return allowedClientIds.length > 0
+      ? query.in('cliente_id', allowedClientIds)
+      : query
   }
 
-  return messages
+  const collectAllPages = async (
+    narrow: (offset: number, pageSize: number) => PromiseLike<{
+      data: unknown
+      error: { message: string } | null
+    }>,
+  ) => {
+    let offset = 0
+    while (true) {
+      const pageSize = Math.min(1000, SESSION_MESSAGE_LIMIT + 1 - budget.count)
+      if (pageSize <= 0) {
+        throw new NexusSessionLinkValidationError(
+          'A sessão Nexus excedeu o limite seguro de mensagens para vínculo.',
+        )
+      }
+
+      const { data, error } = await narrow(offset, pageSize)
+      if (error) throw error
+      const rows = (data || []) as NexusMessageRow[]
+      if (rows.length === 0) break
+
+      for (const row of rows) collected.set(row.id, row)
+      budget.count += rows.length
+      if (budget.count > SESSION_MESSAGE_LIMIT) {
+        throw new NexusSessionLinkValidationError(
+          'A sessão Nexus excedeu o limite seguro de mensagens para vínculo.',
+        )
+      }
+
+      offset += rows.length
+      if (rows.length < pageSize) break
+    }
+  }
+
+  if (allowedClientIds.length > 0) {
+    // Com o cliente delimitando o escopo, vale trazer a conversa inteira dele na
+    // janela, inclusive respostas do bot carimbadas com outro canal — o n8n
+    // gravava um número fixo em toda resposta, e filtrar por canal deixava o
+    // histórico do ticket com buracos. Quem separa uma sessão da outra é a
+    // troca de canal na fala do CLIENTE, tratada como fronteira em
+    // `expandNexusSessionBoundary`.
+    await collectAllPages((offset, pageSize) => buildPageQuery(offset, pageSize)
+      .in('remetente', [...NEXUS_REMETENTES]))
+  } else {
+    await collectAllPages((offset, pageSize) => buildPageQuery(offset, pageSize)
+      .in('phone_number_id', sourceChannelIds)
+      .in('remetente', [...NEXUS_REMETENTES]))
+  }
+
+  const direction = ascending ? 1 : -1
+  return [...collected.values()].sort((first, second) => (
+    direction * (
+      (Date.parse(first.enviado_em) - Date.parse(second.enviado_em))
+      || first.id.localeCompare(second.id)
+    )
+  ))
 }
 
 async function expandNexusSessionBoundary({
@@ -435,6 +465,11 @@ async function expandNexusSessionBoundary({
 }) {
   const adjacentMessages: NexusMessageRow[] = []
   const seenIds = new Set(selectedMessageIds)
+  const sourceChannelIdSet = new Set(sourceChannelIds)
+  // Respostas do bot carimbadas com outro canal ficam represadas até uma fala do
+  // cliente no canal provado confirmar que são desta sessão. Se a varredura
+  // parar numa troca de canal do cliente, elas eram da outra conversa e caem.
+  const unprovenBotMessages: NexusMessageRow[] = []
   let chainCursorMs = boundaryMessageAtMs
   let windowCursorMs = boundaryMessageAtMs
   const nowMs = Date.now()
@@ -478,6 +513,20 @@ async function expandNexusSessionBoundary({
       const gapMs = direction === 'before'
         ? chainCursorMs - messageAtMs
         : messageAtMs - chainCursorMs
+      // O cliente falando por outro canal marca o fim desta sessão: ele está em
+      // outra conversa, de outro setor. Sem essa fronteira, as respostas do bot
+      // daquela conversa — que podem vir carimbadas com qualquer canal — seriam
+      // puxadas para cá. 63 clientes tiveram duas sessões em canais diferentes
+      // dentro de 25 min nos 7 dias até 29/07/2026.
+      const isProvenChannel = sourceChannelIdSet.has(message.phone_number_id || '')
+      const clientSwitchedChannel = message.remetente === NEXUS_CLIENT_REMETENTE
+        && !isProvenChannel
+      if (clientSwitchedChannel) {
+        // Tudo que estava represado é da conversa do outro canal, não desta.
+        unprovenBotMessages.length = 0
+        foundBoundary = true
+        break
+      }
       if (
         gapMs >= NEXUS_NO_TICKET_IDLE_MS
         || (message.ticket_id && message.ticket_id !== targetTicketId)
@@ -486,7 +535,13 @@ async function expandNexusSessionBoundary({
         break
       }
 
-      adjacentMessages.push(message)
+      if (isProvenChannel) {
+        // A fala provada ancora as respostas do bot que vieram antes dela na
+        // cadeia: agora se sabe que pertencem a esta sessão.
+        adjacentMessages.push(...unprovenBotMessages.splice(0), message)
+      } else {
+        unprovenBotMessages.push(message)
+      }
       connectedInWindow = true
       chainCursorMs = messageAtMs
     }
@@ -500,6 +555,10 @@ async function expandNexusSessionBoundary({
 
     windowCursorMs = direction === 'before' ? windowStartMs : windowEndMs
   }
+
+  // A varredura chegou ao fim sem topar com outra conversa: o que sobrou
+  // represado é desta sessão mesmo — é o caso do bot que abre o atendimento.
+  adjacentMessages.push(...unprovenBotMessages)
 
   if (
     (direction === 'before' && windowCursorMs <= absoluteLimitMs)
@@ -565,24 +624,32 @@ export async function prepareNexusSessionLink({
   let selectedChannelKey: string | null = null
 
   for (const message of sortedMessages) {
-    const messageChannelKey = message.phone_number_id
+    // Só a fala do CLIENTE prova o canal — mesma regra do envio
+    // (`lib/message-send-target.ts`). A resposta do bot é saída, e o
+    // `phone_number_id` dela é apenas o que o integrador carimbou: em
+    // 29/07/2026 o n8n gravava um número fixo em toda resposta, o que travava
+    // 63% das sessões aqui sem que nada estivesse errado com a conversa.
+    const isInboundClient = message.remetente === NEXUS_CLIENT_REMETENTE
+    const messageChannelKey = (message.phone_number_id
       ? sourceChannelIds.get(message.phone_number_id)
-      : null
+      : null) ?? null
     if (
-      !messageChannelKey
-      || !NEXUS_REMETENTES.has(message.remetente || '')
+      !NEXUS_REMETENTES.has(message.remetente || '')
       || (message.ticket_id && message.ticket_id !== targetTicketId)
+      || (isInboundClient && !messageChannelKey)
     ) {
       throw new NexusSessionLinkValidationError(
         'As mensagens não pertencem a uma sessão Nexus disponível no setor de origem.',
       )
     }
-    if (selectedChannelKey && selectedChannelKey !== messageChannelKey) {
-      throw new NexusSessionLinkValidationError(
-        'As mensagens selecionadas pertencem a canais Nexus diferentes.',
-      )
+    if (isInboundClient) {
+      if (selectedChannelKey && selectedChannelKey !== messageChannelKey) {
+        throw new NexusSessionLinkValidationError(
+          'As mensagens selecionadas pertencem a canais Nexus diferentes.',
+        )
+      }
+      selectedChannelKey = messageChannelKey
     }
-    selectedChannelKey = messageChannelKey
 
     if (!messageBelongsToClient(message, allowedClientIdSet, normalizedClientPhone)) {
       throw new NexusSessionLinkValidationError(
@@ -604,6 +671,14 @@ export async function prepareNexusSessionLink({
     }
     previousMessageAt = messageAt
     if (message.cliente_id) allowedClientIdSet.add(message.cliente_id)
+  }
+
+  // Sem nenhuma fala do cliente não há prova de canal, e vincular por conta das
+  // mensagens do bot deixaria a sessão sem dono verificável.
+  if (!selectedChannelKey) {
+    throw new NexusSessionLinkValidationError(
+      'A sessão Nexus não tem mensagem do cliente para comprovar o canal de origem.',
+    )
   }
 
   const firstMessageAtMs = Date.parse(sortedMessages[0].enviado_em)
