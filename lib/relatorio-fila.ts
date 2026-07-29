@@ -20,6 +20,13 @@ export type TicketFila = {
   criado_em?: string | null
   primeira_resposta_em?: string | null
   /**
+   * Fecha a espera de quem foi encerrado sem nunca receber resposta. Sem isto a
+   * espera desses tickets seguia correndo contra o relógio: o #151097 foi
+   * encerrado 74 segundos depois de criado e aparecia como "3h 53min · ainda
+   * esperando" no card de maior espera.
+   */
+  encerrado_em?: string | null
+  /**
    * O PostgREST devolve o embed como objeto ou como array conforme infere a
    * relação: no relatório vem objeto, na consulta do monitoramento vem array.
    * Aceitar só uma das formas faria o nome do cliente sumir calado numa das
@@ -31,6 +38,25 @@ export type TicketFila = {
 function nomeDoCliente(clientes: TicketFila['clientes']): string | null {
   const registro = Array.isArray(clientes) ? clientes[0] : clientes
   return registro?.nome || null
+}
+
+/**
+ * Instante em que o cliente parou de esperar, ou `NaN` se ainda espera.
+ *
+ * A primeira resposta encerra a espera. Encerrar o ticket também: quem foi
+ * fechado sem nunca ser respondido saiu da fila ali, não segue esperando.
+ * Considerar só a resposta fazia a espera desses tickets crescer para sempre.
+ */
+function resolverFimDaEspera(ticket: TicketFila): number {
+  const respondido = ticket.primeira_resposta_em
+    ? Date.parse(ticket.primeira_resposta_em)
+    : Number.NaN
+  if (Number.isFinite(respondido)) return respondido
+
+  const encerrado = ticket.encerrado_em
+    ? Date.parse(ticket.encerrado_em)
+    : Number.NaN
+  return Number.isFinite(encerrado) ? encerrado : Number.NaN
 }
 
 export type MaiorEspera = {
@@ -87,13 +113,11 @@ export function resumirFila(
     if (!Number.isFinite(inicio)) continue
     total += 1
 
-    const respondido = ticket.primeira_resposta_em
-      ? Date.parse(ticket.primeira_resposta_em)
-      : Number.NaN
-    const emAndamento = !Number.isFinite(respondido)
-    // Sem resposta ainda, a espera corre até agora — é o caso que mais importa,
-    // porque é o cliente que continua esperando.
-    const fim = emAndamento ? opts.agoraMs : respondido
+    const fimDaEspera = resolverFimDaEspera(ticket)
+    const emAndamento = !Number.isFinite(fimDaEspera)
+    // Sem resposta e sem encerramento, a espera corre até agora — é o caso que
+    // mais importa, porque é o cliente que continua esperando.
+    const fim = emAndamento ? opts.agoraMs : fimDaEspera
     const espera = fim - inicio
     if (!Number.isFinite(espera) || espera < 0) continue
 

@@ -239,3 +239,31 @@ test('lista vazia não inventa episódio', () => {
   const r = contarEpisodiosDeFila([], { agoraMs: AGORA })
   assert.deepEqual([r.vezes, r.pico, r.semEspera], [0, 0, 0])
 })
+
+test('ticket encerrado sem resposta para de esperar no encerramento', () => {
+  // Caso real do #151097: criado 13:34:17, encerrado 13:35:31 sem nenhuma
+  // resposta. Contando só a primeira resposta, a espera corria contra o relógio
+  // e o card mostrava "3h 53min · ainda esperando" horas depois.
+  const r = resumirFila([
+    { numero: '151097', criado_em: min(240), encerrado_em: min(238), clientes: { nome: 'SOFTCOM BACKUP' } },
+  ], base)
+
+  assert.equal(r.maiorEspera.esperaMs, 2 * 60_000)
+  assert.equal(r.maiorEspera.emAndamento, false)
+})
+
+test('a resposta manda sobre o encerramento quando as duas existem', () => {
+  const r = resumirFila([
+    { criado_em: min(100), primeira_resposta_em: min(90), encerrado_em: min(10) },
+  ], base)
+
+  assert.equal(r.maiorEspera.esperaMs, 10 * 60_000)
+  assert.equal(r.maiorEspera.emAndamento, false)
+})
+
+test('sem resposta e sem encerramento a espera segue correndo', () => {
+  const r = resumirFila([{ criado_em: min(45) }], base)
+
+  assert.equal(r.maiorEspera.esperaMs, 45 * 60_000)
+  assert.equal(r.maiorEspera.emAndamento, true)
+})
