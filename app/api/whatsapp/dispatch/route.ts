@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { buscarSubsetoresDoCriador, escolherSubsetorDoCriador } from '@/lib/disparo-processor'
+import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
 
@@ -246,6 +248,16 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    // Esta rota monta o ticket à mão, sem passar por `criarEDistribuirTicket`
+    // nem pelo processador de lotes — era o único caminho de criação que ainda
+    // deixava `subsetor_id` nulo, e ticket órfão só casa com atendente sem
+    // vínculo de subsetor. Herda de quem disparou quando a escolha é
+    // inequívoca; senão cai no padrão do setor, como o transbordo. Os dois
+    // devolvem null em silêncio se algo falhar, então o disparo não quebra.
+    const subsetorDoDisparo = escolherSubsetorDoCriador(
+      await buscarSubsetoresDoCriador(supabase, setorId, colaborador.id),
+    ) ?? await resolverSubsetorPadrao(supabase, setorId)
+
     // Create ticket
     const { data: ticket, error: ticketError } = await supabase
       .from('tickets')
@@ -258,6 +270,7 @@ export async function POST(request: NextRequest) {
         canal: 'whatsapp',
         is_disparo: true,
         disparo_em: new Date().toISOString(),
+        ...(subsetorDoDisparo ? { subsetor_id: subsetorDoDisparo } : {}),
       })
       .select('id, numero')
       .single()
