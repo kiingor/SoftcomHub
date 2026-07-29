@@ -20,21 +20,12 @@ export function ThemeToggle() {
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
-  // Evita mismatch de hidratação: o tema real só é conhecido no cliente.
+  // O tema real só é conhecido no cliente, mas a ESTRUTURA não depende dele:
+  // os ícones trocam por CSS (`dark:`) e só o ponto-sinal precisa do valor.
+  // Antes daqui saíam duas árvores diferentes — um botão simples no servidor e
+  // o menu inteiro depois de montar —, e essa troca é o tipo de divergência
+  // servidor/cliente que embaralha os `useId` dos componentes vizinhos.
   useEffect(() => setMounted(true), [])
-
-  if (!mounted) {
-    return (
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-9 w-9"
-        aria-label="Alternar tema"
-      >
-        <Sun className="h-4 w-4" />
-      </Button>
-    )
-  }
 
   return (
     <DropdownMenu>
@@ -54,21 +45,21 @@ export function ThemeToggle() {
         <DropdownMenuItem onClick={() => setTheme('light')} className="gap-2">
           <Sun className="h-4 w-4" />
           Claro
-          {theme === 'light' && (
+          {mounted && theme === 'light' && (
             <span className="signal-dot ml-auto" aria-hidden="true" />
           )}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme('dark')} className="gap-2">
           <Moon className="h-4 w-4" />
           Escuro
-          {theme === 'dark' && (
+          {mounted && theme === 'dark' && (
             <span className="signal-dot ml-auto" aria-hidden="true" />
           )}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme('system')} className="gap-2">
           <Laptop className="h-4 w-4" />
           Sistema
-          {theme === 'system' && (
+          {mounted && theme === 'system' && (
             <span className="signal-dot ml-auto" aria-hidden="true" />
           )}
         </DropdownMenuItem>
