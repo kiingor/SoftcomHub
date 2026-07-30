@@ -146,8 +146,11 @@ import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { resumirFila, contarEpisodiosDeFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
 import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
-import { formatarTempoMonitoramento } from '@/lib/monitoramento-tempo-real'
-import { calcularTempoReal } from '@/lib/monitoramento-tempo-real'
+import {
+  calcularTempoReal,
+  formatarTempoMonitoramento,
+  MONITORING_REFRESH_OPTIONS,
+} from '@/lib/monitoramento-tempo-real'
 import { OrigemBadge } from '@/components/origem-badge'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import { toast } from 'sonner'
@@ -1837,7 +1840,7 @@ function SetorPageInner() {
   const { data, isLoading, mutate } = useSWR(
     setorId ? ['setor-detail', setorId] : null,
     () => fetchSetorData(setorId),
-    { revalidateOnFocus: false } // sem polling — Realtime com mutate() já atualiza a cada mudança de ticket
+    MONITORING_REFRESH_OPTIONS,
   )
 
   // Relatório separado: recarrega quando filtro de data muda (server-side filtering)
@@ -2010,9 +2013,8 @@ function SetorPageInner() {
       )
       .subscribe()
 
-    // Removed the unfiltered `setor-colaboradores-realtime` channel — it was a global
-    // subscription on the entire `colaboradores` table. SWR already polls this page
-    // every 30s (refreshInterval: 30000), so colaborador status updates land within 30s.
+    // O status dos atendentes chega pelo polling do SWR a cada 30 segundos.
+    // Inscrever a tabela inteira de colaboradores receberia eventos de outros setores.
 
     return () => {
       supabase.removeChannel(ticketsChannel)

@@ -7,6 +7,12 @@
  * perderia a confiança nos dois números.
  */
 
+export const MONITORING_REFRESH_OPTIONS = {
+  refreshInterval: 30_000,
+  revalidateOnFocus: true,
+  revalidateOnReconnect: true,
+} as const
+
 export type TicketTempoReal = {
   status?: string | null
   subsetor_id?: string | null

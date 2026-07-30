@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { calcularTempoReal, formatarTempoMonitoramento } from '../lib/monitoramento-tempo-real.ts'
+import {
+  calcularTempoReal,
+  formatarTempoMonitoramento,
+  MONITORING_REFRESH_OPTIONS,
+} from '../lib/monitoramento-tempo-real.ts'
 
 const AGORA = Date.parse('2026-07-28T12:00:00.000Z')
 const minAtras = (n) => new Date(AGORA - n * 60_000).toISOString()
@@ -12,6 +16,12 @@ const base = {
   aceitaAtendente: () => true,
   agoraMs: AGORA,
 }
+
+test('atualiza a fonte do monitoramento antes do heartbeat de dois minutos expirar', () => {
+  assert.equal(MONITORING_REFRESH_OPTIONS.refreshInterval, 30_000)
+  assert.equal(MONITORING_REFRESH_OPTIONS.revalidateOnFocus, true)
+  assert.equal(MONITORING_REFRESH_OPTIONS.revalidateOnReconnect, true)
+})
 
 test('conta ativos, fila e em atendimento', () => {
   const r = calcularTempoReal({
