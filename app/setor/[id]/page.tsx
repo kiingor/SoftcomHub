@@ -8,6 +8,8 @@ import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador } from '@/lib/hooks/use-data'
+import { atendenteNoFiltro, filtroEfetivo, tagsParaFiltro, tagsVisiveisPara } from '@/lib/tag-setor'
+import { TagManagerDialog } from '@/components/dashboard/tag-manager-dialog'
 import { computePausaElapsedMs, formatPausaStatusLabel, isPausaEstourada } from '@/lib/pausa-status'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 import { DateRange } from 'react-day-picker'
@@ -71,7 +73,6 @@ import {
   BarChart3,
   FileText,
   Settings,
-  Filter,
   Search,
   RefreshCw,
   AlertCircle,
@@ -144,7 +145,6 @@ import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorF
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { resumirFila, contarEpisodiosDeFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
-import { ComparacaoSubsetores, type IndicadorComparacao } from '@/components/setor/comparacao-subsetores'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
 import { formatarTempoMonitoramento } from '@/lib/monitoramento-tempo-real'
 import { calcularTempoReal } from '@/lib/monitoramento-tempo-real'
@@ -416,7 +416,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     // Tickets de hoje (para estatisticas)
     supabase.from('tickets').select('id, numero, status, criado_em, primeira_resposta_em, encerrado_em, atribuido_em, subsetor_id, colaborador_id, clientes(nome)').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
-    supabase.from('colaboradores_setores').select('colaborador_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
+    supabase.from('colaboradores_setores').select('colaborador_id, tag_setor_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
     supabase.from('permissoes').select('*'),
     supabase.from('pausas').select('*').eq('setor_id', setorId).order('nome'),
@@ -461,6 +461,8 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     ...as.colaboradores,
     subsetor_ids: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.id),
     subsetor_nomes: (colabSubsetoresMap[as.colaborador_id] || []).map((s: any) => s.nome),
+    // Operação do atendente NESTE canal — o recorte de Suporte Chat x Pit Stop.
+    tag_setor_id: as.tag_setor_id ?? null,
   })).filter(Boolean)
 
   // Dados da pausa ativa (nome + início + tempo máximo configurado) — mesmo padrão
@@ -813,6 +815,66 @@ const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
   { i: 'matrizTipoTecnico', x: 0, y: 21, w: 12, h: 6 },
   { i: 'tabela', x: 0, y: 27, w: 12, h: 7 },
 ]
+
+const RELATORIO_KPI_IDS = new Set([
+  'kpiPrimeiraResposta',
+  'kpiResolucao',
+  'kpiRecebidos',
+  'kpiResolvidos',
+  'kpiTaxa',
+  'kpiNps',
+])
+
+const RELATORIO_MEIA_LARGURA_IDS = new Set([
+  'saudeFila',
+  'maiorEspera',
+  'rankTipo',
+  'nps',
+  'canal',
+  'status',
+  'roteamento',
+])
+
+/**
+ * O grid mede a largura da área de conteúdo, não a da janela. Com a lateral
+ * aberta, uma janela de 1205px entra em `sm` (6 colunas). Deixar a biblioteca
+ * converter o arranjo de 12 colunas cria sobreposições e empurra os cards para
+ * baixo, deixando vazios enormes. Refluímos a ordem de leitura para cada grade.
+ */
+function buildResponsiveReportLayout(source: Layout[], columns: number): Layout[] {
+  const ordered = [...source].sort((first, second) => (
+    first.y - second.y || first.x - second.x || first.i.localeCompare(second.i)
+  ))
+  let x = 0
+  let y = 0
+  let rowHeight = 0
+
+  return ordered.map((item) => {
+    const width = RELATORIO_KPI_IDS.has(item.i)
+      ? columns >= 8 ? Math.ceil(columns / 2) : columns >= 6 ? columns / 2 : columns
+      : RELATORIO_MEIA_LARGURA_IDS.has(item.i) && columns >= 6
+        ? columns / 2
+        : columns
+
+    if (x + width > columns) {
+      x = 0
+      y += rowHeight
+      rowHeight = 0
+    }
+
+    const reflowed = { ...item, x, y, w: width }
+    x += width
+    rowHeight = Math.max(rowHeight, item.h)
+
+    if (x === columns) {
+      x = 0
+      y += rowHeight
+      rowHeight = 0
+    }
+
+    return reflowed
+  })
+}
 // ids presentes no arranjo padrão = visíveis por padrão (os demais começam ocultos)
 /**
  * Visíveis por padrão.
@@ -1170,43 +1232,21 @@ function calculateRelatorioStats(tickets: any[], formatMs: (ms: number) => strin
   }
 }
 
-// Client-side filters applied over the already-loaded report tickets
-// (atendente + canal selects + cliente search). Shared by the current period
-// view and the previous-period comparison so the Δ stays consistent.
-/** Valor do filtro de subsetor para os tickets que não têm nenhum. */
-const RELATORIO_SEM_SUBSETOR = '__sem_subsetor__'
+function filterReportTicketsBySearch(list: any[], searchCliente: string): any[] {
+  const term = searchCliente.trim().toLowerCase()
+  if (!term) return list
 
-function applyRelatorioFilters(
-  list: any[],
-  opts: { searchCliente: string; atendente: string; canal: string; subsetor?: string },
-): any[] {
-  let out = list
-  if (opts.atendente !== 'all') {
-    out = out.filter((t) => (t.colaboradores?.nome || '') === opts.atendente)
-  }
-  if (opts.canal !== 'all') {
-    out = out.filter((t) => (t.canal || 'desconhecido') === opts.canal)
-  }
-  if (opts.subsetor && opts.subsetor !== 'all') {
-    out = opts.subsetor === RELATORIO_SEM_SUBSETOR
-      ? out.filter((t) => !t.subsetor_id)
-      : out.filter((t) => t.subsetor_id === opts.subsetor)
-  }
-  const term = opts.searchCliente.trim().toLowerCase()
-  if (term) {
-    const termPhone = term.replace(/\D/g, '')
-    out = out.filter((t: any) => {
-      const nome = (t.clientes?.nome || '').toLowerCase()
-      const cnpj = (t.clientes?.CNPJ || '').replace(/\D/g, '')
-      const telefone = (t.clientes?.telefone || '').replace(/\D/g, '')
-      const telefoneNorm = telefone.startsWith('55') ? telefone.slice(2) : telefone
-      if (nome.includes(term)) return true
-      if (termPhone && telefoneNorm.includes(termPhone)) return true
-      if (termPhone && cnpj.includes(termPhone)) return true
-      return false
-    })
-  }
-  return out
+  const termPhone = term.replace(/\D/g, '')
+  return list.filter((t: any) => {
+    const nome = (t.clientes?.nome || '').toLowerCase()
+    const cnpj = (t.clientes?.CNPJ || '').replace(/\D/g, '')
+    const telefone = (t.clientes?.telefone || '').replace(/\D/g, '')
+    const telefoneNorm = telefone.startsWith('55') ? telefone.slice(2) : telefone
+    if (nome.includes(term)) return true
+    if (termPhone && telefoneNorm.includes(termPhone)) return true
+    if (termPhone && cnpj.includes(termPhone)) return true
+    return false
+  })
 }
 
 // Numeric KPIs used for the period-over-period comparison (Δ%). Kept separate
@@ -1302,6 +1342,108 @@ function getIconComponent(iconName: string | null) {
   return found ? found.icon : MessageCircle
 }
 
+/**
+ * A operação do atendente neste canal, exibida e editável no card.
+ *
+ * Grava em `colaboradores_setores.tag_setor_id` — o vínculo desta pessoa com
+ * ESTE canal. Só quem pode editar vê o seletor; para os demais é leitura, senão
+ * um atendente mudaria o próprio recorte de métrica.
+ */
+function TagSetorDoAtendente({
+  atendenteId,
+  atendenteNome,
+  tagAtualId,
+  tags,
+  setorId,
+  podeEditar,
+  onSalvo,
+}: {
+  atendenteId: string
+  atendenteNome: string
+  tagAtualId: string | null
+  tags: { id: string; nome: string; cor: string }[]
+  setorId: string
+  podeEditar: boolean
+  onSalvo: () => void
+}) {
+  const supabase = createClient()
+  const [salvando, setSalvando] = useState(false)
+  const tagAtual = tags.find((tag) => tag.id === tagAtualId) || null
+
+  async function salvar(novoId: string | null) {
+    setSalvando(true)
+    try {
+      const { error } = await supabase
+        .from('colaboradores_setores')
+        .update({ tag_setor_id: novoId })
+        .eq('colaborador_id', atendenteId)
+        .eq('setor_id', setorId)
+      if (error) throw error
+      toast.success(
+        novoId
+          ? `${atendenteNome} agora é ${tags.find((tag) => tag.id === novoId)?.nome}`
+          : `Tag removida de ${atendenteNome}`,
+      )
+      onSalvo()
+    } catch {
+      toast.error('Erro ao salvar a tag de setor')
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  if (tags.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground/60" title="Cadastre em Configurações > Tags de setor">
+        nenhuma tag no canal
+      </p>
+    )
+  }
+
+  if (!podeEditar) {
+    return tagAtual ? (
+      <span
+        className="mt-0.5 inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium"
+        style={{ borderColor: tagAtual.cor, color: tagAtual.cor }}
+      >
+        {tagAtual.nome}
+      </span>
+    ) : (
+      <p className="text-xs text-muted-foreground/60">sem tag</p>
+    )
+  }
+
+  return (
+    <Select
+      value={tagAtualId || 'none'}
+      onValueChange={(v) => salvar(v === 'none' ? null : v)}
+      disabled={salvando}
+    >
+      <SelectTrigger className="mt-0.5 h-7 text-xs" aria-label={`Tag de setor de ${atendenteNome}`}>
+        {salvando ? (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            salvando
+          </span>
+        ) : (
+          <SelectValue placeholder="Sem tag" />
+        )}
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="none">Sem tag</SelectItem>
+        {tags.map((tag) => (
+          <SelectItem key={tag.id} value={tag.id}>
+            <div className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.cor }} />
+              {tag.nome}
+            </div>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
 function SetorPageInner() {
   const params = useParams()
   const router = useRouter()
@@ -1329,6 +1471,9 @@ function SetorPageInner() {
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
+  const [tagSetorFilter, setTagSetorFilter] = useState(() => (
+    searchParams.get('tags')?.split(',').filter(Boolean) || []
+  ))
   // Subsetor acompanhado na coluna lateral do Monitoramento. Guardado por
   // gestor + setor, como o filtro rápido — a escolha é dele.
   // Cada card de tempo real tem o seu recorte. O principal nasce sem filtro
@@ -1341,6 +1486,8 @@ function SetorPageInner() {
   const [proporcaoLinha1, setProporcaoLinha1] = useState<ProporcaoLinha1>('equilibrado')
 
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
+  const [quickTagSetorFiltroOpen, setQuickTagSetorFiltroOpen] = useState(false)
+  const [relatorioTagSetorFiltroOpen, setRelatorioTagSetorFiltroOpen] = useState(false)
   // Começam no padrão e são substituídos pelo valor salvo logo após a montagem:
   // ler o storage no inicializador quebraria a renderização no servidor.
   const [monitoringPageSize, setMonitoringPageSize] = useState<number>(PAGE_SIZE_PADRAO)
@@ -1497,6 +1644,10 @@ function SetorPageInner() {
 
   // Tags list (for tag selector in config)
   const [tagsList, setTagsList] = useState<{ id: string; nome: string; cor: string }[]>([])
+  // Tags de setor: operação que o canal executa (Suporte Chat, Pit Stop).
+  // Dimensão separada de `tags`, que agrupa por origem (Matriz, Filial...).
+  const [tagsSetorList, setTagsSetorList] = useState<{ id: string; nome: string; cor: string; ordem?: number }[]>([])
+  const [isTagsSetorDialogOpen, setIsTagsSetorDialogOpen] = useState(false)
 
   // Config form state
   const [configForm, setConfigForm] = useState({
@@ -1917,13 +2068,11 @@ function SetorPageInner() {
   const { data: prevRelatorioData } = useSWR(
     setorId && prevPeriod ? ['setor-relatorio-prev', setorId, prevPeriod.from, prevPeriod.to] : null,
     async () => {
-      // `subsetor_id` é obrigatório aqui: sem ele o filtro de subsetor valeria só
-      // para o período atual, e as variações percentuais compaririam o Prime
-      // filtrado contra o setor inteiro. Paginado pelo mesmo motivo do período
-      // atual — o teto de 1.000 falseava a base de comparação.
+      // Paginado pelo mesmo motivo do período atual — o teto de 1.000 falseava
+      // a base de comparação.
       return await loadRowsByPages(() => supabase
         .from('tickets')
-        .select('criado_em, status, primeira_resposta_em, encerrado_em, canal, subsetor_id, colaboradores(nome), clientes(nome, telefone, CNPJ)')
+        .select('colaborador_id, criado_em, status, primeira_resposta_em, encerrado_em, canal, colaboradores(nome), clientes(nome, telefone, CNPJ)')
         .eq('setor_id', setorId)
         .gte('criado_em', prevPeriod!.from)
         .lte('criado_em', prevPeriod!.to)
@@ -2026,7 +2175,87 @@ function SetorPageInner() {
   const baseTemposHoje = data?.temposHoje || { tempoMedioEspera: '00:00:00', tempoMedioResposta: '00:00:00', tempoMedioPrimeiraResposta: '00:00:00', tempoMedioAtendimento: '00:00:00' }
   const tickets = data?.tickets || []
   const ticketsMonitoramentoHoje = data?.ticketsMonitoramentoHoje || []
+  const atendentes = data?.atendentes || []
   const ticketsRelatorioRaw = relatorioData || []
+
+  // A tag pertence ao vínculo do atendente com este setor. Logo, o relatório
+  // só pode contar tickets atribuídos aos atendentes da operação do gestor.
+  // Somente master vê todas as operações. Gestor sem tag configurada não
+  // recebe um fallback amplo: isso impediria que uma operação sem cadastro
+  // voltasse a enxergar Pit Stop e Service Desk por acidente.
+  const tagsPermitidasNosTickets = useMemo(() => {
+    const eu = (atendentes as any[]).find((a: any) => a.id === colaboradorLogado?.id)
+    const minhasTags = eu?.tag_setor_id ? [eu.tag_setor_id as string] : []
+    return tagsVisiveisPara(minhasTags, colaboradorLogado?.is_master === true)
+  }, [atendentes, colaboradorLogado?.id, colaboradorLogado?.is_master])
+
+  const idsAtendentesPermitidos = useMemo(() => {
+    if (tagsPermitidasNosTickets === null) return new Set<string>()
+    if (tagsPermitidasNosTickets.length === 0) return new Set<string>()
+    return new Set(
+      (atendentes as any[])
+        .filter((atendente: any) => atendenteNoFiltro(
+          atendente.tag_setor_id ? [atendente.tag_setor_id] : [],
+          tagsPermitidasNosTickets,
+        ))
+        .map((atendente: any) => atendente.id),
+    )
+  }, [atendentes, tagsPermitidasNosTickets])
+
+  const tagSetorFiltroOptions = useMemo(() => tagsParaFiltro(
+    tagsSetorList,
+    (atendentes as any[]).map((atendente: any) => ({
+      colaborador_id: atendente.id,
+      setor_id: setorId,
+      tag_setor_id: atendente.tag_setor_id ?? null,
+    })),
+    tagsPermitidasNosTickets,
+  ), [atendentes, setorId, tagsPermitidasNosTickets, tagsSetorList])
+
+  const tagSetorFiltroEfetivo = useMemo(
+    () => filtroEfetivo(tagsPermitidasNosTickets, tagSetorFilter),
+    [tagSetorFilter, tagsPermitidasNosTickets],
+  )
+
+  const idsAtendentesNoFiltroTag = useMemo(() => {
+    const deveRestringir = tagSetorFilter.length > 0 || tagsPermitidasNosTickets !== null
+    if (!deveRestringir) return null
+    if (tagSetorFiltroEfetivo.length === 0) return new Set<string>()
+
+    return new Set(
+      (atendentes as any[])
+        .filter((atendente: any) => atendenteNoFiltro(
+          atendente.tag_setor_id ? [atendente.tag_setor_id] : [],
+          tagSetorFiltroEfetivo,
+        ))
+        .map((atendente: any) => atendente.id),
+    )
+  }, [atendentes, tagSetorFilter.length, tagSetorFiltroEfetivo, tagsPermitidasNosTickets])
+
+  const matchesAtendenteTagFilter = useCallback(
+    (atendente: { id: string }) => (
+      idsAtendentesNoFiltroTag === null || idsAtendentesNoFiltroTag.has(atendente.id)
+    ),
+    [idsAtendentesNoFiltroTag],
+  )
+
+  const matchesTicketTagFilter = useCallback(
+    (ticket: { colaborador_id?: string | null }) => (
+      idsAtendentesNoFiltroTag === null
+      || (Boolean(ticket.colaborador_id) && idsAtendentesNoFiltroTag.has(ticket.colaborador_id!))
+    ),
+    [idsAtendentesNoFiltroTag],
+  )
+
+  const ticketsRelatorioFiltrados = useMemo(
+    () => ticketsRelatorioRaw.filter(matchesTicketTagFilter),
+    [matchesTicketTagFilter, ticketsRelatorioRaw],
+  )
+
+  const ticketsRelatorioAnteriorFiltrados = useMemo(
+    () => prevRelatorioData?.filter(matchesTicketTagFilter),
+    [matchesTicketTagFilter, prevRelatorioData],
+  )
 
   // Lookup global de setores — usado pra reescrever descrições antigas de
   // transbordo em tempo de exibição (sem mexer no banco). Permite mostrar
@@ -2044,110 +2273,18 @@ function SetorPageInner() {
   // Construído uma vez quando tickets mudam — usado nas tabelas pra renderizar
   // o badge de origem sem recalcular por linha.
   const origensMap = useMemo(() => {
-    const allTickets = [...tickets, ...ticketsRelatorioRaw]
+    const allTickets = [...tickets, ...ticketsRelatorioFiltrados]
     const allLogs = allTickets.flatMap((t: any) => t._logs || [])
     return calcularOrigem(allTickets, allLogs, setoresLookup)
-  }, [tickets, ticketsRelatorioRaw, setoresLookup])
+  }, [tickets, ticketsRelatorioFiltrados, setoresLookup])
 
-  // Filtros client-side do relatório (busca por cliente + atendente + canal),
-  // inicializados pela querystring. Aplicados sobre os tickets já carregados.
+  // Busca da tabela de atendimentos, mantida no link para ser compartilhável.
   const [searchCliente, setSearchCliente] = useState(() => searchParams.get('cliente') || '')
-  const [relatorioAtendente, setRelatorioAtendente] = useState(() => searchParams.get('atendente') || 'all')
-  const [relatorioCanal, setRelatorioCanal] = useState(() => searchParams.get('canal') || 'all')
-  const [relatorioSubsetor, setRelatorioSubsetor] = useState(() => searchParams.get('subsetor') || 'all')
-
-  // Comparação lado a lado: quando ativa, a área de cards é repetida em duas
-  // colunas, uma por subsetor. O gestor acompanha Suporte e Prime na mesma tela,
-  // com as mesmas métricas e o mesmo período.
-  const [comparandoSubsetores, setComparandoSubsetores] = useState(false)
-  const [subsetorEsquerda, setSubsetorEsquerda] = useState<string>('all')
-  const [subsetorDireita, setSubsetorDireita] = useState<string>('all')
-
-  const relatorioSubsetorOptions = useMemo(() => {
-    // Lê de `subsetores` e não de `subsetorNomeById`: aquele mapa é declarado
-    // bem mais abaixo no componente, e `const` não sobe — usá-lo aqui quebraria
-    // na primeira renderização.
-    const nomePorId = new Map((subsetores as any[]).map((s) => [s.id, s.nome]))
-    const usados = new Map<string, string>()
-    let temSemSubsetor = false
-    for (const t of ticketsRelatorioRaw) {
-      if (!t.subsetor_id) { temSemSubsetor = true; continue }
-      if (!usados.has(t.subsetor_id)) {
-        usados.set(t.subsetor_id, nomePorId.get(t.subsetor_id) || 'Subsetor')
-      }
-    }
-    const lista = [...usados.entries()]
-      .map(([id, nome]) => ({ id, nome }))
-      .sort((a, b) => a.nome.localeCompare(b.nome))
-    // "Sem subsetor" só aparece quando existe de fato — evita opção morta.
-    if (temSemSubsetor) lista.push({ id: RELATORIO_SEM_SUBSETOR, nome: 'Sem subsetor' })
-    return lista
-  }, [ticketsRelatorioRaw, subsetores])
-
-  // Opções dos selects derivadas dos próprios tickets do período
-  const relatorioAtendentesOptions = useMemo(() => {
-    const set = new Set<string>()
-    for (const t of ticketsRelatorioRaw) {
-      if (t.colaboradores?.nome) set.add(t.colaboradores.nome)
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b))
-  }, [ticketsRelatorioRaw])
-  const relatorioCanaisOptions = useMemo(() => {
-    const set = new Set<string>()
-    for (const t of ticketsRelatorioRaw) set.add(t.canal || 'desconhecido')
-    return Array.from(set).sort((a, b) => a.localeCompare(b))
-  }, [ticketsRelatorioRaw])
 
   const ticketsRelatorio = useMemo(
-    () => applyRelatorioFilters(ticketsRelatorioRaw, {
-      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor: relatorioSubsetor,
-    }),
-    [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal, relatorioSubsetor]
+    () => filterReportTicketsBySearch(ticketsRelatorioFiltrados, searchCliente),
+    [ticketsRelatorioFiltrados, searchCliente],
   )
-
-  /** Tickets de uma coluna da comparação — mesmos filtros, subsetor próprio. */
-  const ticketsDoSubsetor = useCallback((subsetor: string) => (
-    applyRelatorioFilters(ticketsRelatorioRaw, {
-      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor,
-    })
-  ), [ticketsRelatorioRaw, searchCliente, relatorioAtendente, relatorioCanal])
-
-  const ticketsEsquerda = useMemo(
-    () => (comparandoSubsetores ? ticketsDoSubsetor(subsetorEsquerda) : []),
-    [comparandoSubsetores, ticketsDoSubsetor, subsetorEsquerda],
-  )
-  const ticketsDireita = useMemo(
-    () => (comparandoSubsetores ? ticketsDoSubsetor(subsetorDireita) : []),
-    [comparandoSubsetores, ticketsDoSubsetor, subsetorDireita],
-  )
-
-  /**
-   * Indicadores de uma coluna da comparação.
-   *
-   * `bruto` acompanha o valor formatado porque quem lidera precisa ser decidido
-   * por número — comparar "00:11:00" com "00:46:48" como texto daria errado.
-   */
-  const indicadoresDe = useCallback((lista: any[]): IndicadorComparacao[] => {
-    const paraHhMmSs = (ms: number) => {
-      const horas = Math.floor(ms / 3_600_000)
-      const minutos = Math.floor((ms % 3_600_000) / 60_000)
-      const segundos = Math.floor((ms % 60_000) / 1000)
-      return [horas, minutos, segundos].map((n) => String(n).padStart(2, '0')).join(':')
-    }
-    const kpis = computeRelatorioKpis(lista)
-    const stats = calculateRelatorioStats(lista, paraHhMmSs)
-    return [
-      { chave: 'recebidos', rotulo: 'Tickets recebidos', valor: String(kpis.recebidos), bruto: kpis.recebidos, maiorEhMelhor: true },
-      { chave: 'resolvidos', rotulo: 'Tickets resolvidos', valor: String(kpis.resolvidos), bruto: kpis.resolvidos, maiorEhMelhor: true },
-      { chave: 'taxa', rotulo: 'Taxa de resolução', valor: `${Math.round(kpis.taxaResolucao)}%`, bruto: kpis.taxaResolucao, maiorEhMelhor: true },
-      // `bruto` zerado vira null: 0ms aqui significa "sem amostra", não "instantâneo".
-      { chave: 'primeiraResposta', rotulo: 'Tempo médio 1ª resposta', valor: stats.tempoMedioPrimeiraResposta, bruto: kpis.tmaPrimeiraRespostaMs || null, maiorEhMelhor: false },
-      { chave: 'resolucao', rotulo: 'Tempo médio resolução', valor: stats.tempoMedioResolucao, bruto: kpis.tmaResolucaoMs || null, maiorEhMelhor: false },
-    ]
-  }, [])
-
-  const indicadoresEsquerda = useMemo(() => indicadoresDe(ticketsEsquerda), [indicadoresDe, ticketsEsquerda])
-  const indicadoresDireita = useMemo(() => indicadoresDe(ticketsDireita), [indicadoresDe, ticketsDireita])
 
   /**
    * Fila do período — calculada sobre `ticketsRelatorio`, que já respeita
@@ -2164,14 +2301,9 @@ function SetorPageInner() {
   // KPIs numéricos do período atual e do anterior (para o Δ%)
   const kpiAtual = useMemo(() => computeRelatorioKpis(ticketsRelatorio), [ticketsRelatorio])
   const kpiAnterior = useMemo(() => {
-    if (!prevRelatorioData) return null
-    // O mesmo filtro de subsetor precisa valer aqui, senão o Δ% compararia o
-    // subsetor escolhido contra o setor inteiro do período anterior.
-    const filtered = applyRelatorioFilters(prevRelatorioData, {
-      searchCliente, atendente: relatorioAtendente, canal: relatorioCanal, subsetor: relatorioSubsetor,
-    })
-    return computeRelatorioKpis(filtered)
-  }, [prevRelatorioData, searchCliente, relatorioAtendente, relatorioCanal, relatorioSubsetor])
+    if (!ticketsRelatorioAnteriorFiltrados) return null
+    return computeRelatorioKpis(filterReportTicketsBySearch(ticketsRelatorioAnteriorFiltrados, searchCliente))
+  }, [ticketsRelatorioAnteriorFiltrados, searchCliente])
 
   // Base do nome do arquivo exportado (setor + data atual)
   const exportFilenameBase = useMemo(() => {
@@ -2196,7 +2328,7 @@ function SetorPageInner() {
     return calculateRelatorioStats(ticketsRelatorio, formatMs)
   }, [ticketsRelatorio])
 
-  // Reflete os filtros do relatório na URL (link compartilhável/recarregável).
+  // Reflete busca, período e filtros na URL (link compartilhável/recarregável).
   // Debounce evita spam de navegações enquanto o usuário digita; router.replace
   // não empilha histórico. Os estados são lidos da URL só no mount, então não há
   // loop de fetch.
@@ -2209,20 +2341,23 @@ function SetorPageInner() {
         if (customRange?.to) next.set('ate', customRange.to.toISOString())
       }
       if (searchCliente.trim()) next.set('cliente', searchCliente.trim())
-      if (relatorioAtendente !== 'all') next.set('atendente', relatorioAtendente)
-      if (relatorioCanal !== 'all') next.set('canal', relatorioCanal)
+      if (tagSetorFilter.length > 0) next.set('tags', tagSetorFilter.join(','))
       const qs = next.toString()
       const pathname = window.location.pathname
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
     }, 350)
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFilter, customRange, searchCliente, relatorioAtendente, relatorioCanal])
+  }, [dateFilter, customRange, searchCliente, tagSetorFilter])
 
   // Gráficos de Demanda com filtro de período próprio (independente do filtro global)
   const [volumePeriod, setVolumePeriod] = useState('7')
   const [heatmapPeriod, setHeatmapPeriod] = useState('7')
-  const [chartTickets, setChartTickets] = useState<{ criado_em: string }[]>([])
+  const [chartTickets, setChartTickets] = useState<{
+    criado_em: string
+    colaborador_id: string | null
+  }[]>([])
+  const [chartTicketsLoaded, setChartTicketsLoaded] = useState(false)
   // Busca só a maior janela em uso entre os dois gráficos, e pagina até esgotar.
   //
   // Antes eram 90 dias fixos com `.limit(1000)` e ordem decrescente: o gráfico
@@ -2233,14 +2368,15 @@ function SetorPageInner() {
   useEffect(() => {
     if (!setorId) return
     let cancelled = false
+    setChartTicketsLoaded(false)
     ;(async () => {
       const cutoff = new Date(chartPeriodCutoffMs(chartFetchDays)).toISOString()
       const PAGINA = 1000
-      const todos: { criado_em: string }[] = []
+      const todos: { criado_em: string; colaborador_id: string | null }[] = []
       for (let inicio = 0; ; inicio += PAGINA) {
         const { data, error } = await supabase
           .from('tickets')
-          .select('criado_em')
+          .select('criado_em, colaborador_id')
           .eq('setor_id', setorId)
           .gte('criado_em', cutoff)
           .order('criado_em', { ascending: false })
@@ -2254,12 +2390,19 @@ function SetorPageInner() {
         if (data.length < PAGINA) break
         if (cancelled) return
       }
-      if (!cancelled) setChartTickets(todos)
+      if (!cancelled) {
+        setChartTickets(todos)
+        setChartTicketsLoaded(true)
+      }
     })()
     return () => { cancelled = true }
   }, [setorId, chartFetchDays])
-  // Fonte dos gráficos: fetch dedicado de 90 dias; se ainda vazio, usa os tickets já carregados
-  const chartSource = chartTickets.length > 0 ? chartTickets : ticketsRelatorioRaw
+  const chartTicketsFiltrados = useMemo(() => {
+    return chartTickets.filter(matchesTicketTagFilter)
+  }, [chartTickets, matchesTicketTagFilter])
+  // Fonte dos gráficos: fetch dedicado no recorte dos filtros; até ele concluir,
+  // usa os tickets do relatório já filtrados para não misturar resultados.
+  const chartSource = chartTicketsLoaded ? chartTicketsFiltrados : ticketsRelatorioFiltrados
   const volumeSerie = useMemo(
     () => buildSerieVolume(filterTicketsByDays(chartSource, Number(volumePeriod))),
     [chartSource, volumePeriod]
@@ -2408,6 +2551,13 @@ function SetorPageInner() {
     () => baseLgLayout.map((l) => (collapsedCards[l.i] ? { ...l, h: RELATORIO_COLLAPSED_H, isResizable: false } : l)),
     [baseLgLayout, collapsedCards]
   )
+  const reportResponsiveLayouts = useMemo(() => ({
+    lg: effectiveLgLayout,
+    md: buildResponsiveReportLayout(effectiveLgLayout, 10),
+    sm: buildResponsiveReportLayout(effectiveLgLayout, 6),
+    xs: buildResponsiveReportLayout(effectiveLgLayout, 4),
+    xxs: buildResponsiveReportLayout(effectiveLgLayout, 2),
+  }), [effectiveLgLayout])
   const handleLayoutChange = (current: Layout[]) => {
     // A grade avisa a posição dos cards já na montagem, e o efeito que lê o
     // storage roda depois dela. Persistir nesse instante gravaria o arranjo
@@ -2471,15 +2621,15 @@ function SetorPageInner() {
   }
 
   const horarios = data?.horarios || []
-  const atendentes = data?.atendentes || []
   const permissoes = data?.permissoes || []
   const pausasData = data?.pausas || []
 
   const atendentesStats = useMemo(() => {
-    if (subsetorFilter.length === 0) return baseAtendentesStats
+    if (subsetorFilter.length === 0 && idsAtendentesNoFiltroTag === null) return baseAtendentesStats
 
     const scopedAttendants = atendentes.filter((attendant: any) => (
-      matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
+      matchesAtendenteTagFilter(attendant)
+      && matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
     ))
 
     return {
@@ -2493,15 +2643,20 @@ function SetorPageInner() {
         && !isAtendenteOnline(attendant)
       )).length,
     }
-  }, [atendentes, baseAtendentesStats, subsetorFilter])
+  }, [atendentes, baseAtendentesStats, idsAtendentesNoFiltroTag, matchesAtendenteTagFilter, subsetorFilter])
+
+  const ticketsHojePorTag = useMemo(
+    () => ticketsMonitoramentoHoje.filter(matchesTicketTagFilter),
+    [matchesTicketTagFilter, ticketsMonitoramentoHoje],
+  )
 
   const scopedTicketsHoje = useMemo(
     () => subsetorFilter.length === 0
-      ? ticketsMonitoramentoHoje
-      : ticketsMonitoramentoHoje.filter((ticket: any) => (
+      ? ticketsHojePorTag
+      : ticketsHojePorTag.filter((ticket: any) => (
           matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
         )),
-    [subsetorFilter, ticketsMonitoramentoHoje],
+    [subsetorFilter, ticketsHojePorTag],
   )
 
   /**
@@ -2516,12 +2671,12 @@ function SetorPageInner() {
    * subsetor.
    */
   const filaDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    resumirFila(ticketsMonitoramentoHoje.filter(aceitaTicket), { agoraMs: monitoringTick })
-  ), [ticketsMonitoramentoHoje, monitoringTick])
+    resumirFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick })
+  ), [ticketsHojePorTag, monitoringTick])
 
   const episodiosDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    contarEpisodiosDeFila(ticketsMonitoramentoHoje.filter(aceitaTicket), { agoraMs: monitoringTick })
-  ), [ticketsMonitoramentoHoje, monitoringTick])
+    contarEpisodiosDeFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick })
+  ), [ticketsHojePorTag, monitoringTick])
 
   const filaCardPrincipal = useMemo(() => filaDeHoje((t: any) => (
     subsetorCardPrincipal === TODOS_SUBSETORES
@@ -2546,7 +2701,7 @@ function SetorPageInner() {
   )
 
   const ticketsHoje = useMemo(() => {
-    if (subsetorFilter.length === 0) return baseTicketsHoje
+    if (subsetorFilter.length === 0 && idsAtendentesNoFiltroTag === null) return baseTicketsHoje
     const finalized = scopedTicketsHoje.filter((ticket: any) => ticket.status === 'encerrado').length
 
     return {
@@ -2556,10 +2711,10 @@ function SetorPageInner() {
       finalizados: finalized,
       fechados: finalized,
     }
-  }, [baseTicketsHoje, scopedTicketsHoje, subsetorFilter])
+  }, [baseTicketsHoje, idsAtendentesNoFiltroTag, scopedTicketsHoje, subsetorFilter])
 
   const temposHoje = useMemo(() => {
-    if (subsetorFilter.length === 0) return baseTemposHoje
+    if (subsetorFilter.length === 0 && idsAtendentesNoFiltroTag === null) return baseTemposHoje
 
     const averageDuration = (
       startField: string,
@@ -2596,7 +2751,7 @@ function SetorPageInner() {
         averageDuration('atribuido_em', 'encerrado_em', isClosed),
       ),
     }
-  }, [baseTemposHoje, scopedTicketsHoje, subsetorFilter])
+  }, [baseTemposHoje, idsAtendentesNoFiltroTag, scopedTicketsHoje, subsetorFilter])
 
   // Update pausas state when data changes
   const pausasLength = pausasData.length
@@ -2737,8 +2892,12 @@ function SetorPageInner() {
 
   // Fetch all tags for tag selector
   const fetchTagsList = async () => {
-    const { data } = await supabase.from('tags').select('id, nome, cor').order('nome')
-    if (data) setTagsList(data)
+    const [origem, operacao] = await Promise.all([
+      supabase.from('tags').select('id, nome, cor').order('nome').limit(200),
+      supabase.from('tags_setor').select('id, nome, cor, ordem').eq('setor_id', setorId).order('ordem').order('nome').limit(200),
+    ])
+    if (origem.data) setTagsList(origem.data)
+    if (operacao.data) setTagsSetorList(operacao.data)
   }
 
   // Fetch setores destino de transferência configurados
@@ -2912,6 +3071,11 @@ function SetorPageInner() {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || t.status === 'aberto')
       .filter((t: any) => {
+        if (
+          tagsPermitidasNosTickets !== null
+          && (!t.colaborador_id || !idsAtendentesPermitidos.has(t.colaborador_id))
+        ) return false
+        if (!matchesTicketTagFilter(t)) return false
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
         if (!searchTerm) return true
@@ -2958,13 +3122,28 @@ function SetorPageInner() {
         subsetor_id: t.subsetor_id ?? null,
         setores: { nome: setor?.nome ?? null },
       }))
-  }, [tickets, searchTerm, setor, atendenteFilter, subsetorFilter, monitoringTick, subsetorNomeById])
+  }, [
+    atendenteFilter,
+    idsAtendentesPermitidos,
+    matchesTicketTagFilter,
+    monitoringTick,
+    searchTerm,
+    setor,
+    subsetorFilter,
+    subsetorNomeById,
+    tagsPermitidasNosTickets,
+    tickets,
+  ])
 
   const atendenteFiltroOptions = useMemo(() => {
     const order = (x: any) => (x.is_online && !x.pausa_atual_id ? 0 : x.pausa_atual_id ? 1 : 2)
     const temTicket = (id: string) =>
       tickets.some((t: any) => t.colaborador_id === id && (t.status === 'em_atendimento' || t.status === 'aberto'))
     return [...atendentes]
+      .filter((atendente: any) => (
+        tagsPermitidasNosTickets === null || idsAtendentesPermitidos.has(atendente.id)
+      ))
+      .filter(matchesAtendenteTagFilter)
       .filter((a: any) => a.ativo)
       .sort((a: any, b: any) =>
         order(a) - order(b)
@@ -2977,7 +3156,7 @@ function SetorPageInner() {
         // Cor do ponto = status: online (verde), pausa (amarelo), offline (cinza).
         cor: a.is_online && !a.pausa_atual_id ? '#22c55e' : a.pausa_atual_id ? '#eab308' : '#9ca3af',
       }))
-  }, [atendentes, tickets])
+  }, [atendentes, idsAtendentesPermitidos, matchesAtendenteTagFilter, tagsPermitidasNosTickets, tickets])
 
   const subsetorFiltroOptions = useMemo(
     () => [
@@ -3004,13 +3183,15 @@ function SetorPageInner() {
       tickets,
       ticketsDeHoje: ticketsMonitoramentoHoje,
       atendentes,
-      aceitaTicket: (t: any) => t.subsetor_id === subsetorId,
+      aceitaTicket: (t: any) => matchesTicketTagFilter(t) && t.subsetor_id === subsetorId,
       aceitaAtendente: (a: any) => (
-        isAtendenteOnline(a) && (a.subsetor_ids || []).includes(subsetorId)
+        matchesAtendenteTagFilter(a)
+        && isAtendenteOnline(a)
+        && (a.subsetor_ids || []).includes(subsetorId)
       ),
       agoraMs: monitoringTick,
     })
-  ), [tickets, ticketsMonitoramentoHoje, atendentes, monitoringTick])
+  ), [tickets, ticketsMonitoramentoHoje, atendentes, matchesAtendenteTagFilter, matchesTicketTagFilter, monitoringTick])
 
   const resumoCardSecundario = useMemo(
     () => resumoDoSubsetor(subsetorCardSecundario),
@@ -3030,17 +3211,20 @@ function SetorPageInner() {
     ticketsDeHoje: ticketsMonitoramentoHoje,
     atendentes,
     aceitaTicket: (t: any) => (
-      subsetorCardPrincipal === TODOS_SUBSETORES
+      matchesTicketTagFilter(t)
+      && (subsetorCardPrincipal === TODOS_SUBSETORES
         ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
-        : t.subsetor_id === subsetorCardPrincipal
+        : t.subsetor_id === subsetorCardPrincipal)
     ),
-    aceitaAtendente: (a: any) => isAtendenteOnline(a) && (
-      subsetorCardPrincipal === TODOS_SUBSETORES
+    aceitaAtendente: (a: any) => (
+      matchesAtendenteTagFilter(a)
+      && isAtendenteOnline(a)
+      && (subsetorCardPrincipal === TODOS_SUBSETORES
         ? matchesAtendenteSubsetorFilter(subsetorFilter, a.subsetor_ids)
-        : (a.subsetor_ids || []).includes(subsetorCardPrincipal)
+        : (a.subsetor_ids || []).includes(subsetorCardPrincipal))
     ),
     agoraMs: monitoringTick,
-  }), [tickets, ticketsMonitoramentoHoje, atendentes, subsetorCardPrincipal, subsetorFilter, monitoringTick])
+  }), [tickets, ticketsMonitoramentoHoje, atendentes, matchesAtendenteTagFilter, matchesTicketTagFilter, subsetorCardPrincipal, subsetorFilter, monitoringTick])
 
   const cargaCardPrincipal = useMemo(
     () => calculateWorkloadOs(resumoCardPrincipal.total, resumoCardPrincipal.atendentesOnline),
@@ -3278,13 +3462,21 @@ function SetorPageInner() {
     const isSelectedSubsetor = (item: { subsetor_id?: string | null }) => (
       matchesSubsetorFilter(subsetorFilter, item.subsetor_id)
     )
-    const activeTickets = tickets.filter(isSelectedSubsetor)
+    const activeTickets = tickets.filter((ticket: any) => (
+      matchesTicketTagFilter(ticket) && isSelectedSubsetor(ticket)
+    ))
     const queuedTickets = activeTickets.filter((ticket: any) => ticket.status === 'aberto')
     const assignedTickets = activeTickets.filter((ticket: any) => ticket.status === 'em_atendimento')
     const finalizedToday = ticketsMonitoramentoHoje.filter(
-      (ticket: any) => ticket.status === 'encerrado' && isSelectedSubsetor(ticket),
+      (ticket: any) => (
+        ticket.status === 'encerrado'
+        && matchesTicketTagFilter(ticket)
+        && isSelectedSubsetor(ticket)
+      ),
     )
     const onlineAttendants = atendentes.filter((attendant: any) => (
+      matchesAtendenteTagFilter(attendant)
+      &&
       isAtendenteOnline(attendant)
       && matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
     ))
@@ -3308,7 +3500,7 @@ function SetorPageInner() {
       onlineAttendants: onlineAttendants.length,
       workload: calculateWorkloadOs(activeTickets.length, onlineAttendants.length),
     }
-  }, [atendentes, monitoringTick, subsetorFilter, tickets, ticketsMonitoramentoHoje])
+  }, [atendentes, matchesAtendenteTagFilter, matchesTicketTagFilter, monitoringTick, subsetorFilter, tickets, ticketsMonitoramentoHoje])
 
   const workloadTone = WORKLOAD_OS_TONES[realtimeStats.workload.level]
 
@@ -3316,6 +3508,7 @@ function SetorPageInner() {
     return tickets
       .filter((t: any) => t.status === 'aberto' && !t.colaborador_id)
       .filter((t: any) => {
+        if (!matchesTicketTagFilter(t)) return false
         if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
@@ -3339,7 +3532,7 @@ function SetorPageInner() {
         subsetor_id: t.subsetor_id ?? null,
         setores: { nome: setor?.nome ?? null },
       }))
-  }, [tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
+  }, [matchesTicketTagFilter, tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
 
   // Sem filtro de subsetor, mostram o total do setor (matchesSubsetorFilter
   // com seleção vazia aceita qualquer subsetor_id) — com filtro, só contam os
@@ -3351,12 +3544,13 @@ function SetorPageInner() {
       if (
         ticket.status !== 'em_atendimento'
         || !ticket.colaborador_id
+        || !matchesTicketTagFilter(ticket)
         || !matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
       ) continue
       counts.set(ticket.colaborador_id, (counts.get(ticket.colaborador_id) || 0) + 1)
     }
     return counts
-  }, [subsetorFilter, tickets])
+  }, [matchesTicketTagFilter, subsetorFilter, tickets])
 
   const finalizedTodayCountByAttendant = useMemo(() => {
     const counts = new Map<string, number>()
@@ -3364,12 +3558,13 @@ function SetorPageInner() {
       if (
         ticket.status !== 'encerrado'
         || !ticket.colaborador_id
+        || !matchesTicketTagFilter(ticket)
         || !matchesSubsetorFilter(subsetorFilter, ticket.subsetor_id)
       ) continue
       counts.set(ticket.colaborador_id, (counts.get(ticket.colaborador_id) || 0) + 1)
     }
     return counts
-  }, [subsetorFilter, ticketsMonitoramentoHoje])
+  }, [matchesTicketTagFilter, subsetorFilter, ticketsMonitoramentoHoje])
 
   const sortedTicketsEmAndamento = useMemo(() => {
     const getValue = (ticket: any): SortValue => {
@@ -3417,6 +3612,23 @@ function SetorPageInner() {
     })
   }, [origensMap, ticketsAguardando, waitingTicketsSort])
 
+  // ─── Trava por tag de setor ───
+  // O gestor da operação só enxerga quem tem a mesma tag DELE neste canal. A tag
+  // vem do próprio vínculo, então não há cadastro paralelo. `null` = sem recorte:
+  // é o master, que precisa auditar, e quem não tem tag nenhuma.
+  const atendentesVisiveis = useMemo(() => {
+    return (atendentes as any[]).filter(matchesAtendenteTagFilter)
+  }, [atendentes, matchesAtendenteTagFilter])
+
+  const idsVisiveis = useMemo(
+    () => new Set((atendentesVisiveis as any[]).map((a: any) => a.id)),
+    [atendentesVisiveis],
+  )
+
+  // Só quem administra muda a tag — atendente não reconfigura o próprio recorte.
+  const podeEditarTagSetor = colaboradorLogado?.is_master === true
+    || (colaboradorLogado as any)?.permissoes?.can_view_dashboard === true
+
   const sortedMonitoringAttendants = useMemo(() => {
     const getStatus = (attendant: any) => {
       if (attendant.pausa_atual_id) return 'Ausente'
@@ -3431,7 +3643,7 @@ function SetorPageInner() {
       }
     }
 
-    const filtered = atendentes.filter((attendant: any) => (
+    const filtered = atendentesVisiveis.filter((attendant: any) => (
       matchesAtendenteSubsetorFilter(subsetorFilter, attendant.subsetor_ids)
       && (atendenteFilter.length === 0 || atendenteFilter.includes(attendant.id))
     ))
@@ -3446,7 +3658,7 @@ function SetorPageInner() {
     })
   }, [
     activeTicketCountByAttendant,
-    atendentes,
+    atendentesVisiveis,
     atendenteFilter,
     attendantsSort,
     finalizedTodayCountByAttendant,
@@ -3479,7 +3691,7 @@ function SetorPageInner() {
 
   const filteredManagementAttendants = useMemo(() => {
     const term = searchAtendente.trim().toLocaleLowerCase('pt-BR')
-    return atendentes.filter((atendente: any) => {
+    return atendentesVisiveis.filter((atendente: any) => {
       // O filtro de subsetor precisa entrar AQUI, e não na hora de renderizar:
       // a lista é paginada, e o contador ("x-y de N") e o estado vazio leem
       // este memo. Filtrar só no map deixaria os três em desacordo.
@@ -3490,7 +3702,7 @@ function SetorPageInner() {
         || atendente.email?.toLocaleLowerCase('pt-BR').includes(term)
       )
     })
-  }, [atendentes, searchAtendente, subsetorFilter])
+  }, [atendentesVisiveis, searchAtendente, subsetorFilter])
   const attendantsTotalPages = Math.max(1, Math.ceil(filteredManagementAttendants.length / attendantsPageSize))
   const safeAttendantsPage = Math.min(attendantsPage, attendantsTotalPages)
   const attendantsPageStart = (safeAttendantsPage - 1) * attendantsPageSize
@@ -5183,25 +5395,41 @@ const saveConfig = async () => {
               </div>
 
               {/* Quick Filters */}
-              {/* Mostra mesmo com só "Sem subsetor" disponível se houver seleção ativa —
-                  senão um filtro ligado ficaria sem nenhum controle visível para limpar. */}
-              {(subsetorFiltroOptions.length > 1 || subsetorFilter.length > 0) && (
+              {(subsetorFiltroOptions.length > 1 || subsetorFilter.length > 0 || tagSetorFiltroOptions.length > 0 || tagSetorFilter.length > 0) && (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm text-muted-foreground">Filtros rápidos:</span>
-                  <MultiSelectFilter
-                    icon={Layers}
-                    placeholder="Subsetores"
-                    header="Filtrar monitoramento por subsetor"
-                    pluralWord="subsetores"
-                    options={subsetorFiltroOptions}
-                    selected={subsetorFilter}
-                    onChange={(next) => {
-                      setSubsetorFilter(next)
-                      setMonitoringPage(1)
-                    }}
-                    open={quickSubsetorFiltroOpen}
-                    onOpenChange={setQuickSubsetorFiltroOpen}
-                  />
+                  {(subsetorFiltroOptions.length > 1 || subsetorFilter.length > 0) && (
+                    <MultiSelectFilter
+                      icon={Layers}
+                      placeholder="Subsetores"
+                      header="Filtrar monitoramento por subsetor"
+                      pluralWord="subsetores"
+                      options={subsetorFiltroOptions}
+                      selected={subsetorFilter}
+                      onChange={(next) => {
+                        setSubsetorFilter(next)
+                        setMonitoringPage(1)
+                      }}
+                      open={quickSubsetorFiltroOpen}
+                      onOpenChange={setQuickSubsetorFiltroOpen}
+                    />
+                  )}
+                  {(tagSetorFiltroOptions.length > 0 || tagSetorFilter.length > 0) && (
+                    <MultiSelectFilter
+                      icon={Tag}
+                      placeholder="Tags"
+                      header="Filtrar monitoramento por tag"
+                      pluralWord="tags"
+                      options={tagSetorFiltroOptions}
+                      selected={tagSetorFilter}
+                      onChange={(next) => {
+                        setTagSetorFilter(next)
+                        setMonitoringPage(1)
+                      }}
+                      open={quickTagSetorFiltroOpen}
+                      onOpenChange={setQuickTagSetorFiltroOpen}
+                    />
+                  )}
                 </div>
               )}
 
@@ -5355,32 +5583,49 @@ const saveConfig = async () => {
 
 
 {/* Status dos tickets hoje */}
-              <Card className="glass-card-elevated h-full overflow-auto rounded-lg">
-                <CardHeader className="pb-2">
+              <Card className="@container glass-card-elevated flex h-full flex-col gap-2 overflow-auto rounded-lg py-5">
+                <CardHeader className="flex flex-row items-center justify-between gap-2 pb-0">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Status dos tickets hoje
+                    Resultado dos tickets
                   </CardTitle>
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                    Hoje
+                  </span>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-4 gap-2 text-center">
-                    <div className="space-y-1">
-                      <p className="text-2xl font-bold text-red-500 tabular-nums">{ticketsHoje.perdidos}</p>
-                      <p className="text-xs text-muted-foreground">Perdidos</p>
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-2xl font-bold text-orange-500 tabular-nums">{ticketsHoje.abandonados}</p>
-                      <p className="text-xs text-muted-foreground">Abandonados</p>
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-2xl font-bold text-green-500 tabular-nums">{ticketsHoje.finalizados}</p>
-                      <p className="text-xs text-muted-foreground">Finalizados</p>
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-2xl font-bold text-blue-500 tabular-nums">{ticketsHoje.fechados}</p>
-                      <p className="text-xs text-muted-foreground">Fechados</p>
+                <CardContent className="flex flex-1 pt-0">
+                  <div className="grid w-full grid-cols-1 gap-3 @sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.8fr)]">
+                    <section className="flex min-h-20 flex-col justify-between rounded-lg border border-green-500/20 bg-green-500/10 p-3">
+                      <div className="flex items-center gap-2 text-xs font-medium text-green-600 dark:text-green-400">
+                        <span className="flex size-6 items-center justify-center rounded-full bg-green-500/15">
+                          <CheckCircle className="size-3.5" aria-hidden="true" />
+                        </span>
+                        Concluídos
+                      </div>
+                      <div>
+                        <p className="text-3xl font-bold tracking-tight text-foreground tabular-nums">
+                          {ticketsHoje.finalizados}
+                        </p>
+                        <p className="text-xs text-muted-foreground">atendimentos finalizados</p>
+                      </div>
+                    </section>
+
+                    <div className="grid grid-cols-2 gap-2 @sm:grid-cols-1">
+                      <div className="rounded-lg border border-red-500/15 bg-red-500/5 px-3 py-2">
+                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                          <CircleOff className="size-3.5 text-red-500" aria-hidden="true" />
+                          Perdidos
+                        </div>
+                        <p className="mt-1 text-xl font-bold text-red-500 tabular-nums">{ticketsHoje.perdidos}</p>
+                      </div>
+                      <div className="rounded-lg border border-orange-500/15 bg-orange-500/5 px-3 py-2">
+                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                          <AlertCircle className="size-3.5 text-orange-500" aria-hidden="true" />
+                          Abandonados
+                        </div>
+                        <p className="mt-1 text-xl font-bold text-orange-500 tabular-nums">{ticketsHoje.abandonados}</p>
+                      </div>
                     </div>
                   </div>
-
                 </CardContent>
               </Card>
                 </ReportWidget>
@@ -5998,6 +6243,7 @@ const saveConfig = async () => {
                 <h1 className="text-2xl font-semibold tracking-tight">Relatorios de Atendimento</h1>
               </div>
               <div className="flex items-center gap-2">
+                {editMode && (
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button variant="outline" size="sm" className="gap-2">
@@ -6061,6 +6307,7 @@ const saveConfig = async () => {
                     )}
                   </PopoverContent>
                 </Popover>
+                )}
                 {editMode ? (
                   <>
                     <Popover>
@@ -6129,93 +6376,23 @@ const saveConfig = async () => {
               </div>
             </div>
 
-            {/* Filtros client-side: atendente + canal (sobre os tickets já carregados) */}
             <div className="flex flex-wrap items-center gap-2 anim-rise">
               <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-                <Filter className="h-3.5 w-3.5" />
                 Filtrar:
               </span>
-              <Select value={relatorioAtendente} onValueChange={setRelatorioAtendente}>
-                <SelectTrigger className="h-9 w-[200px] text-sm">
-                  <SelectValue placeholder="Atendente" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os atendentes</SelectItem>
-                  {relatorioAtendentesOptions.map((nome) => (
-                    <SelectItem key={nome} value={nome}>{nome}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={relatorioCanal} onValueChange={setRelatorioCanal}>
-                <SelectTrigger className="h-9 w-[180px] text-sm">
-                  <SelectValue placeholder="Canal" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os canais</SelectItem>
-                  {relatorioCanaisOptions.map((canal) => (
-                    <SelectItem key={canal} value={canal} className="capitalize">{canal}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {relatorioSubsetorOptions.length > 0 && (
-                <Select
-                  value={relatorioSubsetor}
-                  onValueChange={setRelatorioSubsetor}
-                  disabled={comparandoSubsetores}
-                >
-                  <SelectTrigger className="h-9 w-[190px] text-sm" aria-label="Subsetor">
-                    <SelectValue placeholder="Subsetor" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos os subsetores</SelectItem>
-                    {relatorioSubsetorOptions.map((sub) => (
-                      <SelectItem key={sub.id} value={sub.id}>{sub.nome}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-
-              {/* A comparação precisa de pelo menos dois subsetores para fazer sentido. */}
-              {relatorioSubsetorOptions.length >= 2 && (
-                <Button
-                  variant={comparandoSubsetores ? 'default' : 'outline'}
-                  size="sm"
-                  className="h-9 gap-1.5"
-                  onClick={() => {
-                    setComparandoSubsetores((ativo) => {
-                      const proximo = !ativo
-                      if (proximo) {
-                        // Começa com os dois primeiros para a tela já nascer útil.
-                        setSubsetorEsquerda(relatorioSubsetorOptions[0].id)
-                        setSubsetorDireita(relatorioSubsetorOptions[1].id)
-                        setRelatorioSubsetor('all')
-                      }
-                      return proximo
-                    })
-                  }}
-                >
-                  <Layers className="h-3.5 w-3.5" />
-                  {comparandoSubsetores ? 'Sair da comparação' : 'Comparar subsetores'}
-                </Button>
-              )}
-
-              {(relatorioAtendente !== 'all' || relatorioCanal !== 'all' || relatorioSubsetor !== 'all') && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-9 gap-1.5 text-muted-foreground"
-                  onClick={() => {
-                    setRelatorioAtendente('all')
-                    setRelatorioCanal('all')
-                    setRelatorioSubsetor('all')
-                  }}
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Limpar filtros
-                </Button>
-              )}
+              <MultiSelectFilter
+                icon={Tag}
+                placeholder="Tags"
+                header="Filtrar relatórios por tag"
+                pluralWord="tags"
+                options={tagSetorFiltroOptions}
+                selected={tagSetorFilter}
+                onChange={setTagSetorFilter}
+                open={relatorioTagSetorFiltroOpen}
+                onOpenChange={setRelatorioTagSetorFiltroOpen}
+              />
               <span className="ml-auto text-xs text-muted-foreground tabular-nums" data-nums>
-                {ticketsRelatorio.length} de {ticketsRelatorioRaw.length} atendimentos
+                {ticketsRelatorio.length} atendimentos
               </span>
             </div>
 
@@ -6224,25 +6401,9 @@ const saveConfig = async () => {
                 Modo de personalização: arraste pelo punho <GripVertical className="inline h-3 w-3" /> para mover e use o canto inferior‑direito para redimensionar. Clique em <strong>Concluir</strong> para fixar.
               </div>
             )}
-            {/* Comparação substitui a grade em vez de conviver com ela: os cards
-                mostram o setor inteiro, e ver os dois números juntos na mesma
-                tela induziria a ler um pelo outro. */}
-            {comparandoSubsetores && (
-              <ComparacaoSubsetores
-                opcoes={relatorioSubsetorOptions}
-                esquerda={subsetorEsquerda}
-                direita={subsetorDireita}
-                aoTrocarEsquerda={setSubsetorEsquerda}
-                aoTrocarDireita={setSubsetorDireita}
-                indicadoresEsquerda={indicadoresEsquerda}
-                indicadoresDireita={indicadoresDireita}
-              />
-            )}
-
             {/* ===== Relatórios — cartões (fixos; editáveis no modo Personalizar) ===== */}
-            {!comparandoSubsetores && (
             <ResponsiveReactGridLayout
-              layouts={{ lg: effectiveLgLayout }}
+              layouts={reportResponsiveLayouts}
               breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
               cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
               rowHeight={64}
@@ -7248,7 +7409,6 @@ const saveConfig = async () => {
             )}
 
             </ResponsiveReactGridLayout>
-            )}
         </div>
       )}
 
@@ -7400,6 +7560,20 @@ const saveConfig = async () => {
                                 </div>
                               )
                             })()}
+                          </div>
+
+                          {/* Tag de setor — a operação do atendente neste canal */}
+                          <div>
+                            <p className="text-[10px] uppercase text-muted-foreground tracking-wide">Tag de setor</p>
+                            <TagSetorDoAtendente
+                              atendenteId={atendente.id}
+                              atendenteNome={atendente.nome}
+                              tagAtualId={atendente.tag_setor_id}
+                              tags={tagsSetorList}
+                              setorId={setorId}
+                              podeEditar={podeEditarTagSetor}
+                              onSalvo={mutate}
+                            />
                           </div>
 
                           {/* Filas/Setor */}
@@ -7835,7 +8009,7 @@ const saveConfig = async () => {
                 <div className="space-y-2">
                   <Label className="flex items-center gap-1.5">
                     <Tag className="h-3.5 w-3.5" />
-                    Tag
+                    Tag de origem
                   </Label>
                   <Select
                     value={configForm.tag_id || 'none'}
@@ -7861,8 +8035,54 @@ const saveConfig = async () => {
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    De onde vem a operação: Matriz, Filial, PEV, Franquias, Internos.
+                  </p>
                 </div>
               )}
+
+              {/* Tags de setor deste canal — as operações que convivem dentro
+                  dele (Suporte Chat, Pit Stop, ...). A tag marca o ATENDENTE, na
+                  aba Atendentes; aqui é só o cadastro. */}
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5">
+                  <Layers className="h-3.5 w-3.5" />
+                  Tags de setor
+                </Label>
+                <div className="rounded-lg border border-border p-3 space-y-3">
+                  {tagsSetorList.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      Nenhuma tag cadastrada neste canal.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {tagsSetorList.map((tag) => (
+                        <span
+                          key={tag.id}
+                          className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium"
+                          style={{ borderColor: tag.cor, color: tag.cor }}
+                        >
+                          {tag.nome}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsTagsSetorDialogOpen(true)}
+                  >
+                    <Layers className="mr-2 h-3.5 w-3.5" />
+                    Gerenciar tags de setor
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Separam as operações dentro deste canal. Cada atendente recebe
+                    uma na aba Atendentes, e ela recorta as métricas e o que o
+                    gestor da operação enxerga.
+                  </p>
+                </div>
+              </div>
 
             </CardContent>
           </Card>
@@ -10506,6 +10726,23 @@ const saveConfig = async () => {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Cadastro das operações deste canal (Suporte Chat, Pit Stop, ...) */}
+      <TagManagerDialog
+        open={isTagsSetorDialogOpen}
+        onOpenChange={setIsTagsSetorDialogOpen}
+        tabela="tags_setor"
+        setorId={setorId}
+        titulo="Tags de setor"
+        descricao="Operações que convivem dentro deste canal."
+        exemploNome="Ex: Suporte Chat, Pit Stop..."
+        tags={tagsSetorList.map((tag) => ({ ...tag, ordem: tag.ordem ?? 0 }))}
+        carregando={false}
+        onChanged={async () => {
+          await fetchTagsList()
+          mutate()
+        }}
+      />
     </div>
   )
 }

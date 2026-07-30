@@ -41,9 +41,22 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search } from 'lucide-react'
+import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search, Layers } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { useColaborador } from '@/lib/hooks/use-data'
+import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
+import {
+  agruparNpsPorColaborador,
+  atendenteNoFiltro,
+  filtroEfetivo,
+  npsDoAtendente,
+  tagsParaFiltro,
+  tagsPorColaborador as indexarTagsPorColaborador,
+  tagsVisiveisPara,
+  type LinhaNps,
+  type TagSetor,
+  type VinculoSetor,
+} from '@/lib/tag-setor'
 
 interface Setor {
   id: string
@@ -139,6 +152,26 @@ function getSupabaseAccessToken(): string | null {
   }
 }
 
+/**
+ * Lê uma tabela inteira, em páginas.
+ *
+ * O PostgREST devolve no máximo 1000 linhas e não avisa que cortou — pedir
+ * `limit` maior ou `range` largo não fura o teto, só o laço de páginas fura.
+ * Era isso que quebrava o NPS desta tela: `avaliacoes` tem 5322 linhas e a
+ * média saía calculada sobre as 1000 primeiras.
+ */
+const TAMANHO_PAGINA = 1000
+
+
+async function todasAsLinhas<T>(lerPagina: (de: number, ate: number) => Promise<T[]>): Promise<T[]> {
+  const tudo: T[] = []
+  for (let de = 0; ; de += TAMANHO_PAGINA) {
+    const pagina = await lerPagina(de, de + TAMANHO_PAGINA - 1)
+    tudo.push(...pagina)
+    if (pagina.length < TAMANHO_PAGINA) return tudo
+  }
+}
+
 export default function ColaboradoresPage() {
   const [colaboradores, setColaboradores] = useState<Colaborador[]>([])
   const [setores, setSetores] = useState<Setor[]>([])
@@ -175,8 +208,12 @@ export default function ColaboradoresPage() {
   const canDeactivateColaborador = colaboradorLogado?.is_master === true
   const canManagePermissionLevel = colaboradorLogado?.is_master === true
 
-  const [colaboradorSetores, setColaboradorSetores] = useState<{ colaborador_id: string; setor_id: string }[]>([])
-  const [mediasNPS, setMediasNPS] = useState<Map<string, { media: number; total: number }>>(new Map())
+  const [colaboradorSetores, setColaboradorSetores] = useState<VinculoSetor[]>([])
+  // NPS já agregado por (atendente, tag de setor) — ver vw_nps_colaborador_tag_setor.
+  const [linhasNPS, setLinhasNPS] = useState<LinhaNps[]>([])
+  const [tagsSetor, setTagsSetor] = useState<TagSetor[]>([])
+  const [tagFilter, setTagFilter] = useState<string[]>([])
+  const [tagFiltroOpen, setTagFiltroOpen] = useState(false)
   const atendentePermissao = useMemo(
     () => permissoes.find((permissao) => permissao.nome.toLowerCase() === 'atendente')
       || permissoes.find((permissao) => !isElevatedPermission(permissao)),
@@ -208,21 +245,66 @@ export default function ColaboradoresPage() {
       .map((cs) => cs.setor_id)
   }
 
+  // ─── Recorte por tag de setor ───
+  // A tag mora no VÍNCULO (colaboradores_setores.tag_setor_id), não no canal:
+  // ServiceDesk e Pit Stop vão virar um canal só, e a tag do canal daria a mesma
+  // resposta para todo mundo dentro dele.
+  const tagsDoColaborador = useMemo(
+    () => indexarTagsPorColaborador(colaboradorSetores),
+    [colaboradorSetores],
+  )
+
+  // A trava: o gestor só enxerga a própria operação. `null` = sem recorte,
+  // exclusivo do master; gestor sem tag configurada não recebe visão ampla.
+  const tagsPermitidas = useMemo(
+    () => tagsVisiveisPara(
+      colaboradorLogado?.id ? tagsDoColaborador.get(colaboradorLogado.id) || [] : [],
+      colaboradorLogado?.is_master === true,
+    ),
+    [colaboradorLogado?.id, colaboradorLogado?.is_master, tagsDoColaborador],
+  )
+
+  const tagsDisponiveis = useMemo(
+    () => tagsParaFiltro(tagsSetor, colaboradorSetores, tagsPermitidas),
+    [tagsSetor, colaboradorSetores, tagsPermitidas],
+  )
+
+  // Permissão manda sobre escolha: pedir uma tag fora do recorte não amplia.
+  const filtroAtivo = useMemo(
+    () => filtroEfetivo(tagsPermitidas, tagFilter),
+    [tagsPermitidas, tagFilter],
+  )
+
+  const npsPorColaborador = useMemo(() => agruparNpsPorColaborador(linhasNPS), [linhasNPS])
+
+  // NPS recalculado pelo recorte ativo: com "Pit Stop" selecionado, a nota do
+  // atendente conta só os atendimentos do Pit Stop.
+  const mediasNPS = useMemo(() => {
+    const medias = new Map<string, { media: number; total: number }>()
+    for (const [colaboradorId, linhas] of npsPorColaborador) {
+      const nps = npsDoAtendente(linhas, filtroAtivo)
+      if (nps) medias.set(colaboradorId, nps)
+    }
+    return medias
+  }, [npsPorColaborador, filtroAtivo])
+
   // Filtro da busca memoizado + deferido: digitar não trava a UI e a lista só
   // recalcula quando colaboradores/termo mudam (não a cada render do polling).
   const deferredSearch = useDeferredValue(searchTerm)
   const colaboradoresFiltrados = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase()
-    if (!q) return colaboradores
-    return colaboradores.filter(
-      (c) => c.nome.toLowerCase().includes(q) || c.email.toLowerCase().includes(q),
-    )
-  }, [colaboradores, deferredSearch])
+    return colaboradores.filter((c) => {
+      if (tagsPermitidas !== null && filtroAtivo.length === 0) return false
+      if (!atendenteNoFiltro(tagsDoColaborador.get(c.id) || [], filtroAtivo)) return false
+      if (!q) return true
+      return c.nome.toLowerCase().includes(q) || c.email.toLowerCase().includes(q)
+    })
+  }, [colaboradores, deferredSearch, tagsDoColaborador, filtroAtivo, tagsPermitidas])
 
   async function fetchData() {
     setLoading(true)
     try {
-      // As 5 buscas são independentes. O caminho RÁPIDO dispara tudo em paralelo
+      // As 6 buscas são independentes. O caminho RÁPIDO dispara tudo em paralelo
       // via REST cru (o supabase-js no browser serializaria pelo auth lock).
       // Se o token não estiver acessível, cai no FALLBACK via supabase-js
       // (correto, porém serializado) — nunca deixa a tela vazia por isso.
@@ -231,8 +313,9 @@ export default function ColaboradoresPage() {
       let colaboradoresData: any[] = []
       let setoresData: Setor[] = []
       let permissoesData: Permissao[] = []
-      let colabSetoresData: { colaborador_id: string; setor_id: string }[] = []
-      let avaliacoesData: { colaborador_id: string; nota: number }[] = []
+      let colabSetoresData: VinculoSetor[] = []
+      let npsData: LinhaNps[] = []
+      let tagsSetorData: TagSetor[] = []
 
       if (token) {
         const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
@@ -247,54 +330,74 @@ export default function ColaboradoresPage() {
         // de carregar os vínculos — um `!inner` aqui escondia o atendente sem
         // setor da única tela onde ele poderia ser corrigido.
         const r = await Promise.all([
-          rest(
-            'colaboradores?select=*,setor:setores(id,nome),permissao:permissoes(id,nome)&order=created_at.desc',
+          todasAsLinhas<any>((de, ate) =>
+            rest(
+              `colaboradores?select=*,setor:setores(id,nome),permissao:permissoes(id,nome)&order=created_at.desc&offset=${de}&limit=${ate - de + 1}`,
+            ),
           ),
           rest('setores?select=id,nome&order=nome'),
           rest('permissoes?select=id,nome,can_view_dashboard&order=nome'),
-          rest('colaboradores_setores?select=colaborador_id,setor_id'),
-          rest('avaliacoes?select=colaborador_id,nota'),
+          todasAsLinhas<VinculoSetor>((de, ate) =>
+            rest(`colaboradores_setores?select=colaborador_id,setor_id,tag_setor_id&order=colaborador_id&offset=${de}&limit=${ate - de + 1}`),
+          ),
+          todasAsLinhas<LinhaNps>((de, ate) =>
+            rest(
+              `vw_nps_colaborador_tag_setor?select=colaborador_id,tag_setor_id,total,soma_notas&order=colaborador_id&offset=${de}&limit=${ate - de + 1}`,
+            ),
+          ),
+          rest(`tags_setor?select=id,nome,cor,ordem,setor_id&order=ordem&order=nome&limit=200`),
         ])
         colaboradoresData = r[0] || []
         setoresData = r[1] || []
         permissoesData = r[2] || []
         colabSetoresData = r[3] || []
-        avaliacoesData = r[4] || []
+        npsData = r[4] || []
+        tagsSetorData = r[5] || []
       } else {
-        const [colaboradoresRes, setoresRes, permissoesRes, colabSetoresRes, avaliacoesRes] =
+        const [colaboradoresRes, setoresRes, permissoesRes, colabSetoresRes, npsRes, tagsSetorRes] =
           await Promise.all([
-            supabase
-              .from('colaboradores')
-              .select('*, setor:setores(id, nome), permissao:permissoes(id, nome)')
-              .order('created_at', { ascending: false }),
+            todasAsLinhas(async (de, ate) => {
+              const { data } = await supabase
+                .from('colaboradores')
+                .select('*, setor:setores(id, nome), permissao:permissoes(id, nome)')
+                .order('created_at', { ascending: false })
+                .range(de, ate)
+              return data || []
+            }),
             supabase.from('setores').select('id, nome').order('nome'),
             supabase.from('permissoes').select('id, nome, can_view_dashboard').order('nome'),
-            supabase.from('colaboradores_setores').select('colaborador_id, setor_id'),
-            supabase.from('avaliacoes').select('colaborador_id, nota'),
+            todasAsLinhas(async (de, ate) => {
+              const { data } = await supabase
+                .from('colaboradores_setores')
+                .select('colaborador_id, setor_id, tag_setor_id')
+                .order('colaborador_id')
+                .range(de, ate)
+              return (data as VinculoSetor[]) || []
+            }),
+            todasAsLinhas(async (de, ate) => {
+              const { data } = await supabase
+                .from('vw_nps_colaborador_tag_setor')
+                .select('colaborador_id, tag_setor_id, total, soma_notas')
+                .order('colaborador_id')
+                .range(de, ate)
+              return (data as LinhaNps[]) || []
+            }),
+            supabase.from('tags_setor').select('id, nome, cor, ordem, setor_id').order('ordem').order('nome').limit(200),
           ])
-        colaboradoresData = colaboradoresRes.data || []
+        colaboradoresData = colaboradoresRes
         setoresData = (setoresRes.data as Setor[]) || []
         permissoesData = (permissoesRes.data as Permissao[]) || []
-        colabSetoresData = colabSetoresRes.data || []
-        avaliacoesData = (avaliacoesRes.data as { colaborador_id: string; nota: number }[]) || []
+        colabSetoresData = colabSetoresRes
+        npsData = npsRes
+        tagsSetorData = (tagsSetorRes.data as TagSetor[]) || []
       }
 
       setColaboradores(filtrarAtendentes(colaboradoresData, colabSetoresData, permissoesData))
       setSetores(setoresData)
       setPermissoes(permissoesData)
       setColaboradorSetores(colabSetoresData)
-
-      // NPS por colaborador (média das notas em avaliacoes)
-      const npsMap = new Map<string, { media: number; total: number }>()
-      const grouped = new Map<string, number[]>()
-      for (const a of avaliacoesData) {
-        if (!grouped.has(a.colaborador_id)) grouped.set(a.colaborador_id, [])
-        grouped.get(a.colaborador_id)!.push(a.nota)
-      }
-      for (const [id, notas] of grouped) {
-        npsMap.set(id, { media: notas.reduce((s, n) => s + n, 0) / notas.length, total: notas.length })
-      }
-      setMediasNPS(npsMap)
+      setLinhasNPS(npsData)
+      setTagsSetor(tagsSetorData)
     } catch (err) {
       console.error('[Atendentes] Erro ao carregar dados:', err)
     } finally {
@@ -405,7 +508,7 @@ export default function ColaboradoresPage() {
       if (error) throw error
       toast({
         title: 'Configuração salva',
-        description: `${colaboradorSetoresAtivos.nome} agora recebe tickets de ${novosSetores.length} setor(es).`,
+        description: `${colaboradorSetoresAtivos.nome} agora recebe tickets de ${novosSetores.length} canal(is).`,
       })
       setSetoresAtivosModalOpen(false)
       setColaboradorSetoresAtivos(null)
@@ -466,25 +569,39 @@ export default function ColaboradoresPage() {
         return
       }
 
-      // Update colaborador_setores join table
-      const { error: deleteAtendimentoError } = await supabase
-        .from('colaboradores_setores')
-        .delete()
-        .eq('colaborador_id', editingColaborador.id)
-      if (deleteAtendimentoError) {
-        setError('Erro ao atualizar setores de atendimento: ' + deleteAtendimentoError.message)
-        setSaving(false)
-        return
+      // Vínculos de atendimento por DIFERENÇA, não apaga-e-reinsere.
+      //
+      // O apaga-e-reinsere zerava `tag_setor_id` e `subsetor_id` de todos os
+      // canais a cada edição de nome — inclusive dos canais que o admin nem
+      // tocou. A tag é justamente o recorte de operação e o subsetor roteia
+      // ticket, então perder os dois calado é caro. Mexendo só no que mudou, o
+      // vínculo que continua preserva as duas colunas.
+      const setoresAtuais = new Set(getSetoresDoColaborador(editingColaborador.id))
+      const setoresDesejados = new Set(formData.setores_selecionados)
+      const paraRemover = [...setoresAtuais].filter((setorId) => !setoresDesejados.has(setorId))
+      const paraAdicionar = [...setoresDesejados].filter((setorId) => !setoresAtuais.has(setorId))
+
+      if (paraRemover.length > 0) {
+        const { error: deleteAtendimentoError } = await supabase
+          .from('colaboradores_setores')
+          .delete()
+          .eq('colaborador_id', editingColaborador.id)
+          .in('setor_id', paraRemover)
+        if (deleteAtendimentoError) {
+          setError('Erro ao atualizar canais de atendimento: ' + deleteAtendimentoError.message)
+          setSaving(false)
+          return
+        }
       }
 
-      if (formData.setores_selecionados.length > 0) {
-        const relations = formData.setores_selecionados.map((setorId) => ({
+      if (paraAdicionar.length > 0) {
+        const relations = paraAdicionar.map((setorId) => ({
           colaborador_id: editingColaborador.id,
           setor_id: setorId,
         }))
         const { error: insertAtendimentoError } = await supabase.from('colaboradores_setores').insert(relations)
         if (insertAtendimentoError) {
-          setError('Erro ao salvar setores de atendimento: ' + insertAtendimentoError.message)
+          setError('Erro ao salvar canais de atendimento: ' + insertAtendimentoError.message)
           setSaving(false)
           return
         }
@@ -495,7 +612,7 @@ export default function ColaboradoresPage() {
         .delete()
         .eq('colaborador_id', editingColaborador.id)
       if (deleteDashboardError) {
-        setError('Erro ao atualizar setores do dashboard: ' + deleteDashboardError.message)
+        setError('Erro ao atualizar canais do dashboard: ' + deleteDashboardError.message)
         setSaving(false)
         return
       }
@@ -507,7 +624,7 @@ export default function ColaboradoresPage() {
         }))
         const { error: insertDashboardError } = await supabase.from('colaborador_setores').insert(dashboardRelations)
         if (insertDashboardError) {
-          setError('Erro ao salvar setores do dashboard: ' + insertDashboardError.message)
+          setError('Erro ao salvar canais do dashboard: ' + insertDashboardError.message)
           setSaving(false)
           return
         }
@@ -591,7 +708,7 @@ export default function ColaboradoresPage() {
         }))
         const { error: insertAtendimentoError } = await supabase.from('colaboradores_setores').insert(relations)
         if (insertAtendimentoError) {
-          setError('Erro ao salvar setores de atendimento: ' + insertAtendimentoError.message)
+          setError('Erro ao salvar canais de atendimento: ' + insertAtendimentoError.message)
           setSaving(false)
           return
         }
@@ -604,7 +721,7 @@ export default function ColaboradoresPage() {
         }))
         const { error: insertDashboardError } = await supabase.from('colaborador_setores').insert(dashboardRelations)
         if (insertDashboardError) {
-          setError('Erro ao salvar setores do dashboard: ' + insertDashboardError.message)
+          setError('Erro ao salvar canais do dashboard: ' + insertDashboardError.message)
           setSaving(false)
           return
         }
@@ -663,10 +780,23 @@ export default function ColaboradoresPage() {
             Atendentes
           </h1>
           <p className="text-muted-foreground">
-            Gerencie atendentes e configure de quais setores cada um recebe tickets
+            Gerencie atendentes e configure de quais canais cada um recebe tickets
           </p>
         </div>
         <div className="flex flex-col gap-3 mt-4 sm:flex-row sm:items-center sm:mt-0">
+          {tagsDisponiveis.length > 0 && (
+            <MultiSelectFilter
+              icon={Layers}
+              placeholder="Todas as tags"
+              header="Tags de setor"
+              pluralWord="tags"
+              options={tagsDisponiveis.map((tag) => ({ id: tag.id, nome: tag.nome, cor: tag.cor }))}
+              selected={tagFilter}
+              onChange={setTagFilter}
+              open={tagFiltroOpen}
+              onOpenChange={setTagFiltroOpen}
+            />
+          )}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -692,6 +822,13 @@ export default function ColaboradoresPage() {
           <CardTitle className="flex items-center gap-2">
             <Users className="h-5 w-5 text-primary" />
             Lista de Colaboradores
+            {/* Deixa explícito que a lista está recortada — e o NPS junto com
+                ela, senão a nota parece ter mudado sozinha. */}
+            {filtroAtivo.length > 0 && (
+              <Badge variant="secondary" className="ml-1 font-normal">
+                {colaboradoresFiltrados.length} de {colaboradores.length} · NPS só desta operação
+              </Badge>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -711,6 +848,25 @@ export default function ColaboradoresPage() {
                 Comece cadastrando o primeiro colaborador
               </p>
             </div>
+          ) : colaboradoresFiltrados.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <div className="rounded-full bg-muted p-4">
+                <Layers className="h-8 w-8 text-muted-foreground" />
+              </div>
+              <h3 className="mt-4 text-lg font-semibold text-foreground">
+                Nenhum atendente neste recorte
+              </h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {filtroAtivo.length > 0
+                  ? 'Nenhum atendente tem essa tag de setor.'
+                  : 'Nenhum atendente corresponde à busca.'}
+              </p>
+              {tagFilter.length > 0 && (
+                <Button variant="outline" size="sm" className="mt-4" onClick={() => setTagFilter([])}>
+                  Limpar filtro de tag
+                </Button>
+              )}
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <Table>
@@ -718,7 +874,8 @@ export default function ColaboradoresPage() {
                   <TableRow>
                     <TableHead>Nome</TableHead>
                     <TableHead>E-mail</TableHead>
-                    <TableHead>Setores</TableHead>
+                    <TableHead>Tag de setor</TableHead>
+                    <TableHead>Canais de atendimento</TableHead>
                     <TableHead>Permissao</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>NPS</TableHead>
@@ -744,16 +901,50 @@ export default function ColaboradoresPage() {
                         <TableCell className="text-muted-foreground">
                           {colaborador.email}
                         </TableCell>
+                        <TableCell>
+                          {(() => {
+                            // Herdada dos canais — é isto que separa quem é do
+                            // Suporte Chat de quem é do Pit Stop.
+                            const tagIds = tagsDoColaborador.get(colaborador.id) || []
+                            const tags = tagIds
+                              .map((tagId: string) => tagsSetor.find((tag) => tag.id === tagId))
+                              .filter(Boolean) as TagSetor[]
+                            if (tags.length === 0) {
+                              return (
+                                <span
+                                  className="text-xs text-muted-foreground/60"
+                                  title="Nenhum canal deste atendente tem tag de setor"
+                                >
+                                  —
+                                </span>
+                              )
+                            }
+                            return (
+                              <div className="flex flex-wrap items-center gap-1">
+                                {tags.map((tag) => (
+                                  <Badge
+                                    key={tag.id}
+                                    variant="outline"
+                                    className="text-xs"
+                                    style={{ borderColor: tag.cor, color: tag.cor }}
+                                  >
+                                    {tag.nome}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )
+                          })()}
+                        </TableCell>
                         <TableCell className="text-muted-foreground">
                           {(() => {
                             const setorIds = getSetoresDoColaborador(colaborador.id)
-                            // Sem setor o atendente não recebe ticket nem
+                            // Sem canal o atendente não recebe ticket nem
                             // aparece no monitoramento — vale destacar, não
                             // registrar como um "Nenhum" qualquer.
                             if (setorIds.length === 0) {
                               return (
                                 <Badge variant="outline" className="text-xs border-destructive/40 text-destructive">
-                                  Sem setor
+                                  Sem canal
                                 </Badge>
                               )
                             }
@@ -853,12 +1044,12 @@ export default function ColaboradoresPage() {
                               disabled={getSetoresDoColaborador(colaborador.id).length === 0}
                               title={
                                 getSetoresDoColaborador(colaborador.id).length === 0
-                                  ? 'Vincule pelo menos 1 setor antes de configurar'
-                                  : 'Escolher de quais setores este atendente recebe tickets'
+                                  ? 'Vincule pelo menos 1 canal antes de configurar'
+                                  : 'Escolher de quais canais este atendente recebe tickets'
                               }
                             >
                               <Building2 className="mr-1 h-4 w-4" />
-                              Setores
+                              Canais
                             </Button>
                             <Button
                               variant="ghost"
@@ -991,7 +1182,7 @@ export default function ColaboradoresPage() {
             <div className="grid gap-2">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <Label className="text-foreground">
-                  Setores
+                  Canais de atendimento
                 </Label>
                 <span className="text-xs text-muted-foreground">
                   {formData.setores_selecionados.length} de {setores.length} selecionado(s)
@@ -1004,7 +1195,7 @@ export default function ColaboradoresPage() {
                     <Input
                       value={setorSearchTerm}
                       onChange={(event) => setSetorSearchTerm(event.target.value)}
-                      placeholder="Buscar setor"
+                      placeholder="Buscar canal"
                       className="h-9 pl-9"
                     />
                   </div>
@@ -1047,9 +1238,9 @@ export default function ColaboradoresPage() {
 
                 <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
                   {setores.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Nenhum setor cadastrado</p>
+                    <p className="text-sm text-muted-foreground">Nenhum canal cadastrado</p>
                   ) : setoresFiltrados.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Nenhum setor encontrado</p>
+                    <p className="text-sm text-muted-foreground">Nenhum canal encontrado</p>
                   ) : (
                     setoresFiltrados.map((setor) => {
                       const isSelected = formData.setores_selecionados.includes(setor.id)
@@ -1143,14 +1334,14 @@ export default function ColaboradoresPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-foreground">
               <Building2 className="h-5 w-5 text-primary" />
-              Configurar setores
+              Configurar canais
             </DialogTitle>
           </DialogHeader>
 
           <div className="space-y-3 py-2">
             <p className="text-sm text-muted-foreground">
               {colaboradorSetoresAtivos
-                ? <>Escolha de quais setores <strong className="text-foreground">{colaboradorSetoresAtivos.nome}</strong> vai receber novos tickets. Tickets já em andamento permanecem com ele.</>
+                ? <>Escolha de quais canais <strong className="text-foreground">{colaboradorSetoresAtivos.nome}</strong> vai receber novos tickets. Tickets já em andamento permanecem com ele.</>
                 : 'Carregando...'}
             </p>
 
@@ -1161,7 +1352,7 @@ export default function ColaboradoresPage() {
                 if (setorIds.length === 0) {
                   return (
                     <p className="text-sm text-muted-foreground text-center py-4">
-                      Atendente não está vinculado a nenhum setor.
+                      Atendente não está vinculado a nenhum canal.
                     </p>
                   )
                 }
@@ -1196,8 +1387,8 @@ export default function ColaboradoresPage() {
             </div>
 
             <div className="rounded-md bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">
-              <strong className="text-foreground">{setoresAtivosSelecionados.size}</strong> setor(es) selecionado(s).
-              Atendente sem nenhum setor ativo não receberá tickets, mesmo estando online.
+              <strong className="text-foreground">{setoresAtivosSelecionados.size}</strong> canal(is) selecionado(s).
+              Atendente sem nenhum canal ativo não receberá tickets, mesmo estando online.
             </div>
           </div>
 

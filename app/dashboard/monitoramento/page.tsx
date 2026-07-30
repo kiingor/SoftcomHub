@@ -447,7 +447,7 @@ export default function MonitoramentoPage() {
       // Fetch atendentes across all accessible setores
       const atendentesQuery = supabase
         .from('colaboradores_setores')
-        .select('setor_id, colaborador_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
+        .select('setor_id, colaborador_id, tag_setor_id, colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat)')
         .in('setor_id', targetSetorIds)
       const subsetorLinksQuery = subsetorFilter.length > 0
         ? supabase
@@ -480,12 +480,38 @@ export default function MonitoramentoPage() {
         )
       }
 
+      // Trava por tag de setor: o gestor da operação só monitora quem tem a
+      // mesma tag dele. A tag vem do vínculo, então vale por canal — juntamos as
+      // tags do gestor em todos os canais acessíveis. Somente master não é
+      // recortado; falta de tag nunca habilita a visão de todas as operações.
+      const minhasTagsSetor = new Set<string>()
+      for (const a of atendentesData || []) {
+        if ((a as any).colaborador_id === colaborador?.id && (a as any).tag_setor_id) {
+          minhasTagsSetor.add((a as any).tag_setor_id)
+        }
+      }
+      const recortaPorTag = colaborador?.is_master !== true
+      const tagsDoAtendente = new Map<string, Set<string>>()
+      for (const a of atendentesData || []) {
+        const id = (a as any).colaborador_id
+        if (!tagsDoAtendente.has(id)) tagsDoAtendente.set(id, new Set())
+        if ((a as any).tag_setor_id) tagsDoAtendente.get(id)!.add((a as any).tag_setor_id)
+      }
+      const visivelPelaTag = (colaboradorId: string) => {
+        if (!recortaPorTag) return true
+        if (minhasTagsSetor.size === 0) return false
+        const suas = tagsDoAtendente.get(colaboradorId)
+        if (!suas || suas.size === 0) return false
+        for (const tag of suas) if (minhasTagsSetor.has(tag)) return true
+        return false
+      }
+
       // Deduplicate atendentes (same person can be in multiple setores)
       const atendentesMap = new Map()
       for (const a of atendentesData || []) {
         if (!matchesAttendantSubsetor(a)) continue
         const colab = (a as any).colaboradores
-        if (colab?.ativo && !atendentesMap.has(colab.id)) {
+        if (colab?.ativo && !atendentesMap.has(colab.id) && visivelPelaTag(colab.id)) {
           atendentesMap.set(colab.id, colab)
         }
       }
