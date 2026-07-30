@@ -7355,9 +7355,11 @@ const saveConfig = async () => {
                   .slice(0, 2)
                   .join('')
                   .toUpperCase() || 'AT'
-                const ticketsDoAtendente = tickets.filter(
-                  (t: any) => t.colaborador_id === atendente.id && t.status === 'em_atendimento'
-                ).length
+                // Mesma contagem da aba Atendentes do monitoramento — contar
+                // aqui à parte ignorava o filtro de subsetor (que é compartilhado
+                // pelas duas telas) e o mesmo atendente aparecia com números
+                // diferentes em cada uma.
+                const ticketsDoAtendente = activeTicketCountByAttendant.get(atendente.id) || 0
 
                 return (
                   <Card key={atendente.id} className="rounded-lg transition-colors hover:border-[var(--border-strong)]">
