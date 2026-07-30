@@ -1474,6 +1474,12 @@ function SetorPageInner() {
   const [tagSetorFilter, setTagSetorFilter] = useState(() => (
     searchParams.get('tags')?.split(',').filter(Boolean) || []
   ))
+  const [relatorioSubsetorFilter, setRelatorioSubsetorFilter] = useState(() => (
+    searchParams.get('subsetores')?.split(',').filter(Boolean) || []
+  ))
+  const [relatorioAtendenteFilter, setRelatorioAtendenteFilter] = useState(() => (
+    searchParams.get('atendentes')?.split(',').filter(Boolean) || []
+  ))
   // Subsetor acompanhado na coluna lateral do Monitoramento. Guardado por
   // gestor + setor, como o filtro rápido — a escolha é dele.
   // Cada card de tempo real tem o seu recorte. O principal nasce sem filtro
@@ -1488,6 +1494,8 @@ function SetorPageInner() {
   const [quickSubsetorFiltroOpen, setQuickSubsetorFiltroOpen] = useState(false)
   const [quickTagSetorFiltroOpen, setQuickTagSetorFiltroOpen] = useState(false)
   const [relatorioTagSetorFiltroOpen, setRelatorioTagSetorFiltroOpen] = useState(false)
+  const [relatorioSubsetorFiltroOpen, setRelatorioSubsetorFiltroOpen] = useState(false)
+  const [relatorioAtendenteFiltroOpen, setRelatorioAtendenteFiltroOpen] = useState(false)
   // Começam no padrão e são substituídos pelo valor salvo logo após a montagem:
   // ler o storage no inicializador quebraria a renderização no servidor.
   const [monitoringPageSize, setMonitoringPageSize] = useState<number>(PAGE_SIZE_PADRAO)
@@ -2068,11 +2076,11 @@ function SetorPageInner() {
   const { data: prevRelatorioData } = useSWR(
     setorId && prevPeriod ? ['setor-relatorio-prev', setorId, prevPeriod.from, prevPeriod.to] : null,
     async () => {
-      // Paginado pelo mesmo motivo do período atual — o teto de 1.000 falseava
-      // a base de comparação.
+      // `subsetor_id` permite aplicar os mesmos filtros no período anterior;
+      // sem ele, o delta compararia o recorte escolhido com o setor inteiro.
       return await loadRowsByPages(() => supabase
         .from('tickets')
-        .select('colaborador_id, criado_em, status, primeira_resposta_em, encerrado_em, canal, colaboradores(nome), clientes(nome, telefone, CNPJ)')
+        .select('colaborador_id, criado_em, status, primeira_resposta_em, encerrado_em, canal, subsetor_id, colaboradores(nome), clientes(nome, telefone, CNPJ)')
         .eq('setor_id', setorId)
         .gte('criado_em', prevPeriod!.from)
         .lte('criado_em', prevPeriod!.to)
@@ -2247,14 +2255,26 @@ function SetorPageInner() {
     [idsAtendentesNoFiltroTag],
   )
 
+  const matchesTicketRelatorioFilters = useCallback(
+    (ticket: { colaborador_id?: string | null; subsetor_id?: string | null }) => {
+      if (!matchesTicketTagFilter(ticket)) return false
+      if (
+        relatorioAtendenteFilter.length > 0
+        && !relatorioAtendenteFilter.includes(ticket.colaborador_id || '')
+      ) return false
+      return matchesSubsetorFilter(relatorioSubsetorFilter, ticket.subsetor_id)
+    },
+    [matchesTicketTagFilter, relatorioAtendenteFilter, relatorioSubsetorFilter],
+  )
+
   const ticketsRelatorioFiltrados = useMemo(
-    () => ticketsRelatorioRaw.filter(matchesTicketTagFilter),
-    [matchesTicketTagFilter, ticketsRelatorioRaw],
+    () => ticketsRelatorioRaw.filter(matchesTicketRelatorioFilters),
+    [matchesTicketRelatorioFilters, ticketsRelatorioRaw],
   )
 
   const ticketsRelatorioAnteriorFiltrados = useMemo(
-    () => prevRelatorioData?.filter(matchesTicketTagFilter),
-    [matchesTicketTagFilter, prevRelatorioData],
+    () => prevRelatorioData?.filter(matchesTicketRelatorioFilters),
+    [matchesTicketRelatorioFilters, prevRelatorioData],
   )
 
   // Lookup global de setores — usado pra reescrever descrições antigas de
@@ -2342,13 +2362,15 @@ function SetorPageInner() {
       }
       if (searchCliente.trim()) next.set('cliente', searchCliente.trim())
       if (tagSetorFilter.length > 0) next.set('tags', tagSetorFilter.join(','))
+      if (relatorioSubsetorFilter.length > 0) next.set('subsetores', relatorioSubsetorFilter.join(','))
+      if (relatorioAtendenteFilter.length > 0) next.set('atendentes', relatorioAtendenteFilter.join(','))
       const qs = next.toString()
       const pathname = window.location.pathname
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
     }, 350)
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFilter, customRange, searchCliente, tagSetorFilter])
+  }, [dateFilter, customRange, searchCliente, tagSetorFilter, relatorioSubsetorFilter, relatorioAtendenteFilter])
 
   // Gráficos de Demanda com filtro de período próprio (independente do filtro global)
   const [volumePeriod, setVolumePeriod] = useState('7')
@@ -2356,6 +2378,7 @@ function SetorPageInner() {
   const [chartTickets, setChartTickets] = useState<{
     criado_em: string
     colaborador_id: string | null
+    subsetor_id: string | null
   }[]>([])
   const [chartTicketsLoaded, setChartTicketsLoaded] = useState(false)
   // Busca só a maior janela em uso entre os dois gráficos, e pagina até esgotar.
@@ -2372,11 +2395,11 @@ function SetorPageInner() {
     ;(async () => {
       const cutoff = new Date(chartPeriodCutoffMs(chartFetchDays)).toISOString()
       const PAGINA = 1000
-      const todos: { criado_em: string; colaborador_id: string | null }[] = []
+      const todos: { criado_em: string; colaborador_id: string | null; subsetor_id: string | null }[] = []
       for (let inicio = 0; ; inicio += PAGINA) {
         const { data, error } = await supabase
           .from('tickets')
-          .select('criado_em, colaborador_id')
+          .select('criado_em, colaborador_id, subsetor_id')
           .eq('setor_id', setorId)
           .gte('criado_em', cutoff)
           .order('criado_em', { ascending: false })
@@ -2398,8 +2421,8 @@ function SetorPageInner() {
     return () => { cancelled = true }
   }, [setorId, chartFetchDays])
   const chartTicketsFiltrados = useMemo(() => {
-    return chartTickets.filter(matchesTicketTagFilter)
-  }, [chartTickets, matchesTicketTagFilter])
+    return chartTickets.filter(matchesTicketRelatorioFilters)
+  }, [chartTickets, matchesTicketRelatorioFilters])
   // Fonte dos gráficos: fetch dedicado no recorte dos filtros; até ele concluir,
   // usa os tickets do relatório já filtrados para não misturar resultados.
   const chartSource = chartTicketsLoaded ? chartTicketsFiltrados : ticketsRelatorioFiltrados
@@ -3157,6 +3180,30 @@ function SetorPageInner() {
         cor: a.is_online && !a.pausa_atual_id ? '#22c55e' : a.pausa_atual_id ? '#eab308' : '#9ca3af',
       }))
   }, [atendentes, idsAtendentesPermitidos, matchesAtendenteTagFilter, tagsPermitidasNosTickets, tickets])
+
+  // O relatório também permite selecionar quem não está mais ativo no canal,
+  // mas ainda possui atendimentos no período escolhido. O catálogo respeita
+  // a tag de operação, para nunca oferecer alguém fora do recorte permitido.
+  const relatorioAtendenteFiltroOptions = useMemo(() => {
+    const idsExistentes = new Set(atendenteFiltroOptions.map((atendente) => atendente.id))
+    const historicos = new Map<string, { id: string; nome: string; cor: null }>()
+
+    for (const ticket of ticketsRelatorioRaw as any[]) {
+      if (!ticket.colaborador_id || idsExistentes.has(ticket.colaborador_id)) continue
+      if (!matchesTicketTagFilter(ticket)) continue
+
+      const colaborador = Array.isArray(ticket.colaboradores)
+        ? ticket.colaboradores[0]
+        : ticket.colaboradores
+      const nome = colaborador?.nome?.trim()
+      if (nome) historicos.set(ticket.colaborador_id, { id: ticket.colaborador_id, nome, cor: null })
+    }
+
+    return [
+      ...atendenteFiltroOptions,
+      ...Array.from(historicos.values()).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')),
+    ]
+  }, [atendenteFiltroOptions, matchesTicketTagFilter, ticketsRelatorioRaw])
 
   const subsetorFiltroOptions = useMemo(
     () => [
@@ -6380,6 +6427,32 @@ const saveConfig = async () => {
               <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
                 Filtrar:
               </span>
+              {(subsetorFiltroOptions.length > 1 || relatorioSubsetorFilter.length > 0) && (
+                <MultiSelectFilter
+                  icon={Layers}
+                  placeholder="Subsetores"
+                  header="Filtrar relatórios por subsetor"
+                  pluralWord="subsetores"
+                  options={subsetorFiltroOptions}
+                  selected={relatorioSubsetorFilter}
+                  onChange={setRelatorioSubsetorFilter}
+                  open={relatorioSubsetorFiltroOpen}
+                  onOpenChange={setRelatorioSubsetorFiltroOpen}
+                  searchable
+                />
+              )}
+              <MultiSelectFilter
+                icon={User}
+                placeholder="Atendentes"
+                header="Filtrar relatórios por atendente"
+                pluralWord="atendentes"
+                options={relatorioAtendenteFiltroOptions}
+                selected={relatorioAtendenteFilter}
+                onChange={setRelatorioAtendenteFilter}
+                open={relatorioAtendenteFiltroOpen}
+                onOpenChange={setRelatorioAtendenteFiltroOpen}
+                searchable
+              />
               <MultiSelectFilter
                 icon={Tag}
                 placeholder="Tags"
