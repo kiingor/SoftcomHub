@@ -73,3 +73,17 @@ test('mantém compatibilidade com tickets antigos sem eventos estruturados', () 
   assert.equal(tempos.atendimentoAtualEm, '2026-07-31T08:00:00.000Z')
   assert.equal(tempos.setorAtualEm, '2026-07-31T08:00:00.000Z')
 })
+
+test('usa a última transferência legada para o tempo do atendente', () => {
+  const tempos = resolverIniciosTempoTransferencia(
+    ticketBase,
+    [],
+    [
+      { tipo: 'transferencia', criado_em: '2026-07-31T09:00:00.000Z' },
+      { tipo: 'transferencia_automatica', criado_em: '2026-07-31T10:00:00.000Z' },
+    ],
+  )
+
+  assert.equal(tempos.atendimentoAtualEm, '2026-07-31T10:00:00.000Z')
+  assert.equal(tempos.setorAtualEm, '2026-07-31T08:00:00.000Z')
+})
