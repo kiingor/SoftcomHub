@@ -707,7 +707,7 @@ const ROTULO_PROPORCAO: Record<ProporcaoLinha1, string> = {
 // Cards selecionáveis no relatório (mostrar/ocultar via "Personalizar")
 const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
 const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
-const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v5'
+const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v6'
 const RELATORIO_ORDER_STORAGE_KEY = 'setor-relatorio-order-v1'
 
 // Preferência do filtro de subsetor no Monitoramento (aba Atendentes + filtro
@@ -719,12 +719,12 @@ function getAtendentesSubsetorFiltroStorageKey(colaboradorId: string, setorId: s
 
 // Tamanho padrão (em colunas de 12 / linhas de grid) de cada card
 const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
-  kpiPrimeiraResposta: { w: 4, h: 2 },
-  kpiResolucao: { w: 4, h: 2 },
-  kpiRecebidos: { w: 4, h: 2 },
-  kpiResolvidos: { w: 4, h: 2 },
-  kpiTaxa: { w: 4, h: 2 },
-  kpiNps: { w: 4, h: 2 },
+  kpiPrimeiraResposta: { w: 4, h: 1 },
+  kpiResolucao: { w: 4, h: 1 },
+  kpiRecebidos: { w: 4, h: 1 },
+  kpiResolvidos: { w: 4, h: 1 },
+  kpiTaxa: { w: 4, h: 1 },
+  kpiNps: { w: 4, h: 1 },
   saudeFila: { w: 6, h: 4 },
   maiorEspera: { w: 6, h: 4 },
   volume: { w: 6, h: 5 },
@@ -800,23 +800,23 @@ const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
 // É o layout inicial de todos os setores enquanto o usuário não personalizar.
 // Cards ausentes aqui (ex.: 'canal') começam ocultos. Ordenado por leitura (y, x).
 const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
-  { i: 'kpiPrimeiraResposta', x: 0, y: 0, w: 4, h: 2 },
-  { i: 'kpiResolucao', x: 4, y: 0, w: 4, h: 2 },
-  { i: 'kpiRecebidos', x: 8, y: 0, w: 4, h: 2 },
-  { i: 'kpiResolvidos', x: 0, y: 2, w: 4, h: 2 },
-  { i: 'kpiTaxa', x: 4, y: 2, w: 4, h: 2 },
-  { i: 'kpiNps', x: 8, y: 2, w: 4, h: 2 },
-  { i: 'volume', x: 0, y: 4, w: 6, h: 5 },
-  { i: 'rankTipo', x: 6, y: 4, w: 3, h: 4 },
-  { i: 'nps', x: 9, y: 4, w: 3, h: 4 },
-  { i: 'heatmap', x: 6, y: 8, w: 4, h: 8 },
-  { i: 'status', x: 10, y: 8, w: 2, h: 4 },
-  { i: 'sla', x: 0, y: 9, w: 6, h: 5 },
-  { i: 'roteamento', x: 10, y: 12, w: 2, h: 4 },
-  { i: 'rankAtendente', x: 0, y: 14, w: 6, h: 7 },
-  { i: 'rankPDV', x: 6, y: 16, w: 6, h: 5 },
-  { i: 'matrizTipoTecnico', x: 0, y: 21, w: 12, h: 6 },
-  { i: 'tabela', x: 0, y: 27, w: 12, h: 7 },
+  { i: 'kpiPrimeiraResposta', x: 0, y: 0, w: 4, h: 1 },
+  { i: 'kpiResolucao', x: 4, y: 0, w: 4, h: 1 },
+  { i: 'kpiRecebidos', x: 8, y: 0, w: 4, h: 1 },
+  { i: 'kpiResolvidos', x: 0, y: 1, w: 4, h: 1 },
+  { i: 'kpiTaxa', x: 4, y: 1, w: 4, h: 1 },
+  { i: 'kpiNps', x: 8, y: 1, w: 4, h: 1 },
+  { i: 'volume', x: 0, y: 2, w: 6, h: 5 },
+  { i: 'rankTipo', x: 6, y: 2, w: 3, h: 4 },
+  { i: 'nps', x: 9, y: 2, w: 3, h: 4 },
+  { i: 'heatmap', x: 6, y: 6, w: 4, h: 8 },
+  { i: 'status', x: 10, y: 6, w: 2, h: 4 },
+  { i: 'sla', x: 0, y: 7, w: 6, h: 5 },
+  { i: 'roteamento', x: 10, y: 10, w: 2, h: 4 },
+  { i: 'rankAtendente', x: 0, y: 12, w: 6, h: 7 },
+  { i: 'rankPDV', x: 6, y: 14, w: 6, h: 5 },
+  { i: 'matrizTipoTecnico', x: 0, y: 19, w: 12, h: 6 },
+  { i: 'tabela', x: 0, y: 25, w: 12, h: 7 },
 ]
 
 const RELATORIO_KPI_IDS = new Set([
@@ -6500,8 +6500,8 @@ const saveConfig = async () => {
               layouts={reportResponsiveLayouts}
               breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
               cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-              rowHeight={64}
-              margin={[16, 16]}
+              rowHeight={72}
+              margin={[12, 12]}
               isDraggable={editMode}
               isResizable={editMode}
               draggableHandle=".report-drag-handle"
@@ -6513,18 +6513,18 @@ const saveConfig = async () => {
             {visibleCards.kpiPrimeiraResposta && (
             <div key="kpiPrimeiraResposta" className="overflow-hidden">
             <ReportWidget {...wprops('kpiPrimeiraResposta')}>
-              <Card className="glass-card-elevated rounded-lg h-full">
-                <CardContent className="p-5 h-full flex items-center">
-                  <div className="flex w-full items-start justify-between">
-                    <div className="space-y-4">
+              <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
+                <CardContent className="flex h-full items-center p-2">
+                  <div className="flex w-full items-center justify-between">
+                    <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Tempo médio 1a resposta</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioPrimeiraResposta}</p>
+                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.tempoMedioPrimeiraResposta}</p>
                         <DeltaBadge current={kpiAtual.tmaPrimeiraRespostaMs} previous={kpiAnterior?.tmaPrimeiraRespostaMs} invert />
                       </div>
                     </div>
-                    <div className="h-9 w-9 rounded-lg bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
-                      <Timer className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-50 dark:bg-blue-950/30">
+                      <Timer aria-hidden="true" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6536,18 +6536,18 @@ const saveConfig = async () => {
             {visibleCards.kpiResolucao && (
             <div key="kpiResolucao" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolucao')}>
-              <Card className="glass-card-elevated rounded-lg h-full">
-                <CardContent className="p-5 h-full flex items-center">
-                  <div className="flex w-full items-start justify-between">
-                    <div className="space-y-4">
+              <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
+                <CardContent className="flex h-full items-center p-2">
+                  <div className="flex w-full items-center justify-between">
+                    <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Tempo médio resolução</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.tempoMedioResolucao}</p>
+                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.tempoMedioResolucao}</p>
                         <DeltaBadge current={kpiAtual.tmaResolucaoMs} previous={kpiAnterior?.tmaResolucaoMs} invert />
                       </div>
                     </div>
-                    <div className="h-9 w-9 rounded-lg bg-green-50 dark:bg-green-950/30 flex items-center justify-center">
-                      <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-green-50 dark:bg-green-950/30">
+                      <CheckCircle aria-hidden="true" className="h-4 w-4 text-green-600 dark:text-green-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6559,18 +6559,18 @@ const saveConfig = async () => {
             {visibleCards.kpiRecebidos && (
             <div key="kpiRecebidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiRecebidos')}>
-              <Card className="glass-card-elevated rounded-lg h-full">
-                <CardContent className="p-5 h-full flex items-center">
-                  <div className="flex w-full items-start justify-between">
-                    <div className="space-y-4">
+              <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
+                <CardContent className="flex h-full items-center p-2">
+                  <div className="flex w-full items-center justify-between">
+                    <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Tickets recebidos</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalRecebidos}</p>
+                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.totalRecebidos}</p>
                         <DeltaBadge current={kpiAtual.recebidos} previous={kpiAnterior?.recebidos} />
                       </div>
                     </div>
-                    <div className="h-9 w-9 rounded-lg bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center">
-                      <TrendingUp className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-amber-50 dark:bg-amber-950/30">
+                      <TrendingUp aria-hidden="true" className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6582,18 +6582,18 @@ const saveConfig = async () => {
             {visibleCards.kpiResolvidos && (
             <div key="kpiResolvidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolvidos')}>
-              <Card className="glass-card-elevated rounded-lg h-full">
-                <CardContent className="p-5 h-full flex items-center">
-                  <div className="flex w-full items-start justify-between">
-                    <div className="space-y-4">
+              <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
+                <CardContent className="flex h-full items-center p-2">
+                  <div className="flex w-full items-center justify-between">
+                    <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Tickets resolvidos</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.totalResolvidos}</p>
+                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.totalResolvidos}</p>
                         <DeltaBadge current={kpiAtual.resolvidos} previous={kpiAnterior?.resolvidos} />
                       </div>
                     </div>
-                    <div className="h-9 w-9 rounded-lg bg-purple-50 dark:bg-purple-950/30 flex items-center justify-center">
-                      <UserCheck className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-purple-50 dark:bg-purple-950/30">
+                      <UserCheck aria-hidden="true" className="h-4 w-4 text-purple-600 dark:text-purple-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6605,18 +6605,18 @@ const saveConfig = async () => {
             {visibleCards.kpiTaxa && (
             <div key="kpiTaxa" className="overflow-hidden">
             <ReportWidget {...wprops('kpiTaxa')}>
-              <Card className="glass-card-elevated rounded-lg h-full">
-                <CardContent className="p-5 h-full flex items-center">
-                  <div className="flex w-full items-start justify-between">
-                    <div className="space-y-4">
+              <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
+                <CardContent className="flex h-full items-center p-2">
+                  <div className="flex w-full items-center justify-between">
+                    <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Taxa de resolução</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-xl lg:text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.taxaResolucao}%</p>
+                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.taxaResolucao}%</p>
                         <DeltaBadge current={kpiAtual.taxaResolucao} previous={kpiAnterior?.taxaResolucao} />
                       </div>
                     </div>
-                    <div className="h-9 w-9 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center">
-                      <Activity className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-50 dark:bg-emerald-950/30">
+                      <Activity aria-hidden="true" className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6628,25 +6628,25 @@ const saveConfig = async () => {
             {visibleCards.kpiNps && (
             <div key="kpiNps" className="overflow-hidden">
             <ReportWidget {...wprops('kpiNps')}>
-              <Card className="glass-card-elevated rounded-lg h-full">
-                <CardContent className="p-5 h-full flex items-center">
-                  <div className="flex w-full items-start justify-between">
-                    <div className="space-y-4">
+              <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
+                <CardContent className="flex h-full items-center p-2">
+                  <div className="flex w-full items-center justify-between">
+                    <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">NPS Score</p>
                       <div>
                         <p className={cn(
-                          "text-xl lg:text-2xl font-semibold tracking-tight tabular-nums",
+                          "text-lg font-semibold tracking-tight tabular-nums lg:text-xl",
                           relatorioStats.npsScore >= 50 ? 'text-green-600' :
                           relatorioStats.npsScore >= 0 ? 'text-yellow-600' :
                           'text-red-600'
                         )}>
                           {relatorioStats.totalAvaliacoes > 0 ? relatorioStats.npsScore : '—'}
                         </p>
-                        <p className="text-[10px] text-muted-foreground mt-1">{relatorioStats.totalAvaliacoes} avaliações</p>
+                        <p className="mt-0 text-[10px] text-muted-foreground">{relatorioStats.totalAvaliacoes} avaliações</p>
                       </div>
                     </div>
-                    <div className="h-9 w-9 rounded-lg bg-rose-50 dark:bg-rose-950/30 flex items-center justify-center">
-                      <Star className="h-5 w-5 text-rose-600 dark:text-rose-400" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-rose-50 dark:bg-rose-950/30">
+                      <Star aria-hidden="true" className="h-4 w-4 text-rose-600 dark:text-rose-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -8062,21 +8062,21 @@ const saveConfig = async () => {
 
     {/* Configurações Section */}
     {activeSection === 'configuracoes' && (
-      <div className="space-y-6">
+      <div className="space-y-4 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-content]]:px-4 [&_[data-slot=card-header]]:gap-1 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-header]]:pb-0">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Configurações do Setor</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-xl font-semibold tracking-tight">Configurações do Setor</h1>
+          <p className="text-sm text-muted-foreground">
             Personalize as informações e aparência do setor
           </p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2">
           {/* Basic info */}
           <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle>Informações Básicas</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div className="space-y-2">
                 <Label htmlFor="nome">Nome do Setor</Label>
                 <Input
@@ -8097,7 +8097,7 @@ const saveConfig = async () => {
                     setConfigForm((prev) => ({ ...prev, descricao: e.target.value }))
                   }
                   placeholder="Descreva as responsabilidades deste setor..."
-                  rows={4}
+                  rows={3}
                 />
               </div>
 
@@ -8188,14 +8188,14 @@ const saveConfig = async () => {
             <CardHeader>
               <CardTitle>Aparencia do Setor</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               {/* Preview inline */}
-              <div className="flex items-center gap-4 p-3 rounded-lg bg-muted/50">
+              <div className="flex items-center gap-3 rounded-md bg-muted/50 p-2.5">
                 <div
-                  className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
                   style={{ backgroundColor: configForm.cor }}
                 >
-                  <IconComponent className="h-7 w-7 text-white" />
+                  <IconComponent className="h-5 w-5 text-white" />
                 </div>
                 <div>
                   <h3 className="font-semibold">{configForm.nome || 'Nome do Setor'}</h3>
@@ -8266,7 +8266,7 @@ const saveConfig = async () => {
               Configure para qual setor cada tipo de atendimento sera redirecionado quando identificado pelo bot.
             </p>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-2">
             {[
               { key: 'suporte', label: 'Suporte Tecnico', icon: Headphones, color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400', desc: 'Duvidas tecnicas e problemas com o sistema' },
               { key: 'comercial', label: 'Comercial', icon: ShoppingCart, color: 'bg-green-500/10 text-green-600 dark:text-green-400', desc: 'Vendas, propostas e negociacoes' },
@@ -8277,9 +8277,9 @@ const saveConfig = async () => {
               const IconComponent = tipo.icon
               const selectedSetor = todosSetores.find(s => s.id === tiposAtendimentoSetor[tipo.key])
               return (
-                <div key={tipo.key} className="flex items-center gap-4 p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
-                  <div className={cn("flex items-center justify-center h-12 w-12 rounded-lg shrink-0", tipo.color)}>
-                    <IconComponent className="h-6 w-6" />
+                <div key={tipo.key} className="flex flex-col gap-2 rounded-md border bg-card p-2.5 transition-colors hover:bg-accent/50 sm:flex-row sm:items-center sm:gap-3">
+                  <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-md", tipo.color)}>
+                    <IconComponent aria-hidden="true" className="h-4 w-4" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -8290,7 +8290,7 @@ const saveConfig = async () => {
                         </Badge>
                       )}
                     </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">{tipo.desc}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{tipo.desc}</p>
                   </div>
                   <Select
                     value={tiposAtendimentoSetor[tipo.key] || 'none'}
@@ -8299,7 +8299,7 @@ const saveConfig = async () => {
                       setHasUnsavedTipos(true)
                     }}
                   >
-                    <SelectTrigger className="w-[180px]">
+                    <SelectTrigger aria-label={`Destino de roteamento para ${tipo.label}`} className="h-9 w-full text-xs sm:w-[170px]">
                       <SelectValue placeholder="Selecionar setor" />
                     </SelectTrigger>
                     <SelectContent>
