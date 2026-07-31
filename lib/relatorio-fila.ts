@@ -49,14 +49,18 @@ type TicketComEntradaDeFila = Pick<
   'criado_em' | 'is_disparo' | 'cliente_respondeu_em'
 >
 
+function obterEntradaDeFila(ticket: TicketComEntradaDeFila): string | null {
+  return ticket.is_disparo
+    ? ticket.cliente_respondeu_em ?? null
+    : ticket.criado_em ?? null
+}
+
 /**
  * A fila começa quando o cliente pede atendimento. Em disparos, o envio parte
  * da operação; enquanto o cliente não responder, não existe espera a medir.
  */
 export function resolverEntradaDeFila(ticket: TicketComEntradaDeFila): number {
-  const entrada = ticket.is_disparo
-    ? ticket.cliente_respondeu_em
-    : ticket.criado_em
+  const entrada = obterEntradaDeFila(ticket)
   return entrada ? Date.parse(entrada) : Number.NaN
 }
 
@@ -152,7 +156,7 @@ export function resumirFila(
         esperaMs: espera,
         ticket: ticket.numero != null ? String(ticket.numero) : null,
         cliente: nomeDoCliente(ticket.clientes),
-        entradaISO: ticket.criado_em ?? null,
+        entradaISO: obterEntradaDeFila(ticket),
         emAndamento,
       }
     }

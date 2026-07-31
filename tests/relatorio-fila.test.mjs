@@ -72,6 +72,7 @@ test('disparo respondido começa a fila na resposta do cliente', () => {
   ], base)
 
   assert.equal(r.maiorEspera.esperaMs, 15 * 60_000)
+  assert.equal(r.maiorEspera.entradaISO, min(20))
 })
 
 test('exatamente no limite não conta — nem na fila, nem no SLA', () => {
