@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -39,7 +39,6 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
   const router = useRouter()
   const { data: colaborador, mutate: mutateColaborador } = useColaborador()
   const [fotoDialogOpen, setFotoDialogOpen] = useState(false)
-  const [isMounted, setIsMounted] = useState(false)
 
   // — Alterar senha
   const [senhaDialogOpen, setSenhaDialogOpen] = useState(false)
@@ -108,10 +107,6 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
     window.location.href = '/login'
   }
 
-  useEffect(() => {
-    setIsMounted(true)
-  }, [])
-
   const userInitials = user.email
     ? user.email.slice(0, 2).toUpperCase()
     : 'U'
@@ -152,8 +147,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
         <div className="hidden md:block h-6 w-px bg-border mx-1" />
 
         {/* User dropdown */}
-        {isMounted ? (
-          <DropdownMenu>
+        <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
@@ -246,24 +240,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
                 <span className="text-sm">Sair</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <div className="flex h-10 items-center gap-2.5 pl-2 pr-3">
-            <Avatar className="h-8 w-8 glass-avatar-ring">
-              <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
-                {userInitials}
-              </AvatarFallback>
-            </Avatar>
-            <div className="hidden md:flex flex-col items-start">
-              <span className="text-sm font-medium text-foreground leading-tight capitalize">
-                {userDisplayName}
-              </span>
-              <span className="text-[10px] text-muted-foreground leading-tight">
-                {userRole}
-              </span>
-            </div>
-          </div>
-        )}
+        </DropdownMenu>
         {/* Dialog — Alterar Senha */}
         <Dialog open={senhaDialogOpen} onOpenChange={(open) => { if (!open) resetSenhaDialog(); setSenhaDialogOpen(open) }}>
           <DialogContent className="sm:max-w-md">

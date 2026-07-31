@@ -25,12 +25,10 @@ export function PushToggle({
 }) {
   const { state, busy, supported, enable, disable } = usePushNotifications()
 
-  // Evita hydration mismatch: o suporte a push só existe no cliente, então
-  // servidor e primeiro render do cliente devem renderizar igual (null).
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
-  if (!mounted || !supported) return null
+  const isUsable = mounted && supported
 
   const subscribed = state === 'subscribed'
 
@@ -57,6 +55,7 @@ export function PushToggle({
   }
 
   if (variant === 'menu') {
+    if (!isUsable) return null
     // Botão simples (NÃO usar Radix Switch aqui — conflita com o DropdownMenu).
     // O "interruptor" é só visual; o clique no botão inteiro faz o toggle.
     return (
@@ -100,6 +99,7 @@ export function PushToggle({
   }
 
   if (variant === 'full') {
+    if (!isUsable) return null
     return (
       <Button
         variant="ghost"
@@ -118,10 +118,12 @@ export function PushToggle({
       variant="ghost"
       size="icon"
       onClick={onClick}
-      disabled={busy}
+      disabled={busy || !isUsable}
       aria-label={subscribed ? 'Desativar notificações' : 'Ativar notificações'}
       title={subscribed ? 'Notificações ativas' : 'Ativar notificações'}
-      className={className}
+      aria-hidden={!isUsable}
+      tabIndex={isUsable ? undefined : -1}
+      className={cn(!isUsable && 'hidden', className)}
     >
       {subscribed ? (
         <BellRing className="h-5 w-5 text-primary" />
