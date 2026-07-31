@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
+import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
 
 /**
  * POST /api/tickets/pull-next
@@ -110,13 +111,14 @@ export async function POST(request: Request) {
     }
 
     // 3. Buscar tickets em fila (mais antigos primeiro) nos setores do colaborador
-    const { data: queuedTickets, error: fetchError } = await supabase
+    const { data: queuedTicketsData, error: fetchError } = await supabase
       .from('tickets')
       .select('id, setor_id, subsetor_id, criado_em')
       .eq('status', 'aberto')
       .is('colaborador_id', null)
       .in('setor_id', setorIds)
       .order('criado_em', { ascending: true })
+      .order('id', { ascending: true })
 
     if (fetchError) {
       return NextResponse.json(
@@ -125,7 +127,9 @@ export async function POST(request: Request) {
       )
     }
 
-    if (!queuedTickets || queuedTickets.length === 0) {
+    const queuedTickets = ordenarTicketsPorFila(queuedTicketsData || [])
+
+    if (queuedTickets.length === 0) {
       return NextResponse.json({ error: 'Nenhum ticket na fila' }, { status: 404 })
     }
 

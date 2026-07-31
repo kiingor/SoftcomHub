@@ -5,6 +5,7 @@ import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
+import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
 
 // Configuration defaults
 const DEFAULT_CHECK_INTERVAL_MS = 30000 // 30 seconds
@@ -415,23 +416,25 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
   }
 
   // Get all unassigned tickets ordered by creation time (oldest first)
-  const { data: queuedTickets, error: fetchError } = await supabase
+  const { data: queuedTicketsData, error: fetchError } = await supabase
     .from('tickets')
     .select('id, setor_id, subsetor_id, criado_em, clientes(nome)')
     .in('status', ['aberto', 'em_atendimento'])
     .is('colaborador_id', null)
     .order('criado_em', { ascending: true })
+    .order('id', { ascending: true })
   
   if (fetchError) {
     stats.errors.push(`Error fetching queue: ${fetchError.message}`)
     return stats
   }
   
-  stats.ticketsInQueue = queuedTickets?.length || 0
+  const queuedTickets = ordenarTicketsPorFila(queuedTicketsData || [])
+  stats.ticketsInQueue = queuedTickets.length
   
   console.log(`[TicketQueue] processTicketQueue - Found ${stats.ticketsInQueue} tickets in queue`)
   
-  if (!queuedTickets || queuedTickets.length === 0) {
+  if (queuedTickets.length === 0) {
     return stats
   }
   
@@ -722,23 +725,25 @@ export async function onColaboradorOnline(colaboradorId: string): Promise<Proces
   console.log(`[TicketQueue] onColaboradorOnline - colaboradorId: ${colaboradorId}, setorIds: ${JSON.stringify(setorIds)}`)
 
   // Only fetch unassigned tickets from the colaborador's setores
-  const { data: queuedTickets, error: fetchError } = await supabase
+  const { data: queuedTicketsData, error: fetchError } = await supabase
     .from('tickets')
     .select('id, setor_id, subsetor_id, criado_em')
     .in('status', ['aberto', 'em_atendimento'])
     .is('colaborador_id', null)
     .in('setor_id', setorIds)
     .order('criado_em', { ascending: true })
+    .order('id', { ascending: true })
 
   if (fetchError) {
     stats.errors.push(`Error fetching queue: ${fetchError.message}`)
     return stats
   }
 
-  stats.ticketsInQueue = queuedTickets?.length || 0
+  const queuedTickets = ordenarTicketsPorFila(queuedTicketsData || [])
+  stats.ticketsInQueue = queuedTickets.length
   console.log(`[TicketQueue] onColaboradorOnline - Found ${stats.ticketsInQueue} queued tickets in colaborador's setores`)
 
-  if (!queuedTickets || queuedTickets.length === 0) {
+  if (queuedTickets.length === 0) {
     return stats
   }
 

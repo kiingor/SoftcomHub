@@ -4,6 +4,7 @@ import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { escolherDestino, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
+import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
 
 interface DistribuicaoResult {
   ticketId: string
@@ -659,15 +660,18 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
 
   try {
     // Get unassigned tickets in this sector, including subsetor_id
-    const { data: pendingTickets } = await supabase
+    const { data: pendingTicketsData } = await supabase
       .from('tickets')
-      .select('id, cliente_id, subsetor_id')
+      .select('id, cliente_id, subsetor_id, criado_em')
       .eq('setor_id', setorId)
       .eq('status', 'aberto')
       .is('colaborador_id', null)
       .order('criado_em', { ascending: true })
+      .order('id', { ascending: true })
 
-    if (!pendingTickets || pendingTickets.length === 0) {
+    const pendingTickets = ordenarTicketsPorFila(pendingTicketsData || [])
+
+    if (pendingTickets.length === 0) {
       return 0
     }
 
