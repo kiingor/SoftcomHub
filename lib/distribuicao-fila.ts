@@ -74,6 +74,7 @@ export interface OpcoesDestino {
    */
   subsetoresComFila?: readonly (string | null)[]
   maxTicketsAbertos: number
+  permitirTransbordo?: boolean
 }
 
 /**
@@ -91,10 +92,12 @@ export function escolherDestino({
   candidatos,
   subsetoresComFila = [],
   maxTicketsAbertos,
+  permitirTransbordo = true,
 }: OpcoesDestino): EscolhaDestino {
   const proprios = candidatos.filter((c) => atendeSubsetor(subsetorDoTicket, c.subsetorIds))
   const filaPropria = ordenarPorEquilibrio(proprios, maxTicketsAbertos)
   if (filaPropria.length > 0) return { fila: filaPropria, origem: 'proprio' }
+  if (!permitirTransbordo) return { fila: [], origem: 'ninguem' }
 
   // Transbordo: quem é de outro subsetor, tem vaga, e não tem fila esperando
   // por ele. Atendente sem subsetor entra pela chave `null`.
