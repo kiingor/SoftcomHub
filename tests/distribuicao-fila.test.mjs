@@ -82,6 +82,22 @@ test('o subsetor do ticket tem precedência: transbordo só quando ninguém do p
   assert.deepEqual(escolha.fila.map((c) => c.id), ['sup'])
 })
 
+test('a primeira passagem da fila não antecipa o transbordo', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: 'suporte',
+    candidatos: [
+      atendente('sup', 5, 10, { subsetorIds: ['suporte'] }),
+      atendente('prime', 8, 2, { subsetorIds: ['prime'] }),
+    ],
+    subsetoresComFila: [],
+    maxTicketsAbertos: 10,
+    permitirTransbordo: false,
+  })
+
+  assert.equal(escolha.origem, 'ninguem')
+  assert.deepEqual(escolha.fila, [])
+})
+
 test('Prime ajuda o Suporte quando o Suporte está sem vaga e a fila Prime está vazia', () => {
   const escolha = escolherDestino({
     subsetorDoTicket: 'suporte',
