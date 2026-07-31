@@ -3149,7 +3149,11 @@ function SetorPageInner() {
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
       })
       .map((t: any) => {
-        const tempos = resolverIniciosTempoTransferencia(t, t._assignmentEvents || [])
+        const tempos = resolverIniciosTempoTransferencia(
+          t,
+          t._assignmentEvents || [],
+          t._logs || [],
+        )
         return {
         id: t.id,
         numero: t.numero ?? null,

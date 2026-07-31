@@ -979,7 +979,11 @@ export default function MonitoramentoPage() {
         return contato.toLowerCase().includes(searchTerm.toLowerCase()) || numero.includes(searchTerm)
       })
       .map((t: any) => {
-        const tempos = resolverIniciosTempoTransferencia(t, t._assignmentEvents || [])
+        const tempos = resolverIniciosTempoTransferencia(
+          t,
+          t._assignmentEvents || [],
+          t._logs || [],
+        )
         return {
         id: t.id,
         cliente_id: t.cliente_id,

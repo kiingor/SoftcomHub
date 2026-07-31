@@ -13,6 +13,11 @@ export type EventoAtribuicaoTicket = {
   created_at?: string | null
 }
 
+export type EventoHistoricoTicket = {
+  tipo?: string | null
+  criado_em?: string | null
+}
+
 function temDataValida(data: string | null | undefined): data is string {
   return typeof data === 'string' && Number.isFinite(Date.parse(data))
 }
@@ -34,9 +39,23 @@ function ultimoEvento(
   }, null)
 }
 
+function ultimaTransferenciaLegada(eventos: readonly EventoHistoricoTicket[]): string | null {
+  return eventos.reduce<string | null>((maisRecente, evento) => {
+    if (
+      !['transferencia', 'transferencia_automatica'].includes(evento.tipo || '')
+      || !temDataValida(evento.criado_em)
+    ) return maisRecente
+    if (!maisRecente || Date.parse(evento.criado_em) > Date.parse(maisRecente)) {
+      return evento.criado_em
+    }
+    return maisRecente
+  }, null)
+}
+
 export function resolverIniciosTempoTransferencia(
   ticket: TicketComTempoTransferencia,
   eventos: readonly EventoAtribuicaoTicket[],
+  historico: readonly EventoHistoricoTicket[] = [],
 ) {
   const eventoAtendenteAtual = ultimoEvento(
     eventos,
@@ -56,9 +75,11 @@ export function resolverIniciosTempoTransferencia(
       && evento.previous_setor_id !== ticket.setor_id
     ),
   )
+  const transferenciaLegadaEm = ultimaTransferenciaLegada(historico)
 
   return {
     atendimentoAtualEm: eventoAtendenteAtual?.created_at
+      ?? transferenciaLegadaEm
       ?? ticket.atribuido_em
       ?? ticket.criado_em
       ?? null,
