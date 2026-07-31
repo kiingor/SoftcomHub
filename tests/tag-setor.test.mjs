@@ -5,6 +5,7 @@ import {
   tagsVisiveisPara,
   filtroEfetivo,
   atendenteNoFiltro,
+  ticketNoFiltroDeTag,
   npsDoAtendente,
   agruparNpsPorColaborador,
   ordenarTags,
@@ -103,6 +104,15 @@ test('filtro ativo esconde quem não é da operação', () => {
 
 test('atendente sem tag só aparece sem filtro', () => {
   assert.equal(atendenteNoFiltro([], [CHAT]), false)
+})
+
+test('fila sem atendente fica visível no monitoramento mesmo com tag ativa', () => {
+  const atendentesDoSuporte = new Set(['ana'])
+
+  assert.equal(ticketNoFiltroDeTag(null, atendentesDoSuporte), false)
+  assert.equal(ticketNoFiltroDeTag(null, atendentesDoSuporte, true), true)
+  assert.equal(ticketNoFiltroDeTag('ana', atendentesDoSuporte, true), true)
+  assert.equal(ticketNoFiltroDeTag('bia', atendentesDoSuporte, true), false)
 })
 
 // ─── NPS ───

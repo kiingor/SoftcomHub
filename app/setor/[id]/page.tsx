@@ -8,7 +8,7 @@ import Link from 'next/link'
 import useSWR from 'swr'
 import { createClient } from '@/lib/supabase/client'
 import { useColaborador } from '@/lib/hooks/use-data'
-import { atendenteNoFiltro, filtroEfetivo, tagsParaFiltro, tagsVisiveisPara } from '@/lib/tag-setor'
+import { atendenteNoFiltro, filtroEfetivo, tagsParaFiltro, tagsVisiveisPara, ticketNoFiltroDeTag } from '@/lib/tag-setor'
 import { TagManagerDialog } from '@/components/dashboard/tag-manager-dialog'
 import { computePausaElapsedMs, formatPausaStatusLabel, isPausaEstourada } from '@/lib/pausa-status'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
@@ -2258,10 +2258,18 @@ function SetorPageInner() {
   )
 
   const matchesTicketTagFilter = useCallback(
-    (ticket: { colaborador_id?: string | null }) => (
-      idsAtendentesNoFiltroTag === null
-      || (Boolean(ticket.colaborador_id) && idsAtendentesNoFiltroTag.has(ticket.colaborador_id!))
-    ),
+    (ticket: { colaborador_id?: string | null }) =>
+      ticketNoFiltroDeTag(ticket.colaborador_id, idsAtendentesNoFiltroTag),
+    [idsAtendentesNoFiltroTag],
+  )
+
+  const matchesTicketTagNoMonitoramento = useCallback(
+    (ticket: { status?: string | null; colaborador_id?: string | null }) =>
+      ticketNoFiltroDeTag(
+        ticket.colaborador_id,
+        idsAtendentesNoFiltroTag,
+        ticket.status === 'aberto' && !ticket.colaborador_id,
+      ),
     [idsAtendentesNoFiltroTag],
   )
 
@@ -3243,7 +3251,7 @@ function SetorPageInner() {
       tickets,
       ticketsDeHoje: ticketsMonitoramentoHoje,
       atendentes,
-      aceitaTicket: (t: any) => matchesTicketTagFilter(t) && t.subsetor_id === subsetorId,
+      aceitaTicket: (t: any) => matchesTicketTagNoMonitoramento(t) && t.subsetor_id === subsetorId,
       aceitaAtendente: (a: any) => (
         matchesAtendenteTagFilter(a)
         && isAtendenteOnline(a)
@@ -3251,7 +3259,7 @@ function SetorPageInner() {
       ),
       agoraMs: monitoringTick,
     })
-  ), [tickets, ticketsMonitoramentoHoje, atendentes, matchesAtendenteTagFilter, matchesTicketTagFilter, monitoringTick])
+  ), [tickets, ticketsMonitoramentoHoje, atendentes, matchesAtendenteTagFilter, matchesTicketTagNoMonitoramento, monitoringTick])
 
   const resumoCardSecundario = useMemo(
     () => resumoDoSubsetor(subsetorCardSecundario),
@@ -3271,7 +3279,7 @@ function SetorPageInner() {
     ticketsDeHoje: ticketsMonitoramentoHoje,
     atendentes,
     aceitaTicket: (t: any) => (
-      matchesTicketTagFilter(t)
+      matchesTicketTagNoMonitoramento(t)
       && (subsetorCardPrincipal === TODOS_SUBSETORES
         ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
         : t.subsetor_id === subsetorCardPrincipal)
@@ -3284,7 +3292,7 @@ function SetorPageInner() {
         : (a.subsetor_ids || []).includes(subsetorCardPrincipal))
     ),
     agoraMs: monitoringTick,
-  }), [tickets, ticketsMonitoramentoHoje, atendentes, matchesAtendenteTagFilter, matchesTicketTagFilter, subsetorCardPrincipal, subsetorFilter, monitoringTick])
+  }), [tickets, ticketsMonitoramentoHoje, atendentes, matchesAtendenteTagFilter, matchesTicketTagNoMonitoramento, subsetorCardPrincipal, subsetorFilter, monitoringTick])
 
   const cargaCardPrincipal = useMemo(
     () => calculateWorkloadOs(resumoCardPrincipal.total, resumoCardPrincipal.atendentesOnline),
@@ -3523,14 +3531,14 @@ function SetorPageInner() {
       matchesSubsetorFilter(subsetorFilter, item.subsetor_id)
     )
     const activeTickets = tickets.filter((ticket: any) => (
-      matchesTicketTagFilter(ticket) && isSelectedSubsetor(ticket)
+      matchesTicketTagNoMonitoramento(ticket) && isSelectedSubsetor(ticket)
     ))
     const queuedTickets = activeTickets.filter((ticket: any) => ticket.status === 'aberto')
     const assignedTickets = activeTickets.filter((ticket: any) => ticket.status === 'em_atendimento')
     const finalizedToday = ticketsMonitoramentoHoje.filter(
       (ticket: any) => (
         ticket.status === 'encerrado'
-        && matchesTicketTagFilter(ticket)
+        && matchesTicketTagNoMonitoramento(ticket)
         && isSelectedSubsetor(ticket)
       ),
     )
@@ -3560,7 +3568,7 @@ function SetorPageInner() {
       onlineAttendants: onlineAttendants.length,
       workload: calculateWorkloadOs(activeTickets.length, onlineAttendants.length),
     }
-  }, [atendentes, matchesAtendenteTagFilter, matchesTicketTagFilter, monitoringTick, subsetorFilter, tickets, ticketsMonitoramentoHoje])
+  }, [atendentes, matchesAtendenteTagFilter, matchesTicketTagNoMonitoramento, monitoringTick, subsetorFilter, tickets, ticketsMonitoramentoHoje])
 
   const workloadTone = WORKLOAD_OS_TONES[realtimeStats.workload.level]
 
@@ -3568,7 +3576,7 @@ function SetorPageInner() {
     return tickets
       .filter((t: any) => t.status === 'aberto' && !t.colaborador_id)
       .filter((t: any) => {
-        if (!matchesTicketTagFilter(t)) return false
+        if (!matchesTicketTagNoMonitoramento(t)) return false
         if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
         if (!searchTerm) return true
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
@@ -3592,7 +3600,7 @@ function SetorPageInner() {
         subsetor_id: t.subsetor_id ?? null,
         setores: { nome: setor?.nome ?? null },
       }))
-  }, [matchesTicketTagFilter, tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
+  }, [matchesTicketTagNoMonitoramento, tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
 
   // Sem filtro de subsetor, mostram o total do setor (matchesSubsetorFilter
   // com seleção vazia aceita qualquer subsetor_id) — com filtro, só contam os
