@@ -106,6 +106,22 @@ export function atendenteNoFiltro(
 }
 
 /**
+ * Decide se o ticket pertence ao recorte da operação.
+ *
+ * Na fila ainda não existe atendente para associar à tag. O monitoramento pode
+ * incluí-la explicitamente para manter a fila do canal visível às operações.
+ */
+export function ticketNoFiltroDeTag(
+  colaboradorId: string | null | undefined,
+  idsAtendentesNoFiltro: ReadonlySet<string> | null,
+  incluirSemAtendente = false,
+): boolean {
+  if (idsAtendentesNoFiltro === null) return true
+  if (!colaboradorId) return incluirSemAtendente
+  return idsAtendentesNoFiltro.has(colaboradorId)
+}
+
+/**
  * NPS do atendente restrito às tags do filtro, ou `null` quando não há nota.
  *
  * Soma as linhas em vez de mediar as médias: com 40 notas numa tag e 3 na outra,
