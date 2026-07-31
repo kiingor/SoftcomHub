@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { isConteudoProtocolo, CONTEUDO_PROTOCOLO_LABEL } from '@/lib/mensagem-conteudo'
+import { normalizarAtendenteBot } from '@/lib/webhook-atendente'
 
 /**
  * POST /api/mensagens/save
@@ -24,6 +25,8 @@ import { isConteudoProtocolo, CONTEUDO_PROTOCOLO_LABEL } from '@/lib/mensagem-co
  *   - media_type (string, opcional): tipo MIME da mídia
  *   - whatsapp_message_id (string, opcional): ID da mensagem no WhatsApp/Evolution
  * 
+ *   - atendente_bot (string, opcional): nome do bot Nexus que enviou a mensagem
+ *
  * Retorna:
  *   - { success: true, mensagem_id, cliente_id }
  * 
@@ -56,6 +59,7 @@ export async function POST(request: NextRequest) {
       url_imagem,
       media_type,
       whatsapp_message_id,
+      atendente_bot,
     } = body
 
     // Validar campos obrigatórios
@@ -138,6 +142,13 @@ export async function POST(request: NextRequest) {
     if (effectiveMediaType) mensagemData.media_type = effectiveMediaType
 
     if (whatsapp_message_id) mensagemData.whatsapp_message_id = whatsapp_message_id
+
+    if (remetente === 'bot-nexus') {
+      const atendenteBot = normalizarAtendenteBot(atendente_bot)
+      if (atendenteBot) {
+        mensagemData.atendente_bot = atendenteBot
+      }
+    }
 
     // Warn when n8n (or any integrator) posts a media-type message without a URL —
     // this is the most common cause of empty "Imagem"/"Documento" bubbles in WorkDesk.
