@@ -143,9 +143,10 @@ import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
-import { loadRowsByPages } from '@/lib/supabase/paginate'
+import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 import { resumirFila, contarEpisodiosDeFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
+import { resolverIniciosTempoTransferencia } from '@/lib/ticket-transfer-timing'
 import {
   calcularTempoReal,
   formatarTempoMonitoramento,
@@ -437,21 +438,42 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
   // (criacao, transferencias, transbordos). Carrega em batch pra evitar N+1.
   const ticketsAtivosIds = ticketsAtivos.map((t: any) => t.id)
   const logsMap = new Map<string, any[]>()
+  const assignmentEventsMap = new Map<string, any[]>()
   if (ticketsAtivosIds.length > 0) {
-    const { data: logsData } = await supabase
-      .from('ticket_logs')
-      .select('ticket_id, tipo, descricao, criado_em')
-      .in('ticket_id', ticketsAtivosIds)
-      .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual'])
+    const [logsResult, assignmentEventsData] = await Promise.all([
+      supabase
+        .from('ticket_logs')
+        .select('ticket_id, tipo, descricao, criado_em')
+        .in('ticket_id', ticketsAtivosIds)
+        .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+      loadRowsByValues(
+        supabase,
+        'ticket_assignment_logs',
+        '*',
+        'ticket_id',
+        ticketsAtivosIds,
+      ).catch((error) => {
+        console.warn('[Setor] Falha ao carregar eventos de atribuição:', error.message)
+        return []
+      }),
+    ])
+    const logsData = logsResult.data
     for (const l of (logsData || [])) {
       const arr = logsMap.get(l.ticket_id) || []
       arr.push(l)
       logsMap.set(l.ticket_id, arr)
     }
+    for (const event of assignmentEventsData) {
+      const arr = assignmentEventsMap.get(event.ticket_id) || []
+      arr.push(event)
+      assignmentEventsMap.set(event.ticket_id, arr)
+    }
   }
   // Anexa _logs em cada ticket ativo (mesma chave usada no relatório)
   for (const t of ticketsAtivos as any[]) {
-    (t as any)._logs = logsMap.get(t.id) || []
+    const ticket = t as any
+    ticket._logs = logsMap.get(t.id) || []
+    ticket._assignmentEvents = assignmentEventsMap.get(t.id) || []
   }
   // Agrupar subsetores por colaborador
   const colabSubsetoresMap: Record<string, { id: string; nome: string }[]> = {}
@@ -3126,7 +3148,9 @@ function SetorPageInner() {
         const contato = t.clientes?.nome || t.clientes?.telefone || ''
         return contato.toLowerCase().includes(searchTerm.toLowerCase())
       })
-      .map((t: any) => ({
+      .map((t: any) => {
+        const tempos = resolverIniciosTempoTransferencia(t, t._assignmentEvents || [])
+        return {
         id: t.id,
         numero: t.numero ?? null,
         // Tempo na fila = criado_em → atribuido_em (tempo aguardando atendente)
@@ -3144,11 +3168,11 @@ function SetorPageInner() {
         tempoPrimeiraRespostaMs: t.primeira_resposta_em
           ? getDurationMs(t.criado_em, t.primeira_resposta_em)
           : null,
-        // Tempo de atendimento = atribuido_em → agora (ou criado_em como fallback)
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
+        tempoAtendimento: t.colaborador_id ? formatDuration(tempos.atendimentoAtualEm, null) : '0min',
         tempoAtendimentoMs: t.colaborador_id
-          ? getDurationMs(t.atribuido_em || t.criado_em, null)
+          ? getDurationMs(tempos.atendimentoAtualEm, null)
           : 0,
+        tempoNoSetor: formatDuration(tempos.setorAtualEm, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
         atendente: t.colaboradores?.nome || null,
@@ -3165,7 +3189,8 @@ function SetorPageInner() {
         setor_id: t.setor_id ?? setorId,
         subsetor_id: t.subsetor_id ?? null,
         setores: { nome: setor?.nome ?? null },
-      }))
+        }
+      })
   }, [
     atendenteFilter,
     idsAtendentesPermitidos,
@@ -5811,7 +5836,7 @@ const saveConfig = async () => {
                               onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'firstResponse'))}
                             />
                             <SortableTableHead
-                              label="Tempo atend."
+                              label="Tempos atuais"
                               active={activeTicketsSort.key === 'serviceTime'}
                               direction={activeTicketsSort.direction}
                               onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'serviceTime'))}
@@ -5895,7 +5920,10 @@ const saveConfig = async () => {
                                       <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '0min'}</span>
                                     )}
                                   </TableCell>
-                                  <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
+                                  <TableCell className="text-sm tabular-nums text-foreground">
+                                    <p>Atendente: {ticket.tempoAtendimento}</p>
+                                    <p className="text-xs text-muted-foreground">Setor: {ticket.tempoNoSetor}</p>
+                                  </TableCell>
                                   <TableCell className="text-sm font-mono tabnums text-foreground font-medium">
                                     {ticket.numero ? `#${ticket.numero}` : '—'}
                                   </TableCell>
@@ -10598,6 +10626,16 @@ const saveConfig = async () => {
               {/* Info Tab */}
               {conversationTab === 'info' && (
                 <div className="p-4 space-y-4">
+                  <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/20 p-3 text-sm">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Com atendente atual</p>
+                      <p className="font-semibold tabular-nums">{selectedTicket.tempoAtendimento}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">No setor atual</p>
+                      <p className="font-semibold tabular-nums">{selectedTicket.tempoNoSetor}</p>
+                    </div>
+                  </div>
                   <div className="space-y-3">
                     <div>
                       <Label className="text-muted-foreground">Cliente</Label>

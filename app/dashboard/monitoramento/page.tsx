@@ -101,6 +101,7 @@ import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
+import { resolverIniciosTempoTransferencia } from '@/lib/ticket-transfer-timing'
 
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
 const NEXUS_CLIENT_REMETENTE = 'cliente-nexus'
@@ -395,20 +396,41 @@ export default function MonitoramentoPage() {
       // batch pra evitar N+1 — mesma estratégia da página do setor.
       const ticketsAtivosIds = (ticketsAtivos || []).map((t: any) => t.id)
       const logsMap = new Map<string, any[]>()
+      const assignmentEventsMap = new Map<string, any[]>()
       if (ticketsAtivosIds.length > 0) {
-        const { data: logsData } = await supabase
-          .from('ticket_logs')
-          .select('ticket_id, tipo, descricao, criado_em')
-          .in('ticket_id', ticketsAtivosIds)
-          .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual'])
+        const [logsResult, assignmentEventsData] = await Promise.all([
+          supabase
+            .from('ticket_logs')
+            .select('ticket_id, tipo, descricao, criado_em')
+            .in('ticket_id', ticketsAtivosIds)
+            .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+          loadRowsByValues(
+            supabase,
+            'ticket_assignment_logs',
+            '*',
+            'ticket_id',
+            ticketsAtivosIds,
+          ).catch((error) => {
+            console.warn('[Monitoramento] Falha ao carregar eventos de atribuição:', error.message)
+            return []
+          }),
+        ])
+        const logsData = logsResult.data
         for (const l of (logsData || [])) {
           const arr = logsMap.get(l.ticket_id) || []
           arr.push(l)
           logsMap.set(l.ticket_id, arr)
         }
+        for (const event of assignmentEventsData) {
+          const arr = assignmentEventsMap.get(event.ticket_id) || []
+          arr.push(event)
+          assignmentEventsMap.set(event.ticket_id, arr)
+        }
       }
       for (const t of (ticketsAtivos || []) as any[]) {
-        (t as any)._logs = logsMap.get(t.id) || []
+        const ticket = t as any
+        ticket._logs = logsMap.get(t.id) || []
+        ticket._assignmentEvents = assignmentEventsMap.get(t.id) || []
       }
 
       // Fetch today's tickets (for stats)
@@ -956,7 +978,9 @@ export default function MonitoramentoPage() {
         const numero = String(t.numero ?? t.id?.slice(0, 8) ?? '')
         return contato.toLowerCase().includes(searchTerm.toLowerCase()) || numero.includes(searchTerm)
       })
-      .map((t: any) => ({
+      .map((t: any) => {
+        const tempos = resolverIniciosTempoTransferencia(t, t._assignmentEvents || [])
+        return {
         id: t.id,
         cliente_id: t.cliente_id,
         setor_id: t.setor_id,
@@ -970,12 +994,8 @@ export default function MonitoramentoPage() {
         colaboradores: t.colaboradores,
         numero: t.numero ?? null,
         tempoPrimeiraResposta: t.primeira_resposta_em ? formatDuration(t.criado_em, t.primeira_resposta_em) : null,
-        // Medir desde `criado_em` está correto: o ticket nasce já com atendente
-        // (o n8n escolhe antes de inserir a linha), então não existe tempo de
-        // fila embutido aqui. Medido em 27/07/2026 sobre os 2.214 tickets que
-        // têm `atribuido_em`: gap criado→atribuído de 0s em 1.000 de 1.000 da
-        // amostra. O fallback só importa para os ~0,4% que nascem sem atendente.
-        tempoAtendimento: t.colaborador_id ? formatDuration(t.atribuido_em || t.criado_em, null) : '0min',
+        tempoAtendimento: t.colaborador_id ? formatDuration(tempos.atendimentoAtualEm, null) : '0min',
+        tempoNoSetor: formatDuration(tempos.setorAtualEm, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         telefone: t.clientes?.telefone || null,
         canal: t.canal || 'whatsapp',
@@ -984,7 +1004,8 @@ export default function MonitoramentoPage() {
         atendente: t.colaboradores?.nome || null,
         status: t.status,
         primeira_resposta_em: t.primeira_resposta_em,
-      }))
+        }
+      })
   }, [tickets, searchTerm, subsetorFilter, atendenteFilter])
 
   // Tickets aguardando
@@ -1746,7 +1767,7 @@ export default function MonitoramentoPage() {
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">1ª Resposta</TableHead>
-                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempo atend.</TableHead>
+                      <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tempos atuais</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ticket</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Número</TableHead>
                       <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contato</TableHead>
@@ -1800,7 +1821,10 @@ export default function MonitoramentoPage() {
                                 <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '0min'}</span>
                               )}
                             </TableCell>
-                            <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoAtendimento}</TableCell>
+                            <TableCell className="text-sm tabular-nums text-foreground">
+                              <p>Atendente: {ticket.tempoAtendimento}</p>
+                              <p className="text-xs text-muted-foreground">Setor: {ticket.tempoNoSetor}</p>
+                            </TableCell>
                             <TableCell className="text-sm tabular-nums text-foreground font-medium">
                               <span className="flex items-center gap-1.5">
                                 {ticket.numero ? `#${ticket.numero}` : '—'}
@@ -2247,6 +2271,16 @@ export default function MonitoramentoPage() {
               {conversationTab === 'info' && (
                 <div className="h-full overflow-y-auto">
                 <div className="p-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/20 p-3 text-sm">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Com atendente atual</p>
+                      <p className="font-semibold tabular-nums">{selectedTicket.tempoAtendimento}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">No setor atual</p>
+                      <p className="font-semibold tabular-nums">{selectedTicket.tempoNoSetor}</p>
+                    </div>
+                  </div>
                   {loadingHistory ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
