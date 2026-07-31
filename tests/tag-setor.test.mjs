@@ -62,6 +62,10 @@ test('gestor sem tag não recebe acesso amplo por fallback', () => {
   assert.deepEqual(tagsVisiveisPara([], false), [])
 })
 
+test('canal sem tags mantém a visualização normal', () => {
+  assert.equal(tagsVisiveisPara([], false, false), null)
+})
+
 test('gestor com tag fica restrito a ela', () => {
   assert.deepEqual(tagsVisiveisPara([PIT], false), [PIT])
 })
