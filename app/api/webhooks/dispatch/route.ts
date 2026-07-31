@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { resolverAtendenteBotDoWebhook } from '@/lib/webhook-atendente'
 
 // URL fixa do webhook de encerramento (Maestro / n8n). Sobrescrita apenas via
 // env MAESTRO_WEBHOOK_URL — não há personalização por setor.
@@ -141,7 +142,7 @@ export async function POST(request: Request) {
     // Fetch all messages for this ticket (conversation history)
     const { data: mensagens } = await supabase
       .from('mensagens')
-      .select('id, remetente, conteudo, tipo, url_imagem, media_type, enviado_em, canal_envio, phone_number_id')
+      .select('id, remetente, conteudo, tipo, url_imagem, media_type, enviado_em, canal_envio, phone_number_id, atendente_bot')
       .eq('ticket_id', ticketId)
       .order('enviado_em', { ascending: true })
 
@@ -257,6 +258,7 @@ export async function POST(request: Request) {
         atendente: colaboradorNome
           ? { id: ticket.colaborador_id, nome: colaboradorNome, suporte_id: colaboradorSuporteId }
           : null,
+        atendente_bot: resolverAtendenteBotDoWebhook(msgLista),
 
         // Timestamps ISO + BR
         criado_em:             ticket.criado_em || null,
