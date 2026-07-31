@@ -48,6 +48,32 @@ test('ticket sem resposta conta a espera até agora — é quem ainda espera', (
   assert.equal(r.maiorEspera.emAndamento, true)
 })
 
+test('disparo sem resposta do cliente não entra na fila', () => {
+  const r = resumirFila([
+    {
+      numero: '153078',
+      criado_em: min(90),
+      is_disparo: true,
+      primeira_resposta_em: min(15),
+    },
+  ], base)
+
+  assert.equal(r.total, 0)
+})
+
+test('disparo respondido começa a fila na resposta do cliente', () => {
+  const r = resumirFila([
+    {
+      criado_em: min(120),
+      is_disparo: true,
+      cliente_respondeu_em: min(20),
+      primeira_resposta_em: min(5),
+    },
+  ], base)
+
+  assert.equal(r.maiorEspera.esperaMs, 15 * 60_000)
+})
+
 test('exatamente no limite não conta — nem na fila, nem no SLA', () => {
   assert.equal(
     resumirFila([{ criado_em: min(LIMITE_FILA_PADRAO_MIN), primeira_resposta_em: min(0) }], base).entraramNaFila,
@@ -211,6 +237,14 @@ test('ticket ainda sem resposta conta como fila correndo agora', () => {
 
   assert.equal(r.vezes, 1)
   assert.equal(r.pico, 1)
+})
+
+test('disparo sem resposta do cliente não cria episódio de fila', () => {
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(120), is_disparo: true, primeira_resposta_em: seg(60) },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 0)
 })
 
 test('encerrado sem nenhuma resposta usa o encerramento como fim da espera', () => {

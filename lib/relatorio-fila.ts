@@ -1,8 +1,9 @@
 /**
  * Indicadores de fila para o relatório de atendimento.
  *
- * A "fila" aqui é a espera do cliente pela PRIMEIRA RESPOSTA — de `criado_em`
- * até `primeira_resposta_em`. É o único recorte reconstruível historicamente:
+ * A "fila" aqui é a espera do cliente pela PRIMEIRA RESPOSTA — da criação do
+ * ticket, ou da resposta do cliente quando o atendimento veio de um disparo.
+ * É o único recorte reconstruível historicamente:
  * `atribuido_em` só passou a ser gravado em 28/07/2026, e antes disso não há
  * registro de quando o ticket saiu da fila.
  *
@@ -18,6 +19,9 @@ type ClienteEmbed = { nome?: string | null }
 export type TicketFila = {
   numero?: number | string | null
   criado_em?: string | null
+  /** Disparo só entra na fila após o cliente responder. */
+  is_disparo?: boolean | null
+  cliente_respondeu_em?: string | null
   primeira_resposta_em?: string | null
   /**
    * Fecha a espera de quem foi encerrado sem nunca receber resposta. Sem isto a
@@ -38,6 +42,22 @@ export type TicketFila = {
 function nomeDoCliente(clientes: TicketFila['clientes']): string | null {
   const registro = Array.isArray(clientes) ? clientes[0] : clientes
   return registro?.nome || null
+}
+
+type TicketComEntradaDeFila = Pick<
+  TicketFila,
+  'criado_em' | 'is_disparo' | 'cliente_respondeu_em'
+>
+
+/**
+ * A fila começa quando o cliente pede atendimento. Em disparos, o envio parte
+ * da operação; enquanto o cliente não responder, não existe espera a medir.
+ */
+export function resolverEntradaDeFila(ticket: TicketComEntradaDeFila): number {
+  const entrada = ticket.is_disparo
+    ? ticket.cliente_respondeu_em
+    : ticket.criado_em
+  return entrada ? Date.parse(entrada) : Number.NaN
 }
 
 /**
@@ -63,14 +83,14 @@ export type MaiorEspera = {
   esperaMs: number
   ticket: string | null
   cliente: string | null
-  /** ISO da entrada na fila (criação do ticket). */
+  /** ISO da entrada na fila (criação ou resposta a disparo). */
   entradaISO: string | null
   /** A espera ainda está correndo — o cliente segue sem resposta. */
   emAndamento: boolean
 }
 
 export type ResumoFila = {
-  /** Tickets do período com data de criação válida. */
+  /** Tickets do período com entrada de fila válida. */
   total: number
   /** Esperaram mais que o limite de fila — cada um é um cliente que ficou. */
   entraramNaFila: number
@@ -109,7 +129,7 @@ export function resumirFila(
   const eventos: Array<[number, number]> = []
 
   for (const ticket of tickets) {
-    const inicio = ticket.criado_em ? Date.parse(ticket.criado_em) : Number.NaN
+    const inicio = resolverEntradaDeFila(ticket)
     if (!Number.isFinite(inicio)) continue
     total += 1
 
@@ -180,6 +200,8 @@ export function faixaDeSaude(percentual: number): 'boa' | 'atencao' | 'critica' 
 
 export type TicketNaFila = {
   criado_em?: string | null
+  is_disparo?: boolean | null
+  cliente_respondeu_em?: string | null
   /** Saída da fila: o cliente deixou de esperar quando alguém respondeu. */
   primeira_resposta_em?: string | null
   /** Encerrado sem nenhuma resposta — a espera acabou aqui, mesmo assim. */
@@ -227,7 +249,7 @@ export function contarEpisodiosDeFila(
   let semEspera = 0
 
   for (const ticket of tickets) {
-    const entrada = ticket.criado_em ? Date.parse(ticket.criado_em) : Number.NaN
+    const entrada = resolverEntradaDeFila(ticket)
     if (!Number.isFinite(entrada)) continue
 
     const respondido = ticket.primeira_resposta_em ? Date.parse(ticket.primeira_resposta_em) : Number.NaN

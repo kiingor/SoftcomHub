@@ -600,6 +600,17 @@ export async function POST(request: NextRequest) {
 
     console.log(`[v0] Message received and saved for ticket ${ticket.id}`)
 
+    const clienteRespondeuEm = new Date(providerTimestampMs ?? Date.now()).toISOString()
+    const { error: replyTimestampError } = await supabase
+      .from('tickets')
+      .update({ cliente_respondeu_em: clienteRespondeuEm })
+      .eq('id', ticket.id)
+      .eq('is_disparo', true)
+      .is('cliente_respondeu_em', null)
+    if (replyTimestampError) {
+      console.warn('[webhook] Unable to register a dispatch reply:', replyTimestampError.message)
+    }
+
     // Web Push para o atendente atribuído (não notifica se em fila/encerrado,
     // nem se o WorkDesk já estiver em foco — o service worker decide isso).
     if (ticket.colaborador_id) {
