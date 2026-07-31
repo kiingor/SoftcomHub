@@ -62,16 +62,16 @@ export function tagsPorColaborador(
 /**
  * O recorte que o usuário logado PODE ver.
  *
- * `null` significa "todas as tags" — é o caso do master, que precisa enxergar o
- * conjunto inteiro para auditar e consertar cadastro errado. Para os demais,
- * uma lista vazia significa "nenhuma operação autorizada": nunca existe um
- * fallback que transforme um cadastro incompleto em acesso a todas as tags.
+ * `null` significa "todas as tags" — é o caso do master e de um canal que ainda
+ * não possui tags configuradas. Para os demais, em um canal com tags, uma lista
+ * vazia significa "nenhuma operação autorizada".
  */
 export function tagsVisiveisPara(
   tagsDoUsuario: readonly string[],
   isMaster: boolean,
+  hasTagsConfigured = true,
 ): string[] | null {
-  if (isMaster) return null
+  if (isMaster || !hasTagsConfigured) return null
   return [...tagsDoUsuario]
 }
 

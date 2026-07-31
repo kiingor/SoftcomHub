@@ -1658,6 +1658,7 @@ function SetorPageInner() {
   // Tags de setor: operação que o canal executa (Suporte Chat, Pit Stop).
   // Dimensão separada de `tags`, que agrupa por origem (Matriz, Filial...).
   const [tagsSetorList, setTagsSetorList] = useState<{ id: string; nome: string; cor: string; ordem?: number }[]>([])
+  const [tagsSetorLoadedSetorId, setTagsSetorLoadedSetorId] = useState<string | null>(null)
   const [isTagsSetorDialogOpen, setIsTagsSetorDialogOpen] = useState(false)
 
   // Config form state
@@ -2196,8 +2197,15 @@ function SetorPageInner() {
   const tagsPermitidasNosTickets = useMemo(() => {
     const eu = (atendentes as any[]).find((a: any) => a.id === colaboradorLogado?.id)
     const minhasTags = eu?.tag_setor_id ? [eu.tag_setor_id as string] : []
-    return tagsVisiveisPara(minhasTags, colaboradorLogado?.is_master === true)
-  }, [atendentes, colaboradorLogado?.id, colaboradorLogado?.is_master])
+    const hasTagsConfigured = tagsSetorLoadedSetorId === setorId
+      ? tagsSetorList.length > 0
+      : true
+    return tagsVisiveisPara(
+      minhasTags,
+      colaboradorLogado?.is_master === true,
+      hasTagsConfigured,
+    )
+  }, [atendentes, colaboradorLogado?.id, colaboradorLogado?.is_master, setorId, tagsSetorList.length, tagsSetorLoadedSetorId])
 
   const idsAtendentesPermitidos = useMemo(() => {
     if (tagsPermitidasNosTickets === null) return new Set<string>()
@@ -2922,7 +2930,10 @@ function SetorPageInner() {
       supabase.from('tags_setor').select('id, nome, cor, ordem').eq('setor_id', setorId).order('ordem').order('nome').limit(200),
     ])
     if (origem.data) setTagsList(origem.data)
-    if (operacao.data) setTagsSetorList(operacao.data)
+    if (!operacao.error) {
+      setTagsSetorList(operacao.data || [])
+      setTagsSetorLoadedSetorId(setorId)
+    }
   }
 
   // Fetch setores destino de transferência configurados
