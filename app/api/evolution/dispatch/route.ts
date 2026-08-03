@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { buscarSubsetoresDoCriador, escolherSubsetorDoCriador } from '@/lib/disparo-processor'
+import {
+  buscarSubsetoresDoCriador,
+  escolherSubsetorDoCriador,
+  registrarFalhaDeDisparo,
+  verificarDestinatarioEvolution,
+} from '@/lib/disparo-processor'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 import {
   describeUnexpectedError,
@@ -73,16 +78,53 @@ export async function POST(request: NextRequest) {
 
     // Format phone number
     const formattedPhone = normalizeBrazilianPhone(telefone)
+    if (!formattedPhone) {
+      return NextResponse.json({ error: 'Telefone inválido' }, { status: 400 })
+    }
+
+    const cleanCnpj = clienteCnpj?.replace(/\D/g, '') || null
+    const templateName = `[Evolution] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`
+    const verificacao = await verificarDestinatarioEvolution(
+      {
+        baseUrl: evolutionBaseUrl.replace(/\/+$/, ''),
+        apiKey: evolutionApiKey,
+        instanceName,
+      },
+      formattedPhone,
+    )
+
+    if (verificacao.status !== 'available') {
+      await registrarFalhaDeDisparo(supabase, {
+        setorId,
+        colaboradorId: colaborador.id,
+        colaboradorNome: colaborador.nome,
+        clienteNome,
+        clienteTelefone: formattedPhone,
+        clienteCnpj: cleanCnpj,
+        templateName,
+      })
+
+      const isRecipientMissing = verificacao.status === 'not_registered'
+      return NextResponse.json(
+        {
+          error: isRecipientMissing
+            ? 'O número informado não possui WhatsApp. Nenhum ticket foi criado.'
+            : 'Não foi possível validar o número no WhatsApp. Nenhum ticket foi criado.',
+          code: isRecipientMissing ? 'RECIPIENT_NOT_ON_WHATSAPP' : 'RECIPIENT_CHECK_UNAVAILABLE',
+        },
+        { status: isRecipientMissing ? 422 : 502 },
+      )
+    }
+
+    const destinatarioPhone = verificacao.telefone || formattedPhone
 
     // Find or create cliente
-    const cleanCnpj = clienteCnpj?.replace(/\D/g, '') || null
-
     let clienteId: string
 
     const { data: existingCliente } = await supabase
       .from('clientes')
       .select('id')
-      .eq('telefone', formattedPhone)
+      .eq('telefone', destinatarioPhone)
       .maybeSingle()
 
     if (existingCliente) {
@@ -100,7 +142,7 @@ export async function POST(request: NextRequest) {
         .from('clientes')
         .insert({
           nome: clienteNome,
-          telefone: formattedPhone,
+          telefone: destinatarioPhone,
           CNPJ: cleanCnpj,
           Registro: clienteRegistro || null,
         })
@@ -180,7 +222,7 @@ export async function POST(request: NextRequest) {
     const baseUrl = evolutionBaseUrl.replace(/\/+$/, '')
     const evolutionUrl = `${baseUrl}/message/sendText/${instanceName}`
     const evolutionBody = {
-      number: formattedPhone,
+      number: destinatarioPhone,
       text: mensagem,
       delay: 1000,
     }
@@ -221,7 +263,7 @@ export async function POST(request: NextRequest) {
 
     if (remoteJid && remoteJid.endsWith('@s.whatsapp.net')) {
       const canonicalPhone = remoteJid.replace('@s.whatsapp.net', '')
-      if (canonicalPhone && canonicalPhone !== formattedPhone) {
+      if (canonicalPhone && canonicalPhone !== destinatarioPhone) {
         await supabase
           .from('clientes')
           .update({ telefone: canonicalPhone })
@@ -259,8 +301,8 @@ export async function POST(request: NextRequest) {
       colaborador_nome: colaborador.nome,
       ticket_id: ticketId,
       cliente_nome: clienteNome,
-      cliente_telefone: formattedPhone,
-      template_name: `[Evolution] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+      cliente_telefone: destinatarioPhone,
+      template_name: templateName,
       status: 'enviado',
     })
 

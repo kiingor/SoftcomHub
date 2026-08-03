@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { buscarSubsetoresDoCriador, escolherSubsetorDoCriador } from '@/lib/disparo-processor'
+import {
+  buscarSubsetoresDoCriador,
+  escolherSubsetorDoCriador,
+  registrarFalhaDeDisparo,
+} from '@/lib/disparo-processor'
 import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { sanitizeWhatsAppProviderError } from '@/lib/provider-error'
+import { getWhatsAppProviderAcceptance } from '@/lib/whatsapp-provider-error'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
 
@@ -111,6 +116,7 @@ export async function POST(request: NextRequest) {
 
     // Format phone number
     const formattedPhone = telefone.replace(/\D/g, '')
+    const cleanCnpj = clienteCnpj?.replace(/\D/g, '') || null
 
     // Use the language from resolved dispatch config
     const templateLanguage = dispatchTemplateLanguage
@@ -185,13 +191,32 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get wa_id from response (the phone registered in WhatsApp)
-    const waId = whatsappData.contacts?.[0]?.wa_id || formattedPhone
-    const whatsappMessageId = whatsappData.messages?.[0]?.id
+    const providerAcceptance = getWhatsAppProviderAcceptance(whatsappData)
+    if (!providerAcceptance.messageId || !providerAcceptance.hasValidatedRecipient) {
+      console.warn('[Dispatch] WhatsApp did not confirm the recipient')
+      await registrarFalhaDeDisparo(supabase, {
+        setorId,
+        colaboradorId: colaborador.id,
+        colaboradorNome: colaborador.nome,
+        clienteNome,
+        clienteTelefone: formattedPhone,
+        clienteCnpj: cleanCnpj,
+        templateName: dispatchTemplateId,
+      })
+      return NextResponse.json(
+        {
+          error: 'Não foi possível confirmar o destinatário no WhatsApp. Nenhum ticket foi criado.',
+          code: 'RECIPIENT_NOT_CONFIRMED',
+        },
+        { status: 502 },
+      )
+    }
+
+    // `hasValidatedRecipient` above guarantees this wa_id is safe to persist.
+    const waId = whatsappData.contacts[0].wa_id
+    const whatsappMessageId = providerAcceptance.messageId
 
     // Find or create cliente
-    const cleanCnpj = clienteCnpj?.replace(/\D/g, '') || null
-
     let clienteId: string
 
     // Check if cliente exists by phone
