@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { buscarSubsetoresDoCriador, escolherSubsetorDoCriador } from '@/lib/disparo-processor'
 import { normalizeBrazilianPhone } from '@/lib/phone'
+import {
+  describeUnexpectedError,
+  sanitizeDatabaseError,
+  sanitizeEvolutionProviderError,
+} from '@/lib/provider-error'
 import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { createClient } from '@/lib/supabase/server'
 
@@ -103,9 +108,12 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (clienteError || !newCliente) {
-        console.error('[Evolution Dispatch] Error creating cliente:', JSON.stringify(clienteError))
+        // O `details` do PostgREST repete a linha recusada — em `clientes` isso
+        // é o telefone. Só código e mensagem redigida saem daqui.
+        const failure = sanitizeDatabaseError(clienteError)
+        console.error('[Evolution Dispatch] Error creating cliente:', failure)
         return NextResponse.json(
-          { error: 'Erro ao criar cliente', details: clienteError?.message || clienteError },
+          { error: 'Erro ao criar cliente', details: failure },
           { status: 500 },
         )
       }
@@ -157,9 +165,10 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (ticketError || !ticket) {
-        console.error('[Evolution Dispatch] Error creating ticket:', JSON.stringify(ticketError))
+        const failure = sanitizeDatabaseError(ticketError)
+        console.error('[Evolution Dispatch] Error creating ticket:', failure)
         return NextResponse.json(
-          { error: 'Erro ao criar ticket', details: ticketError?.message || ticketError },
+          { error: 'Erro ao criar ticket', details: failure },
           { status: 500 },
         )
       }
@@ -188,9 +197,10 @@ export async function POST(request: NextRequest) {
     const evolutionData = await evolutionResponse.json()
 
     if (!evolutionResponse.ok) {
-      console.error('[Evolution Dispatch] API error:', evolutionData)
+      const providerDetails = sanitizeEvolutionProviderError(evolutionData, evolutionResponse.status)
+      console.error('[Evolution Dispatch] API error:', providerDetails)
       return NextResponse.json(
-        { error: 'Erro ao enviar mensagem via EvolutionAPI', details: evolutionData },
+        { error: 'Erro ao enviar mensagem via EvolutionAPI', details: providerDetails },
         { status: evolutionResponse.status },
       )
     }
@@ -216,11 +226,14 @@ export async function POST(request: NextRequest) {
           .from('clientes')
           .update({ telefone: canonicalPhone })
           .eq('id', clienteId)
-        console.log(`[Evolution Dispatch] Updated client phone: ${formattedPhone} → ${canonicalPhone}`)
+        console.log(`[Evolution Dispatch] Telefone canonizado pelo provedor — cliente: ${clienteId}`)
       }
       // Se já é igual, nenhuma atualização necessária
     } else if (remoteJid) {
-      console.log(`[Evolution Dispatch] remoteJid ignorado (formato não é @s.whatsapp.net): ${remoteJid}`)
+      // O sufixo é exatamente o que este log existe para dizer (@lid, @g.us…) e
+      // é a única parte do JID que não é o número do cliente.
+      const formato = remoteJid.includes('@') ? remoteJid.slice(remoteJid.indexOf('@')) : 'sem @'
+      console.log(`[Evolution Dispatch] remoteJid ignorado (formato não é @s.whatsapp.net): ${formato}`)
     }
 
     // Save message in DB as bot message (initial dispatch message)
@@ -236,7 +249,7 @@ export async function POST(request: NextRequest) {
     })
 
     if (msgError) {
-      console.error('[Evolution Dispatch] Error saving message:', JSON.stringify(msgError))
+      console.error('[Evolution Dispatch] Error saving message:', sanitizeDatabaseError(msgError))
     }
 
     // Save dispatch log
@@ -251,7 +264,7 @@ export async function POST(request: NextRequest) {
     })
 
     if (logError) {
-      console.error('[Evolution Dispatch] Error saving disparo_log:', JSON.stringify(logError))
+      console.error('[Evolution Dispatch] Error saving disparo_log:', sanitizeDatabaseError(logError))
     }
 
     return NextResponse.json({
@@ -261,7 +274,10 @@ export async function POST(request: NextRequest) {
       clienteId,
     })
   } catch (error) {
-    console.error('[Evolution Dispatch] Error:', error)
+    console.error(
+      '[Evolution Dispatch] Error:',
+      describeUnexpectedError(error, 'Erro interno no disparo'),
+    )
     return NextResponse.json({ error: 'Erro interno' }, { status: 500 })
   }
 }

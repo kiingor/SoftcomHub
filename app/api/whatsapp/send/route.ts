@@ -22,6 +22,10 @@ import { resolveSharedChannelOwnerId } from '@/lib/nexus-channel-resolution'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 import { checkMetaCompatibility, extFromUrl, resolveMime } from '@/lib/whatsapp-media'
+import {
+  getWhatsAppProviderAcceptance,
+  mapWhatsAppProviderError,
+} from '@/lib/whatsapp-provider-error'
 import { authorizeTicketSend } from '@/lib/ticket-send-auth'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
@@ -52,9 +56,10 @@ async function persistFailure(
   if (result.ok) return null
   return NextResponse.json(
     {
-      error: result.error,
+      error: 'Nao foi possivel atualizar o estado da mensagem.',
       code: result.code,
       providerAccepted: false,
+      deliveryConfirmed: false,
       status_envio: 'enviando',
     },
     { status: 500 },
@@ -65,6 +70,7 @@ export async function POST(request: NextRequest) {
   let serviceClient: ReturnType<typeof createServiceClient> | null = null
   let sendAttempt: MessageSendAttempt | null = null
   let providerRequestStarted = false
+  let providerAccepted = false
 
   try {
     const supabase = await createClient()
@@ -166,6 +172,8 @@ export async function POST(request: NextRequest) {
               success: true,
               idempotent: true,
               legacy: true,
+              providerAccepted: true,
+              deliveryConfirmed: false,
               whatsappMessageId: legacyMessage.providerMessageId,
             })
           }
@@ -185,6 +193,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           success: true,
           idempotent: true,
+          providerAccepted: true,
+          deliveryConfirmed: false,
           status_envio: claim.status_envio,
           whatsappMessageId: claim.providerMessageId,
         })
@@ -578,27 +588,40 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(messagePayload),
     })
 
-    const whatsappData = await whatsappResponse.json()
+    const whatsappData = await whatsappResponse.json().catch(() => null)
 
     if (!whatsappResponse.ok) {
-      console.error('[WhatsApp Send] Provider error status:', whatsappResponse.status)
-      const error = whatsappData?.error?.message || 'Falha ao enviar mensagem via WhatsApp'
-      const persistenceFailure = await persistFailure(serviceClient, sendAttempt, error)
+      const providerFailure = mapWhatsAppProviderError(
+        whatsappData,
+        whatsappResponse.status,
+      )
+      const persistenceFailure = await persistFailure(
+        serviceClient,
+        sendAttempt,
+        providerFailure.error,
+      )
       if (persistenceFailure) return persistenceFailure
       sendAttempt = null
       return NextResponse.json(
         {
-          error: 'Failed to send WhatsApp message',
-          code: 'PROVIDER_SEND_FAILED',
+          error: providerFailure.error,
+          code: providerFailure.code,
+          providerAccepted: false,
+          deliveryConfirmed: false,
           status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
         },
-        { status: whatsappResponse.status }
+        { status: providerFailure.status }
       )
     }
 
-    const providerMessageId = whatsappData.messages?.[0]?.id
+    const providerAcceptance = getWhatsAppProviderAcceptance(whatsappData)
+    const providerMessageId = providerAcceptance.messageId
     if (!providerMessageId) {
-      throw new Error('WhatsApp não retornou o identificador da mensagem')
+      throw new Error('Meta did not return a message identifier')
+    }
+    providerAccepted = true
+    if (providerAcceptance.hasValidatedRecipient) {
+      console.info('[WhatsApp Send] Meta accepted a message for a validated recipient')
     }
 
     let savedMessage = null
@@ -615,14 +638,17 @@ export async function POST(request: NextRequest) {
       if (!completion.ok) {
         return NextResponse.json(
           {
-            error: completion.error,
+            error: 'A mensagem foi aceita, mas nao foi possivel atualizar o registro local.',
             code: completion.code,
             providerAccepted: true,
+            deliveryConfirmed: false,
           },
           { status: 500 },
         )
       }
     } else if (messageId) {
+      // `enviado` is the existing local state for provider acceptance. Delivery
+      // remains confirmed exclusively by the WhatsApp status webhooks.
       const completion = await completePersistedMessageSend(serviceClient!, sendAttempt!, {
         status: 'enviado',
         providerMessageId,
@@ -631,9 +657,10 @@ export async function POST(request: NextRequest) {
       if (!completion.ok) {
         return NextResponse.json(
           {
-            error: completion.error,
+            error: 'A mensagem foi aceita, mas nao foi possivel atualizar o registro local.',
             code: completion.code,
             providerAccepted: true,
+            deliveryConfirmed: false,
             status_envio: 'enviando',
           },
           { status: 500 },
@@ -664,11 +691,12 @@ export async function POST(request: NextRequest) {
 
       if (!persistence.ok) {
         console.error('[WhatsApp Send] Falha ao persistir mensagem aceita')
-        // Message was sent but not saved - still return success but warn
+        // The provider accepted the message, but the local record was not saved.
         return NextResponse.json({
           success: true,
-          warning: 'Message sent but failed to save to database',
+          warning: 'Mensagem aceita pelo provedor, mas nao foi salva no banco de dados',
           providerAccepted: true,
+          deliveryConfirmed: false,
           whatsappMessageId: providerMessageId,
         })
       }
@@ -685,24 +713,30 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: savedMessage,
+      providerAccepted: true,
+      deliveryConfirmed: false,
       status_envio: messageId && !legacyPersistedMessage ? 'enviado' : undefined,
       legacy: legacyPersistedMessage || undefined,
       whatsappMessageId: providerMessageId,
     })
-  } catch (error) {
+  } catch {
     console.error('[WhatsApp Send] Falha interna de envio')
     if (serviceClient && sendAttempt) {
       const status = providerRequestStarted ? 'indeterminado' : 'falhou'
+      const persistenceError = providerRequestStarted
+        ? 'Nao foi possivel concluir a confirmacao de aceitacao pelo provedor'
+        : 'Erro interno antes do envio'
       const completion = await completePersistedMessageSend(serviceClient, sendAttempt, {
         status,
-        error: error instanceof Error ? error.message : 'Erro interno no envio',
+        error: persistenceError,
       })
       if (!completion.ok) {
         return NextResponse.json(
           {
-            error: completion.error,
+            error: 'Nao foi possivel atualizar o estado da mensagem.',
             code: completion.code,
-            providerAccepted: providerRequestStarted,
+            providerAccepted,
+            deliveryConfirmed: false,
             status_envio: 'enviando',
           },
           { status: 500 },
@@ -716,13 +750,24 @@ export async function POST(request: NextRequest) {
           code: providerRequestStarted
             ? 'MESSAGE_SEND_INDETERMINATE'
             : 'MESSAGE_SEND_FAILED',
+          providerAccepted,
+          deliveryConfirmed: false,
           status_envio: status,
         },
         { status: providerRequestStarted ? 502 : 500 },
       )
     }
     return NextResponse.json(
-      { error: 'Internal server error' },
+      {
+        error: providerAccepted
+          ? 'A mensagem foi aceita pelo provedor, mas nao foi possivel concluir o processamento local'
+          : 'Internal server error',
+        code: providerAccepted
+          ? 'MESSAGE_SEND_POST_ACCEPTANCE_FAILED'
+          : 'MESSAGE_SEND_FAILED',
+        providerAccepted,
+        deliveryConfirmed: false,
+      },
       { status: 500 }
     )
   }
