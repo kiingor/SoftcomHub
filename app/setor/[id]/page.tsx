@@ -165,6 +165,7 @@ import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
+import { atendimentoStatusBadgeClass, computeAtendimentoStatus, formatAtendimentoStatusLabel } from '@/lib/atendimento-status'
 import {
   AreaChart,
   Area,
@@ -230,8 +231,8 @@ function formatMonitoringTime(ms: number) {
 
 type SortDirection = 'asc' | 'desc'
 type SortValue = string | number | null | undefined
-type ActiveTicketSortKey = 'queueTime' | 'firstResponse' | 'serviceTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'attendant'
-type WaitingTicketSortKey = 'queueTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'priority'
+type ActiveTicketSortKey = 'status' | 'queueTime' | 'firstResponse' | 'serviceTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'attendant'
+type WaitingTicketSortKey = 'status' | 'queueTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'priority'
 type AttendantSortKey = 'attendant' | 'status' | 'activeTickets' | 'finalizedToday'
 
 interface SortState<Key extends string> {
@@ -3172,6 +3173,9 @@ function SetorPageInner() {
         tempoPrimeiraRespostaMs: t.primeira_resposta_em
           ? getDurationMs(t.criado_em, t.primeira_resposta_em)
           : null,
+        // Status do atendimento: tempo total do ticket em aberto, desde a criação —
+        // não distingue fase (fila, aguardando 1ª resposta, em atendimento).
+        statusMs: getDurationMs(t.criado_em, null),
         tempoAtendimento: t.colaborador_id ? formatDuration(tempos.atendimentoAtualEm, null) : '0min',
         tempoAtendimentoMs: t.colaborador_id
           ? getDurationMs(tempos.atendimentoAtualEm, null)
@@ -3666,6 +3670,7 @@ function SetorPageInner() {
   const sortedTicketsEmAndamento = useMemo(() => {
     const getValue = (ticket: any): SortValue => {
       switch (activeTicketsSort.key) {
+        case 'status': return ticket.statusMs
         case 'queueTime': return ticket.tempoNaFilaMs
         case 'firstResponse': return ticket.tempoPrimeiraRespostaMs
         case 'serviceTime': return ticket.tempoAtendimentoMs
@@ -3690,6 +3695,7 @@ function SetorPageInner() {
   const sortedTicketsAguardando = useMemo(() => {
     const getValue = (ticket: any): SortValue => {
       switch (waitingTicketsSort.key) {
+        case 'status': return ticket.tempoNaFilaMs
         case 'queueTime': return ticket.tempoNaFilaMs
         case 'ticket': return toSortableNumber(ticket.numero)
         case 'contact': return ticket.contato
@@ -5828,6 +5834,12 @@ const saveConfig = async () => {
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
                             <SortableTableHead
+                              label="Status"
+                              active={activeTicketsSort.key === 'status'}
+                              direction={activeTicketsSort.direction}
+                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'status'))}
+                            />
+                            <SortableTableHead
                               label="Tempo na fila"
                               active={activeTicketsSort.key === 'queueTime'}
                               direction={activeTicketsSort.direction}
@@ -5882,6 +5894,7 @@ const saveConfig = async () => {
                           {isLoading ? (
                             Array.from({ length: 5 }).map((_, i) => (
                               <TableRow key={i}>
+                                <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-20" /></TableCell>
@@ -5895,7 +5908,7 @@ const saveConfig = async () => {
                             ))
                           ) : ticketsEmAndamento.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={9} className="h-32 text-center">
+                              <TableCell colSpan={10} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
                                   <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendimento no momento</p>
@@ -5906,13 +5919,19 @@ const saveConfig = async () => {
                           ) : (
                             paginatedTicketsEmAndamento.map((ticket: any) => {
                               const aguardandoResposta = ticket.status === 'em_atendimento' && !ticket.primeira_resposta_em
+                              const statusLevel = computeAtendimentoStatus(ticket.statusMs)
                               return (
-                                <TableRow 
-                                  key={ticket.id} 
+                                <TableRow
+                                  key={ticket.id}
                                   className={cn(
                                     aguardandoResposta && "bg-yellow-50/50 dark:bg-yellow-950/20"
                                   )}
                                 >
+                                  <TableCell>
+                                    <Badge variant="outline" className={cn('text-[10px]', atendimentoStatusBadgeClass(statusLevel))}>
+                                      {formatAtendimentoStatusLabel(statusLevel)}
+                                    </Badge>
+                                  </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoNaFila}</TableCell>
                                   <TableCell>
                                     {aguardandoResposta ? (
@@ -5970,6 +5989,12 @@ const saveConfig = async () => {
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
                             <SortableTableHead
+                              label="Status"
+                              active={waitingTicketsSort.key === 'status'}
+                              direction={waitingTicketsSort.direction}
+                              onSort={() => setWaitingTicketsSort((current) => getNextSort(current, 'status'))}
+                            />
+                            <SortableTableHead
                               label="Tempo na fila"
                               active={waitingTicketsSort.key === 'queueTime'}
                               direction={waitingTicketsSort.direction}
@@ -6012,6 +6037,7 @@ const saveConfig = async () => {
                           {isLoading ? (
                             Array.from({ length: 3 }).map((_, i) => (
                               <TableRow key={i}>
+                                <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-32" /></TableCell>
@@ -6023,7 +6049,7 @@ const saveConfig = async () => {
                             ))
                           ) : ticketsAguardando.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={7} className="h-32 text-center">
+                              <TableCell colSpan={8} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
                                   <p className="text-sm font-medium tracking-tight text-foreground">Nenhum ticket aguardando atendimento</p>
@@ -6034,6 +6060,11 @@ const saveConfig = async () => {
                           ) : (
                             paginatedTicketsAguardando.map((ticket: any) => (
                               <TableRow key={ticket.id} className="bg-yellow-50/50 dark:bg-yellow-950/20">
+                                <TableCell>
+                                  <Badge variant="outline" className={cn('text-[10px]', atendimentoStatusBadgeClass(computeAtendimentoStatus(ticket.tempoNaFilaMs)))}>
+                                    {formatAtendimentoStatusLabel(computeAtendimentoStatus(ticket.tempoNaFilaMs))}
+                                  </Badge>
+                                </TableCell>
                                 <TableCell>
                                   <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
                                     <Clock className="mr-1 h-3 w-3" />
