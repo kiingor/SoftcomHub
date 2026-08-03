@@ -1,5 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
+import {
+  describeUnexpectedError,
+  sanitizeDatabaseError,
+  sanitizeEvolutionProviderError,
+  sanitizeWhatsAppProviderError,
+} from '@/lib/provider-error'
+import { getWhatsAppProviderAcceptance } from '@/lib/whatsapp-provider-error'
 import { createServiceClient } from '@/lib/supabase/service'
+import {
+  registrarFalhaDeDisparo,
+  verificarDestinatarioEvolution,
+} from '@/lib/disparo-processor'
 import { criarEDistribuirTicket } from '@/lib/ticket-distribution'
 
 /**
@@ -59,7 +70,7 @@ export async function POST(request: NextRequest) {
 
     // ─── Formatar telefone ────────────────────────────────────────────────────
     const phoneDigits = telefone ? telefone.replace(/\D/g, '') : ''
-    const formattedPhone = phoneDigits.length === 11
+    let formattedPhone = phoneDigits.length === 11
       ? `55${phoneDigits}`
       : phoneDigits.length === 13 && phoneDigits.startsWith('55')
         ? phoneDigits
@@ -102,9 +113,12 @@ export async function POST(request: NextRequest) {
           .single()
 
         if (clienteError || !newCliente) {
-          console.error('[Disparo Externo] Erro ao criar cliente:', clienteError)
+          // O `details` do PostgREST repete a linha recusada — em `clientes`
+          // isso é o telefone. Só código e mensagem redigida saem daqui.
+          const failure = sanitizeDatabaseError(clienteError)
+          console.error('[Disparo Externo] Erro ao criar cliente:', failure)
           return NextResponse.json(
-            { error: 'Erro ao criar cliente', details: clienteError?.message },
+            { error: 'Erro ao criar cliente', details: failure },
             { status: 500 },
           )
         }
@@ -125,54 +139,10 @@ export async function POST(request: NextRequest) {
       .in('status', ['aberto', 'em_atendimento'])
       .maybeSingle()
 
-    let ticketId: string
-    let ticketNumero: number | null = null
-    let colaboradorId: string | null = null
+    let ticketId: string | null = existingTicket?.id || null
+    let ticketNumero: number | null = existingTicket?.numero || null
+    let colaboradorId: string | null = existingTicket?.colaborador_id || null
     let distribuido = false
-
-    if (existingTicket) {
-      // Reusar ticket existente
-      ticketId = existingTicket.id
-      ticketNumero = existingTicket.numero
-      colaboradorId = existingTicket.colaborador_id
-    } else {
-      // Criar ticket com distribuição automática (round-robin)
-      console.log(`[Disparo Externo] Criando ticket — cliente: ${clienteId}, setor: ${setor_id}, subsetor: ${subsetor_id || 'none'}, canal: ${canal}`)
-      let result: Awaited<ReturnType<typeof criarEDistribuirTicket>> = null
-      try {
-        result = await criarEDistribuirTicket(clienteId, setor_id, canal, subsetor_id || null)
-      } catch (distError: any) {
-        console.error(`[Disparo Externo] criarEDistribuirTicket threw:`, distError)
-        return NextResponse.json(
-          { error: 'Erro ao criar ticket', details: distError?.message || String(distError) },
-          { status: 500 },
-        )
-      }
-
-      if (!result) {
-        console.error(`[Disparo Externo] criarEDistribuirTicket retornou null — cliente: ${clienteId}, setor: ${setor_id}`)
-        return NextResponse.json(
-          { error: 'Erro ao criar ticket', hint: 'criarEDistribuirTicket retornou null. Verifique os logs do servidor.' },
-          { status: 500 },
-        )
-      }
-
-      ticketId = result.ticketId
-      colaboradorId = result.colaboradorId
-      distribuido = !!colaboradorId
-
-      // Buscar numero do ticket criado
-      const { data: ticketData } = await supabase
-        .from('tickets')
-        .select('numero')
-        .eq('id', ticketId)
-        .single()
-      ticketNumero = ticketData?.numero || null
-
-      console.log(
-        `[Disparo Externo] Ticket #${ticketNumero} criado — setor: ${setor_id}, subsetor: ${subsetor_id || 'none'}, atribuído a: ${colaboradorId || 'fila'}`
-      )
-    }
 
     // ─── Buscar canal ativo do setor (Evolution OU API Oficial) ────────────────
     // Tenta qualquer canal ativo — usa o primeiro que encontrar
@@ -214,6 +184,39 @@ export async function POST(request: NextRequest) {
       const evolutionBaseUrl = (canalEvolution.evolution_base_url || process.env.EVOLUTION_BASE_URL || EVOLUTION_BASE_URL).replace(/\/+$/, '')
       const evolutionApiKey = canalEvolution.evolution_api_key || process.env.EVOLUTION_GLOBAL_API_KEY || EVOLUTION_GLOBAL_API_KEY
       const instanceName = canalEvolution.instancia
+      const verificacao = await verificarDestinatarioEvolution(
+        {
+          baseUrl: evolutionBaseUrl,
+          apiKey: evolutionApiKey,
+          instanceName,
+        },
+        formattedPhone,
+      )
+
+      if (verificacao.status !== 'available') {
+        await registrarFalhaDeDisparo(supabase, {
+          setorId: setor_id,
+          colaboradorId: null,
+          colaboradorNome: 'Integração externa',
+          clienteNome: nome,
+          clienteTelefone: formattedPhone,
+          clienteCnpj: cnpj,
+          templateName: `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+        })
+
+        const isRecipientMissing = verificacao.status === 'not_registered'
+        return NextResponse.json(
+          {
+            error: isRecipientMissing
+              ? 'O número informado não possui WhatsApp. Nenhum ticket foi criado.'
+              : 'Não foi possível validar o número no WhatsApp. Nenhum ticket foi criado.',
+            code: isRecipientMissing ? 'RECIPIENT_NOT_ON_WHATSAPP' : 'RECIPIENT_CHECK_UNAVAILABLE',
+          },
+          { status: isRecipientMissing ? 422 : 502 },
+        )
+      }
+
+      formattedPhone = verificacao.telefone || formattedPhone
 
       const evolutionUrl = `${evolutionBaseUrl}/message/sendText/${instanceName}`
       const evolutionResponse = await fetch(evolutionUrl, {
@@ -224,9 +227,10 @@ export async function POST(request: NextRequest) {
       const evolutionData = await evolutionResponse.json()
 
       if (!evolutionResponse.ok) {
-        console.error('[Disparo Externo] Evolution API error:', evolutionData)
+        const providerDetails = sanitizeEvolutionProviderError(evolutionData, evolutionResponse.status)
+        console.error('[Disparo Externo] Evolution API error:', providerDetails)
         return NextResponse.json(
-          { error: 'Erro ao enviar mensagem via Evolution API', details: evolutionData, ticket_id: ticketId, ticket_numero: ticketNumero },
+          { error: 'Erro ao enviar mensagem via Evolution API', details: providerDetails, ticket_id: ticketId, ticket_numero: ticketNumero },
           { status: evolutionResponse.status },
         )
       }
@@ -241,7 +245,7 @@ export async function POST(request: NextRequest) {
         const canonicalPhone = remoteJid.replace('@s.whatsapp.net', '')
         if (canonicalPhone && canonicalPhone !== formattedPhone) {
           await supabase.from('clientes').update({ telefone: canonicalPhone }).eq('id', clienteId)
-          console.log(`[Disparo Externo] Telefone atualizado: ${formattedPhone} → ${canonicalPhone}`)
+          console.log(`[Disparo Externo] Telefone canonizado pelo provedor — cliente: ${clienteId}`)
         }
       }
     } else if (canalOficial) {
@@ -292,23 +296,78 @@ export async function POST(request: NextRequest) {
       }
 
       if (!whatsappResponse.ok) {
-        console.error('[Disparo Externo] WhatsApp Official API error:', whatsappData)
+        const providerDetails = sanitizeWhatsAppProviderError(whatsappData, whatsappResponse.status)
+        console.error('[Disparo Externo] WhatsApp Official API error:', providerDetails)
         return NextResponse.json(
-          { error: 'Erro ao enviar template via API Oficial WhatsApp', details: whatsappData, ticket_id: ticketId, ticket_numero: ticketNumero },
+          { error: 'Erro ao enviar template via API Oficial WhatsApp', details: providerDetails, ticket_id: ticketId, ticket_numero: ticketNumero },
           { status: whatsappResponse.status },
         )
       }
 
-      messageId = whatsappData.messages?.[0]?.id || null
+      const providerAcceptance = getWhatsAppProviderAcceptance(whatsappData)
+      if (!providerAcceptance.messageId || !providerAcceptance.hasValidatedRecipient) {
+        await registrarFalhaDeDisparo(supabase, {
+          setorId: setor_id,
+          colaboradorId: null,
+          colaboradorNome: 'Integração externa',
+          clienteNome: nome,
+          clienteTelefone: formattedPhone,
+          clienteCnpj: cnpj,
+          templateName: '[Template Oficial]',
+        })
+        return NextResponse.json(
+          {
+            error: 'Não foi possível confirmar o destinatário no WhatsApp. Nenhum ticket foi criado.',
+            code: 'RECIPIENT_NOT_CONFIRMED',
+          },
+          { status: 502 },
+        )
+      }
+
+      messageId = providerAcceptance.messageId
       canalEnvio = 'whatsapp'
       phoneNumberIdUsed = officialPhoneNumberId
 
       // Atualizar telefone canônico com wa_id
-      const waId = whatsappData.contacts?.[0]?.wa_id
+      const waId = whatsappData.contacts[0].wa_id
       if (waId && waId !== formattedPhone) {
         await supabase.from('clientes').update({ telefone: waId }).eq('id', clienteId)
-        console.log(`[Disparo Externo] Telefone atualizado: ${formattedPhone} → ${waId}`)
+        console.log(`[Disparo Externo] Telefone canonizado pelo provedor — cliente: ${clienteId}`)
       }
+    }
+
+    if (!ticketId) {
+      console.log(`[Disparo Externo] Criando ticket após o envio — setor: ${setor_id}, subsetor: ${subsetor_id || 'none'}, canal: ${canal}`)
+      let result: Awaited<ReturnType<typeof criarEDistribuirTicket>> = null
+      try {
+        result = await criarEDistribuirTicket(clienteId, setor_id, canal, subsetor_id || null)
+      } catch (distError: any) {
+        const failure = describeUnexpectedError(distError, 'Erro ao distribuir o ticket')
+        console.error('[Disparo Externo] criarEDistribuirTicket threw:', failure)
+        return NextResponse.json(
+          { error: 'Mensagem enviada, mas não foi possível criar o ticket', details: failure },
+          { status: 500 },
+        )
+      }
+
+      if (!result) {
+        console.error(`[Disparo Externo] criarEDistribuirTicket retornou null — setor: ${setor_id}`)
+        return NextResponse.json(
+          { error: 'Mensagem enviada, mas não foi possível criar o ticket' },
+          { status: 500 },
+        )
+      }
+
+      ticketId = result.ticketId
+      colaboradorId = result.colaboradorId
+      distribuido = Boolean(colaboradorId)
+
+      const { data: ticketData } = await supabase
+        .from('tickets')
+        .select('numero')
+        .eq('id', ticketId)
+        .single()
+      ticketNumero = ticketData?.numero || null
     }
 
     // ─── Salvar mensagem no banco ─────────────────────────────────────────────
@@ -328,19 +387,21 @@ export async function POST(request: NextRequest) {
     })
 
     // ─── Salvar log de disparo (tabela opcional) ──────────────────────────────
-    try {
-      await supabase.from('disparo_logs').insert({
-        setor_id: setor_id,
-        colaborador_id: colaboradorId,
-        ticket_id: ticketId,
-        cliente_nome: nome,
-        cliente_telefone: formattedPhone,
-        template_usado: canalEnvio === 'whatsapp'
-          ? `[Template Oficial]`
-          : `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
-        status: 'enviado',
-      })
-    } catch { /* tabela pode não existir */ }
+    const { error: logError } = await supabase.from('disparo_logs').insert({
+      setor_id: setor_id,
+      colaborador_id: null,
+      colaborador_nome: 'Integração externa',
+      ticket_id: ticketId,
+      cliente_nome: nome,
+      cliente_telefone: formattedPhone,
+      template_name: canalEnvio === 'whatsapp'
+        ? `[Template Oficial]`
+        : `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+      status: 'enviado',
+    })
+    if (logError) {
+      console.warn('[Disparo Externo] Não foi possível registrar o disparo:', logError.code)
+    }
 
     // ─── Resposta ─────────────────────────────────────────────────────────────
     return NextResponse.json({
@@ -354,9 +415,10 @@ export async function POST(request: NextRequest) {
       message_id: messageId,
     })
   } catch (error: any) {
-    console.error('[Disparo Externo] Erro:', error)
+    const failure = describeUnexpectedError(error, 'Erro interno no disparo externo')
+    console.error('[Disparo Externo] Erro:', failure)
     return NextResponse.json(
-      { error: 'Erro interno', details: error?.message },
+      { error: 'Erro interno', details: failure },
       { status: 500 },
     )
   }

@@ -23,6 +23,11 @@ import { createClient } from '@/lib/supabase/server'
 import { resolveMime } from '@/lib/whatsapp-media'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 import { authorizeTicketSend } from '@/lib/ticket-send-auth'
+import {
+  describeUnexpectedError,
+  redactSensitiveText,
+  sanitizeEvolutionProviderError,
+} from '@/lib/provider-error'
 
 const requestSchema = z.object({
   ticketId: z.string().uuid(),
@@ -59,9 +64,11 @@ async function persistFailure(
   error: string,
 ) {
   if (!serviceClient || !attempt) return null
+  // `erro_envio` é exibido no WorkDesk e copiado para error_logs — o texto não
+  // pode carregar telefone, credencial ou URL do provedor.
   const result = await completePersistedMessageSend(serviceClient, attempt, {
     status: 'falhou',
-    error,
+    error: redactSensitiveText(error),
   })
   if (result.ok) return null
   return NextResponse.json(
@@ -405,7 +412,6 @@ export async function POST(request: NextRequest) {
       type LegacyEvolutionSector = {
         id: string
         canal: string | null
-        instancia: string | null
         phone_number_id: string | null
         evolution_base_url: string | null
         evolution_api_key: string | null
@@ -413,34 +419,18 @@ export async function POST(request: NextRequest) {
       let legacySectors: LegacyEvolutionSector[] = []
 
       if (requestedInstance) {
-        // Use parameterized equality queries instead of interpolating the
-        // caller-controlled identifier into a PostgREST `.or(...)` filter.
-        const [byInstance, byPhoneNumber] = await Promise.all([
-          authoritativeClient
-            .from('setores')
-            .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
-            .eq('instancia', requestedInstance)
-            .order('id', { ascending: true })
-            .limit(1000),
-          authoritativeClient
-            .from('setores')
-            .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
-            .eq('phone_number_id', requestedInstance)
-            .order('id', { ascending: true })
-            .limit(1000),
-        ])
-        if (byInstance.error) throw byInstance.error
-        if (byPhoneNumber.error) throw byPhoneNumber.error
-
-        const uniqueSectors = new Map<string, LegacyEvolutionSector>()
-        for (const sector of [...(byInstance.data || []), ...(byPhoneNumber.data || [])]) {
-          uniqueSectors.set(sector.id, sector)
-        }
-        legacySectors = [...uniqueSectors.values()]
+        const { data, error } = await authoritativeClient
+          .from('setores')
+          .select('id, canal, phone_number_id, evolution_base_url, evolution_api_key')
+          .eq('phone_number_id', requestedInstance)
+          .order('id', { ascending: true })
+          .limit(1000)
+        if (error) throw error
+        legacySectors = data || []
       } else {
         const { data, error } = await authoritativeClient
           .from('setores')
-          .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
+          .select('id, canal, phone_number_id, evolution_base_url, evolution_api_key')
           .eq('id', ticket.setor_id)
           .order('id', { ascending: true })
           .limit(1)
@@ -449,18 +439,15 @@ export async function POST(request: NextRequest) {
       }
 
       const configuredLegacyChannels = legacySectors
-        .filter(isConfiguredLegacyEvolutionChannel)
+        .filter((sector) => isConfiguredLegacyEvolutionChannel({
+          ...sector,
+          instancia: null,
+        }))
         .map((sector) => ({
           id: `legacy:${sector.id}`,
           setor_id: sector.id,
-          channel_identifier: requestedInstance
-            ? (
-                sector.instancia === requestedInstance
-                  ? sector.instancia
-                  : sector.phone_number_id
-              )
-            : sector.instancia || sector.phone_number_id,
-          instancia: sector.instancia,
+          channel_identifier: sector.phone_number_id,
+          instancia: null,
           phone_number_id: sector.phone_number_id,
           evolution_base_url: sector.evolution_base_url,
           evolution_api_key: sector.evolution_api_key,
@@ -677,7 +664,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (!evolutionResponse.ok) {
-      console.error('[EvolutionAPI Send] Provider error status:', evolutionResponse.status)
+      const providerDetails = sanitizeEvolutionProviderError(evolutionData, evolutionResponse.status)
+      console.error('[EvolutionAPI Send] Provider rejected the message:', providerDetails)
 
       // Detectar erro de dispositivo desconectado nas respostas de erro
       const errorStr = JSON.stringify(evolutionData).toLowerCase()
@@ -712,6 +700,7 @@ export async function POST(request: NextRequest) {
         {
           error: genericErrorMsg,
           code: 'PROVIDER_SEND_FAILED',
+          details: providerDetails,
           status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
         },
         { status: evolutionResponse.status },
@@ -785,7 +774,7 @@ export async function POST(request: NextRequest) {
           success: true,
           warning: 'Mensagem enviada, mas não foi possível salvar no histórico',
           providerAccepted: true,
-          evolutionData,
+          messageId: evolutionMsgId,
         })
       }
       savedMessage = persistence.message
@@ -798,20 +787,31 @@ export async function POST(request: NextRequest) {
       .in('status', ['aberto', 'em_atendimento'])
       .is('primeira_resposta_em', null)
 
+    // Só o id devolvido pelo provedor sai daqui. O payload bruto traz o
+    // `remoteJid` do cliente e o eco da mensagem enviada, e nenhum consumidor
+    // do endpoint precisa dele.
     return NextResponse.json({
       success: true,
       message: savedMessage,
-      evolutionData,
+      messageId: evolutionMsgId,
       status_envio: messageId && !legacyPersistedMessage ? 'enviado' : undefined,
       legacy: legacyPersistedMessage || undefined,
     })
   } catch (error) {
-    console.error('[EvolutionAPI Send] Falha interna de envio')
+    const internalFailure = redactSensitiveText(
+      error instanceof Error ? error.message : 'Erro interno no envio',
+    )
+    // O nome da classe do erro só ajuda no log; `erro_envio` continua guardando
+    // exatamente a mensagem de antes, apenas sem o que não pode ser exibido.
+    console.error(
+      '[EvolutionAPI Send] Falha interna de envio:',
+      describeUnexpectedError(error, internalFailure),
+    )
     if (serviceClient && sendAttempt) {
       const status = providerRequestStarted ? 'indeterminado' : 'falhou'
       const completion = await completePersistedMessageSend(serviceClient, sendAttempt, {
         status,
-        error: error instanceof Error ? error.message : 'Erro interno no envio',
+        error: internalFailure,
       })
       if (!completion.ok) {
         return NextResponse.json(

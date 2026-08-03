@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { buscarSubsetoresDoCriador, escolherSubsetorDoCriador } from '@/lib/disparo-processor'
+import {
+  buscarSubsetoresDoCriador,
+  escolherSubsetorDoCriador,
+  registrarFalhaDeDisparo,
+} from '@/lib/disparo-processor'
 import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
+import { sanitizeWhatsAppProviderError } from '@/lib/provider-error'
+import { getWhatsAppProviderAcceptance } from '@/lib/whatsapp-provider-error'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
 
@@ -74,12 +80,15 @@ export async function POST(request: NextRequest) {
       const todayStart = new Date()
       todayStart.setHours(0, 0, 0, 0)
 
-      const { count } = await supabase
+      const { count, error: countError } = await supabase
         .from('disparo_logs')
         .select('*', { count: 'exact', head: true })
         .eq('setor_id', setorId)
-        .gte('created_at', todayStart.toISOString())
+        .gte('criado_em', todayStart.toISOString())
 
+      if (countError) {
+        console.warn('[Dispatch] Não foi possível verificar o limite diário:', countError.code)
+      }
       if ((count || 0) >= dispatchMaxDisparosDia) {
         return NextResponse.json(
           { error: `Limite diario de disparos atingido (${dispatchMaxDisparosDia}/${dispatchMaxDisparosDia}). Tente novamente amanha.` },
@@ -107,6 +116,7 @@ export async function POST(request: NextRequest) {
 
     // Format phone number
     const formattedPhone = telefone.replace(/\D/g, '')
+    const cleanCnpj = clienteCnpj?.replace(/\D/g, '') || null
 
     // Use the language from resolved dispatch config
     const templateLanguage = dispatchTemplateLanguage
@@ -173,20 +183,40 @@ export async function POST(request: NextRequest) {
     }
 
     if (!whatsappResponse.ok) {
-      console.error('[Dispatch] WhatsApp API error:', whatsappData)
+      const providerDetails = sanitizeWhatsAppProviderError(whatsappData, whatsappResponse.status)
+      console.error('[Dispatch] WhatsApp API error:', providerDetails)
       return NextResponse.json(
-        { error: 'Erro ao enviar template', details: whatsappData },
+        { error: 'Erro ao enviar template', details: providerDetails },
         { status: whatsappResponse.status }
       )
     }
 
-    // Get wa_id from response (the phone registered in WhatsApp)
-    const waId = whatsappData.contacts?.[0]?.wa_id || formattedPhone
-    const whatsappMessageId = whatsappData.messages?.[0]?.id
+    const providerAcceptance = getWhatsAppProviderAcceptance(whatsappData)
+    if (!providerAcceptance.messageId || !providerAcceptance.hasValidatedRecipient) {
+      console.warn('[Dispatch] WhatsApp did not confirm the recipient')
+      await registrarFalhaDeDisparo(supabase, {
+        setorId,
+        colaboradorId: colaborador.id,
+        colaboradorNome: colaborador.nome,
+        clienteNome,
+        clienteTelefone: formattedPhone,
+        clienteCnpj: cleanCnpj,
+        templateName: dispatchTemplateId,
+      })
+      return NextResponse.json(
+        {
+          error: 'Não foi possível confirmar o destinatário no WhatsApp. Nenhum ticket foi criado.',
+          code: 'RECIPIENT_NOT_CONFIRMED',
+        },
+        { status: 502 },
+      )
+    }
+
+    // `hasValidatedRecipient` above guarantees this wa_id is safe to persist.
+    const waId = whatsappData.contacts[0].wa_id
+    const whatsappMessageId = providerAcceptance.messageId
 
     // Find or create cliente
-    const cleanCnpj = clienteCnpj?.replace(/\D/g, '') || null
-
     let clienteId: string
 
     // Check if cliente exists by phone
@@ -293,15 +323,19 @@ export async function POST(request: NextRequest) {
     })
 
     // Save dispatch log
-    await supabase.from('disparo_logs').insert({
+    const { error: logError } = await supabase.from('disparo_logs').insert({
       setor_id: setorId,
       colaborador_id: colaborador.id,
+      colaborador_nome: colaborador.nome,
       ticket_id: ticket.id,
       cliente_nome: clienteNome,
       cliente_telefone: waId,
-      template_usado: dispatchTemplateId,
+      template_name: dispatchTemplateId,
       status: 'enviado',
     })
+    if (logError) {
+      console.warn('[Dispatch] Não foi possível registrar o disparo:', logError.code)
+    }
 
     return NextResponse.json({
       success: true,

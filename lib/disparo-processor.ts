@@ -146,11 +146,173 @@ export async function sendEvolutionMessage(
   }
 }
 
+export type EvolutionRecipientStatus =
+  | 'available'
+  | 'not_registered'
+  | 'invalid_phone'
+  | 'unavailable'
+
+export interface EvolutionRecipientCheck {
+  status: EvolutionRecipientStatus
+  telefone: string | null
+}
+
+type EvolutionNumberRecord = {
+  exists?: unknown
+  number?: unknown
+}
+
+function lerNumerosEvolution(data: unknown): EvolutionNumberRecord[] {
+  const numbers = Array.isArray(data)
+    ? data
+    : typeof data === 'object' && data !== null && Array.isArray((data as { numbers?: unknown }).numbers)
+      ? (data as { numbers: unknown[] }).numbers
+      : []
+
+  return numbers.filter(
+    (numero): numero is EvolutionNumberRecord => typeof numero === 'object' && numero !== null,
+  )
+}
+
+function interpretarNumeroEvolution(
+  numero: EvolutionNumberRecord | undefined,
+  telefone: string,
+): EvolutionRecipientCheck {
+  if (!numero || typeof numero.exists !== 'boolean') {
+    return { status: 'unavailable', telefone: null }
+  }
+  if (!numero.exists) return { status: 'not_registered', telefone: null }
+
+  const telefoneCanonico = typeof numero.number === 'string'
+    ? normalizePhone(numero.number)
+    : ''
+
+  return { status: 'available', telefone: telefoneCanonico || telefone }
+}
+
+export function interpretarVerificacaoDestinatarioEvolution(
+  data: unknown,
+  telefone: string,
+): EvolutionRecipientCheck {
+  return interpretarVerificacoesDestinatariosEvolution(data, [telefone])[0]
+}
+
+export function interpretarVerificacoesDestinatariosEvolution(
+  data: unknown,
+  telefones: readonly string[],
+): EvolutionRecipientCheck[] {
+  const telefonesNormalizados = telefones.map(normalizePhone)
+  const telefonesValidos = telefonesNormalizados.filter(Boolean)
+  if (telefonesValidos.length === 0) {
+    return telefonesNormalizados.map(() => ({ status: 'invalid_phone', telefone: null }))
+  }
+
+  const numeros = lerNumerosEvolution(data)
+  const respostaAlinhada = numeros.length === telefonesValidos.length
+  const resultadosPorTelefone = new Map<string, EvolutionNumberRecord>()
+
+  for (const [indice, numero] of numeros.entries()) {
+    const telefoneRetornado = typeof numero.number === 'string'
+      ? normalizePhone(numero.number)
+      : ''
+
+    if (telefoneRetornado) {
+      resultadosPorTelefone.set(telefoneRetornado, numero)
+    } else if (respostaAlinhada && telefonesValidos[indice]) {
+      resultadosPorTelefone.set(telefonesValidos[indice], numero)
+    }
+  }
+
+  return telefonesNormalizados.map((telefone) => {
+    if (!telefone) return { status: 'invalid_phone', telefone: null }
+    return interpretarNumeroEvolution(resultadosPorTelefone.get(telefone), telefone)
+  })
+}
+
+export async function verificarDestinatariosEvolution(
+  creds: EvolutionCreds,
+  telefones: readonly string[],
+): Promise<EvolutionRecipientCheck[]> {
+  const telefonesNormalizados = telefones.map(normalizePhone)
+  const telefonesValidos = telefonesNormalizados.filter(Boolean)
+  if (telefonesValidos.length === 0) {
+    return telefonesNormalizados.map(() => ({ status: 'invalid_phone', telefone: null }))
+  }
+
+  try {
+    const response = await fetch(
+      `${creds.baseUrl}/chat/whatsappNumbers/${creds.instanceName}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: creds.apiKey,
+        },
+        body: JSON.stringify({ numbers: telefonesValidos }),
+      },
+    )
+    const data = await response.json().catch(() => null)
+
+    if (!response.ok) {
+      return telefonesNormalizados.map((telefone) => telefone
+        ? { status: 'unavailable', telefone: null }
+        : { status: 'invalid_phone', telefone: null })
+    }
+
+    return interpretarVerificacoesDestinatariosEvolution(data, telefones)
+  } catch {
+    return telefonesNormalizados.map((telefone) => telefone
+      ? { status: 'unavailable', telefone: null }
+      : { status: 'invalid_phone', telefone: null })
+  }
+}
+
+export async function verificarDestinatarioEvolution(
+  creds: EvolutionCreds,
+  telefone: string,
+): Promise<EvolutionRecipientCheck> {
+  return (await verificarDestinatariosEvolution(creds, [telefone]))[0]
+}
+
+export interface FailedDispatchLogInput {
+  setorId: string
+  colaboradorId: string | null
+  colaboradorNome: string
+  clienteNome: string | null | undefined
+  clienteTelefone: string | null | undefined
+  clienteCnpj: string | null | undefined
+  templateName: string
+  loteId?: string | null
+}
+
+export async function registrarFalhaDeDisparo(
+  supabase: SupabaseClient,
+  input: FailedDispatchLogInput,
+): Promise<void> {
+  const { error } = await supabase.from('disparo_logs').insert({
+    setor_id: input.setorId,
+    colaborador_id: input.colaboradorId,
+    colaborador_nome: input.colaboradorNome,
+    ticket_id: null,
+    cliente_nome: input.clienteNome || null,
+    cliente_telefone: input.clienteTelefone || null,
+    cliente_cnpj: input.clienteCnpj || null,
+    template_name: input.templateName,
+    status: 'falhado',
+    ...(input.loteId ? { disparo_lote_id: input.loteId } : {}),
+  })
+
+  if (error) {
+    console.warn('[disparo-processor] não foi possível registrar a falha do disparo:', error.code)
+  }
+}
+
 export interface ProcessDispatchParams {
   supabase: SupabaseClient
   loteId: string
   setorId: string
   colaboradorCriadorId: string | null
+  colaboradorCriadorNome: string
   mensagem: string
   destinoTipo: 'subsetor' | 'atendentes'
   subsetorId: string | null
@@ -219,6 +381,7 @@ export async function processarDisparoLote(
     loteId,
     setorId,
     colaboradorCriadorId,
+    colaboradorCriadorNome,
     mensagem,
     destinoTipo,
     subsetorId,
@@ -237,14 +400,62 @@ export async function processarDisparoLote(
     : escolherSubsetorDoCriador(
       await buscarSubsetoresDoCriador(supabase, setorId, colaboradorCriadorId),
     )
+  const templateName = `[Disparo Lote] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`
+  const verificacoes = await verificarDestinatariosEvolution(
+    creds,
+    destinatarios.map((destinatario) => destinatario.telefone),
+  )
 
   for (let i = 0; i < destinatarios.length; i++) {
     const dest = destinatarios[i]
 
-    const cliente = await findOrCreateCliente(supabase, dest)
+    const verificacao = verificacoes[i] ?? { status: 'unavailable' as const, telefone: null }
+    if (verificacao.status !== 'available') {
+      await registrarFalhaDeDisparo(supabase, {
+        setorId,
+        colaboradorId: colaboradorCriadorId,
+        colaboradorNome: colaboradorCriadorNome,
+        clienteNome: dest.nome,
+        clienteTelefone: normalizePhone(dest.telefone),
+        clienteCnpj: dest.cnpj,
+        templateName,
+        loteId,
+      })
+      falhados++
+      falhas.push({
+        telefone: dest.telefone,
+        motivo: verificacao.status === 'not_registered'
+          ? 'whatsapp_nao_encontrado'
+          : verificacao.status,
+      })
+      await supabase
+        .from('disparos_lote')
+        .update({ total_enviados: enviados, total_falhados: falhados })
+        .eq('id', loteId)
+      continue
+    }
+
+    const cliente = await findOrCreateCliente(supabase, {
+      ...dest,
+      telefone: verificacao.telefone || dest.telefone,
+    })
     if (!cliente) {
+      await registrarFalhaDeDisparo(supabase, {
+        setorId,
+        colaboradorId: colaboradorCriadorId,
+        colaboradorNome: colaboradorCriadorNome,
+        clienteNome: dest.nome,
+        clienteTelefone: verificacao.telefone,
+        clienteCnpj: dest.cnpj,
+        templateName,
+        loteId,
+      })
       falhados++
       falhas.push({ telefone: dest.telefone, motivo: 'cliente_invalido' })
+      await supabase
+        .from('disparos_lote')
+        .update({ total_enviados: enviados, total_falhados: falhados })
+        .eq('id', loteId)
       continue
     }
 
@@ -278,7 +489,11 @@ export async function processarDisparoLote(
       continue
     }
 
-    const envio = await sendEvolutionMessage(creds, cliente.telefone, mensagem)
+    const envio = await sendEvolutionMessage(
+      creds,
+      verificacao.telefone || cliente.telefone,
+      mensagem,
+    )
 
     if (envio.canonicalPhone && envio.canonicalPhone !== cliente.telefone) {
       await supabase
@@ -299,31 +514,39 @@ export async function processarDisparoLote(
         enviado_em: new Date().toISOString(),
       })
 
-      await supabase.from('disparo_logs').insert({
+      const { error: logError } = await supabase.from('disparo_logs').insert({
         setor_id: setorId,
         colaborador_id: colaboradorCriadorId,
+        colaborador_nome: colaboradorCriadorNome,
         ticket_id: ticket.id,
         cliente_nome: dest.nome || null,
         cliente_telefone: cliente.telefone,
         cliente_cnpj: dest.cnpj || null,
-        template_usado: `[Disparo Lote] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+        template_name: templateName,
         status: 'enviado',
         disparo_lote_id: loteId,
       })
+      if (logError) {
+        console.warn('[disparo-processor] não foi possível registrar o disparo:', logError.code)
+      }
 
       enviados++
     } else {
-      await supabase.from('disparo_logs').insert({
+      const { error: logError } = await supabase.from('disparo_logs').insert({
         setor_id: setorId,
         colaborador_id: colaboradorCriadorId,
+        colaborador_nome: colaboradorCriadorNome,
         ticket_id: ticket.id,
         cliente_nome: dest.nome || null,
         cliente_telefone: cliente.telefone,
         cliente_cnpj: dest.cnpj || null,
-        template_usado: `[Disparo Lote] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+        template_name: templateName,
         status: 'falhado',
         disparo_lote_id: loteId,
       })
+      if (logError) {
+        console.warn('[disparo-processor] não foi possível registrar a falha do disparo:', logError.code)
+      }
 
       falhados++
       falhas.push({ telefone: cliente.telefone, motivo: envio.error || 'evolution_error' })

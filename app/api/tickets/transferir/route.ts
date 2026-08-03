@@ -14,6 +14,7 @@ const transferRequestSchema = z.object({
   colaborador_id: z.string().uuid('colaborador_id inválido').nullable().optional(),
   from_colaborador_nome: z.string().max(200).optional(),
   from_setor_nome: z.string().max(200).optional(),
+  observacao: z.string().trim().max(1000).optional(),
   // Confirma que o atendente de destino está indisponível (offline/pausa) e mesmo
   // assim deve receber o ticket — setado pelo client só depois de confirmação do usuário.
   allow_unavailable: z.boolean().optional(),
@@ -361,10 +362,13 @@ export async function POST(request: Request) {
     const destinationLogSuffix = targetColaborador
       ? ` (para ${targetColaborador.nome}${wasTargetForcedUnavailable ? ' — indisponível no momento, transferido mesmo assim' : ''})`
       : ' (fila)'
+    const observationLogSuffix = body.observacao
+      ? `. Obs: ${body.observacao}`
+      : ''
     const { error: logError } = await supabase.from('ticket_logs').insert({
       ticket_id: body.ticket_id,
       tipo: 'transferencia',
-      descricao: `Transferido por ${fromNome}: ${fromSetor} → ${destinoNome}${destinationLogSuffix}`,
+      descricao: `Transferido por ${fromNome}: ${fromSetor} → ${destinoNome}${destinationLogSuffix}${observationLogSuffix}`,
     })
     if (logError) {
       console.warn('[Transferir] Falha ao gravar log de transferência:', logError.message)

@@ -94,7 +94,7 @@ export async function POST(
 
   const { data: colaborador } = await supabase
     .from('colaboradores')
-    .select('id, setor_id')
+    .select('id, nome, setor_id')
     .eq('email', user.email)
     .single()
 
@@ -125,11 +125,15 @@ export async function POST(
   const maxDia = setor.max_disparos_dia || 1000
   const hoje = new Date()
   hoje.setHours(0, 0, 0, 0)
-  const { count: countHoje } = await service
+  const { count: countHoje, error: countHojeError } = await service
     .from('disparo_logs')
     .select('id', { count: 'exact', head: true })
     .eq('setor_id', setorId)
-    .gte('created_at', hoje.toISOString())
+    .gte('criado_em', hoje.toISOString())
+
+  if (countHojeError) {
+    console.warn('[api/setores/disparos] não foi possível verificar o limite diário:', countHojeError.code)
+  }
 
   const usados = countHoje || 0
   const restante = Math.max(0, maxDia - usados)
@@ -166,6 +170,7 @@ export async function POST(
     loteId: lote.id,
     setorId,
     colaboradorCriadorId: colaborador.id,
+    colaboradorCriadorNome: colaborador.nome,
     mensagem,
     destinoTipo: destino_tipo,
     subsetorId: subsetor_id,

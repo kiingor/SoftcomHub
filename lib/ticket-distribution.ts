@@ -318,7 +318,7 @@ export async function criarEDistribuirTicket(
       const escolha = routingLookupFailed
         ? { fila: [], origem: 'ninguem' as const }
         : escolherDestino({
-            subsetorDoTicket: subsetorId,
+            subsetorDoTicket: subsetorEfetivo,
             candidatos: fallbackColaboradores.map((c) => ({
               id: c.id,
               nome: c.nome,
@@ -332,7 +332,7 @@ export async function criarEDistribuirTicket(
           })
 
       const sorted = escolha.fila
-      console.log(`[Distribution] Origem=${escolha.origem}; candidatos=${sorted.length}; setor=${setorId}; subsetor=${subsetorId || 'null'}`)
+      console.log(`[Distribution] Origem=${escolha.origem}; candidatos=${sorted.length}; setor=${setorId}; subsetor=${subsetorEfetivo || 'null'}`)
 
       if (sorted.length > 0) {
         console.log(`[Distribution] Ranking: ${sorted.map(c => `${c.nome}(hoje=${c.recebidosHoje}, abertos=${c.ticketsAbertos})`).join(', ')}`)
@@ -422,6 +422,7 @@ export async function criarEDistribuirTicket(
           console.log(`[Distribuição] Transbordo bloqueado por horário no setor ${setorId} — ticket ${ticket.id} aguarda na fila.`)
         } else if (setorData?.transmissao_ativa && setorData?.setor_receptor_id) {
           const receptorId = setorData.setor_receptor_id
+          const subsetorDestino = await resolverSubsetorPadrao(supabase, receptorId)
           console.log(`[Distribuição] Transmitindo ticket ${ticket.id} para setor receptor ${receptorId}`)
 
           // Nomes dos setores pra log (origem + destino)
@@ -434,16 +435,16 @@ export async function criarEDistribuirTicket(
             .from('tickets')
             .update({
               setor_id: receptorId,
-              subsetor_id: null,
+              subsetor_id: subsetorDestino,
             })
             .eq('id', ticket.id)
             .eq('setor_id', setorId)
             .eq('status', 'aberto')
             .is('colaborador_id', null)
 
-          moveQuery = subsetorId == null
+          moveQuery = subsetorEfetivo == null
             ? moveQuery.is('subsetor_id', null)
-            : moveQuery.eq('subsetor_id', subsetorId)
+            : moveQuery.eq('subsetor_id', subsetorEfetivo)
 
           const { data: movedTicket, error: moveError } = await moveQuery
             .select('id')
@@ -733,11 +734,12 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
         const nomeDestino = nomesSetores?.find(s => s.id === receptorId)?.nome || receptorId
 
         for (const ticket of pendingTickets) {
+          const subsetorDestino = await resolverSubsetorPadrao(supabase, receptorId)
           let moveQuery = supabase
             .from('tickets')
             .update({
               setor_id: receptorId,
-              subsetor_id: null,
+              subsetor_id: subsetorDestino,
             })
             .eq('id', ticket.id)
             .eq('setor_id', setorId)

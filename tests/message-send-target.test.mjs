@@ -85,6 +85,13 @@ test('recognizes only unambiguous, configured legacy provider channels', () => {
     evolution_api_key: 'api-key',
   }), true)
   assert.equal(isConfiguredLegacyEvolutionChannel({
+    canal: 'evolution_api',
+    instancia: null,
+    phone_number_id: 'legacy-phone-id',
+    evolution_base_url: 'https://evolution.example.test',
+    evolution_api_key: 'api-key',
+  }), true)
+  assert.equal(isConfiguredLegacyEvolutionChannel({
     canal: 'whatsapp',
     instancia: null,
     phone_number_id: 'legacy-instance',
