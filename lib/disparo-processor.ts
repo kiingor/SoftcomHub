@@ -151,6 +151,7 @@ export interface ProcessDispatchParams {
   loteId: string
   setorId: string
   colaboradorCriadorId: string | null
+  colaboradorCriadorNome: string
   mensagem: string
   destinoTipo: 'subsetor' | 'atendentes'
   subsetorId: string | null
@@ -219,6 +220,7 @@ export async function processarDisparoLote(
     loteId,
     setorId,
     colaboradorCriadorId,
+    colaboradorCriadorNome,
     mensagem,
     destinoTipo,
     subsetorId,
@@ -299,31 +301,39 @@ export async function processarDisparoLote(
         enviado_em: new Date().toISOString(),
       })
 
-      await supabase.from('disparo_logs').insert({
+      const { error: logError } = await supabase.from('disparo_logs').insert({
         setor_id: setorId,
         colaborador_id: colaboradorCriadorId,
+        colaborador_nome: colaboradorCriadorNome,
         ticket_id: ticket.id,
         cliente_nome: dest.nome || null,
         cliente_telefone: cliente.telefone,
         cliente_cnpj: dest.cnpj || null,
-        template_usado: `[Disparo Lote] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+        template_name: `[Disparo Lote] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
         status: 'enviado',
         disparo_lote_id: loteId,
       })
+      if (logError) {
+        console.warn('[disparo-processor] não foi possível registrar o disparo:', logError.code)
+      }
 
       enviados++
     } else {
-      await supabase.from('disparo_logs').insert({
+      const { error: logError } = await supabase.from('disparo_logs').insert({
         setor_id: setorId,
         colaborador_id: colaboradorCriadorId,
+        colaborador_nome: colaboradorCriadorNome,
         ticket_id: ticket.id,
         cliente_nome: dest.nome || null,
         cliente_telefone: cliente.telefone,
         cliente_cnpj: dest.cnpj || null,
-        template_usado: `[Disparo Lote] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+        template_name: `[Disparo Lote] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
         status: 'falhado',
         disparo_lote_id: loteId,
       })
+      if (logError) {
+        console.warn('[disparo-processor] não foi possível registrar a falha do disparo:', logError.code)
+      }
 
       falhados++
       falhas.push({ telefone: cliente.telefone, motivo: envio.error || 'evolution_error' })

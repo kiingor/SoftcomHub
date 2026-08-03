@@ -57,6 +57,7 @@ import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
+import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
 
 interface Cliente {
   id: string
@@ -74,15 +75,14 @@ interface Setor {
 interface Colaborador {
   id: string
   nome: string
+  ativo?: boolean
   is_online?: boolean
   last_heartbeat?: string
+  pausa_atual_id?: string | null
 }
 
-const HEARTBEAT_STALE_THRESHOLD = 3 * 60 * 1000
 function isColabOnline(c: Colaborador | null | undefined): boolean {
-  if (!c?.is_online) return false
-  if (!c.last_heartbeat) return false
-  return (Date.now() - new Date(c.last_heartbeat).getTime()) < HEARTBEAT_STALE_THRESHOLD
+  return isTransferTargetAvailable(c)
 }
 
 interface Subsetor {
@@ -116,7 +116,7 @@ interface TicketLog {
   colaborador_id: string | null
   tipo: string
   descricao: string
-  created_at: string
+  criado_em: string
   colaborador?: Colaborador | null
 }
 
@@ -278,7 +278,7 @@ export default function TicketsPage() {
         setor:setores!tickets_setor_id_fkey(id, nome),
         subsetor:subsetores(id, nome)
       `)
-      .order('created_at', { ascending: false })
+      .order('criado_em', { ascending: false })
 
     // Filter by accessible setores (unless master)
     if (!colaborador?.is_master && setorIdsAcessiveis.length > 0) {
@@ -434,13 +434,28 @@ export default function TicketsPage() {
       return
     }
     setLoadingAtendentes(true)
-    const { data } = await supabase
-      .from('colaboradores')
-      .select('id, nome, is_online, last_heartbeat')
-      .eq('ativo', true)
-      .contains('setor_ids', [setorId])
-      .order('nome')
-    setTransferAtendentes(data || [])
+    try {
+      const data = await loadRowsByPages(() => supabase
+        .from('colaboradores_setores')
+        .select('colaborador:colaboradores(id, nome, ativo, is_online, last_heartbeat, pausa_atual_id)')
+        .eq('setor_id', setorId)
+        .order('colaborador_id', { ascending: true }))
+
+      const atendentes = data
+        .map((vinculo: { colaborador: Colaborador | Colaborador[] | null }) => (
+          Array.isArray(vinculo.colaborador) ? vinculo.colaborador[0] : vinculo.colaborador
+        ))
+        .filter((colaborador): colaborador is Colaborador => Boolean(colaborador?.ativo))
+        .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
+      setTransferAtendentes(atendentes)
+    } catch {
+      toast({
+        title: 'Erro',
+        description: 'Não foi possível carregar os atendentes do setor',
+        variant: 'destructive',
+      })
+      setTransferAtendentes([])
+    }
     setLoadingAtendentes(false)
   }
 
@@ -452,60 +467,31 @@ export default function TicketsPage() {
 
     setSaving(true)
 
-    const oldSetorName = selectedTicket.setor?.nome || 'Nenhum'
-    const newSetor = setores.find((s) => s.id === transferSetorId)
-
-    // Update ticket
     const actualAtendenteId = transferAtendenteId && transferAtendenteId !== 'fila' ? transferAtendenteId : null
-    const updateData: Record<string, any> = {
-      setor_id: transferSetorId,
-      colaborador_id: actualAtendenteId,
-      status: actualAtendenteId ? 'em_atendimento' : 'aberto',
-    }
-    const { error: updateError } = await supabase
-      .from('tickets')
-      .update(updateData)
-      .eq('id', selectedTicket.id)
 
-    if (updateError) {
-      toast({ title: 'Erro', description: 'Erro ao transferir ticket', variant: 'destructive' })
-    } else {
-      // Add log
-      const atendenteNome = actualAtendenteId ? transferAtendentes.find(a => a.id === actualAtendenteId)?.nome : null
-      await supabase.from('ticket_logs').insert({
-        ticket_id: selectedTicket.id,
-        tipo: 'transferencia',
-        descricao: `Ticket transferido de "${oldSetorName}" para "${newSetor?.nome}"${atendenteNome ? ` (atendente: ${atendenteNome})` : ''}${transferObservacao ? `. Obs: ${transferObservacao}` : ''}`,
+    try {
+      const response = await fetch('/api/tickets/transferir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticket_id: selectedTicket.id,
+          setor_id: transferSetorId,
+          colaborador_id: actualAtendenteId,
+          observacao: transferObservacao.trim() || undefined,
+        }),
       })
+      const result = await response.json().catch(() => null)
 
-      // Insert system message in chat for transfer visibility
-      const fromColabName = selectedTicket.colaborador?.nome || 'Sem atendente'
-      const toColabName = atendenteNome || 'Aguardando atendente'
-      const transferContent = `Transferido de ${fromColabName} - ${oldSetorName} >> ${toColabName} - ${newSetor?.nome}`
-
-      const { error: msgError } = await supabase.from('mensagens').insert({
-        ticket_id: selectedTicket.id,
-        cliente_id: selectedTicket.cliente_id,
-        remetente: 'sistema',
-        conteudo: transferContent,
-        tipo: 'texto',
-        enviado_em: new Date().toISOString(),
-      })
-      if (msgError) {
-        console.error('[v0] Erro ao inserir mensagem de transferencia:', msgError)
+      if (!response.ok) {
+        toast({
+          title: 'Erro',
+          description: result?.error || 'Erro ao transferir ticket',
+          variant: 'destructive',
+        })
+        return
       }
 
-      toast({ title: 'Sucesso', description: 'Ticket transferido com sucesso' })
-
-      // Se o ticket foi para a fila (sem atendente), acionar distribuição imediata
-      if (!actualAtendenteId) {
-        fetch('/api/tickets/auto-assign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        }).catch(() => {})
-      }
-
+      toast({ title: 'Sucesso', description: result?.message || 'Ticket transferido com sucesso' })
       setTransferModalOpen(false)
       setTransferSetorId('')
       setTransferAtendenteId('')
@@ -513,9 +499,11 @@ export default function TicketsPage() {
       setTransferAtendentes([])
       setDetailsModalOpen(false)
       fetchTickets()
+    } catch {
+      toast({ title: 'Erro', description: 'Erro de conexão ao transferir ticket', variant: 'destructive' })
+    } finally {
+      setSaving(false)
     }
-
-    setSaving(false)
   }
 
   async function handleAddObservation() {
@@ -545,7 +533,7 @@ export default function TicketsPage() {
           colaborador:colaboradores(id, nome)
         `)
         .eq('ticket_id', selectedTicket.id)
-        .order('created_at', { ascending: false })
+        .order('criado_em', { ascending: false })
 
       if (logsData) setTicketLogs(logsData)
 
@@ -1001,7 +989,7 @@ export default function TicketsPage() {
                                 <div className="flex-1">
                                   <p className="text-sm">{log.descricao}</p>
                                   <p className="text-xs text-muted-foreground">
-                                    {format(new Date(log.created_at), "dd/MM/yyyy HH:mm", {
+                                    {format(new Date(log.criado_em), "dd/MM/yyyy HH:mm", {
                                       locale: ptBR,
                                     })}
                                     {log.colaborador && ` - ${log.colaborador.nome}`}

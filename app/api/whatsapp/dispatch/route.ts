@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { buscarSubsetoresDoCriador, escolherSubsetorDoCriador } from '@/lib/disparo-processor'
 import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
+import { sanitizeWhatsAppProviderError } from '@/lib/provider-error'
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0'
 
@@ -74,12 +75,15 @@ export async function POST(request: NextRequest) {
       const todayStart = new Date()
       todayStart.setHours(0, 0, 0, 0)
 
-      const { count } = await supabase
+      const { count, error: countError } = await supabase
         .from('disparo_logs')
         .select('*', { count: 'exact', head: true })
         .eq('setor_id', setorId)
-        .gte('created_at', todayStart.toISOString())
+        .gte('criado_em', todayStart.toISOString())
 
+      if (countError) {
+        console.warn('[Dispatch] Não foi possível verificar o limite diário:', countError.code)
+      }
       if ((count || 0) >= dispatchMaxDisparosDia) {
         return NextResponse.json(
           { error: `Limite diario de disparos atingido (${dispatchMaxDisparosDia}/${dispatchMaxDisparosDia}). Tente novamente amanha.` },
@@ -173,9 +177,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (!whatsappResponse.ok) {
-      console.error('[Dispatch] WhatsApp API error:', whatsappData)
+      const providerDetails = sanitizeWhatsAppProviderError(whatsappData, whatsappResponse.status)
+      console.error('[Dispatch] WhatsApp API error:', providerDetails)
       return NextResponse.json(
-        { error: 'Erro ao enviar template', details: whatsappData },
+        { error: 'Erro ao enviar template', details: providerDetails },
         { status: whatsappResponse.status }
       )
     }
@@ -293,15 +298,19 @@ export async function POST(request: NextRequest) {
     })
 
     // Save dispatch log
-    await supabase.from('disparo_logs').insert({
+    const { error: logError } = await supabase.from('disparo_logs').insert({
       setor_id: setorId,
       colaborador_id: colaborador.id,
+      colaborador_nome: colaborador.nome,
       ticket_id: ticket.id,
       cliente_nome: clienteNome,
       cliente_telefone: waId,
-      template_usado: dispatchTemplateId,
+      template_name: dispatchTemplateId,
       status: 'enviado',
     })
+    if (logError) {
+      console.warn('[Dispatch] Não foi possível registrar o disparo:', logError.code)
+    }
 
     return NextResponse.json({
       success: true,

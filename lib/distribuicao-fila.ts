@@ -57,6 +57,20 @@ export function atendeSubsetor(
   return subsetorDoTicket ? ids.includes(subsetorDoTicket) : ids.length === 0
 }
 
+/**
+ * Prime pode usar a capacidade do Suporte mesmo quando o Suporte possui fila.
+ * A exceção só existe quando os três IDs são conhecidos: `null` nunca é Prime.
+ */
+export function obterExcecaoFilaPrimeParaSuporte(
+  subsetorDoTicket: string | null | undefined,
+  primeId: string | null | undefined,
+  suporteId: string | null | undefined,
+): string[] {
+  return subsetorDoTicket && primeId && suporteId && subsetorDoTicket === primeId
+    ? [suporteId]
+    : []
+}
+
 export interface EscolhaDestino {
   /** Candidatos elegíveis, já na ordem em que devem ser tentados. */
   fila: CandidatoDistribuicao[]
@@ -90,7 +104,8 @@ export interface OpcoesDestino {
  *    pelo chamador (transbordo — ex.: Prime usa Suporte).
  *
  * O passo 2 só entra quando o passo 1 se esgota, então a fila do próprio
- * subsetor sempre tem precedência.
+ * subsetor sempre tem precedência. A única exceção configurada é Prime usar
+ * Suporte, sem retirar a proteção das demais filas do atendente.
  */
 export function escolherDestino({
   subsetorDoTicket,

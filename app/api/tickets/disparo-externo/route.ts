@@ -340,19 +340,21 @@ export async function POST(request: NextRequest) {
     })
 
     // ─── Salvar log de disparo (tabela opcional) ──────────────────────────────
-    try {
-      await supabase.from('disparo_logs').insert({
-        setor_id: setor_id,
-        colaborador_id: colaboradorId,
-        ticket_id: ticketId,
-        cliente_nome: nome,
-        cliente_telefone: formattedPhone,
-        template_usado: canalEnvio === 'whatsapp'
-          ? `[Template Oficial]`
-          : `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
-        status: 'enviado',
-      })
-    } catch { /* tabela pode não existir */ }
+    const { error: logError } = await supabase.from('disparo_logs').insert({
+      setor_id: setor_id,
+      colaborador_id: null,
+      colaborador_nome: 'Integração externa',
+      ticket_id: ticketId,
+      cliente_nome: nome,
+      cliente_telefone: formattedPhone,
+      template_name: canalEnvio === 'whatsapp'
+        ? `[Template Oficial]`
+        : `[Externo] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+      status: 'enviado',
+    })
+    if (logError) {
+      console.warn('[Disparo Externo] Não foi possível registrar o disparo:', logError.code)
+    }
 
     // ─── Resposta ─────────────────────────────────────────────────────────────
     return NextResponse.json({

@@ -412,7 +412,6 @@ export async function POST(request: NextRequest) {
       type LegacyEvolutionSector = {
         id: string
         canal: string | null
-        instancia: string | null
         phone_number_id: string | null
         evolution_base_url: string | null
         evolution_api_key: string | null
@@ -420,34 +419,18 @@ export async function POST(request: NextRequest) {
       let legacySectors: LegacyEvolutionSector[] = []
 
       if (requestedInstance) {
-        // Use parameterized equality queries instead of interpolating the
-        // caller-controlled identifier into a PostgREST `.or(...)` filter.
-        const [byInstance, byPhoneNumber] = await Promise.all([
-          authoritativeClient
-            .from('setores')
-            .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
-            .eq('instancia', requestedInstance)
-            .order('id', { ascending: true })
-            .limit(1000),
-          authoritativeClient
-            .from('setores')
-            .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
-            .eq('phone_number_id', requestedInstance)
-            .order('id', { ascending: true })
-            .limit(1000),
-        ])
-        if (byInstance.error) throw byInstance.error
-        if (byPhoneNumber.error) throw byPhoneNumber.error
-
-        const uniqueSectors = new Map<string, LegacyEvolutionSector>()
-        for (const sector of [...(byInstance.data || []), ...(byPhoneNumber.data || [])]) {
-          uniqueSectors.set(sector.id, sector)
-        }
-        legacySectors = [...uniqueSectors.values()]
+        const { data, error } = await authoritativeClient
+          .from('setores')
+          .select('id, canal, phone_number_id, evolution_base_url, evolution_api_key')
+          .eq('phone_number_id', requestedInstance)
+          .order('id', { ascending: true })
+          .limit(1000)
+        if (error) throw error
+        legacySectors = data || []
       } else {
         const { data, error } = await authoritativeClient
           .from('setores')
-          .select('id, canal, instancia, phone_number_id, evolution_base_url, evolution_api_key')
+          .select('id, canal, phone_number_id, evolution_base_url, evolution_api_key')
           .eq('id', ticket.setor_id)
           .order('id', { ascending: true })
           .limit(1)
@@ -456,18 +439,15 @@ export async function POST(request: NextRequest) {
       }
 
       const configuredLegacyChannels = legacySectors
-        .filter(isConfiguredLegacyEvolutionChannel)
+        .filter((sector) => isConfiguredLegacyEvolutionChannel({
+          ...sector,
+          instancia: null,
+        }))
         .map((sector) => ({
           id: `legacy:${sector.id}`,
           setor_id: sector.id,
-          channel_identifier: requestedInstance
-            ? (
-                sector.instancia === requestedInstance
-                  ? sector.instancia
-                  : sector.phone_number_id
-              )
-            : sector.instancia || sector.phone_number_id,
-          instancia: sector.instancia,
+          channel_identifier: sector.phone_number_id,
+          instancia: null,
           phone_number_id: sector.phone_number_id,
           evolution_base_url: sector.evolution_base_url,
           evolution_api_key: sector.evolution_api_key,

@@ -2,7 +2,11 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
 import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
-import { escolherDestino, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
+import {
+  escolherDestino,
+  obterExcecaoFilaPrimeParaSuporte,
+  ordenarPorEquilibrio,
+} from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
@@ -71,27 +75,31 @@ async function getSubsetoresPrimeESuporte(
   const cache = subsetoresTransbordoCache.get(setorId)
   if (cache && cache.expiraEm > Date.now()) return cache.valor
 
-  const { data, error } = await supabase
-    .from('subsetores')
-    .select('id, nome, ativo')
-    .eq('setor_id', setorId)
+  try {
+    const data = await loadRowsByPages<{ id: string; nome: string; ativo: boolean | null }>(() => supabase
+      .from('subsetores')
+      .select('id, nome, ativo')
+      .eq('setor_id', setorId)
+      .order('id', { ascending: true }))
 
-  if (error) {
-    console.warn('[TicketQueue] Não foi possível identificar Prime e Suporte para o transbordo:', error.message)
+    const ativos = data.filter((subsetor) => subsetor.ativo !== false)
+    const valor = {
+      primeId: ativos.find((subsetor) => normalizarNomeSubsetor(subsetor.nome) === 'prime')?.id || null,
+      suporteId: ativos.find((subsetor) => normalizarNomeSubsetor(subsetor.nome) === 'suporte')?.id || null,
+    }
+
+    subsetoresTransbordoCache.set(setorId, {
+      valor,
+      expiraEm: Date.now() + CACHE_SUBSETORES_TRANSBORDO_MS,
+    })
+    return valor
+  } catch (error) {
+    console.warn('[TicketQueue] Não foi possível identificar Prime e Suporte para o transbordo:', {
+      setorId,
+      error: error instanceof Error ? error.message : String(error),
+    })
     return { primeId: null, suporteId: null }
   }
-
-  const ativos = (data || []).filter((subsetor: any) => subsetor.ativo !== false)
-  const valor = {
-    primeId: ativos.find((subsetor: any) => normalizarNomeSubsetor(subsetor.nome) === 'prime')?.id || null,
-    suporteId: ativos.find((subsetor: any) => normalizarNomeSubsetor(subsetor.nome) === 'suporte')?.id || null,
-  }
-
-  subsetoresTransbordoCache.set(setorId, {
-    valor,
-    expiraEm: Date.now() + CACHE_SUBSETORES_TRANSBORDO_MS,
-  })
-  return valor
 }
 
 async function getSubsetoresComFila(supabase: any, setorId: string): Promise<Array<string | null>> {
@@ -397,9 +405,11 @@ async function tryAssignTicket(
       getSubsetoresComFila(supabase, setorId),
       getSubsetoresPrimeESuporte(supabase, setorId),
     ])
-    const subsetoresQuePodemReceberMesmoComFila = (
-      ticketSubsetorId === primeId && suporteId
-    ) ? [suporteId] : []
+    const subsetoresQuePodemReceberMesmoComFila = obterExcecaoFilaPrimeParaSuporte(
+      ticketSubsetorId,
+      primeId,
+      suporteId,
+    )
 
     const destino = escolherDestino({
       subsetorDoTicket: ticketSubsetorId,
@@ -693,6 +703,8 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
             continue
           }
 
+          const subsetorDestino = await resolverSubsetorPadrao(supabase, receptorId)
+
           // Mover ticket para o setor receptor + incrementar hops
           let moveQuery = supabase
             .from('tickets')
@@ -703,7 +715,7 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
               // atendente sem vínculo de subsetor. Agora cai no padrão do
               // destino — e volta a `null` quando o destino não tem padrão
               // seguro, que é o comportamento antigo.
-              subsetor_id: await resolverSubsetorPadrao(supabase, receptorId),
+              subsetor_id: subsetorDestino,
               transbordo_hops: currentHops + 1,
             })
             .eq('id', ticketId)
@@ -738,12 +750,12 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
           if (logError) console.warn('[TicketQueue] Falha ao gravar log transferencia_automatica:', logError.message)
 
           // Tentar atribuir no setor receptor
-          let receptorResult = await tryAssignTicket(ticketId, receptorId, null)
+          let receptorResult = await tryAssignTicket(ticketId, receptorId, subsetorDestino)
           if (receptorResult.fallbackEligible) {
             receptorResult = await tryAssignTicket(
               ticketId,
               receptorId,
-              null,
+              subsetorDestino,
               'fallback',
             )
           }

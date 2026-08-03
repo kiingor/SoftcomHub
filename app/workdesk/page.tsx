@@ -15,7 +15,7 @@ import { ptBR } from 'date-fns/locale'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { TransferirTicketDialog } from '@/components/tickets/transferir-ticket-dialog'
 import { rotuloDuplicidade, ticketsAbertos } from '@/lib/tickets-duplicados'
-import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
+import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { upload } from '@vercel/blob/client'
 import { resolveMime } from '@/lib/whatsapp-media'
 import {
@@ -818,6 +818,8 @@ export default function WorkdeskPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messageTextareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const mobileMessagesViewportRef = useRef<HTMLDivElement>(null)
+  const devePosicionarNoInicioDoTicketMobileRef = useRef(false)
 
   // Voice recording (PTT) state — uses opus-recorder to produce ogg/opus directly
   // (Chrome's native MediaRecorder only emits webm/opus, which Meta Cloud API silently rejects).
@@ -1712,6 +1714,20 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     acompanhandoOFimRef.current = false
   }, [mensagens, loadingMensagens, posicionarNoInicioDoTicket])
 
+  useLayoutEffect(() => {
+    if (!mobileDrawerOpen || mensagens.length === 0 || loadingMensagens) return
+    if (!devePosicionarNoInicioDoTicketMobileRef.current) return
+
+    const container = mobileMessagesViewportRef.current
+    const inicioDoTicket = container?.querySelector<HTMLElement>('[data-ticket-start]')
+      || container?.querySelector<HTMLElement>('[data-nexus-history-start]')
+    devePosicionarNoInicioDoTicketMobileRef.current = false
+    if (!container || !inicioDoTicket) return
+
+    inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
+    container.scrollTop = Math.max(0, container.scrollTop - 16)
+  }, [mensagens, loadingMensagens, mobileDrawerOpen])
+
   // Acompanha o fim da conversa — mas só de quem já estava no fim.
   //
   // `mensagens` é recriada a cada recibo de entrega ou de leitura, sem nenhuma
@@ -2430,6 +2446,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     setSelectedTicket(ticket)
 
     if (!isSameTicket) {
+      devePosicionarNoInicioDoTicketMobileRef.current = true
       // Clear messages only when switching to a DIFFERENT ticket — prevents flash of old
       // conversation while new messages load. Re-clicking the same ticket must NOT clear
       // messages because the useEffect won't re-fire (selectedTicketId didn't change).
@@ -4916,20 +4933,7 @@ const insertEmoji = (emoji: string) => {
                             return (
                               <React.Fragment key={msg.id}>
                                 {msg.id === firstNexusConversationMessageId && (
-                                  <div
-                                    data-nexus-history-start
-                                    className="flex items-center gap-3 py-2"
-                                  >
-                                    <div className="flex-1 border-t border-dashed border-blue-500/30" />
-                                    <div className="flex items-center gap-1.5 rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
-                                      <Sparkles className="h-3 w-3" aria-hidden="true" />
-                                      <span>Conversa com Nexus</span>
-                                      <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[9px]">
-                                        {nexusConversationMessages.length}
-                                      </Badge>
-                                    </div>
-                                    <div className="flex-1 border-t border-dashed border-blue-500/30" />
-                                  </div>
+                                  <SeparadorConversaNexus quantidade={nexusConversationMessages.length} />
                                 )}
                                 {msg.id === inicioHumanoDoTicketId && (
                                   <div data-ticket-start className="scroll-mt-4">
@@ -6001,7 +6005,7 @@ onClick={() => {
               </div>
 
               {/* Messages */}
-              <ScrollArea className="flex-1 p-4">
+              <ScrollArea className="flex-1 p-4" viewportRef={mobileMessagesViewportRef}>
                 {mensagens.length === 0 ? (
                   <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
                     <MessageCircle className="mb-2 h-12 w-12 text-muted-foreground/40" />
@@ -6011,13 +6015,32 @@ onClick={() => {
 ) : (
                       <div className="space-y-4">
                         {(() => {
-                          // Garante que mensagens do ticket atual sempre venham por último (mobile)
+                          const currentTicketId = selectedTicket?.id
+                          const idsContextoNexusOrfao = selecionarIdsContextoNexusOrfao(
+                            mensagens,
+                            selectedTicket?.criado_em,
+                          )
+                          const isCurrentTicketContext = (message: Mensagem) => (
+                            currentTicketId
+                              ? pertenceAoContextoDoTicket(message, currentTicketId, idsContextoNexusOrfao)
+                              : false
+                          )
+                          // Garante que o ticket atual e o seu contexto Nexus apareçam por último.
                           const mensagensOrdenadas = selectedTicket
                             ? [
-                                ...mensagens.filter((m) => m.ticket_id !== selectedTicket.id),
-                                ...mensagens.filter((m) => m.ticket_id === selectedTicket.id),
+                                ...mensagens.filter((m) => !isCurrentTicketContext(m)),
+                                ...mensagens.filter(isCurrentTicketContext),
                               ]
                             : mensagens
+                          const nexusConversationMessages = currentTicketId
+                            ? mensagensOrdenadas.filter((m) => (
+                                isCurrentTicketContext(m) && isNexusMessage(m)
+                              ))
+                            : []
+                          const firstNexusConversationMessageId = nexusConversationMessages[0]?.id
+                          const inicioHumanoDoTicketId = nexusConversationMessages.length > 0 && currentTicketId
+                            ? selecionarInicioHumanoDoTicket(mensagensOrdenadas, currentTicketId)
+                            : undefined
 
                           let lastTicketId: string | null = null
                           return mensagensOrdenadas.map((msg, index) => {
@@ -6026,8 +6049,11 @@ onClick={() => {
                             // 'indeterminado' = perdemos a resposta da API, não sabemos se o provedor recebeu.
                             const sendOutcome = computeSendOutcome(msgStatus, msg.status_envio)
                             const isFailedSend = sendOutcome === 'failed' || sendOutcome === 'indeterminate'
-                            const isNewTicket = msg.ticket_id !== lastTicketId
-                            const isCurrentTicket = msg.ticket_id === selectedTicket?.id
+                            const messageTicketId = idsContextoNexusOrfao.has(msg.id)
+                              ? currentTicketId
+                              : msg.ticket_id
+                            const isNewTicket = messageTicketId !== lastTicketId
+                            const isCurrentTicket = messageTicketId === currentTicketId
                             const isPreviousTicket = !isCurrentTicket && isNewTicket
                             const canRetrySend = Boolean(
                               isFailedSend
@@ -6038,10 +6064,18 @@ onClick={() => {
                               && ['aberto', 'em_atendimento'].includes(selectedTicket.status)
                               && ['falhou', 'indeterminado'].includes(msg.status_envio || '')
                             )
-                            lastTicketId = msg.ticket_id
+                            lastTicketId = messageTicketId
 
                             return (
                               <React.Fragment key={msg.id}>
+                                {msg.id === firstNexusConversationMessageId && (
+                                  <SeparadorConversaNexus quantidade={nexusConversationMessages.length} />
+                                )}
+                                {msg.id === inicioHumanoDoTicketId && (
+                                  <div data-ticket-start className="scroll-mt-4">
+                                    <SeparadorInicioTicket numero={selectedTicket?.numero} />
+                                  </div>
+                                )}
                                 {/* Ticket separator for history */}
                                 {isPreviousTicket && (
                                   <div className="flex items-center gap-2 py-2">

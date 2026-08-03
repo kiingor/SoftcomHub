@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   atendeSubsetor,
   escolherDestino,
+  obterExcecaoFilaPrimeParaSuporte,
   ordenarPorEquilibrio,
 } from '../lib/distribuicao-fila.ts'
 
@@ -66,6 +67,17 @@ test('atendente sem subsetor atende ticket sem subsetor, e não o contrário', (
   assert.equal(atendeSubsetor('prime', ['prime']), true)
   assert.equal(atendeSubsetor('prime', ['suporte']), false)
   assert.equal(atendeSubsetor('prime', undefined), false)
+})
+
+test('só um ticket Prime libera a fila própria do Suporte', () => {
+  assert.deepEqual(
+    obterExcecaoFilaPrimeParaSuporte('prime', 'prime', 'suporte'),
+    ['suporte'],
+  )
+  assert.deepEqual(
+    obterExcecaoFilaPrimeParaSuporte(null, null, 'suporte'),
+    [],
+  )
 })
 
 test('o subsetor do ticket tem precedência: transbordo só quando ninguém do próprio tem vaga', () => {

@@ -53,8 +53,8 @@ test('drops every provider field outside the allowlist', () => {
   const details = sanitizeEvolutionProviderError({
     status: 401,
     error: 'Unauthorized',
-    apikey: 'B70YqyQrxL5212If',
-    headers: { apikey: 'B70YqyQrxL5212If', authorization: 'Bearer abc.def' },
+    apikey: 'fake-evolution-apikey',
+    headers: { apikey: 'fake-evolution-apikey', authorization: 'Bearer abc.def' },
     number: '5511999999999',
     request: {
       url: 'https://whatsapi.example.com/message/sendText/inst-01',
@@ -72,7 +72,7 @@ test('drops every provider field outside the allowlist', () => {
   })
   assert.doesNotMatch(
     JSON.stringify(details),
-    /B70YqyQrxL5212If|5511999999999|whatsapi|conteúdo da conversa/,
+    /fake-evolution-apikey|5511999999999|whatsapi|conteúdo da conversa/,
   )
 })
 
@@ -101,11 +101,33 @@ test('hides the WhatsApp JID, which carries the phone number', () => {
 
 test('hides credentials echoed back in JSON or header form', () => {
   const details = sanitizeEvolutionProviderError({
-    message: '{"headers":{"apikey":"B70YqyQrxL5212If","Authorization":"Bearer abc.def"}}',
+    message: '{"headers":{"apikey":"fake-evolution-apikey","Authorization":"Bearer abc.def"}}',
   }, 401)
 
   assert.match(details.message ?? '', /apikey=\[oculto\]/i)
-  assert.doesNotMatch(details.message ?? '', /B70YqyQrxL5212If|abc\.def/)
+  assert.doesNotMatch(details.message ?? '', /fake-evolution-apikey|abc\.def/)
+})
+
+test('redacts compound keys, quoted secrets and Basic authorization values', () => {
+  const redacted = redactSensitiveText([
+    'whatsapp_token=fake-token-value',
+    'client_secret=fake-client-secret',
+    'service_role_key=fake-service-role-key',
+    'password="secret with spaces"',
+    '{"authorization":"Basic dGVzdDp0ZXN0"}',
+    'invalid apikey fake-evolution-key',
+  ].join('; '))
+
+  assert.doesNotMatch(
+    redacted,
+    /fake-token-value|fake-client-secret|fake-service-role-key|secret with spaces|dGVzdDp0ZXN0|fake-evolution-key/,
+  )
+  assert.match(redacted, /whatsapp_token=\[oculto\]/i)
+  assert.match(redacted, /client_secret=\[oculto\]/i)
+  assert.match(redacted, /service_role_key=\[oculto\]/i)
+  assert.match(redacted, /password=\[oculto\]/i)
+  assert.match(redacted, /authorization=\[oculto\]/i)
+  assert.match(redacted, /apikey=\[oculto\]/i)
 })
 
 test('hides a bare JWT with no keyword announcing it', () => {
@@ -204,6 +226,7 @@ const lerRota = (caminho) => [
 const ROTAS_DE_ENVIO = [
   lerRota('app/api/evolution/send/route.ts'),
   lerRota('app/api/evolution/dispatch/route.ts'),
+  lerRota('app/api/whatsapp/dispatch/route.ts'),
   lerRota('app/api/tickets/disparo-externo/route.ts'),
 ]
 

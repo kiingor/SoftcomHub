@@ -12,6 +12,7 @@ import {
   HelpCircle,
   Megaphone,
   RefreshCw,
+  Sparkles,
   User,
 } from 'lucide-react'
 
@@ -211,6 +212,25 @@ export function SeparadorInicioTicket({ numero }: { numero?: number | null }) {
   )
 }
 
+/** Divide a conversa que ocorreu com o Nexus do atendimento humano do ticket. */
+export function SeparadorConversaNexus({ quantidade }: { quantidade?: number }) {
+  return (
+    <div data-nexus-history-start className="flex items-center gap-3 py-2">
+      <div className="flex-1 border-t border-dashed border-blue-500/30" />
+      <div className="flex items-center gap-1.5 rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
+        <Sparkles className="h-3 w-3" aria-hidden="true" />
+        <span>Conversa com Nexus</span>
+        {typeof quantidade === 'number' && (
+          <span className="flex h-4 min-w-4 items-center justify-center rounded-sm bg-secondary px-1 text-[9px] text-secondary-foreground">
+            {quantidade}
+          </span>
+        )}
+      </div>
+      <div className="flex-1 border-t border-dashed border-blue-500/30" />
+    </div>
+  )
+}
+
 /** Recado interno do supervisor — nunca sai para o cliente, por isso o destaque. */
 export function MensagemSupervisor({ mensagem }: { mensagem: MensagemBubbleData }) {
   const conteudo = mensagem.conteudo || ''
@@ -353,11 +373,17 @@ export function MensagemBubbleBox<T extends MensagemBubbleData>({
     >
       {replyPreview}
 
-      {variant === 'workdesk' && nexusActor && (
+      {nexusActor && (
         <div
           className={cn(
             'mb-1.5 flex items-center gap-1 text-[10px] font-semibold',
-            outgoing ? 'text-primary-foreground/80' : 'text-muted-foreground',
+            supervisao
+              ? mensagem.remetente === 'bot-nexus'
+                ? 'text-blue-700 dark:text-blue-300'
+                : 'text-muted-foreground'
+              : outgoing
+                ? 'text-primary-foreground/80'
+                : 'text-muted-foreground',
           )}
         >
           {mensagem.remetente === 'bot-nexus'

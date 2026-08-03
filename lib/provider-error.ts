@@ -28,16 +28,54 @@ export type DatabaseErrorDetails = {
 
 const MAX_PROVIDER_MESSAGE_LENGTH = 500
 
+const SENSITIVE_KEY_PATTERN = String.raw`(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*[_-])?(?:api[_\s-]?key|apikey|authorization|token|password|senha|secret|key)`
+const AUTHORIZATION_KEY_PATTERN = String.raw`(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*[_-])?authorization`
+const PASSWORD_KEY_PATTERN = String.raw`(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*[_-])?(?:password|senha)`
+
 // A ordem importa. O padrão de telefone é o mais abrangente e, se rodasse
 // primeiro, mutilaria URLs e JIDs — o segredo continuaria legível em volta do
 // trecho ocultado. Cada regra específica precisa consumir o valor inteiro antes.
 const REDACTIONS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bbearer\s+[a-z0-9._~+/=-]+/gi, 'Bearer [oculto]'],
   [/\beyJ[a-z0-9_-]{4,}\.[a-z0-9_-]+\.[a-z0-9_-]+/gi, '[token oculto]'],
-  // Cobre `apikey=x`, `API key: x` e a forma JSON `"authorization": "x"`.
+  // Valores entre aspas podem conter espaços, então precisam ser consumidos
+  // por inteiro antes da regra de valores simples.
   [
-    /\b(api[_\s-]?key|authorization|token|password|senha|secret)\b["']?\s*[:=]\s*["']?[^\s,;"'}\]]+/gi,
-    '$1=[oculto]',
+    new RegExp(
+      String.raw`(^|[^a-z0-9_-])(${SENSITIVE_KEY_PATTERN})["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`,
+      'gim',
+    ),
+    '$1$2=[oculto]',
+  ],
+  // `Authorization: Basic <credencial>` não pode esconder apenas o "Basic".
+  [
+    new RegExp(
+      String.raw`(^|[^a-z0-9_-])(${AUTHORIZATION_KEY_PATTERN})["']?\s*[:=]\s*(?:bearer|basic)\s+[^\s,;}\]]+`,
+      'gim',
+    ),
+    '$1$2=[oculto]',
+  ],
+  // Senhas sem aspas podem ter espaços; até o delimitador é mais seguro
+  // ocultar o valor inteiro do que revelar parte dele em um log.
+  [
+    new RegExp(
+      String.raw`(^|[^a-z0-9_-])(${PASSWORD_KEY_PATTERN})["']?\s*[:=]\s*[^,;}\]\r\n]+`,
+      'gim',
+    ),
+    '$1$2=[oculto]',
+  ],
+  // Cobre `apikey=x`, `API key: x` e credenciais compostas como
+  // `whatsapp_token`, `client_secret` e `service_role_key`.
+  [
+    new RegExp(
+      String.raw`(^|[^a-z0-9_-])(${SENSITIVE_KEY_PATTERN})["']?\s*[:=]\s*[^\s,;"'}\]]+`,
+      'gim',
+    ),
+    '$1$2=[oculto]',
+  ],
+  [
+    /(^|[^a-z0-9_-])(api[_\s-]?key|apikey)\s+[^\s,;"'}\]]+/gim,
+    '$1$2=[oculto]',
   ],
   [/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>"']+/gi, '[url ocultada]'],
   [/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d{2,5})?\/[^\s<>"']*/gi, '[url ocultada]'],

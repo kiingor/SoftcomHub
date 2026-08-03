@@ -24,11 +24,16 @@ export async function GET(request: NextRequest) {
     const todayStart = new Date()
     todayStart.setHours(0, 0, 0, 0)
 
-    const { count } = await supabase
+    const { count, error: countError } = await supabase
       .from('disparo_logs')
       .select('*', { count: 'exact', head: true })
       .eq('setor_id', setorId)
-      .gte('created_at', todayStart.toISOString())
+      .gte('criado_em', todayStart.toISOString())
+
+    if (countError) {
+      console.warn('[Dispatch count] Não foi possível consultar os disparos do dia:', countError.code)
+      return NextResponse.json({ error: 'Não foi possível consultar os disparos do dia' }, { status: 503 })
+    }
 
     return NextResponse.json({
       used: count || 0,

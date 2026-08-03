@@ -9,8 +9,9 @@ import { logError } from '@/lib/error-logger'
 import { idsComDuplicidade } from '@/lib/tickets-duplicados'
 import { AlertTriangle } from 'lucide-react'
 
-import { MensagemBubble, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
+import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
+import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
 
 /** Marca a linha cujo cliente tem outro atendimento aberto ao mesmo tempo. */
 function BadgeDuplicado() {
@@ -274,6 +275,7 @@ export default function MonitoramentoPage() {
   // Conversation panel state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
+  const devePosicionarNoInicioDoTicketRef = useRef(false)
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [ticketHistory, setTicketHistory] = useState<any[]>([])
   const [historyMessages, setHistoryMessages] = useState<Record<string, any[]>>({})
@@ -294,8 +296,8 @@ export default function MonitoramentoPage() {
   // raiz re-renderizava as tabelas inteiras a cada segundo à toa — os tempos
   // delas vêm de useMemo e só mudam quando os dados chegam.
 
-  // Auto-scroll conversation to bottom when messages load.
-  // Uses ResizeObserver to keep scrolling as images/audios load and resize the content.
+  // Ao abrir uma conversa com contexto Nexus, a primeira leitura útil é onde o
+  // atendimento humano começa. Sem contexto, mantém o comportamento de abrir no fim.
   useEffect(() => {
     if (
       conversationTab !== 'atendimento' ||
@@ -306,6 +308,17 @@ export default function MonitoramentoPage() {
       return
     }
     const el = conversationScrollRef.current
+    if (devePosicionarNoInicioDoTicketRef.current) {
+      const inicioDoTicket = el.querySelector<HTMLElement>('[data-ticket-start]')
+        || el.querySelector<HTMLElement>('[data-nexus-history-start]')
+      devePosicionarNoInicioDoTicketRef.current = false
+      if (inicioDoTicket) {
+        inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
+        el.scrollTop = Math.max(0, el.scrollTop - 16)
+        return
+      }
+    }
+
     const scrollToEnd = () => {
       el.scrollTop = el.scrollHeight
     }
@@ -1074,6 +1087,7 @@ export default function MonitoramentoPage() {
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
+    devePosicionarNoInicioDoTicketRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)
@@ -1125,14 +1139,21 @@ export default function MonitoramentoPage() {
       })
       deduped.sort((a, b) => new Date(a.enviado_em).getTime() - new Date(b.enviado_em).getTime())
 
-      const ticketStartMessage = ticket.criado_em
-        ? deduped.find((message) => (
-            message.ticket_id === ticket.id
-            && new Date(message.enviado_em).getTime() >= new Date(ticket.criado_em).getTime()
-          ))
-        : null
-      if (nexusContextMsgs.length > 0 && ticketStartMessage) {
-        ticketStartMessage._ticketStart = true
+      const nexusContextIds = new Set(nexusContextMsgs.map((message) => message.id))
+      const mensagensDaConversaNexus = deduped.filter((message) => (
+        (message.ticket_id === ticket.id || nexusContextIds.has(message.id))
+        && ehMensagemNexus(message)
+      ))
+      const primeiraMensagemNexus = mensagensDaConversaNexus[0]
+      const inicioHumanoDoTicketId = mensagensDaConversaNexus.length > 0
+        ? selecionarInicioHumanoDoTicket(deduped, ticket.id)
+        : undefined
+      if (primeiraMensagemNexus) {
+        primeiraMensagemNexus._nexusHistoryStart = true
+      }
+      if (inicioHumanoDoTicketId) {
+        const ticketStartMessage = deduped.find((message) => message.id === inicioHumanoDoTicketId)
+        if (ticketStartMessage) ticketStartMessage._ticketStart = true
       }
 
       setConversationMessages(deduped)
@@ -2207,6 +2228,7 @@ export default function MonitoramentoPage() {
                     ) : (
                       conversationMessages.map((msg: any) => (
                         <Fragment key={msg.id}>
+                          {msg._nexusHistoryStart && <SeparadorConversaNexus />}
                           {msg._ticketStart && <SeparadorInicioTicket numero={selectedTicket?.numero} />}
                           <MensagemBubble
                             variant="supervisao"

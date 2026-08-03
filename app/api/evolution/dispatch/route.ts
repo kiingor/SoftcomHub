@@ -256,10 +256,11 @@ export async function POST(request: NextRequest) {
     const { error: logError } = await supabase.from('disparo_logs').insert({
       setor_id: setorId,
       colaborador_id: colaborador.id,
+      colaborador_nome: colaborador.nome,
       ticket_id: ticketId,
       cliente_nome: clienteNome,
       cliente_telefone: formattedPhone,
-      template_usado: `[Evolution] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
+      template_name: `[Evolution] ${mensagem.slice(0, 60)}${mensagem.length > 60 ? '...' : ''}`,
       status: 'enviado',
     })
 
