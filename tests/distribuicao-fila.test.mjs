@@ -110,7 +110,7 @@ test('Prime NÃO é puxado para o Suporte enquanto houver ticket esperando na fi
   assert.deepEqual(escolha.fila, [])
 })
 
-test('o transbordo vale nos dois sentidos — Suporte também ajuda o Prime', () => {
+test('fila Prime cheia transborda para Suporte quando o Suporte está disponível', () => {
   const escolha = escolherDestino({
     subsetorDoTicket: 'prime',
     candidatos: [
@@ -122,6 +122,69 @@ test('o transbordo vale nos dois sentidos — Suporte também ajuda o Prime', ()
   })
   assert.equal(escolha.origem, 'transbordo')
   assert.deepEqual(escolha.fila.map((c) => c.id), ['sup'])
+})
+
+test('fila Prime cheia não puxa Suporte que ainda tem fila própria', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: 'prime',
+    candidatos: [
+      atendente('prime', 5, 10, { subsetorIds: ['prime'] }),
+      atendente('sup', 8, 1, { subsetorIds: ['suporte'] }),
+    ],
+    subsetoresComFila: ['suporte'],
+    maxTicketsAbertos: 10,
+  })
+
+  assert.equal(escolha.origem, 'ninguem')
+  assert.deepEqual(escolha.fila, [])
+})
+
+test('Prime pode transbordar para Suporte mesmo com fila própria do Suporte', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: 'prime',
+    candidatos: [
+      atendente('prime', 5, 10, { subsetorIds: ['prime'] }),
+      atendente('sup', 8, 1, { subsetorIds: ['suporte'] }),
+    ],
+    subsetoresComFila: ['suporte'],
+    subsetoresQuePodemReceberMesmoComFila: ['suporte'],
+    maxTicketsAbertos: 10,
+  })
+
+  assert.equal(escolha.origem, 'transbordo')
+  assert.deepEqual(escolha.fila.map((c) => c.id), ['sup'])
+})
+
+test('a exceção Prime → Suporte não libera Suporte → Prime com fila Prime', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: 'suporte',
+    candidatos: [
+      atendente('sup', 5, 10, { subsetorIds: ['suporte'] }),
+      atendente('prime', 8, 1, { subsetorIds: ['prime'] }),
+    ],
+    subsetoresComFila: ['prime'],
+    subsetoresQuePodemReceberMesmoComFila: ['suporte'],
+    maxTicketsAbertos: 10,
+  })
+
+  assert.equal(escolha.origem, 'ninguem')
+  assert.deepEqual(escolha.fila, [])
+})
+
+test('a exceção do Suporte não ignora fila de outro subsetor do mesmo atendente', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: 'prime',
+    candidatos: [
+      atendente('prime', 5, 10, { subsetorIds: ['prime'] }),
+      atendente('sup-fin', 8, 1, { subsetorIds: ['suporte', 'financeiro'] }),
+    ],
+    subsetoresComFila: ['suporte', 'financeiro'],
+    subsetoresQuePodemReceberMesmoComFila: ['suporte'],
+    maxTicketsAbertos: 10,
+  })
+
+  assert.equal(escolha.origem, 'ninguem')
+  assert.deepEqual(escolha.fila, [])
 })
 
 test('no transbordo a equalização continua valendo entre os candidatos', () => {

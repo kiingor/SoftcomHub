@@ -73,6 +73,11 @@ export interface OpcoesDestino {
    * "o Prime esvazia a fila do Prime antes de ajudar o Suporte".
    */
   subsetoresComFila?: readonly (string | null)[]
+  /**
+   * Exceções pontuais à proteção da fila própria do candidato. O transbordo
+   * continua bloqueado para os demais subsetores que ainda tenham fila.
+   */
+  subsetoresQuePodemReceberMesmoComFila?: readonly string[]
   maxTicketsAbertos: number
 }
 
@@ -81,7 +86,8 @@ export interface OpcoesDestino {
  *
  * 1. Atendentes do próprio subsetor que ainda têm vaga.
  * 2. Se nenhum tem vaga, atendentes de outro subsetor que tenham vaga E cuja
- *    própria fila esteja vazia (transbordo — ex.: Prime ajuda o Suporte).
+ *    própria fila esteja vazia, exceto por subsetores explicitamente liberados
+ *    pelo chamador (transbordo — ex.: Prime usa Suporte).
  *
  * O passo 2 só entra quando o passo 1 se esgota, então a fila do próprio
  * subsetor sempre tem precedência.
@@ -90,6 +96,7 @@ export function escolherDestino({
   subsetorDoTicket,
   candidatos,
   subsetoresComFila = [],
+  subsetoresQuePodemReceberMesmoComFila = [],
   maxTicketsAbertos,
 }: OpcoesDestino): EscolhaDestino {
   const proprios = candidatos.filter((c) => atendeSubsetor(subsetorDoTicket, c.subsetorIds))
@@ -98,11 +105,14 @@ export function escolherDestino({
 
   // Transbordo: quem é de outro subsetor, tem vaga, e não tem fila esperando
   // por ele. Atendente sem subsetor entra pela chave `null`.
+  const excecoesFilaPropria = new Set(subsetoresQuePodemReceberMesmoComFila)
   const temFilaPropria = (c: CandidatoDistribuicao) => {
     const ids = c.subsetorIds || []
     return ids.length === 0
       ? subsetoresComFila.includes(null)
-      : ids.some((id) => subsetoresComFila.includes(id))
+      : ids.some((id) => (
+        subsetoresComFila.includes(id) && !excecoesFilaPropria.has(id)
+      ))
   }
 
   const outros = candidatos.filter((c) => (
