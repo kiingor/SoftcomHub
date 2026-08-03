@@ -5158,8 +5158,10 @@ const saveConfig = async () => {
         .eq('ticket_id', ticket.id)
         .order('enviado_em', { ascending: true })
 
-      // Query 2: Mensagens órfãs do cliente (bot) nas 24h antes do ticket
-      let preTicketMsgs: any[] = []
+      // O Nexus pode persistir a última resposta alguns segundos após o ticket
+      // ser criado. A janela curta posterior evita perder esse encerramento sem
+      // misturar uma nova conversa do mesmo cliente.
+      let nexusContextMsgs: any[] = []
       const clienteTelefone = ticket.clientes?.telefone
       if (clienteTelefone) {
         // Buscar todos cliente_ids com mesmo telefone (handles duplicates)
@@ -5170,31 +5172,41 @@ const saveConfig = async () => {
         const clienteIds = allClientes?.map((c: any) => c.id) || [ticket.cliente_id].filter(Boolean)
 
         if (clienteIds.length > 0 && ticket.criado_em) {
-          const before24h = new Date(new Date(ticket.criado_em).getTime() - 24 * 60 * 60 * 1000).toISOString()
+          const ticketCreatedAt = new Date(ticket.criado_em)
+          const before24h = new Date(ticketCreatedAt.getTime() - 24 * 60 * 60 * 1000).toISOString()
+          const nexusTailEndsAt = new Date(ticketCreatedAt.getTime() + 5 * 60 * 1000).toISOString()
           const { data: orphanMsgs } = await supabase
             .from('mensagens')
             .select('*')
             .in('cliente_id', clienteIds)
             .is('ticket_id', null)
+            .in('remetente', ['cliente-nexus', 'bot-nexus'])
             .gte('enviado_em', before24h)
-            .lt('enviado_em', ticket.criado_em)
+            .lte('enviado_em', nexusTailEndsAt)
             .order('enviado_em', { ascending: true })
-          preTicketMsgs = orphanMsgs || []
+          nexusContextMsgs = orphanMsgs || []
         }
       }
 
       // Merge e deduplicar
-      const allMsgs = [...preTicketMsgs, ...(ticketMsgs || [])]
+      const allMsgs = [...nexusContextMsgs, ...(ticketMsgs || [])]
       const seen = new Set<string>()
       const deduped = allMsgs.filter(m => {
         if (seen.has(m.id)) return false
         seen.add(m.id)
         return true
       })
+      deduped.sort((a, b) => new Date(a.enviado_em).getTime() - new Date(b.enviado_em).getTime())
 
       // Marcar onde começa o ticket para separador visual
-      if (preTicketMsgs.length > 0 && ticketMsgs && ticketMsgs.length > 0) {
-        ticketMsgs[0]._ticketStart = true
+      const ticketStartMessage = ticket.criado_em
+        ? deduped.find((message) => (
+            message.ticket_id === ticket.id
+            && new Date(message.enviado_em).getTime() >= new Date(ticket.criado_em).getTime()
+          ))
+        : null
+      if (nexusContextMsgs.length > 0 && ticketStartMessage) {
+        ticketStartMessage._ticketStart = true
       }
 
       setConversationMessages(deduped)

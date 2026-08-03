@@ -4,6 +4,7 @@ import { useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
   ArrowRightLeft,
+  Bot,
   Check,
   CheckCheck,
   Clock,
@@ -307,6 +308,12 @@ export function MensagemBubbleBox<T extends MensagemBubbleData>({
   const erro = erroEnvio || mensagem.erro_envio
   const hora = horaCurta(mensagem.enviado_em)
   const isContato = isContactMessage(mensagem) && Boolean(mensagem.conteudo)
+  const nexusActor = mensagem.remetente === 'cliente-nexus'
+    ? 'Cliente'
+    : mensagem.remetente === 'bot-nexus'
+      ? 'Nexus (bot)'
+      : null
+  const mostraStatusEnvio = outgoing && mensagem.remetente !== 'bot-nexus'
   // Documento/áudio/vídeo e PDF já são descritos pelo próprio bloco de mídia.
   const mostraTexto = Boolean(mensagem.conteudo)
     && !isContato
@@ -345,6 +352,20 @@ export function MensagemBubbleBox<T extends MensagemBubbleData>({
       )}
     >
       {replyPreview}
+
+      {variant === 'workdesk' && nexusActor && (
+        <div
+          className={cn(
+            'mb-1.5 flex items-center gap-1 text-[10px] font-semibold',
+            outgoing ? 'text-primary-foreground/80' : 'text-muted-foreground',
+          )}
+        >
+          {mensagem.remetente === 'bot-nexus'
+            ? <Bot className="h-3 w-3" aria-hidden="true" />
+            : <User className="h-3 w-3" aria-hidden="true" />}
+          <span>{nexusActor}</span>
+        </div>
+      )}
 
       {isFailedSend && (
         <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
@@ -408,7 +429,7 @@ export function MensagemBubbleBox<T extends MensagemBubbleData>({
       ) : (
         <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-60">
           {hora && <span>{hora}</span>}
-          {outgoing && (
+          {mostraStatusEnvio && (
             <>
               {(sendOutcome === 'sending' || sendOutcome === 'pending') && <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />}
               {sendOutcome === 'sent' && <Check className="h-3 w-3" aria-hidden="true" />}

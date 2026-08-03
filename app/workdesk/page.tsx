@@ -2,7 +2,7 @@
 
 import React from "react"
 
-import { useEffect, useState, useCallback, useRef, useMemo, startTransition } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, startTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { logError } from '@/lib/error-logger'
 import { stripBrazilCountryCode } from '@/lib/phone'
@@ -15,7 +15,7 @@ import { ptBR } from 'date-fns/locale'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { TransferirTicketDialog } from '@/components/tickets/transferir-ticket-dialog'
 import { rotuloDuplicidade, ticketsAbertos } from '@/lib/tickets-duplicados'
-import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage } from '@/components/chat/mensagem-bubble'
+import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { upload } from '@vercel/blob/client'
 import { resolveMime } from '@/lib/whatsapp-media'
 import {
@@ -115,6 +115,13 @@ import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumen
 import { telefoneSemDDI } from '@/lib/telefone'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import { estaNoFimDaConversa } from '@/lib/scroll-conversa'
+import {
+  calcularInicioJanelaHistoricoIso,
+  ehMensagemNexus as isNexusMessage,
+  pertenceAoContextoDoTicket,
+  selecionarIdsContextoNexusOrfao,
+  selecionarInicioHumanoDoTicket,
+} from '@/lib/nexus-historico-ticket'
 import { toast } from 'sonner'
 import { useAudioAlert } from '@/hooks/use-audio-alert'
 
@@ -188,7 +195,7 @@ interface Mensagem {
   id: string
   ticket_id: string | null
   cliente_id: string | null
-  remetente: 'cliente' | 'colaborador' | 'bot' | 'sistema' | 'supervisor'
+  remetente: 'cliente' | 'cliente-nexus' | 'colaborador' | 'bot' | 'bot-nexus' | 'sistema' | 'supervisor'
   conteudo: string
   tipo: 'texto' | 'imagem' | 'audio' | 'video' | 'documento'
   enviado_em: string
@@ -238,12 +245,12 @@ function parseSendErrorMessage(result: unknown): string {
   if (!r) return 'Erro ao enviar mensagem'
 
   // Evolution: número não existe no WhatsApp
-  // { details: { response: { message: [{ exists: false, number: "..." }] } } }
+  // { details: { response: { message: [{ exists: false }] } } }
   const responseMsg = r?.details?.response?.message
   if (Array.isArray(responseMsg) && responseMsg.length > 0) {
     const item = responseMsg[0]
-    if (item?.exists === false && item?.number) {
-      return `O número ${item.number} não está cadastrado no WhatsApp`
+    if (item?.exists === false) {
+      return 'O número do cliente não está cadastrado no WhatsApp'
     }
     if (typeof item === 'string') return item
     if (item?.message && typeof item.message === 'string') return item.message
@@ -1349,12 +1356,13 @@ export default function WorkdeskPage() {
 
 // Fetch messages for selected ticket (including client history from today only)
   const fetchMensagens = useCallback(
-    async (ticketId: string, clienteId: string, options?: { silent?: boolean }) => {
+    async (ticketId: string, clienteId: string, ticketCriadoEm: string, options?: { silent?: boolean }) => {
       if (!options?.silent) setLoadingMensagens(true)
 
-      // Only show history from today (since midnight)
-      const todayStart = new Date()
-      todayStart.setHours(0, 0, 0, 0)
+      // Janela relativa ao criado_em do ticket (24h antes), não à meia-noite
+      // do momento atual — um ticket aberto logo após meia-noite precisa
+      // enxergar a conversa do Nexus de antes dela.
+      const inicioJanelaHistorico = calcularInicioJanelaHistoricoIso(ticketCriadoEm)
 
       // Resolve all cliente_ids with the same phone number (handles duplicate records)
       let allClienteIds = [clienteId]
@@ -1382,14 +1390,14 @@ export default function WorkdeskPage() {
         .eq('ticket_id', ticketId)
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
-      // Query 2: Messages from OTHER tickets of the same client (last 7 days)
+      // Query 2: Messages from OTHER tickets of the same client (24h before this ticket's creation)
       const { data: otherTicketMsgs, error: err2 } = await supabase
         .from('mensagens')
         .select('*, tickets(id, status, criado_em, encerrado_em)')
         .in('cliente_id', allClienteIds)
         .neq('ticket_id', ticketId)
         .not('ticket_id', 'is', null)
-        .gte('enviado_em', todayStart.toISOString())
+        .gte('enviado_em', inicioJanelaHistorico)
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
       // Query 3: Orphan messages (ticket_id IS NULL) — bot conversations before ticket creation
@@ -1398,7 +1406,7 @@ export default function WorkdeskPage() {
         .select('*')
         .in('cliente_id', allClienteIds)
         .is('ticket_id', null)
-        .gte('enviado_em', todayStart.toISOString())
+        .gte('enviado_em', inicioJanelaHistorico)
         .order('enviado_em', { ascending: true, nullsFirst: false })
 
       console.log('[fetchMensagens] Q1 ticketMsgs:', ticketMsgs?.length, err1 ? `ERR: ${JSON.stringify(err1)}` : 'OK')
@@ -1559,6 +1567,36 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
    * meio. O que decide é onde o atendente estava ANTES da atualização.
    */
   const acompanhandoOFimRef = useRef(true)
+  // Ao abrir uma conversa que traz o histórico do Nexus, a referência útil
+  // para o atendente é a abertura do ticket — não a primeira mensagem do bot.
+  // Esta guarda é consumida uma única vez após o carregamento inicial.
+  const devePosicionarNoInicioDoTicketRef = useRef(false)
+
+  const posicionarNoInicioDoTicket = useCallback(() => {
+    const container = messagesContainerRef.current
+    const ticketStart = container?.querySelector<HTMLElement>('[data-ticket-start]')
+    if (!container || !ticketStart) return false
+
+    const ticketId = selectedTicketIdRef.current
+    const posicionar = () => {
+      if (selectedTicketIdRef.current !== ticketId) return
+
+      const currentContainer = messagesContainerRef.current
+      const currentTicketStart = currentContainer?.querySelector<HTMLElement>('[data-ticket-start]')
+      if (!currentContainer || !currentTicketStart) return
+
+      currentTicketStart.scrollIntoView({ block: 'start', inline: 'nearest' })
+      currentContainer.scrollTop = Math.max(0, currentContainer.scrollTop - 16)
+    }
+
+    // Imagens e as animações das bolhas podem alterar a altura logo depois da
+    // primeira pintura. Reaplica apenas para o mesmo ticket, sem deslocar quem
+    // já tiver aberto outra conversa nesse intervalo.
+    posicionar()
+    requestAnimationFrame(posicionar)
+    window.setTimeout(posicionar, 180)
+    return true
+  }, [])
 
   const handleMessagesScroll = useCallback(() => {
     acompanhandoOFimRef.current = estaNoFimDaConversa(messagesContainerRef.current)
@@ -1568,9 +1606,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // This prevents re-fetching when ticket data refreshes but same ticket is open
   const selectedTicketId = selectedTicket?.id || null
   const selectedClienteId = selectedTicket?.cliente_id || null
+  const selectedTicketCriadoEm = selectedTicket?.criado_em || ''
   useEffect(() => {
   if (selectedTicketId && selectedClienteId) {
-  fetchMensagens(selectedTicketId, selectedClienteId)
+  fetchMensagens(selectedTicketId, selectedClienteId, selectedTicketCriadoEm)
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTicketId])
@@ -1661,6 +1700,18 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (el) el.scrollTop = el.scrollHeight
   }, [historicoConversaMsgs, historicoConversaLoading])
 
+  // A referência só existe depois de o React montar as mensagens. Usar layout
+  // effect evita que a primeira pintura mostre o topo do histórico do Nexus e
+  // o efeito comum de rolagem a substitua antes do atendente vê-la.
+  useLayoutEffect(() => {
+    if (mensagens.length === 0 || loadingMensagens) return
+    if (!devePosicionarNoInicioDoTicketRef.current) return
+    if (!posicionarNoInicioDoTicket()) return
+
+    devePosicionarNoInicioDoTicketRef.current = false
+    acompanhandoOFimRef.current = false
+  }, [mensagens, loadingMensagens, posicionarNoInicioDoTicket])
+
   // Acompanha o fim da conversa — mas só de quem já estava no fim.
   //
   // `mensagens` é recriada a cada recibo de entrega ou de leitura, sem nenhuma
@@ -1676,6 +1727,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // Abrir outra conversa começa no fim, independente de onde a anterior parou.
   useEffect(() => {
     acompanhandoOFimRef.current = true
+    devePosicionarNoInicioDoTicketRef.current = true
   }, [selectedTicketId])
 
 // Real-time subscription for tickets
@@ -2063,6 +2115,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // Stable refs for realtime subscription
   const selectedTicketIdRef2 = selectedTicket?.id
   const selectedClienteIdRef = selectedTicket?.cliente_id
+  const selectedTicketCriadoEmRef2 = selectedTicket?.criado_em
 
   useEffect(() => {
     if (!selectedTicketIdRef2 || !selectedClienteIdRef) return
@@ -2159,14 +2212,15 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       })
 
     const refreshSelectedMessages = async () => {
-      await fetchMensagens(selectedTicketIdRef2, selectedClienteIdRef, { silent: true })
+      await fetchMensagens(selectedTicketIdRef2, selectedClienteIdRef, selectedTicketCriadoEmRef2 || '', { silent: true })
     }
 
     // Fallback polling to catch any missed messages (Realtime é o primário)
     const pollInterval = setInterval(async () => {
       if (!selectedTicketIdRef2) return
-      const todayStart = new Date()
-      todayStart.setHours(0, 0, 0, 0)
+      // Mesma janela relativa ao criado_em do ticket usada em fetchMensagens —
+      // não à meia-noite do momento atual.
+      const inicioJanelaHistorico = calcularInicioJanelaHistoricoIso(selectedTicketCriadoEmRef2)
 
       // Resolve all cliente_ids with the same phone (handles duplicate client records)
       let pollClienteIds: string[] = selectedClienteIdRef ? [selectedClienteIdRef] : []
@@ -2202,7 +2256,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             .in('cliente_id', pollClienteIds)
             .neq('ticket_id', selectedTicketIdRef2)
             .not('ticket_id', 'is', null)
-            .gte('enviado_em', todayStart.toISOString())
+            .gte('enviado_em', inicioJanelaHistorico)
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
@@ -2213,7 +2267,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
             .select('*')
             .in('cliente_id', pollClienteIds)
             .is('ticket_id', null)
-            .gte('enviado_em', todayStart.toISOString())
+            .gte('enviado_em', inicioJanelaHistorico)
             .order('enviado_em', { ascending: true, nullsFirst: false })
         : { data: [] }
 
@@ -2257,7 +2311,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       supabase.removeChannel(channel)
       clearInterval(pollInterval)
     }
-  }, [selectedTicketIdRef2, selectedClienteIdRef, supabase, fetchMensagens])
+  }, [selectedTicketIdRef2, selectedClienteIdRef, selectedTicketCriadoEmRef2, supabase, fetchMensagens])
 
   // Global subscription for new messages on all tickets (for audio alerts)
   // Use ref for ticketIds to avoid recreating the channel on every ticket list change
@@ -4260,7 +4314,7 @@ const insertEmoji = (emoji: string) => {
       // spinner). Per-message sending/sent cleanup already happened in sendOne.
       setTimeout(() => {
         if (selectedTicketIdRef.current === capturedTicketId) {
-          fetchMensagens(capturedTicketId, capturedTicket.cliente_id, { silent: true })
+          fetchMensagens(capturedTicketId, capturedTicket.cliente_id, capturedTicket.criado_em, { silent: true })
         }
       }, 2000)
 
@@ -4800,15 +4854,40 @@ const insertEmoji = (emoji: string) => {
                     <div className="space-y-4">
                       <AnimatePresence>
                         {(() => {
-                          // Garante que mensagens do ticket atual sempre venham por último,
-                          // evitando que mensagens recebidas via real-time de outros tickets
-                          // apareçam depois do ticket atual e sejam classificadas como "anteriores".
+                          const currentTicketId = selectedTicket?.id
+                          const idsContextoNexusOrfao = selecionarIdsContextoNexusOrfao(
+                            mensagens,
+                            selectedTicket?.criado_em,
+                          )
+                          const isCurrentTicketContext = (message: Mensagem) => (
+                            currentTicketId
+                              ? pertenceAoContextoDoTicket(message, currentTicketId, idsContextoNexusOrfao)
+                              : false
+                          )
+                          // Garante que o ticket atual (incluindo a resposta tardia do Nexus)
+                          // permaneça no fim, sem quebrar a ordem cronológica da conversa.
                           const mensagensOrdenadas = selectedTicket
                             ? [
-                                ...mensagens.filter((m) => m.ticket_id !== selectedTicket.id),
-                                ...mensagens.filter((m) => m.ticket_id === selectedTicket.id),
+                                ...mensagens.filter((m) => !isCurrentTicketContext(m)),
+                                ...mensagens.filter(isCurrentTicketContext),
                               ]
                             : mensagens
+                          const nexusConversationMessages = currentTicketId
+                            ? mensagensOrdenadas.filter((m) => (
+                                isCurrentTicketContext(m)
+                                && isNexusMessage(m)
+                              ))
+                            : []
+                          const firstNexusConversationMessageId = nexusConversationMessages[0]?.id
+                          // Âncora do separador "Início do Ticket" e da rolagem inicial: a
+                          // primeira mensagem do ticket que não é do Nexus. Uma resposta
+                          // tardia do bot-nexus já vinculada ao ticket continua no bloco
+                          // "Conversa com Nexus" e nunca vira essa âncora. Sem mensagem
+                          // humana ainda, fica undefined — sem separador, com fallback de
+                          // rolagem para o fim.
+                          const inicioHumanoDoTicketId = nexusConversationMessages.length > 0 && currentTicketId
+                            ? selecionarInicioHumanoDoTicket(mensagensOrdenadas, currentTicketId)
+                            : undefined
 
                           let lastTicketId: string | null = null
                           return mensagensOrdenadas.map((msg, index) => {
@@ -4817,8 +4896,11 @@ const insertEmoji = (emoji: string) => {
                             // 'indeterminado' = perdemos a resposta da API, não sabemos se o provedor recebeu.
                             const sendOutcome = computeSendOutcome(msgStatus, msg.status_envio)
                             const isFailedSend = sendOutcome === 'failed' || sendOutcome === 'indeterminate'
-                            const isNewTicket = msg.ticket_id !== lastTicketId
-                            const isCurrentTicket = msg.ticket_id === selectedTicket?.id
+                            const messageTicketId = idsContextoNexusOrfao.has(msg.id)
+                              ? currentTicketId
+                              : msg.ticket_id
+                            const isNewTicket = messageTicketId !== lastTicketId
+                            const isCurrentTicket = messageTicketId === currentTicketId
                             const isPreviousTicket = !isCurrentTicket && isNewTicket
                             const canRetrySend = Boolean(
                               isFailedSend
@@ -4829,10 +4911,31 @@ const insertEmoji = (emoji: string) => {
                               && ['aberto', 'em_atendimento'].includes(selectedTicket.status)
                               && ['falhou', 'indeterminado'].includes(msg.status_envio || '')
                             )
-                            lastTicketId = msg.ticket_id
+                            lastTicketId = messageTicketId
 
                             return (
                               <React.Fragment key={msg.id}>
+                                {msg.id === firstNexusConversationMessageId && (
+                                  <div
+                                    data-nexus-history-start
+                                    className="flex items-center gap-3 py-2"
+                                  >
+                                    <div className="flex-1 border-t border-dashed border-blue-500/30" />
+                                    <div className="flex items-center gap-1.5 rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
+                                      <Sparkles className="h-3 w-3" aria-hidden="true" />
+                                      <span>Conversa com Nexus</span>
+                                      <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[9px]">
+                                        {nexusConversationMessages.length}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex-1 border-t border-dashed border-blue-500/30" />
+                                  </div>
+                                )}
+                                {msg.id === inicioHumanoDoTicketId && (
+                                  <div data-ticket-start className="scroll-mt-4">
+                                    <SeparadorInicioTicket numero={selectedTicket?.numero} />
+                                  </div>
+                                )}
                                 {/* Ticket separator for history */}
                                 {isPreviousTicket && (
                                   <div className="flex items-center gap-3 py-3">
