@@ -9,6 +9,7 @@ import { stripBrazilCountryCode } from '@/lib/phone'
 import { computeSendOutcome } from '@/lib/message-send-status'
 import { areSetorSortConfigsEqual, sortTicketsBySetorConfig } from '@/lib/ticket-sort'
 import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
+import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
@@ -2577,6 +2578,15 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         ...(isFirstResponse ? { primeira_resposta_em: new Date().toISOString() } : {}),
       })
       .eq('id', selectedTicket.id)
+
+    // Puxar o ticket para si É a saída da fila, e este caminho não passava por
+    // `marcarSaidaDaFila`: medido em 04/08/2026, 25% dos tickets do dia tinham
+    // dono e nenhum `atribuido_em`. O card não errava por acaso — grava
+    // `primeira_resposta_em` no mesmo instante e o cálculo cai nela —, mas
+    // depender dessa coincidência deixa a coluna inútil para qualquer análise.
+    // O helper é quem garante "só na primeira vez", no banco: transferência
+    // posterior não pode apagar a espera real.
+    await marcarSaidaDaFila(supabase, selectedTicket.id)
 
     setSelectedTicket((prev) =>
       prev ? { ...prev, status: 'em_atendimento', colaborador_id: colaborador.id } : null

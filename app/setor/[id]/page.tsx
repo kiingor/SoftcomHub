@@ -144,7 +144,9 @@ import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
-import { resumirFila, contarEpisodiosDeFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
+import { resumirFila, somarEpisodiosPorFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
+import { escolherSubsetorPadrao } from '@/lib/subsetor-padrao'
+import { criarMedidorDeExpediente } from '@/lib/horario-atendimento'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
 import { resolverIniciosTempoTransferencia } from '@/lib/ticket-transfer-timing'
 import {
@@ -239,9 +241,16 @@ function formatMonitoringTime(ms: number) {
   return [hours, minutes, seconds].map((value) => value.toString().padStart(2, '0')).join(':')
 }
 
+/** Cor por limiar: 5min vira atenção (âmbar), 10min vira crítico (vermelho). */
+function corTempoMedioLimiar(ms: number) {
+  if (ms >= 10 * 60_000) return 'text-red-600 dark:text-red-400'
+  if (ms >= 5 * 60_000) return 'text-amber-600 dark:text-amber-400'
+  return 'text-foreground'
+}
+
 type SortDirection = 'asc' | 'desc'
 type SortValue = string | number | null | undefined
-type ActiveTicketSortKey = 'status' | 'queueTime' | 'firstResponse' | 'serviceTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'attendant'
+type ActiveTicketSortKey = 'status' | 'queueTime' | 'serviceTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'attendant'
 type WaitingTicketSortKey = 'status' | 'queueTime' | 'ticket' | 'contact' | 'origin' | 'queue' | 'priority'
 type AttendantSortKey = 'attendant' | 'status' | 'activeTickets' | 'finalizedToday'
 
@@ -613,8 +622,10 @@ temposHoje: (() => {
       }, 0)
       const tempoMedioAtend = ticketsEncerradosHoje.length > 0 ? totalAtend / ticketsEncerradosHoje.length : 0
 
-      // Tempo médio de resolução total: criado_em → encerrado_em
-      const ticketsResolvidos = ticketsHoje.filter((t: any) => t.status === 'encerrado' && t.encerrado_em && t.criado_em)
+      // Tempo médio de resolução total: criado_em → encerrado_em. Só tickets
+      // que não vieram de disparo — o cliente é quem inicia a resposta nesse
+      // caso, então incluí-los infla o tempo sem refletir demora do atendente.
+      const ticketsResolvidos = ticketsHoje.filter((t: any) => t.status === 'encerrado' && t.encerrado_em && t.criado_em && !t.is_disparo)
       const totalResolucao = ticketsResolvidos.reduce((acc: number, t: any) => {
         return acc + (new Date(t.encerrado_em).getTime() - new Date(t.criado_em).getTime())
       }, 0)
@@ -622,8 +633,11 @@ temposHoje: (() => {
 
       return {
         tempoMedioEspera: formatMs(tempoMedioEspera),
+        tempoMedioEsperaMs: tempoMedioEspera,
         tempoMedioResposta: formatMs(tempoMedioResolucao),
+        tempoMedioRespostaMs: tempoMedioResolucao,
         tempoMedioPrimeiraResposta: formatMs(tempoMedio1aResp),
+        tempoMedioPrimeiraRespostaMs: tempoMedio1aResp,
         tempoMedioAtendimento: formatMs(tempoMedioAtend),
       }
     })(),
@@ -646,19 +660,23 @@ temposHoje: (() => {
 // A ORDEM é o que o empacotador usa para montar o arranjo padrão. Mudar aqui
 // muda o padrão; por isso ela segue a leitura da tela, e não a ordem em que os
 // cards foram criados.
+// 'statusAtendentes' vem antes de 'atendimentoHoje' de propósito: o
+// empacotador varre nessa ordem, e 'atendimentoHoje' ocupa a largura toda
+// (12 colunas) — se ele fosse posicionado primeiro, seu vão de linha inteira
+// "sela" todas as colunas na mesma altura e não sobra vão lateral pro card de
+// status encaixar ao lado de 'tempoReal'.
 const MONITOR_CARDS = [
   { id: 'tempoReal', label: 'Atendimentos em tempo real' },
   { id: 'porSubsetor', label: 'Atendimentos em tempo real (2º card)' },
-  { id: 'atendimentoHoje', label: 'Atendimento hoje' },
   { id: 'statusAtendentes', label: 'Status dos atendentes' },
-  { id: 'statusTickets', label: 'Status dos tickets hoje' },
+  { id: 'atendimentoHoje', label: 'Atendimento hoje' },
 ] as const
 
 /**
  * Arranjo padrão do Monitoramento, na largura de 12 colunas.
  *
- *   linha 1   tempoReal (6)          porSubsetor (6)
- *   linha 2   atendimentoHoje (7)  statusAtendentes (2)  statusTickets (3)
+ *   linha 1   tempoReal (6)             porSubsetor (6)
+ *   linha 2   statusAtendentes (2)   atendimentoHoje (10)
  *
  * As duas linhas somam 12 de propósito: é o que faz os cards nascerem lado a
  * lado em vez de empilhados. Combinado com a ordem acima, o empacotador
@@ -668,16 +686,15 @@ const MONITOR_CARDS = [
 const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   tempoReal: { w: 6, h: 6 },
   porSubsetor: { w: 6, h: 6 },
-  atendimentoHoje: { w: 7, h: 3 },
+  atendimentoHoje: { w: 10, h: 3 },
   statusAtendentes: { w: 2, h: 3 },
-  statusTickets: { w: 3, h: 3 },
 }
 
 /**
  * Arranjo padrão sem o segundo card de tempo real.
  *
- *   linha 1   tempoReal (8)        statusAtendentes (4, na mesma altura)
- *   linha 2   atendimentoHoje (7)  statusTickets (5)
+ *   linha 1   tempoReal (8)         statusAtendentes (4, na mesma altura)
+ *   linha 2   atendimentoHoje (12)
  *
  * Não basta esconder o `porSubsetor`: as larguras do caso com dois cards
  * deixariam metade da primeira linha vazia. Aqui o card de tempo real ocupa a
@@ -685,14 +702,18 @@ const MONITOR_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
  */
 const MONITOR_DEFAULT_SIZE_SEM_SEGUNDO: Record<string, { w: number; h: number }> = {
   tempoReal: { w: 8, h: 6 },
-  atendimentoHoje: { w: 7, h: 3 },
+  atendimentoHoje: { w: 12, h: 3 },
   statusAtendentes: { w: 4, h: 6 },
-  statusTickets: { w: 5, h: 3 },
 }
 
-// v2: a v1 nasceu com todos os cards empilhados em x=0. Trocar a chave dá a
-// todo mundo o arranjo corrigido, em vez de exigir "Restaurar padrão".
-const MONITOR_LAYOUT_STORAGE_KEY = 'setor-monitor-layout-v2'
+// v2: a v1 nasceu com todos os cards empilhados em x=0. v3: remove o card
+// 'statusTickets' e redistribui a largura da linha 2. v4: reordena
+// 'statusAtendentes' antes de 'atendimentoHoje' — sem isso o card de largura
+// 12 sela a altura de todas as colunas antes do de status ser posicionado, e
+// ele cai empilhado embaixo em vez de ficar ao lado do card de tempo real.
+// Trocar a chave dá a todo mundo o arranjo corrigido, em vez de exigir
+// "Restaurar padrão".
+const MONITOR_LAYOUT_STORAGE_KEY = 'setor-monitor-layout-v4'
 const MONITOR_COLLAPSED_STORAGE_KEY = 'setor-monitor-collapsed-v1'
 const MONITOR_PAGE_SIZE_STORAGE_KEY = 'setor-monitor-page-size-v1'
 const ATENDENTES_PAGE_SIZE_STORAGE_KEY = 'setor-atendentes-page-size-v1'
@@ -738,10 +759,13 @@ const ROTULO_PROPORCAO: Record<ProporcaoLinha1, string> = {
 }
 
 // Cards selecionáveis no relatório (mostrar/ocultar via "Personalizar")
-const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v1'
+// v2/v7/v2: desativa 'saudeFila', 'maiorEspera', 'rankTipo' e 'matrizTipoTecnico'
+// por padrão e estreita os KPIs — trocar a chave dá a todo mundo o arranjo
+// corrigido, em vez de exigir "Restaurar padrão" (mesma técnica do Monitoramento).
+const RELATORIO_CARDS_STORAGE_KEY = 'setor-relatorio-cards-v2'
 const RELATORIO_COLLAPSED_STORAGE_KEY = 'setor-relatorio-collapsed-v1'
-const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v6'
-const RELATORIO_ORDER_STORAGE_KEY = 'setor-relatorio-order-v1'
+const RELATORIO_LAYOUT_STORAGE_KEY = 'setor-relatorio-layout-v7'
+const RELATORIO_ORDER_STORAGE_KEY = 'setor-relatorio-order-v2'
 
 // Preferência do filtro de subsetor no Monitoramento (aba Atendentes + filtro
 // rápido, que compartilham o mesmo estado). Isolada por colaborador + setor —
@@ -788,8 +812,9 @@ const TOM_SAUDE = {
 function buildDefaultLayout(
   orderedIds: string[],
   sizeMap: Record<string, { w: number; h: number }> = RELATORIO_DEFAULT_SIZE,
+  columns: number = 12,
 ): Layout[] {
-  const COLS = 12
+  const COLS = columns
   const colHeights = new Array(COLS).fill(0)
   return orderedIds.map((id) => {
     const d = sizeMap[id] || { w: 6, h: 4 }
@@ -833,23 +858,21 @@ const RELATORIO_CARD_OPTIONS: { id: string; label: string }[] = [
 // É o layout inicial de todos os setores enquanto o usuário não personalizar.
 // Cards ausentes aqui (ex.: 'canal') começam ocultos. Ordenado por leitura (y, x).
 const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
-  { i: 'kpiPrimeiraResposta', x: 0, y: 0, w: 4, h: 1 },
-  { i: 'kpiResolucao', x: 4, y: 0, w: 4, h: 1 },
-  { i: 'kpiRecebidos', x: 8, y: 0, w: 4, h: 1 },
-  { i: 'kpiResolvidos', x: 0, y: 1, w: 4, h: 1 },
-  { i: 'kpiTaxa', x: 4, y: 1, w: 4, h: 1 },
-  { i: 'kpiNps', x: 8, y: 1, w: 4, h: 1 },
-  { i: 'volume', x: 0, y: 2, w: 6, h: 5 },
-  { i: 'rankTipo', x: 6, y: 2, w: 3, h: 4 },
-  { i: 'nps', x: 9, y: 2, w: 3, h: 4 },
-  { i: 'heatmap', x: 6, y: 6, w: 4, h: 8 },
-  { i: 'status', x: 10, y: 6, w: 2, h: 4 },
-  { i: 'sla', x: 0, y: 7, w: 6, h: 5 },
-  { i: 'roteamento', x: 10, y: 10, w: 2, h: 4 },
-  { i: 'rankAtendente', x: 0, y: 12, w: 6, h: 7 },
-  { i: 'rankPDV', x: 6, y: 14, w: 6, h: 5 },
-  { i: 'matrizTipoTecnico', x: 0, y: 19, w: 12, h: 6 },
-  { i: 'tabela', x: 0, y: 25, w: 12, h: 7 },
+  { i: 'kpiPrimeiraResposta', x: 0, y: 0, w: 2, h: 1 },
+  { i: 'kpiResolucao', x: 2, y: 0, w: 2, h: 1 },
+  { i: 'kpiRecebidos', x: 4, y: 0, w: 2, h: 1 },
+  { i: 'kpiResolvidos', x: 6, y: 0, w: 2, h: 1 },
+  { i: 'kpiTaxa', x: 8, y: 0, w: 2, h: 1 },
+  { i: 'kpiNps', x: 10, y: 0, w: 2, h: 1 },
+  { i: 'volume', x: 0, y: 1, w: 9, h: 5 },
+  { i: 'nps', x: 9, y: 1, w: 3, h: 4 },
+  { i: 'heatmap', x: 6, y: 5, w: 4, h: 8 },
+  { i: 'status', x: 10, y: 5, w: 2, h: 4 },
+  { i: 'sla', x: 0, y: 6, w: 6, h: 5 },
+  { i: 'roteamento', x: 10, y: 9, w: 2, h: 4 },
+  { i: 'rankAtendente', x: 0, y: 11, w: 6, h: 7 },
+  { i: 'rankPDV', x: 6, y: 13, w: 6, h: 5 },
+  { i: 'tabela', x: 0, y: 24, w: 12, h: 7 },
 ]
 
 const RELATORIO_KPI_IDS = new Set([
@@ -886,8 +909,13 @@ function buildResponsiveReportLayout(source: Layout[], columns: number): Layout[
   let rowHeight = 0
 
   return ordered.map((item) => {
+    // KPI fixo em 2 colunas a partir do md: o conteúdo é curto (rótulo + valor
+    // + badge), então meia grade (a conta antiga) sobrava espaço vazio — o
+    // mesmo problema já corrigido no arranjo padrão (lg). Só no xxs (tela bem
+    // estreita) ele ocupa a coluna toda, porque 2 unidades vira menor que o
+    // conteúdo cabe.
     const width = RELATORIO_KPI_IDS.has(item.i)
-      ? columns >= 8 ? Math.ceil(columns / 2) : columns >= 6 ? columns / 2 : columns
+      ? columns >= 4 ? 2 : columns
       : RELATORIO_MEIA_LARGURA_IDS.has(item.i) && columns >= 6
         ? columns / 2
         : columns
@@ -917,12 +945,11 @@ function buildResponsiveReportLayout(source: Layout[], columns: number): Layout[
  *
  * Sai do arranjo padrão mais os cards acrescentados depois dele. Card novo que
  * não entre aqui nasce DESMARCADO: existe na lista do Personalizar e não
- * aparece na tela — foi o que aconteceu com os dois de fila.
+ * aparece na tela — é o caso de 'saudeFila', 'maiorEspera', 'rankTipo' e
+ * 'matrizTipoTecnico' (desativados por padrão a pedido do usuário).
  */
 const RELATORIO_DEFAULT_VISIBLE_IDS = new Set([
   ...RELATORIO_DEFAULT_LAYOUT.map((l) => l.i),
-  'saudeFila',
-  'maiorEspera',
 ])
 // ordem padrão para o painel "Reordenar": ordem de leitura do arranjo + ocultos no fim
 const RELATORIO_DEFAULT_ORDER: string[] = [
@@ -2051,6 +2078,7 @@ function SetorPageInner() {
     () => fetchSetorData(setorId),
     MONITORING_REFRESH_OPTIONS,
   )
+  const horarios = data?.horarios || []
 
   // Relatório separado: recarrega quando filtro de data muda (server-side filtering)
   const { from: dateFrom, to: dateTo } = getDateCutoffs(dateFilter, customRange)
@@ -2236,7 +2264,12 @@ function SetorPageInner() {
   }
   const baseAtendentesStats = data?.atendentesStats || { online: 0, pausa: 0, invisivel: 0 }
   const baseTicketsHoje = data?.ticketsHoje || { perdidos: 0, abandonados: 0, finalizados: 0, fechados: 0 }
-  const baseTemposHoje = data?.temposHoje || { tempoMedioEspera: '00:00:00', tempoMedioResposta: '00:00:00', tempoMedioPrimeiraResposta: '00:00:00', tempoMedioAtendimento: '00:00:00' }
+  const baseTemposHoje = data?.temposHoje || {
+    tempoMedioEspera: '00:00:00', tempoMedioEsperaMs: 0,
+    tempoMedioResposta: '00:00:00', tempoMedioRespostaMs: 0,
+    tempoMedioPrimeiraResposta: '00:00:00', tempoMedioPrimeiraRespostaMs: 0,
+    tempoMedioAtendimento: '00:00:00',
+  }
   const tickets = data?.tickets || []
   const ticketsMonitoramentoHoje = data?.ticketsMonitoramentoHoje || []
   const atendentes = data?.atendentes || []
@@ -2377,6 +2410,13 @@ function SetorPageInner() {
     [ticketsRelatorioFiltrados, searchCliente],
   )
 
+  // Fila sempre mede só o tempo em que o setor podia atender. Reutilizar o
+  // mesmo medidor no Monitoramento e nos Relatórios impede números conflitantes.
+  const expediente = useMemo(
+    () => criarMedidorDeExpediente(horarios as any[]),
+    [horarios],
+  )
+
   /**
    * Fila do período — calculada sobre `ticketsRelatorio`, que já respeita
    * período, atendente, canal e subsetor. Sem consulta nova.
@@ -2385,8 +2425,8 @@ function SetorPageInner() {
    * corre com o relógio.
    */
   const resumoFilaPeriodo = useMemo(
-    () => resumirFila(ticketsRelatorio, { agoraMs: monitoringTick }),
-    [ticketsRelatorio, monitoringTick],
+    () => resumirFila(ticketsRelatorio, { agoraMs: monitoringTick, expediente }),
+    [ticketsRelatorio, monitoringTick, expediente],
   )
 
   // KPIs numéricos do período atual e do anterior (para o Δ%)
@@ -2714,7 +2754,6 @@ function SetorPageInner() {
     } catch {}
   }
 
-  const horarios = data?.horarios || []
   const permissoes = data?.permissoes || []
   const pausasData = data?.pausas || []
 
@@ -2765,12 +2804,40 @@ function SetorPageInner() {
    * subsetor.
    */
   const filaDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    resumirFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick })
-  ), [ticketsHojePorTag, monitoringTick])
+    resumirFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick, expediente })
+  ), [ticketsHojePorTag, monitoringTick, expediente])
 
+  /**
+   * Destino do ticket sem subsetor — no ServiceDesk, o Suporte, que é para onde
+   * vai o trabalho não classificado. Mesma regra que a distribuição usa, para o
+   * número contar a fila de quem de fato atende esses tickets em vez de abrir
+   * uma fila fantasma à parte. Sem padrão seguro no cadastro, devolve `null` e
+   * eles seguem contando separados.
+   */
+  const subsetorPadrao = useMemo(() => escolherSubsetorPadrao(
+    subsetores as any[],
+    new Set(atendentes.flatMap((a: any) => a.subsetor_ids || [])),
+  ), [subsetores, atendentes])
+
+  /** A qual FILA o ticket pertence, para contar episódios. */
+  const filaDoTicket = useCallback(
+    (ticket: any) => ticket.subsetor_id || subsetorPadrao || SEM_SUBSETOR_ID,
+    [subsetorPadrao],
+  )
+
+  /**
+   * Soma fila a fila em vez de medir tudo numa linha do tempo só: cada subsetor
+   * tem atendentes próprios, e duas filas simultâneas são dois episódios. Ver
+   * `somarEpisodiosPorFila` — na linha única o total do ServiceDesk caía de 80
+   * para 31 porque a fila de um subsetor cobria o vazio do outro.
+   */
   const episodiosDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    contarEpisodiosDeFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick })
-  ), [ticketsHojePorTag, monitoringTick])
+    somarEpisodiosPorFila(
+      ticketsHojePorTag.filter(aceitaTicket),
+      filaDoTicket,
+      { agoraMs: monitoringTick, expediente },
+    )
+  ), [ticketsHojePorTag, filaDoTicket, monitoringTick, expediente])
 
   const filaCardPrincipal = useMemo(() => filaDeHoje((t: any) => (
     subsetorCardPrincipal === TODOS_SUBSETORES
@@ -2783,15 +2850,18 @@ function SetorPageInner() {
     [filaDeHoje, subsetorCardSecundario],
   )
 
+  // O recorte de um subsetor usa `filaDoTicket`, não `subsetor_id` cru: senão
+  // "Todos" (onde o ticket sem subsetor entra no Suporte) deixaria de ser a
+  // soma dos cards individuais, que é justamente o que o gestor confere.
   const episodiosPrincipal = useMemo(() => episodiosDeHoje((t: any) => (
     subsetorCardPrincipal === TODOS_SUBSETORES
       ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
-      : t.subsetor_id === subsetorCardPrincipal
-  )), [episodiosDeHoje, subsetorCardPrincipal, subsetorFilter])
+      : filaDoTicket(t) === subsetorCardPrincipal
+  )), [episodiosDeHoje, filaDoTicket, subsetorCardPrincipal, subsetorFilter])
 
   const episodiosSecundario = useMemo(
-    () => episodiosDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
-    [episodiosDeHoje, subsetorCardSecundario],
+    () => episodiosDeHoje((t: any) => filaDoTicket(t) === subsetorCardSecundario),
+    [episodiosDeHoje, filaDoTicket, subsetorCardSecundario],
   )
 
   const ticketsHoje = useMemo(() => {
@@ -2832,15 +2902,21 @@ function SetorPageInner() {
     }
 
     const isClosed = (ticket: any) => ticket.status === 'encerrado'
+    // Exclui disparo: o cliente é quem inicia a resposta nesse caso, então
+    // incluí-lo infla o tempo sem refletir demora do atendente.
+    const isClosedNaoDisparo = (ticket: any) => isClosed(ticket) && !ticket.is_disparo
+
+    const tempoMedioEsperaMs = averageDuration('criado_em', 'atribuido_em')
+    const tempoMedioRespostaMs = averageDuration('criado_em', 'encerrado_em', isClosedNaoDisparo)
+    const tempoMedioPrimeiraRespostaMs = averageDuration('criado_em', 'primeira_resposta_em')
 
     return {
-      tempoMedioEspera: formatMonitoringTime(averageDuration('criado_em', 'atribuido_em')),
-      tempoMedioResposta: formatMonitoringTime(
-        averageDuration('criado_em', 'encerrado_em', isClosed),
-      ),
-      tempoMedioPrimeiraResposta: formatMonitoringTime(
-        averageDuration('criado_em', 'primeira_resposta_em'),
-      ),
+      tempoMedioEspera: formatMonitoringTime(tempoMedioEsperaMs),
+      tempoMedioEsperaMs,
+      tempoMedioResposta: formatMonitoringTime(tempoMedioRespostaMs),
+      tempoMedioRespostaMs,
+      tempoMedioPrimeiraResposta: formatMonitoringTime(tempoMedioPrimeiraRespostaMs),
+      tempoMedioPrimeiraRespostaMs,
       tempoMedioAtendimento: formatMonitoringTime(
         averageDuration('atribuido_em', 'encerrado_em', isClosed),
       ),
@@ -3498,6 +3574,43 @@ function SetorPageInner() {
     [monitorBaseLayout, monitorCollapsed],
   )
 
+  /**
+   * Só o `lg` (12 colunas) tem arranjo próprio — sem isto, react-grid-layout
+   * reaproveita os mesmos x/w em telas menores (não redimensiona), e com
+   * `tempoReal`+`porSubsetor` a 6 cada, w:6 já fecha a coluna toda de um
+   * grid de 6 colunas: os dois cards empilham em vez de continuar lado a
+   * lado. Escala a largura pela razão de colunas e reempacota com o mesmo
+   * "vão mais alto" do arranjo padrão do relatório.
+   */
+  const monitorResponsiveLayouts = useMemo(() => {
+    const ids = monitorEffectiveLayout.map((l) => l.i)
+    const temDoisCardsDeTempoReal = ids.includes('porSubsetor')
+    const escalar = (columns: number, largaTodaId: string[] = []) => Object.fromEntries(
+      monitorEffectiveLayout.map((l) => [
+        l.i,
+        {
+          w: largaTodaId.includes(l.i) ? columns : Math.max(1, Math.min(columns, Math.round(l.w * columns / 12))),
+          h: l.h,
+        },
+      ]),
+    )
+    return {
+      lg: monitorEffectiveLayout,
+      md: buildDefaultLayout(ids, escalar(10), 10),
+      // Abaixo de ~1000px, o card pareado de tempo real fica estreito demais
+      // pro conteúdo interno (que já reflui pra coluna única via @container
+      // do próprio card) caber na altura fixa da grade sem rolagem interna
+      // — em vez de espremer os dois lado a lado, cada um vira linha cheia.
+      sm: buildDefaultLayout(
+        ids,
+        escalar(6, temDoisCardsDeTempoReal ? ['tempoReal', 'porSubsetor'] : []),
+        6,
+      ),
+      xs: buildDefaultLayout(ids, Object.fromEntries(monitorEffectiveLayout.map((l) => [l.i, { w: 4, h: l.h }])), 4),
+      xxs: buildDefaultLayout(ids, Object.fromEntries(monitorEffectiveLayout.map((l) => [l.i, { w: 2, h: l.h }])), 2),
+    }
+  }, [monitorEffectiveLayout])
+
   const handleMonitorLayoutChange = (atual: Layout[]) => {
     // Mesma armadilha do relatório: a grade avisa a posição na montagem, antes
     // de o storage ter sido lido. Gravar aí apagava o arranjo do gestor.
@@ -3704,7 +3817,6 @@ function SetorPageInner() {
       switch (activeTicketsSort.key) {
         case 'status': return ticket.statusMs
         case 'queueTime': return ticket.tempoNaFilaMs
-        case 'firstResponse': return ticket.tempoPrimeiraRespostaMs
         case 'serviceTime': return ticket.tempoAtendimentoMs
         case 'ticket': return toSortableNumber(ticket.numero)
         case 'contact': return ticket.contato
@@ -5378,48 +5490,48 @@ const saveConfig = async () => {
   return (
     <div className="flex h-screen flex-col bg-background">
       {/* Top Header - Simplified without tabs */}
-      <header className="flex h-14 items-center justify-between border-b glass-header px-4">
-        <div className="flex items-center gap-4">
+      <header className="flex h-12 items-center justify-between border-b glass-header px-3">
+        <div className="flex items-center gap-3">
           <button
             onClick={handleBackClick}
-            className="flex items-center gap-3 rounded-md text-foreground hover:text-primary transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex items-center gap-2.5 rounded-md text-foreground hover:text-primary transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <div className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+              "flex h-7 w-7 items-center justify-center rounded-lg transition-colors",
               isNavigatingBack ? "bg-primary/20" : "hover:bg-muted"
             )}>
               {isNavigatingBack ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <ArrowLeft className="h-4 w-4" />
+                <ArrowLeft className="h-3.5 w-3.5" />
               )}
             </div>
             <div className="flex items-center gap-2">
-              <div 
-                className="flex h-8 w-8 items-center justify-center rounded-lg"
+              <div
+                className="flex h-7 w-7 items-center justify-center rounded-lg"
                 style={{ backgroundColor: setor?.cor || '#3B82F6' }}
               >
-                <SetorIcon className="h-4 w-4 text-white" />
+                <SetorIcon className="h-3.5 w-3.5 text-white" />
               </div>
               {isLoading ? (
-                <Skeleton className="h-5 w-32" />
+                <Skeleton className="h-4 w-28" />
               ) : (
-                <span className="font-semibold">{setor?.nome || 'Setor'}</span>
+                <span className="text-sm font-semibold">{setor?.nome || 'Setor'}</span>
               )}
             </div>
           </button>
         </div>
 
         {/* Theme Toggle & User Menu */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {/* Send Notification Button */}
           <Button
             variant="outline"
             size="sm"
             onClick={() => setShowNotificationModal(true)}
-            className="gap-2"
+            className="h-7 gap-1.5 text-xs"
           >
-            <Send className="h-4 w-4" />
+            <Send className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Enviar Aviso</span>
           </Button>
 
@@ -5427,17 +5539,17 @@ const saveConfig = async () => {
           <kbd className="kbd hidden md:inline-flex" aria-hidden="true">Ctrl K</kbd>
 
           <ThemeToggle />
-          
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 rounded-full"
+                className="h-7 w-7 rounded-full"
                 aria-label="Abrir menu do usuário"
                 title="Menu do usuário"
               >
-                <User className="h-4 w-4" />
+                <User className="h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -5453,8 +5565,8 @@ const saveConfig = async () => {
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-64 shrink-0 overflow-y-auto border-r glass-panel p-4">
-          <nav className="space-y-1">
+        <aside className="w-52 shrink-0 overflow-y-auto border-r glass-panel p-2.5">
+          <nav className="space-y-0.5">
             {sidebarItems.filter((item) => !(item as any).whatsappOnly || configForm.canal !== 'discord').map((item) => {
               const Icon = item.icon
               const isActive = activeSection === item.id
@@ -5463,16 +5575,16 @@ const saveConfig = async () => {
                   key={item.id}
                   onClick={() => setActiveSection(item.id)}
                   className={cn(
-                    'flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left text-sm transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     isActive
                       ? 'bg-primary/10 text-primary'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                   )}
                 >
-                  <Icon className="mt-0.5 h-4 w-4 shrink-0" />
-                  <div>
-                    <p className={cn('font-medium', !isActive && 'text-foreground')}>{item.name}</p>
-                    <p className="text-xs text-muted-foreground">{item.description}</p>
+                  <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <div className="min-w-0">
+                    <p className={cn('font-medium leading-tight', !isActive && 'text-foreground')}>{item.name}</p>
+                    <p className="text-[11px] leading-tight text-muted-foreground">{item.description}</p>
                   </div>
                 </button>
               )
@@ -5481,14 +5593,14 @@ const saveConfig = async () => {
         </aside>
 
         {/* Content */}
-        <main className="flex-1 overflow-y-auto bg-muted/30 p-6">
+        <main className="flex-1 overflow-y-auto bg-muted/30 p-4">
           {/* Monitoramento Section */}
           {activeSection === 'monitoramento' && (
-            <div className="space-y-6 anim-rise">
+            <div className="space-y-4 anim-rise">
               {/* Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <h1 className="text-2xl font-semibold tracking-tight">Monitoramento de atendimento</h1>
+                  <h1 className="text-xl font-semibold tracking-tight">Monitoramento de atendimento</h1>
                   <div className="flex items-center gap-1.5">
                     <span className="signal-dot" aria-hidden="true" />
                     <span className="text-xs font-medium text-muted-foreground">Ao vivo</span>
@@ -5506,9 +5618,9 @@ const saveConfig = async () => {
                     <Button
                       variant={monitorEditMode ? 'default' : 'outline'}
                       size="sm"
-                      className="h-9 gap-1.5"
+                      className="h-7 gap-1.5"
                     >
-                      <Settings className="h-3.5 w-3.5" />
+                      <Settings className="h-3 w-3" />
                       Personalizar
                     </Button>
                   </PopoverTrigger>
@@ -5522,7 +5634,7 @@ const saveConfig = async () => {
                         onClick={resetarLayoutMonitor}
                         title="Voltar ao arranjo padrão: posições, tamanhos e largura"
                       >
-                        <RotateCcw className="h-3.5 w-3.5" />
+                        <RotateCcw className="h-3 w-3" />
                         Restaurar padrão
                       </Button>
                     </div>
@@ -5648,11 +5760,11 @@ const saveConfig = async () => {
               )}
 
               <ResponsiveReactGridLayout
-                layouts={{ lg: monitorEffectiveLayout }}
+                layouts={monitorResponsiveLayouts}
                 breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
                 cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-                rowHeight={64}
-                margin={[16, 16]}
+                rowHeight={52}
+                margin={[12, 12]}
                 isDraggable={monitorEditMode}
                 isResizable={monitorEditMode}
                 draggableHandle=".report-drag-handle"
@@ -5679,8 +5791,8 @@ const saveConfig = async () => {
                 <div key="statusAtendentes" className="overflow-hidden">
                 <ReportWidget {...monitorWidget('statusAtendentes')}>
                 {/* Status dos atendentes */}
-                <Card className="glass-card-elevated flex flex-col rounded-lg">
-                  <CardHeader className="pb-2 flex flex-row items-center justify-between">
+                <Card className="glass-card-elevated flex flex-col gap-3 rounded-lg py-3">
+                  <CardHeader className="pb-1.5 px-3 flex flex-row items-center justify-between">
                     <CardTitle className="text-sm font-medium text-muted-foreground">
                       Status dos atendentes
                     </CardTitle>
@@ -5693,24 +5805,24 @@ const saveConfig = async () => {
                       Ver detalhes
                     </Button>
                   </CardHeader>
-                  <CardContent className="flex flex-1 items-center">
-                    <div className="flex w-full justify-around gap-2 text-center">
+                  <CardContent className="flex flex-1 items-center px-3">
+                    <div className="flex w-full justify-around gap-1.5 text-center">
                       <div className="space-y-1">
-                        <p className="text-2xl font-bold text-green-500 tabular-nums">{atendentesStats.online}</p>
+                        <p className="text-xl font-bold text-green-500 tabular-nums">{atendentesStats.online}</p>
                         <div className="flex items-center justify-center gap-1">
                           <span className="h-2 w-2 rounded-full bg-green-500" />
                           <p className="text-xs text-muted-foreground">Online</p>
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-2xl font-bold text-amber-500 tabular-nums">{atendentesStats.pausa}</p>
+                        <p className="text-xl font-bold text-amber-500 tabular-nums">{atendentesStats.pausa}</p>
                         <div className="flex items-center justify-center gap-1">
                           <span className="h-2 w-2 rounded-full bg-yellow-500" />
                           <p className="text-xs text-muted-foreground">Pausa</p>
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-2xl font-bold text-muted-foreground tabular-nums">{atendentesStats.invisivel}</p>
+                        <p className="text-xl font-bold text-muted-foreground tabular-nums">{atendentesStats.invisivel}</p>
                         <div className="flex items-center justify-center gap-1">
                           <span className="h-2 w-2 rounded-full bg-gray-400" />
                           <p className="text-xs text-muted-foreground">Offline</p>
@@ -5748,28 +5860,28 @@ const saveConfig = async () => {
                 <div key="atendimentoHoje" className="overflow-hidden">
                 <ReportWidget {...monitorWidget('atendimentoHoje')}>
               {/* Atendimento hoje */}
-              <Card className="glass-card-elevated h-full overflow-auto rounded-lg">
-                <CardHeader className="pb-2">
+              <Card className="glass-card-elevated h-full overflow-auto rounded-lg gap-3 py-3">
+                <CardHeader className="pb-1.5 px-3">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
                     Atendimento hoje
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-4 gap-2 text-center">
+                <CardContent className="px-3">
+                  <div className="grid grid-cols-4 gap-1.5 text-center">
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioEspera}</p>
+                      <p className={cn('text-lg font-bold tabular-nums', corTempoMedioLimiar(temposHoje.tempoMedioEsperaMs))}>{temposHoje.tempoMedioEspera}</p>
                       <p className="text-xs text-muted-foreground">Tempo méd. espera</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioResposta}</p>
+                      <p className="text-lg font-bold text-foreground tabular-nums">{temposHoje.tempoMedioResposta}</p>
                       <p className="text-xs text-muted-foreground">Tempo méd. resposta</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioPrimeiraResposta}</p>
+                      <p className={cn('text-lg font-bold tabular-nums', corTempoMedioLimiar(temposHoje.tempoMedioPrimeiraRespostaMs))}>{temposHoje.tempoMedioPrimeiraResposta}</p>
                       <p className="text-xs text-muted-foreground">Tempo méd. 1ª resp.</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-xl font-bold text-foreground tabular-nums">{temposHoje.tempoMedioAtendimento}</p>
+                      <p className="text-lg font-bold text-foreground tabular-nums">{temposHoje.tempoMedioAtendimento}</p>
                       <p className="text-xs text-muted-foreground">Tempo méd. atend.</p>
                     </div>
                   </div>
@@ -5779,65 +5891,13 @@ const saveConfig = async () => {
                 </ReportWidget>
                 </div>
 
-                <div key="statusTickets" className="overflow-hidden">
-                <ReportWidget {...monitorWidget('statusTickets')}>
-
-
-{/* Status dos tickets hoje */}
-              <Card className="@container glass-card-elevated flex h-full flex-col gap-2 overflow-auto rounded-lg py-5">
-                <CardHeader className="flex flex-row items-center justify-between gap-2 pb-0">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Resultado dos tickets
-                  </CardTitle>
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                    Hoje
-                  </span>
-                </CardHeader>
-                <CardContent className="flex flex-1 pt-0">
-                  <div className="grid w-full grid-cols-1 gap-3 @sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.8fr)]">
-                    <section className="flex min-h-20 flex-col justify-between rounded-lg border border-green-500/20 bg-green-500/10 p-3">
-                      <div className="flex items-center gap-2 text-xs font-medium text-green-600 dark:text-green-400">
-                        <span className="flex size-6 items-center justify-center rounded-full bg-green-500/15">
-                          <CheckCircle className="size-3.5" aria-hidden="true" />
-                        </span>
-                        Concluídos
-                      </div>
-                      <div>
-                        <p className="text-3xl font-bold tracking-tight text-foreground tabular-nums">
-                          {ticketsHoje.finalizados}
-                        </p>
-                        <p className="text-xs text-muted-foreground">atendimentos finalizados</p>
-                      </div>
-                    </section>
-
-                    <div className="grid grid-cols-2 gap-2 @sm:grid-cols-1">
-                      <div className="rounded-lg border border-red-500/15 bg-red-500/5 px-3 py-2">
-                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          <CircleOff className="size-3.5 text-red-500" aria-hidden="true" />
-                          Perdidos
-                        </div>
-                        <p className="mt-1 text-xl font-bold text-red-500 tabular-nums">{ticketsHoje.perdidos}</p>
-                      </div>
-                      <div className="rounded-lg border border-orange-500/15 bg-orange-500/5 px-3 py-2">
-                        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          <AlertCircle className="size-3.5 text-orange-500" aria-hidden="true" />
-                          Abandonados
-                        </div>
-                        <p className="mt-1 text-xl font-bold text-orange-500 tabular-nums">{ticketsHoje.abandonados}</p>
-                      </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-                </ReportWidget>
-                </div>
               </ResponsiveReactGridLayout>
 
             {/* Monitoramento Detalhado - Blip Style */}
-            <Card className="glass-card-elevated rounded-lg">
-              <CardHeader className="pb-0">
+            <Card className="glass-card-elevated rounded-lg gap-4 py-4">
+              <CardHeader className="px-4 pb-0">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg">Monitoramento detalhado</CardTitle>
+                  <CardTitle className="text-base">Monitoramento detalhado</CardTitle>
                   <div className="flex items-center gap-2">
                     <MultiSelectFilter
                       icon={User}
@@ -5855,7 +5915,7 @@ const saveConfig = async () => {
                       searchable
                     />
                     <div className="relative">
-                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                       <Input
                         placeholder="Buscar pelo Nº do ticket"
                         value={searchTerm}
@@ -5863,15 +5923,15 @@ const saveConfig = async () => {
                           setSearchTerm(e.target.value)
                           setMonitoringPage(1)
                         }}
-                        className="w-52 pl-9 h-9"
+                        className="w-52 pl-9 h-8"
                       />
                     </div>
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="pt-4">
+              <CardContent className="px-4 pt-3">
                 {/* Tabs */}
-                <div className="border-b border-border mb-4">
+                <div className="border-b border-border mb-3">
                   <div className="flex gap-0">
                     <button
                       onClick={() => {
@@ -5879,7 +5939,7 @@ const saveConfig = async () => {
                         setMonitoringPage(1)
                       }}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
+                        "px-3 py-2 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'em-andamento'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -5893,7 +5953,7 @@ const saveConfig = async () => {
                         setMonitoringPage(1)
                       }}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
+                        "px-3 py-2 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'aguardando'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -5912,7 +5972,7 @@ const saveConfig = async () => {
                         setMonitoringPage(1)
                       }}
                       className={cn(
-                        "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
+                        "px-3 py-2 text-sm font-medium border-b-2 transition-colors -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
                         activeTab === 'atendentes'
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30"
@@ -5942,12 +6002,6 @@ const saveConfig = async () => {
                               active={activeTicketsSort.key === 'queueTime'}
                               direction={activeTicketsSort.direction}
                               onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'queueTime'))}
-                            />
-                            <SortableTableHead
-                              label="1ª Resposta"
-                              active={activeTicketsSort.key === 'firstResponse'}
-                              direction={activeTicketsSort.direction}
-                              onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'firstResponse'))}
                             />
                             <SortableTableHead
                               label="Tempos atuais"
@@ -5995,7 +6049,6 @@ const saveConfig = async () => {
                                 <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-20" /></TableCell>
-                                <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-32" /></TableCell>
                                 <TableCell><Skeleton className="h-5 w-16" /></TableCell>
@@ -6006,7 +6059,7 @@ const saveConfig = async () => {
                             ))
                           ) : ticketsEmAndamento.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={10} className="h-32 text-center">
+                              <TableCell colSpan={9} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
                                   <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendimento no momento</p>
@@ -6031,16 +6084,6 @@ const saveConfig = async () => {
                                     </Badge>
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">{ticket.tempoNaFila}</TableCell>
-                                  <TableCell>
-                                    {aguardandoResposta ? (
-                                      <Badge variant="outline" className="bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-200 border-yellow-300 dark:border-yellow-700 text-[10px]">
-                                        <Clock className="mr-1 h-3 w-3" />
-                                        Aguardando...
-                                      </Badge>
-                                    ) : (
-                                      <span className="text-sm tabular-nums text-foreground">{ticket.tempoPrimeiraResposta || '0min'}</span>
-                                    )}
-                                  </TableCell>
                                   <TableCell className="text-sm tabular-nums text-foreground">
                                     <p>Atendente: {ticket.tempoAtendimento}</p>
                                     <p className="text-xs text-muted-foreground">Setor: {ticket.tempoNoSetor}</p>
@@ -6068,7 +6111,7 @@ const saveConfig = async () => {
                                       aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
                                       title="Abrir conversa"
                                     >
-                                      <MessageCircle className="h-4 w-4" />
+                                      <MessageCircle className="h-3.5 w-3.5" />
                                     </Button>
                                   </TableCell>
                                 </TableRow>
@@ -6199,7 +6242,7 @@ const saveConfig = async () => {
                                     aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
                                     title="Abrir conversa"
                                   >
-                                    <MessageCircle className="h-4 w-4" />
+                                    <MessageCircle className="h-3.5 w-3.5" />
                                   </Button>
                                 </TableCell>
                               </TableRow>
@@ -6343,8 +6386,8 @@ const saveConfig = async () => {
                                           title="Alterar status"
                                         >
                                           {isChanging
-                                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                            : <MoreHorizontal className="h-3.5 w-3.5" />
+                                            ? <Loader2 className="h-3 w-3 animate-spin" />
+                                            : <MoreHorizontal className="h-3 w-3" />
                                           }
                                         </Button>
                                       </DropdownMenuTrigger>
@@ -6354,7 +6397,7 @@ const saveConfig = async () => {
                                           onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
                                           className="gap-2"
                                         >
-                                          <CircleCheck className="h-4 w-4 text-green-500" />
+                                          <CircleCheck className="h-3.5 w-3.5 text-green-500" />
                                           Marcar como Online
                                         </DropdownMenuItem>
                                         <DropdownMenuItem
@@ -6362,7 +6405,7 @@ const saveConfig = async () => {
                                           onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
                                           className="gap-2"
                                         >
-                                          <CircleOff className="h-4 w-4 text-muted-foreground" />
+                                          <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
                                           Marcar como Offline
                                         </DropdownMenuItem>
                                       </DropdownMenuContent>
@@ -6381,7 +6424,7 @@ const saveConfig = async () => {
                 </div>
 
                 {/* Pagination */}
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4 mt-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 mt-3">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <span>Resultados por página:</span>
                     <Select
@@ -6393,7 +6436,7 @@ const saveConfig = async () => {
                         MONITOR_PAGE_SIZE_STORAGE_KEY,
                       )}
                     >
-                      <SelectTrigger className="h-8 w-[4.5rem]" aria-label="Resultados por página do monitoramento">
+                      <SelectTrigger className="h-7 w-[4.5rem]" aria-label="Resultados por página do monitoramento">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -6417,7 +6460,7 @@ const saveConfig = async () => {
                         aria-label="Primeira página"
                         title="Primeira página"
                       >
-                        <ChevronFirst className="h-4 w-4" />
+                        <ChevronFirst className="h-3.5 w-3.5" />
                       </Button>
                       <Button
                         variant="ghost"
@@ -6428,7 +6471,7 @@ const saveConfig = async () => {
                         aria-label="Página anterior"
                         title="Página anterior"
                       >
-                        <ChevronLeft className="h-4 w-4" />
+                        <ChevronLeft className="h-3.5 w-3.5" />
                       </Button>
                       <span className="px-2" aria-label={`Página ${safeMonitoringPage} de ${monitoringTotalPages}`}>
                         {safeMonitoringPage}
@@ -6442,7 +6485,7 @@ const saveConfig = async () => {
                         aria-label="Próxima página"
                         title="Próxima página"
                       >
-                        <ChevronRight className="h-4 w-4" />
+                        <ChevronRight className="h-3.5 w-3.5" />
                       </Button>
                       <Button
                         variant="ghost"
@@ -6453,7 +6496,7 @@ const saveConfig = async () => {
                         aria-label="Última página"
                         title="Última página"
                       >
-                        <ChevronLast className="h-4 w-4" />
+                        <ChevronLast className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </div>
@@ -6466,17 +6509,17 @@ const saveConfig = async () => {
 
         {/* Relatórios Section */}
         {activeSection === 'relatorios' && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             <div className="flex items-center justify-between anim-rise">
               <div>
-                <h1 className="text-2xl font-semibold tracking-tight">Relatorios de Atendimento</h1>
+                <h1 className="text-xl font-semibold tracking-tight">Relatorios de Atendimento</h1>
               </div>
               <div className="flex items-center gap-2">
                 {editMode && (
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button variant="outline" size="sm" className="gap-2">
-                      <ArrowUpDown className="h-4 w-4" />
+                      <ArrowUpDown className="h-3.5 w-3.5" />
                       Reordenar
                     </Button>
                   </PopoverTrigger>
@@ -6490,7 +6533,7 @@ const saveConfig = async () => {
                         onClick={resetRelatorioOrder}
                         title="Voltar à ordem padrão"
                       >
-                        <RotateCcw className="h-3.5 w-3.5" />
+                        <RotateCcw className="h-3 w-3" />
                         Restaurar padrão
                       </Button>
                     </div>
@@ -6516,7 +6559,7 @@ const saveConfig = async () => {
                                 aria-label={`Subir ${opt.label}`}
                                 title="Subir"
                               >
-                                <ArrowUp className="h-3.5 w-3.5" />
+                                <ArrowUp className="h-3 w-3" />
                               </Button>
                               <Button
                                 variant="ghost"
@@ -6527,7 +6570,7 @@ const saveConfig = async () => {
                                 aria-label={`Descer ${opt.label}`}
                                 title="Descer"
                               >
-                                <ArrowDown className="h-3.5 w-3.5" />
+                                <ArrowDown className="h-3 w-3" />
                               </Button>
                             </div>
                           )
@@ -6542,7 +6585,7 @@ const saveConfig = async () => {
                     <Popover>
                       <PopoverTrigger asChild>
                         <Button variant="outline" size="sm" className="gap-2">
-                          <Eye className="h-4 w-4" />
+                          <Eye className="h-3.5 w-3.5" />
                           Mostrar/ocultar
                         </Button>
                       </PopoverTrigger>
@@ -6560,20 +6603,20 @@ const saveConfig = async () => {
                       </PopoverContent>
                     </Popover>
                     <Button size="sm" className="gap-2" onClick={() => setEditMode(false)}>
-                      <Check className="h-4 w-4" />
+                      <Check className="h-3.5 w-3.5" />
                       Concluir
                     </Button>
                   </>
                 ) : (
                   <Button variant="outline" size="sm" className="gap-2" onClick={() => setEditMode(true)}>
-                    <Settings className="h-4 w-4" />
+                    <Settings className="h-3.5 w-3.5" />
                     Personalizar
                   </Button>
                 )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="outline" size="sm" className="gap-2" disabled={ticketsRelatorio.length === 0}>
-                      <Download className="h-4 w-4" />
+                      <Download className="h-3.5 w-3.5" />
                       Exportar
                     </Button>
                   </DropdownMenuTrigger>
@@ -6661,7 +6704,7 @@ const saveConfig = async () => {
               layouts={reportResponsiveLayouts}
               breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
               cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-              rowHeight={72}
+              rowHeight={58}
               margin={[12, 12]}
               isDraggable={editMode}
               isResizable={editMode}
@@ -6675,17 +6718,17 @@ const saveConfig = async () => {
             <div key="kpiPrimeiraResposta" className="overflow-hidden">
             <ReportWidget {...wprops('kpiPrimeiraResposta')}>
               <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
-                <CardContent className="flex h-full items-center p-2">
+                <CardContent className="flex h-full items-center px-2 py-1.5">
                   <div className="flex w-full items-center justify-between">
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <p className="text-xs text-muted-foreground">Tempo médio 1a resposta</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.tempoMedioPrimeiraResposta}</p>
+                        <p className="text-base font-semibold tracking-tight tabular-nums lg:text-lg">{relatorioStats.tempoMedioPrimeiraResposta}</p>
                         <DeltaBadge current={kpiAtual.tmaPrimeiraRespostaMs} previous={kpiAnterior?.tmaPrimeiraRespostaMs} invert />
                       </div>
                     </div>
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-50 dark:bg-blue-950/30">
-                      <Timer aria-hidden="true" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-50 dark:bg-blue-950/30">
+                      <Timer aria-hidden="true" className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6698,17 +6741,17 @@ const saveConfig = async () => {
             <div key="kpiResolucao" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolucao')}>
               <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
-                <CardContent className="flex h-full items-center p-2">
+                <CardContent className="flex h-full items-center px-2 py-1.5">
                   <div className="flex w-full items-center justify-between">
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <p className="text-xs text-muted-foreground">Tempo médio resolução</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.tempoMedioResolucao}</p>
+                        <p className="text-base font-semibold tracking-tight tabular-nums lg:text-lg">{relatorioStats.tempoMedioResolucao}</p>
                         <DeltaBadge current={kpiAtual.tmaResolucaoMs} previous={kpiAnterior?.tmaResolucaoMs} invert />
                       </div>
                     </div>
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-green-50 dark:bg-green-950/30">
-                      <CheckCircle aria-hidden="true" className="h-4 w-4 text-green-600 dark:text-green-400" />
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-green-50 dark:bg-green-950/30">
+                      <CheckCircle aria-hidden="true" className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6721,17 +6764,17 @@ const saveConfig = async () => {
             <div key="kpiRecebidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiRecebidos')}>
               <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
-                <CardContent className="flex h-full items-center p-2">
+                <CardContent className="flex h-full items-center px-2 py-1.5">
                   <div className="flex w-full items-center justify-between">
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <p className="text-xs text-muted-foreground">Tickets recebidos</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.totalRecebidos}</p>
+                        <p className="text-base font-semibold tracking-tight tabular-nums lg:text-lg">{relatorioStats.totalRecebidos}</p>
                         <DeltaBadge current={kpiAtual.recebidos} previous={kpiAnterior?.recebidos} />
                       </div>
                     </div>
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-amber-50 dark:bg-amber-950/30">
-                      <TrendingUp aria-hidden="true" className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-50 dark:bg-amber-950/30">
+                      <TrendingUp aria-hidden="true" className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6744,17 +6787,17 @@ const saveConfig = async () => {
             <div key="kpiResolvidos" className="overflow-hidden">
             <ReportWidget {...wprops('kpiResolvidos')}>
               <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
-                <CardContent className="flex h-full items-center p-2">
+                <CardContent className="flex h-full items-center px-2 py-1.5">
                   <div className="flex w-full items-center justify-between">
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <p className="text-xs text-muted-foreground">Tickets resolvidos</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.totalResolvidos}</p>
+                        <p className="text-base font-semibold tracking-tight tabular-nums lg:text-lg">{relatorioStats.totalResolvidos}</p>
                         <DeltaBadge current={kpiAtual.resolvidos} previous={kpiAnterior?.resolvidos} />
                       </div>
                     </div>
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-purple-50 dark:bg-purple-950/30">
-                      <UserCheck aria-hidden="true" className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-purple-50 dark:bg-purple-950/30">
+                      <UserCheck aria-hidden="true" className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6767,17 +6810,17 @@ const saveConfig = async () => {
             <div key="kpiTaxa" className="overflow-hidden">
             <ReportWidget {...wprops('kpiTaxa')}>
               <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
-                <CardContent className="flex h-full items-center p-2">
+                <CardContent className="flex h-full items-center px-2 py-1.5">
                   <div className="flex w-full items-center justify-between">
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <p className="text-xs text-muted-foreground">Taxa de resolução</p>
                       <div className="flex items-baseline gap-2">
-                        <p className="text-lg font-semibold tracking-tight tabular-nums lg:text-xl">{relatorioStats.taxaResolucao}%</p>
+                        <p className="text-base font-semibold tracking-tight tabular-nums lg:text-lg">{relatorioStats.taxaResolucao}%</p>
                         <DeltaBadge current={kpiAtual.taxaResolucao} previous={kpiAnterior?.taxaResolucao} />
                       </div>
                     </div>
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-50 dark:bg-emerald-950/30">
-                      <Activity aria-hidden="true" className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-50 dark:bg-emerald-950/30">
+                      <Activity aria-hidden="true" className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6790,24 +6833,24 @@ const saveConfig = async () => {
             <div key="kpiNps" className="overflow-hidden">
             <ReportWidget {...wprops('kpiNps')}>
               <Card className="glass-card-elevated h-full gap-0 rounded-lg py-0">
-                <CardContent className="flex h-full items-center p-2">
+                <CardContent className="flex h-full items-center px-2 py-1.5">
                   <div className="flex w-full items-center justify-between">
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <p className="text-xs text-muted-foreground">NPS Score</p>
-                      <div>
+                      <div className="flex items-baseline gap-2">
                         <p className={cn(
-                          "text-lg font-semibold tracking-tight tabular-nums lg:text-xl",
+                          "text-base font-semibold tracking-tight tabular-nums lg:text-lg",
                           relatorioStats.npsScore >= 50 ? 'text-green-600' :
                           relatorioStats.npsScore >= 0 ? 'text-yellow-600' :
                           'text-red-600'
                         )}>
                           {relatorioStats.totalAvaliacoes > 0 ? relatorioStats.npsScore : '—'}
                         </p>
-                        <p className="mt-0 text-[10px] text-muted-foreground">{relatorioStats.totalAvaliacoes} avaliações</p>
+                        <span className="whitespace-nowrap text-[10px] text-muted-foreground">{relatorioStats.totalAvaliacoes} avaliações</span>
                       </div>
                     </div>
-                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-rose-50 dark:bg-rose-950/30">
-                      <Star aria-hidden="true" className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-rose-50 dark:bg-rose-950/30">
+                      <Star aria-hidden="true" className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -6820,11 +6863,11 @@ const saveConfig = async () => {
             {visibleCards.volume && (
             <div key="volume" className="overflow-hidden">
             <ReportWidget {...wprops('volume')}>
-                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-                  <CardHeader className="pb-2">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+                  <CardHeader className="px-4 pb-1.5">
                     <div className="flex items-center gap-3 flex-wrap">
                       <CardTitle className="text-base flex items-center gap-2">
-                        <TrendingUp className="h-4 w-4" />
+                        <TrendingUp className="h-3.5 w-3.5" />
                         Atendimentos ao longo do tempo
                       </CardTitle>
                       <Select value={volumePeriod} onValueChange={setVolumePeriod}>
@@ -6837,15 +6880,15 @@ const saveConfig = async () => {
                       </Select>
                     </div>
                   </CardHeader>
-                  <CardContent className="min-h-0 flex-1">
+                  <CardContent className="px-4 min-h-0 flex-1">
                     {volumeSerie.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-8 text-center">
-                        <TrendingUp className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                      <div className="flex flex-col items-center justify-center py-6 text-center">
+                        <TrendingUp className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                         <p className="text-sm text-muted-foreground">Sem dados no período</p>
                       </div>
                     ) : (
                       <div
-                        className="h-full min-h-[180px] w-full"
+                        className="h-full min-h-[144px] w-full"
                         role="img"
                         aria-label={`Gráfico de área com o volume de atendimentos ao longo do tempo, ${volumeSerie.length} pontos no período selecionado`}
                       >
@@ -6876,11 +6919,11 @@ const saveConfig = async () => {
             {visibleCards.heatmap && (
             <div key="heatmap" className="overflow-hidden">
             <ReportWidget {...wprops('heatmap')}>
-                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-                  <CardHeader className="pb-2">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+                  <CardHeader className="px-4 pb-1.5">
                     <div className="flex items-center gap-3 flex-wrap">
                       <CardTitle className="text-base flex items-center gap-2">
-                        <Clock className="h-4 w-4" />
+                        <Clock className="h-3.5 w-3.5" />
                         Padrão horário por dia da semana
                       </CardTitle>
                       <Select value={heatmapPeriod} onValueChange={setHeatmapPeriod}>
@@ -6894,10 +6937,10 @@ const saveConfig = async () => {
                     </div>
                     <p className="text-xs text-muted-foreground">Atendimentos por hora. Clique num dia da legenda para ocultá-lo.</p>
                   </CardHeader>
-                  <CardContent className="min-h-0 flex-1">
+                  <CardContent className="px-4 min-h-0 flex-1">
                     {heatmapData.max === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-8 text-center">
-                        <Clock className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                      <div className="flex flex-col items-center justify-center py-6 text-center">
+                        <Clock className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                         <p className="text-sm text-muted-foreground">Sem dados no período</p>
                       </div>
                     ) : (
@@ -6930,7 +6973,7 @@ const saveConfig = async () => {
                         </div>
 
                         <div
-                          className="min-h-[180px] w-full flex-1"
+                          className="min-h-[144px] w-full flex-1"
                           role="img"
                           aria-label={`Gráfico de linhas com atendimentos por hora, uma linha por dia da semana. Pico de ${heatmapData.max} atendimentos em ${heatmapData.picoLabel}.`}
                         >
@@ -7001,20 +7044,20 @@ const saveConfig = async () => {
             {visibleCards.saudeFila && (
             <div key="saudeFila" className="overflow-hidden">
             <ReportWidget {...wprops('saudeFila')}>
-              <Card className="glass-card-elevated flex h-full flex-col rounded-lg">
-                <CardHeader className="pb-2">
+              <Card className="glass-card-elevated flex h-full flex-col rounded-lg py-4">
+                <CardHeader className="px-4 pb-1.5">
                   <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                    <Timer className="h-4 w-4" aria-hidden="true" />
+                    <Timer className="h-3.5 w-3.5" aria-hidden="true" />
                     Saúde da fila
                   </CardTitle>
                   <p className="text-xs text-muted-foreground">
                     Fila a partir de {LIMITE_FILA_MIN} min · SLA em {LIMITE_SLA_MIN} min.
                   </p>
                 </CardHeader>
-                <CardContent className="flex flex-1 flex-col justify-between gap-4">
+                <CardContent className="flex flex-1 flex-col justify-between gap-3 px-4">
                   <div>
                     <div className="flex items-baseline justify-between gap-2">
-                      <p className={cn('text-3xl font-semibold tabular-nums', TOM_SAUDE[faixaDeSaude(resumoFilaPeriodo.saudePercentual)].texto)}>
+                      <p className={cn('text-2xl font-semibold tabular-nums', TOM_SAUDE[faixaDeSaude(resumoFilaPeriodo.saudePercentual)].texto)}>
                         {resumoFilaPeriodo.saudePercentual}%
                       </p>
                       <p className="text-xs text-muted-foreground">
@@ -7029,17 +7072,17 @@ const saveConfig = async () => {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
-                      <p className="text-2xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+                      <p className="text-xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
                         {resumoFilaPeriodo.entraramNaFila}
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         Entraram na fila
                       </p>
                     </div>
-                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
-                      <p className="text-2xl font-semibold tabular-nums text-foreground">
+                    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+                      <p className="text-xl font-semibold tabular-nums text-foreground">
                         {resumoFilaPeriodo.picoSimultaneo}
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">Pico simultâneo</p>
@@ -7062,21 +7105,21 @@ const saveConfig = async () => {
             {visibleCards.maiorEspera && (
             <div key="maiorEspera" className="overflow-hidden">
             <ReportWidget {...wprops('maiorEspera')}>
-              <Card className="glass-card-elevated flex h-full flex-col rounded-lg">
-                <CardHeader className="pb-2">
+              <Card className="glass-card-elevated flex h-full flex-col rounded-lg py-4">
+                <CardHeader className="px-4 pb-1.5">
                   <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                    <Timer className="h-4 w-4" aria-hidden="true" />
+                    <Timer className="h-3.5 w-3.5" aria-hidden="true" />
                     Maior espera do período
                   </CardTitle>
                   <p className="text-xs text-muted-foreground">
                     Da criação até a primeira resposta.
                   </p>
                 </CardHeader>
-                <CardContent className="flex flex-1 flex-col justify-center gap-3">
+                <CardContent className="flex flex-1 flex-col justify-center gap-2 px-4">
                   {resumoFilaPeriodo.maiorEspera ? (
                     <>
                       <div className="flex items-center gap-2">
-                        <p className="text-3xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
+                        <p className="text-2xl font-semibold tabular-nums text-orange-600 dark:text-orange-400">
                           {formatarEsperaLonga(resumoFilaPeriodo.maiorEspera.esperaMs)}
                         </p>
                         {resumoFilaPeriodo.maiorEspera.emAndamento && (
@@ -7123,20 +7166,20 @@ const saveConfig = async () => {
             {visibleCards.sla && (
             <div key="sla" className="overflow-hidden">
             <ReportWidget {...wprops('sla')}>
-                <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-                  <CardHeader className="pb-2">
+                <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+                  <CardHeader className="px-4 pb-1.5">
                     <CardTitle className="text-base flex items-center gap-2">
-                      <Timer className="h-4 w-4" />
+                      <Timer className="h-3.5 w-3.5" />
                       SLA de 1ª resposta
                     </CardTitle>
                     <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.slaDentroDaMeta}%</span>
+                      <span className="text-xl font-semibold tracking-tight tabular-nums">{relatorioStats.slaDentroDaMeta}%</span>
                       <span className="text-xs text-muted-foreground">respondidos em até 15 min</span>
                     </div>
                   </CardHeader>
-                  <CardContent className="min-h-0 flex-1">
+                  <CardContent className="px-4 min-h-0 flex-1">
                     <div
-                      className="h-full min-h-[160px] w-full"
+                      className="h-full min-h-[128px] w-full"
                       role="img"
                       aria-label={`Gráfico de barras do SLA de 1ª resposta. ${relatorioStats.slaDentroDaMeta}% respondidos em até 15 minutos`}
                     >
@@ -7164,23 +7207,23 @@ const saveConfig = async () => {
             {visibleCards.nps && (
             <div key="nps" className="overflow-hidden">
             <ReportWidget {...wprops('nps')}>
-                <Card className="glass-card-elevated rounded-lg">
-                  <CardHeader className="pb-2">
+                <Card className="glass-card-elevated rounded-lg py-4">
+                  <CardHeader className="px-4 pb-1.5">
                     <CardTitle className="text-base flex items-center gap-2">
-                      <Star className="h-4 w-4" />
+                      <Star className="h-3.5 w-3.5" />
                       Satisfação (NPS)
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="px-4">
                     {relatorioStats.totalAvaliacoes === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-8 text-center">
-                        <Star className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                      <div className="flex flex-col items-center justify-center py-6 text-center">
+                        <Star className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                         <p className="text-sm text-muted-foreground">Nenhuma avaliação no período</p>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-3">
                         <div
-                          className="h-[180px] w-[180px] shrink-0 relative"
+                          className="h-[144px] w-[144px] shrink-0 relative"
                           role="img"
                           aria-label={`Gráfico de pizza de satisfação NPS. NPS ${relatorioStats.satisfacao.nps}, com ${relatorioStats.satisfacao.promotores} promotores, ${relatorioStats.satisfacao.neutros} neutros e ${relatorioStats.satisfacao.detratores} detratores`}
                         >
@@ -7194,8 +7237,8 @@ const saveConfig = async () => {
                                 ]}
                                 dataKey="value"
                                 nameKey="name"
-                                innerRadius={55}
-                                outerRadius={80}
+                                innerRadius={44}
+                                outerRadius={64}
                                 paddingAngle={2}
                               >
                                 <Cell fill="#22C55E" />
@@ -7206,7 +7249,7 @@ const saveConfig = async () => {
                             </PieChart>
                           </ResponsiveContainer>
                           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                            <span className="text-2xl font-semibold tracking-tight tabular-nums">{relatorioStats.satisfacao.nps}</span>
+                            <span className="text-xl font-semibold tracking-tight tabular-nums">{relatorioStats.satisfacao.nps}</span>
                             <span className="text-[10px] text-muted-foreground">NPS</span>
                           </div>
                         </div>
@@ -7228,18 +7271,18 @@ const saveConfig = async () => {
             {visibleCards.canal && (
             <div key="canal" className="overflow-hidden">
             <ReportWidget {...wprops('canal')}>
-                <Card className="glass-card-elevated rounded-lg">
-                  <CardHeader className="pb-2">
+                <Card className="glass-card-elevated rounded-lg py-4">
+                  <CardHeader className="px-4 pb-1.5">
                     <CardTitle className="text-base flex items-center gap-2">
-                      <Radio className="h-4 w-4" />
+                      <Radio className="h-3.5 w-3.5" />
                       Por canal
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="px-4">
                     {relatorioStats.porCanal.length === 0 ? (
-                      <p className="text-sm text-muted-foreground py-4 text-center">Sem dados</p>
+                      <p className="text-sm text-muted-foreground py-3 text-center">Sem dados</p>
                     ) : (
-                      <div className="space-y-3">
+                      <div className="space-y-2">
                         {relatorioStats.porCanal.map((item: { canal: string; count: number }, i: number) => (
                           <div key={item.canal} className="space-y-1">
                             <div className="flex items-center justify-between text-sm">
@@ -7263,18 +7306,18 @@ const saveConfig = async () => {
             {visibleCards.status && (
             <div key="status" className="overflow-hidden">
             <ReportWidget {...wprops('status')}>
-                <Card className="glass-card-elevated rounded-lg">
-                  <CardHeader className="pb-2">
+                <Card className="glass-card-elevated rounded-lg py-4">
+                  <CardHeader className="px-4 pb-1.5">
                     <CardTitle className="text-base flex items-center gap-2">
-                      <Activity className="h-4 w-4" />
+                      <Activity className="h-3.5 w-3.5" />
                       Por resultado
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="px-4">
                     {relatorioStats.porStatus.length === 0 ? (
-                      <p className="text-sm text-muted-foreground py-4 text-center">Sem dados</p>
+                      <p className="text-sm text-muted-foreground py-3 text-center">Sem dados</p>
                     ) : (
-                      <div className="space-y-3">
+                      <div className="space-y-2">
                         {relatorioStats.porStatus.map((item: { status: string; count: number }, i: number) => (
                           <div key={item.status} className="space-y-1">
                             <div className="flex items-center justify-between text-sm">
@@ -7298,14 +7341,14 @@ const saveConfig = async () => {
             {visibleCards.roteamento && (
             <div key="roteamento" className="overflow-hidden">
             <ReportWidget {...wprops('roteamento')}>
-                <Card className="glass-card-elevated rounded-lg">
-                  <CardHeader className="pb-2">
+                <Card className="glass-card-elevated rounded-lg py-4">
+                  <CardHeader className="px-4 pb-1.5">
                     <CardTitle className="text-base flex items-center gap-2">
-                      <ArrowRightLeft className="h-4 w-4" />
+                      <ArrowRightLeft className="h-3.5 w-3.5" />
                       Transferências &amp; transbordos
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-4 pt-2">
+                  <CardContent className="space-y-2 px-4 pt-1.5">
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-muted-foreground">Transferidos</span>
                       <span className="text-sm font-semibold">{roteamentoStats.transferidos} <span className="text-muted-foreground font-normal">({roteamentoStats.pctTransferidos}%)</span></span>
@@ -7318,7 +7361,7 @@ const saveConfig = async () => {
                       <span className="text-sm text-muted-foreground">Saltos médios (hops)</span>
                       <span className="text-sm font-semibold">{roteamentoStats.hopsMedio}</span>
                     </div>
-                    <p className="text-[11px] text-muted-foreground pt-1">Altas taxas indicam possível erro de roteamento inicial.</p>
+                    <p className="text-[11px] text-muted-foreground pt-0.5">Altas taxas indicam possível erro de roteamento inicial.</p>
                   </CardContent>
                 </Card>
             </ReportWidget>
@@ -7329,27 +7372,27 @@ const saveConfig = async () => {
             {visibleCards.rankAtendente && (
             <div key="rankAtendente" className="overflow-hidden">
             <ReportWidget {...wprops('rankAtendente')}>
-            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-              <CardHeader className="pb-2">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+              <CardHeader className="px-4 pb-1.5">
                 <CardTitle className="text-base flex items-center gap-2">
-                  <Users className="h-4 w-4" />
+                  <Users className="h-3.5 w-3.5" />
                   Tickets por atendente
                 </CardTitle>
               </CardHeader>
-              <CardContent className="min-h-0 flex-1">
+              <CardContent className="px-4 min-h-0 flex-1">
                 {relatorioStats.ticketsPorAtendente.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-center">
-                    <Users className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                  <div className="flex flex-col items-center justify-center py-6 text-center">
+                    <Users className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum atendimento registrado</p>
                   </div>
                 ) : (
-                  <div className="space-y-3 h-full overflow-y-auto">
+                  <div className="space-y-2 h-full overflow-y-auto">
                     {relatorioStats.ticketsPorAtendente.map((atendente: { id: string | null; nome: string; count: number; avgPrimeiraRespostaMs: number | null }, index: number) => {
                       const npsEntry = atendente.id ? mediaNPSPorColaborador.get(atendente.id) : undefined
                       const mediaNota = npsEntry && npsEntry.total > 0 ? (npsEntry.soma / npsEntry.total).toFixed(1) : null
                       return (
-                      <div key={atendente.id || atendente.nome} className="flex items-center gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-medium">
+                      <div key={atendente.id || atendente.nome} className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-xs font-medium">
                           {index + 1}
                         </div>
                         <div className="flex-1">
@@ -7389,24 +7432,24 @@ const saveConfig = async () => {
             {visibleCards.rankPDV && (
             <div key="rankPDV" className="overflow-hidden">
             <ReportWidget {...wprops('rankPDV')}>
-            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-              <CardHeader className="pb-2">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+              <CardHeader className="px-4 pb-1.5">
                 <CardTitle className="text-base flex items-center gap-2">
-                  <Hash className="h-4 w-4" />
+                  <Hash className="h-3.5 w-3.5" />
                   Tickets por PDV
                 </CardTitle>
               </CardHeader>
-              <CardContent className="min-h-0 flex-1">
+              <CardContent className="px-4 min-h-0 flex-1">
                 {relatorioStats.ticketsPorPDV.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-center">
-                    <Hash className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                  <div className="flex flex-col items-center justify-center py-6 text-center">
+                    <Hash className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum dado de PDV encontrado</p>
                   </div>
                 ) : (
-                  <div className="space-y-3 h-full overflow-y-auto">
+                  <div className="space-y-2 h-full overflow-y-auto">
                     {relatorioStats.ticketsPorPDV.map((item: { pdv: string; count: number }, index: number) => (
-                      <div key={item.pdv} className="flex items-center gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/50 text-xs font-medium">
+                      <div key={item.pdv} className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/50 text-xs font-medium">
                           {index + 1}
                         </div>
                         <div className="flex-1">
@@ -7435,27 +7478,27 @@ const saveConfig = async () => {
             {visibleCards.rankTipo && (
             <div key="rankTipo" className="overflow-hidden">
             <ReportWidget {...wprops('rankTipo')}>
-            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-              <CardHeader className="pb-2">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+              <CardHeader className="px-4 pb-1.5">
                 <CardTitle className="text-base flex items-center gap-2">
-                  <Tag className="h-4 w-4" />
+                  <Tag className="h-3.5 w-3.5" />
                   Tipos de Atendimento
                 </CardTitle>
                 <p className="text-xs text-muted-foreground">
                   Principais motivos/produtos dos atendimentos encerrados no período.
                 </p>
               </CardHeader>
-              <CardContent className="min-h-0 flex-1">
+              <CardContent className="px-4 min-h-0 flex-1">
                 {relatorioStats.ticketsPorTipo.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-center">
-                    <Tag className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                  <div className="flex flex-col items-center justify-center py-6 text-center">
+                    <Tag className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum atendimento classificado no período</p>
                   </div>
                 ) : (
-                  <div className="space-y-3 h-full overflow-y-auto">
+                  <div className="space-y-2 h-full overflow-y-auto">
                     {relatorioStats.ticketsPorTipo.map((item: { tipo: string; count: number }, index: number) => (
-                      <div key={item.tipo} className="flex items-center gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/50 text-xs font-medium">
+                      <div key={item.tipo} className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/50 text-xs font-medium">
                           {index + 1}
                         </div>
                         <div className="flex-1">
@@ -7484,20 +7527,20 @@ const saveConfig = async () => {
             {visibleCards.matrizTipoTecnico && (
             <div key="matrizTipoTecnico" className="overflow-hidden">
             <ReportWidget {...wprops('matrizTipoTecnico')}>
-              <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-                <CardHeader className="pb-2">
+              <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+                <CardHeader className="px-4 pb-1.5">
                   <CardTitle className="text-base flex items-center gap-2">
-                    <Users className="h-4 w-4" />
+                    <Users className="h-3.5 w-3.5" />
                     Total por tipo, por técnico
                   </CardTitle>
                   <p className="text-xs text-muted-foreground">
                     Quantos atendimentos de cada tipo cada atendente encerrou no período.
                   </p>
                 </CardHeader>
-                <CardContent className="min-h-0 flex-1">
+                <CardContent className="px-4 min-h-0 flex-1">
                   {relatorioStats.tiposPorAtendente.length === 0 || relatorioStats.tiposColunas.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-8 text-center">
-                      <Tag className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                    <div className="flex flex-col items-center justify-center py-6 text-center">
+                      <Tag className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                       <p className="text-sm text-muted-foreground">Nenhum atendimento classificado no período</p>
                     </div>
                   ) : (
@@ -7538,15 +7581,15 @@ const saveConfig = async () => {
             {visibleCards.tabela && (
             <div key="tabela" className="overflow-hidden">
             <ReportWidget {...wprops('tabela')}>
-            <Card className="glass-card-elevated rounded-lg flex h-full flex-col">
-              <CardHeader className="pb-2">
+            <Card className="glass-card-elevated rounded-lg flex h-full flex-col py-4">
+              <CardHeader className="px-4 pb-1.5">
                 <div className="flex items-center justify-between gap-4">
                   <CardTitle className="text-base flex items-center gap-2">
-                    <MessageCircle className="h-4 w-4" />
+                    <MessageCircle className="h-3.5 w-3.5" />
                     Últimos atendimentos
                   </CardTitle>
                   <div className="relative w-72">
-                    <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Search className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                     <Input
                       placeholder="Buscar por nome, telefone ou CNPJ..."
                       value={searchCliente}
@@ -7556,7 +7599,7 @@ const saveConfig = async () => {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="px-4 pb-4 pt-2 min-h-0 flex-1">
+              <CardContent className="px-4 pb-4 pt-1.5 min-h-0 flex-1">
                 {relatorioLoading && ticketsRelatorioRaw.length === 0 ? (
                   <div className="space-y-2 py-2" aria-busy="true" aria-label="Carregando atendimentos">
                     {Array.from({ length: 6 }).map((_, i) => (
@@ -7570,8 +7613,8 @@ const saveConfig = async () => {
                     ))}
                   </div>
                 ) : ticketsRelatorio.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-center">
-                    <AlertCircle className="mb-2 h-8 w-8 text-muted-foreground opacity-50" />
+                  <div className="flex flex-col items-center justify-center py-6 text-center">
+                    <AlertCircle className="mb-2 h-7 w-7 text-muted-foreground opacity-50" />
                     <p className="text-sm text-muted-foreground">Nenhum ticket encontrado no período</p>
                   </div>
                 ) : (
@@ -7648,7 +7691,7 @@ const saveConfig = async () => {
                                 aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
                                 title="Abrir conversa"
                               >
-                                <MessageCircle className="h-4 w-4" />
+                                <MessageCircle className="h-3.5 w-3.5" />
                               </Button>
                             </TableCell>
                           </TableRow>
@@ -7676,20 +7719,20 @@ const saveConfig = async () => {
 
       {/* Atendentes Section */}
       {activeSection === 'atendentes' && (
-        <div className="space-y-6 anim-rise">
+        <div className="space-y-4 anim-rise">
           {/* Header */}
           <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-semibold tracking-tight">Atendentes</h1>
-            <Button onClick={openCreateAtendenteModal} className="gap-2">
-              <Plus className="h-4 w-4" />
+            <h1 className="text-xl font-semibold tracking-tight">Atendentes</h1>
+            <Button onClick={openCreateAtendenteModal} size="sm" className="gap-2">
+              <Plus className="h-3.5 w-3.5" />
               Novo Atendente
             </Button>
           </div>
 
           {/* Search and Filter */}
-          <div className="space-y-3">
+          <div className="space-y-2">
             <div className="relative max-w-md">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder="Buscar por nome ou e-mail"
                 value={searchAtendente}
@@ -7697,7 +7740,7 @@ const saveConfig = async () => {
                   setSearchAtendente(e.target.value)
                   setAttendantsPage(1)
                 }}
-                className="pl-9"
+                className="h-8 pl-9"
               />
             </div>
             {/* Mesmo estado (e mesma preferência salva) do filtro da aba
@@ -7721,13 +7764,13 @@ const saveConfig = async () => {
           </div>
 
           {/* Atendentes List */}
-          <div className="space-y-3">
+          <div className="space-y-2">
             {isLoading ? (
               Array.from({ length: 3 }).map((_, i) => (
-                <Card key={i} className="rounded-lg p-4">
-                  <div className="flex items-center gap-4">
-                    <Skeleton className="h-10 w-10 rounded-full" />
-                    <div className="flex-1 grid grid-cols-4 gap-4">
+                <Card key={i} className="rounded-lg p-3">
+                  <div className="flex items-center gap-3">
+                    <Skeleton className="h-9 w-9 rounded-full" />
+                    <div className="flex-1 grid grid-cols-4 gap-3">
                       <Skeleton className="h-4 w-32" />
                       <Skeleton className="h-4 w-40" />
                       <Skeleton className="h-4 w-24" />
@@ -7737,25 +7780,25 @@ const saveConfig = async () => {
                 </Card>
               ))
             ) : atendentes.length === 0 ? (
-              <Card className="glass-card-elevated rounded-lg p-12">
+              <Card className="glass-card-elevated rounded-lg p-8">
                 <div className="flex flex-col items-center justify-center text-center">
-                  <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-                    <Users className="h-8 w-8 text-muted-foreground" />
+                  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                    <Users className="h-6 w-6 text-muted-foreground" />
                   </div>
                   <h3 className="font-semibold tracking-tight">Nenhum atendente cadastrado</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
                     Adicione atendentes para começar a receber tickets neste setor.
                   </p>
-                  <Button onClick={openCreateAtendenteModal} className="mt-4 gap-2">
-                    <Plus className="h-4 w-4" />
+                  <Button onClick={openCreateAtendenteModal} size="sm" className="mt-3 gap-2">
+                    <Plus className="h-3.5 w-3.5" />
                     Adicionar atendente
                   </Button>
                 </div>
               </Card>
             ) : filteredManagementAttendants.length === 0 ? (
-              <Card className="glass-card-elevated rounded-lg p-12">
+              <Card className="glass-card-elevated rounded-lg p-8">
                 <div className="flex flex-col items-center justify-center text-center">
-                  <Search className="mb-3 h-8 w-8 text-muted-foreground" />
+                  <Search className="mb-2 h-6 w-6 text-muted-foreground" />
                   <h3 className="font-semibold tracking-tight">Nenhum atendente encontrado</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
                     Ajuste a busca ou os filtros para ver outros atendentes.
@@ -7777,19 +7820,19 @@ const saveConfig = async () => {
                 const ticketsDoAtendente = activeTicketCountByAttendant.get(atendente.id) || 0
 
                 return (
-                  <Card key={atendente.id} className="rounded-lg transition-colors hover:border-[var(--border-strong)]">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-4">
+                  <Card key={atendente.id} className="rounded-lg py-4 transition-colors hover:border-[var(--border-strong)]">
+                    <CardContent className="px-4">
+                      <div className="flex items-center gap-3">
                         {/* Avatar */}
                         <div className={cn(
-                          "flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold text-white",
+                          "flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold text-white",
                           atendente.is_online ? "bg-primary" : "bg-gray-400"
                         )}>
                           {initials}
                         </div>
 
                         {/* Info Grid */}
-                        <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                        <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-3 items-center">
                           {/* Nome */}
                           <div>
                             <p className="text-[10px] uppercase text-muted-foreground tracking-wide">Atendente</p>
@@ -7888,7 +7931,7 @@ const saveConfig = async () => {
                                 onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
                                 className="gap-2"
                               >
-                                <CircleCheck className="h-4 w-4 text-green-500" />
+                                <CircleCheck className="h-3.5 w-3.5 text-green-500" />
                                 Marcar como Online
                               </DropdownMenuItem>
                               <DropdownMenuItem
@@ -7896,7 +7939,7 @@ const saveConfig = async () => {
                                 onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
                                 className="gap-2"
                               >
-                                <CircleOff className="h-4 w-4 text-muted-foreground" />
+                                <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
                                 Marcar como Offline
                               </DropdownMenuItem>
                             </DropdownMenuContent>
@@ -7910,15 +7953,15 @@ const saveConfig = async () => {
                             <DropdownMenuTrigger asChild>
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                className="lg:hidden h-8 w-8"
+                                size="icon-sm"
+                                className="lg:hidden"
                                 disabled={alterandoStatusId === atendente.id}
                                 aria-label={`Alterar status de ${atendente.nome}`}
                                 title="Alterar status"
                               >
                                 {alterandoStatusId === atendente.id
-                                  ? <Loader2 className="h-4 w-4 animate-spin" />
-                                  : <MoreHorizontal className="h-4 w-4" />
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : <MoreHorizontal className="h-3.5 w-3.5" />
                                 }
                               </Button>
                             </DropdownMenuTrigger>
@@ -7928,7 +7971,7 @@ const saveConfig = async () => {
                                 onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
                                 className="gap-2"
                               >
-                                <CircleCheck className="h-4 w-4 text-green-500" />
+                                <CircleCheck className="h-3.5 w-3.5 text-green-500" />
                                 Marcar como Online
                               </DropdownMenuItem>
                               <DropdownMenuItem
@@ -7936,30 +7979,29 @@ const saveConfig = async () => {
                                 onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
                                 className="gap-2"
                               >
-                                <CircleOff className="h-4 w-4 text-muted-foreground" />
+                                <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
                                 Marcar como Offline
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                           <Button
                             variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
+                            size="icon-sm"
                             onClick={() => openEditAtendenteModal(atendente)}
                             aria-label={`Editar atendente ${atendente.nome}`}
                             title="Editar atendente"
                           >
-                            <Pencil className="h-4 w-4" />
+                            <Pencil className="h-3.5 w-3.5" />
                           </Button>
                           <Button
                             variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            size="icon-sm"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
                             onClick={() => openDeleteConfirm({ id: atendente.id, nome: atendente.nome })}
                             aria-label={`Excluir atendente ${atendente.nome}`}
                             title="Excluir atendente"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </div>
@@ -7972,7 +8014,7 @@ const saveConfig = async () => {
 
           {/* Pagination */}
           {filteredManagementAttendants.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <span>Resultados por página:</span>
                 <Select
@@ -8008,7 +8050,7 @@ const saveConfig = async () => {
                     aria-label="Primeira página"
                     title="Primeira página"
                   >
-                    <ChevronFirst className="h-4 w-4" />
+                    <ChevronFirst className="h-3.5 w-3.5" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -8019,7 +8061,7 @@ const saveConfig = async () => {
                     aria-label="Página anterior"
                     title="Página anterior"
                   >
-                    <ChevronLeft className="h-4 w-4" />
+                    <ChevronLeft className="h-3.5 w-3.5" />
                   </Button>
                   <span className="px-2" aria-label={`Página ${safeAttendantsPage} de ${attendantsTotalPages}`}>
                     {safeAttendantsPage}
@@ -8033,7 +8075,7 @@ const saveConfig = async () => {
                     aria-label="Próxima página"
                     title="Próxima página"
                   >
-                    <ChevronRight className="h-4 w-4" />
+                    <ChevronRight className="h-3.5 w-3.5" />
                   </Button>
                   <Button
                     variant="ghost"
@@ -8044,7 +8086,7 @@ const saveConfig = async () => {
                     aria-label="Última página"
                     title="Última página"
                   >
-                    <ChevronLast className="h-4 w-4" />
+                    <ChevronLast className="h-3.5 w-3.5" />
                   </Button>
                 </div>
               </div>
@@ -8052,9 +8094,9 @@ const saveConfig = async () => {
           )}
 
           {/* Info Note */}
-          <div className="rounded-lg border bg-muted/50 p-4">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
+          <div className="rounded-lg border bg-muted/50 p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
               <div className="text-sm text-muted-foreground">
               <p className="font-medium text-foreground">Sobre atendentes em múltiplos setores</p>
               <p className="mt-1">
@@ -8069,29 +8111,29 @@ const saveConfig = async () => {
 
     {/* Horários Section */}
     {activeSection === 'horarios' && (
-      <div className="space-y-6">
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Horários de Atendimento</h1>
-            <p className="text-muted-foreground">
+            <h1 className="text-xl font-semibold tracking-tight">Horários de Atendimento</h1>
+            <p className="text-sm text-muted-foreground">
               Defina quais dias e horários seus atendentes estarão disponíveis
             </p>
           </div>
-          <Button onClick={saveHorarios} disabled={saving}>
+          <Button onClick={saveHorarios} disabled={saving} size="sm">
             {saving ? 'Salvando...' : 'Salvar Horários'}
           </Button>
         </div>
 
-        <Card className="glass-card-elevated rounded-lg">
-          <CardContent className="p-6">
-            <div className="space-y-4">
+        <Card className="glass-card-elevated rounded-lg py-4">
+          <CardContent className="px-4">
+            <div className="space-y-2">
               {DIAS_SEMANA.map((dia) => {
                 const horario = horariosEdit.find((h) => h.dia_semana === dia.value)
                 return (
                   <div
                     key={dia.value}
                     className={cn(
-                      'flex items-center gap-4 p-4 rounded-lg border transition-colors',
+                      'flex items-center gap-3 p-3 rounded-lg border transition-colors',
                       horario?.ativo ? 'bg-card' : 'bg-muted/50'
                     )}
                   >
@@ -8101,7 +8143,7 @@ const saveConfig = async () => {
                         updateHorario(dia.value, 'ativo', checked)
                       }
                     />
-                    <span className="w-36 font-medium">{dia.label}</span>
+                    <span className="w-36 text-sm font-medium">{dia.label}</span>
                     {horario?.ativo ? (
                       <div className="flex items-center gap-2">
                         <Input
@@ -8110,20 +8152,20 @@ const saveConfig = async () => {
                           onChange={(e) =>
                             updateHorario(dia.value, 'hora_inicio', e.target.value)
                           }
-                          className="w-32"
+                          className="h-8 w-32"
                         />
-                        <span className="text-muted-foreground">até</span>
+                        <span className="text-sm text-muted-foreground">até</span>
                         <Input
                           type="time"
                           value={horario?.hora_fim || '18:00'}
                           onChange={(e) =>
                             updateHorario(dia.value, 'hora_fim', e.target.value)
                           }
-                          className="w-32"
+                          className="h-8 w-32"
                         />
                       </div>
                     ) : (
-                      <span className="text-muted-foreground">Fechado</span>
+                      <span className="text-sm text-muted-foreground">Fechado</span>
                     )}
                   </div>
                 )
@@ -8136,30 +8178,30 @@ const saveConfig = async () => {
 
     {/* Pausas Section */}
     {activeSection === 'pausas' && (
-      <div className="space-y-6">
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Pausas</h1>
-            <p className="text-muted-foreground">
+            <h1 className="text-xl font-semibold tracking-tight">Pausas</h1>
+            <p className="text-sm text-muted-foreground">
               Configure os tipos de pausas disponíveis para os atendentes
             </p>
           </div>
-          <Button onClick={openNewPausa}>
-            <Coffee className="mr-2 h-4 w-4" />
+          <Button onClick={openNewPausa} size="sm">
+            <Coffee className="mr-1.5 h-3.5 w-3.5" />
             Nova Pausa
           </Button>
         </div>
 
-        <Card className="glass-card-elevated rounded-lg">
+        <Card className="glass-card-elevated rounded-lg py-4">
           <CardContent className="p-0">
             {pausas.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-center">
-                <Coffee className="mb-4 h-12 w-12 text-muted-foreground/30" />
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <Coffee className="mb-3 h-9 w-9 text-muted-foreground/30" />
                 <h3 className="font-medium tracking-tight">Nenhuma pausa cadastrada</h3>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Crie pausas para que os atendentes possam usar durante o expediente
                 </p>
-                <Button onClick={openNewPausa} className="mt-4">
+                <Button onClick={openNewPausa} size="sm" className="mt-3">
                   Criar primeira pausa
                 </Button>
               </div>
@@ -8191,11 +8233,11 @@ const saveConfig = async () => {
                           <DropdownMenuTrigger asChild>
                             <Button
                               variant="ghost"
-                              size="icon"
+                              size="icon-sm"
                               aria-label={`Abrir ações da pausa ${pausa.nome}`}
                               title="Ações da pausa"
                             >
-                              <Settings className="h-4 w-4" />
+                              <Settings className="h-3.5 w-3.5" />
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
@@ -8231,7 +8273,7 @@ const saveConfig = async () => {
           </p>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2">
           {/* Basic info */}
           <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
@@ -8242,6 +8284,7 @@ const saveConfig = async () => {
                 <Label htmlFor="nome">Nome do Setor</Label>
                 <Input
                   id="nome"
+                  className="h-8"
                   value={configForm.nome}
                   onChange={(e) =>
                     setConfigForm((prev) => ({ ...prev, nome: e.target.value }))
@@ -8274,7 +8317,7 @@ const saveConfig = async () => {
                       setConfigForm((prev) => ({ ...prev, tag_id: v === 'none' ? '' : v }))
                     }
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className="h-8">
                       <SelectValue placeholder="Selecionar tag..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -8353,10 +8396,10 @@ const saveConfig = async () => {
               {/* Preview inline */}
               <div className="flex items-center gap-3 rounded-md bg-muted/50 p-2.5">
                 <div
-                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
                   style={{ backgroundColor: configForm.cor }}
                 >
-                  <IconComponent className="h-5 w-5 text-white" />
+                  <IconComponent className="h-4 w-4 text-white" />
                 </div>
                 <div>
                   <h3 className="font-semibold">{configForm.nome || 'Nome do Setor'}</h3>
@@ -8400,14 +8443,14 @@ const saveConfig = async () => {
                         setConfigForm((prev) => ({ ...prev, icon_url: iconItem.name }))
                       }
                       className={cn(
-                        'flex h-9 w-full items-center justify-center rounded-md border transition-all',
+                        'flex h-8 w-full items-center justify-center rounded-md border transition-all',
                         configForm.icon_url === iconItem.name
                           ? 'border-primary bg-primary/10 text-primary'
                           : 'border-transparent hover:bg-muted text-muted-foreground'
                       )}
                       title={iconItem.name}
                     >
-                      <iconItem.icon className="h-4 w-4" />
+                      <iconItem.icon className="h-3.5 w-3.5" />
                     </button>
                   ))}
                 </div>
@@ -8420,7 +8463,7 @@ const saveConfig = async () => {
         <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <ArrowRightLeft className="h-5 w-5" />
+              <ArrowRightLeft className="h-4 w-4" />
               Roteamento de Atendimento
             </CardTitle>
             <p className="text-sm text-muted-foreground">
@@ -8439,8 +8482,8 @@ const saveConfig = async () => {
               const selectedSetor = todosSetores.find(s => s.id === tiposAtendimentoSetor[tipo.key])
               return (
                 <div key={tipo.key} className="flex flex-col gap-2 rounded-md border bg-card p-2.5 transition-colors hover:bg-accent/50 sm:flex-row sm:items-center sm:gap-3">
-                  <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-md", tipo.color)}>
-                    <IconComponent aria-hidden="true" className="h-4 w-4" />
+                  <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-md", tipo.color)}>
+                    <IconComponent aria-hidden="true" className="h-3.5 w-3.5" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -8460,7 +8503,7 @@ const saveConfig = async () => {
                       setHasUnsavedTipos(true)
                     }}
                   >
-                    <SelectTrigger aria-label={`Destino de roteamento para ${tipo.label}`} className="h-9 w-full text-xs sm:w-[170px]">
+                    <SelectTrigger aria-label={`Destino de roteamento para ${tipo.label}`} className="h-8 w-full text-xs sm:w-[170px]">
                       <SelectValue placeholder="Selecionar setor" />
                     </SelectTrigger>
                     <SelectContent>
@@ -8482,17 +8525,18 @@ const saveConfig = async () => {
         <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Tag className="h-5 w-5" />
+              <Tag className="h-4 w-4" />
               Classificação de Atendimento
             </CardTitle>
             <p className="text-sm text-muted-foreground">
               Cadastre os tipos de atendimento deste setor. Ao encerrar um chat no workdesk, o atendente deverá escolher uma destas classificações.
             </p>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             {/* Adicionar nova classificação */}
             <div className="flex gap-2">
               <Input
+                className="h-8"
                 placeholder="Ex: Dúvida, Reclamação, Instalação..."
                 value={novaClassificacao}
                 onChange={(e) => setNovaClassificacao(e.target.value)}
@@ -8504,8 +8548,8 @@ const saveConfig = async () => {
                 }}
                 maxLength={60}
               />
-              <Button onClick={addClassificacao} disabled={savingClassificacao || !novaClassificacao.trim()}>
-                {savingClassificacao ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              <Button size="sm" onClick={addClassificacao} disabled={savingClassificacao || !novaClassificacao.trim()}>
+                {savingClassificacao ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
                 <span className="ml-1 hidden sm:inline">Adicionar</span>
               </Button>
             </div>
@@ -8538,10 +8582,10 @@ const saveConfig = async () => {
                           }}
                           autoFocus
                           maxLength={60}
-                          className="flex-1"
+                          className="flex-1 h-8"
                         />
                         <Button size="sm" onClick={saveEditingClassificacao} disabled={!editingClassificacaoNome.trim()}>
-                          <Check className="h-4 w-4" />
+                          <Check className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           size="sm"
@@ -8551,12 +8595,12 @@ const saveConfig = async () => {
                             setEditingClassificacaoNome('')
                           }}
                         >
-                          <X className="h-4 w-4" />
+                          <X className="h-3.5 w-3.5" />
                         </Button>
                       </>
                     ) : (
                       <>
-                        <Tag className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                         <span className={cn('flex-1 font-medium', !tipo.ativo && 'text-muted-foreground line-through')}>
                           {tipo.nome}
                         </span>
@@ -8576,12 +8620,12 @@ const saveConfig = async () => {
                               setEditingClassificacaoNome(tipo.nome)
                             }}
                           >
-                            <Pencil className="h-4 w-4" />
+                            <Pencil className="h-3.5 w-3.5" />
                           </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
                               <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive">
-                                <Trash2 className="h-4 w-4" />
+                                <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             </AlertDialogTrigger>
                             <AlertDialogContent>
@@ -8613,13 +8657,13 @@ const saveConfig = async () => {
         </Card>
 
         {/* Row 1: Subsetores + Tempo de Espera */}
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2">
           {/* Subsetores */}
           <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="flex flex-row items-center justify-between shrink-0">
               <div>
                 <CardTitle className="flex items-center gap-2">
-                  <Users className="h-5 w-5" />
+                  <Users className="h-4 w-4" />
                   Subsetores
                 </CardTitle>
                 <p className="text-sm text-muted-foreground mt-1">
@@ -8627,11 +8671,11 @@ const saveConfig = async () => {
                 </p>
               </div>
               <Button size="sm" onClick={openCreateSubsetor}>
-                <Plus className="h-4 w-4 mr-1" />
+                <Plus className="h-3.5 w-3.5 mr-1" />
                 Novo Subsetor
               </Button>
             </CardHeader>
-            <CardContent className="flex-1 overflow-hidden p-0 px-6 pb-6">
+            <CardContent className="flex-1 overflow-hidden p-0 px-4 pb-4">
               {subsetores.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">Nenhum subsetor cadastrado</p>
               ) : (
@@ -8660,23 +8704,23 @@ const saveConfig = async () => {
                             <div className="flex items-center justify-end gap-1">
                               <Button
                                 variant="ghost"
-                                size="icon"
+                                size="icon-sm"
                                 onClick={() => openEditSubsetor(subsetor)}
                                 aria-label={`Editar subsetor ${subsetor.nome}`}
                                 title="Editar subsetor"
                               >
-                                <Pencil className="h-4 w-4" />
+                                <Pencil className="h-3.5 w-3.5" />
                               </Button>
                               <Button
                                 variant="ghost"
-                                size="icon"
+                                size="icon-sm"
                                 onClick={() => deleteSubsetor(subsetor.id)}
                                 disabled={deletingSubsetorId === subsetor.id}
                                 className="text-destructive hover:text-destructive"
                                 aria-label={`Excluir subsetor ${subsetor.nome}`}
                                 title="Excluir subsetor"
                               >
-                                <Trash2 className="h-4 w-4" />
+                                <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             </div>
                           </TableCell>
@@ -8698,11 +8742,12 @@ const saveConfig = async () => {
               </p>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                 <div className="space-y-2 flex-1 max-w-xs">
                   <Label htmlFor="tempo_espera_minutos">Minutos</Label>
                   <Input
                     id="tempo_espera_minutos"
+                    className="h-8"
                     type="number"
                     min={1}
                     max={1440}
@@ -8817,8 +8862,8 @@ const saveConfig = async () => {
               Fecha automaticamente tickets em que o atendente foi quem respondeu por último e o cliente não retornou há X minutos. Tickets aguardando resposta do atendente nunca são fechados automaticamente. Tickets de disparo são ignorados.
             </p>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
               <div className="space-y-0.5">
                 <p className="text-sm font-medium">Ativar encerramento automático</p>
                 <p className="text-xs text-muted-foreground">
@@ -8835,11 +8880,12 @@ const saveConfig = async () => {
             </div>
 
             {configForm.encerramento_auto_ativo && (
-              <div className="flex items-center gap-4 pl-2">
+              <div className="flex items-center gap-3 pl-2">
                 <div className="space-y-2 flex-1 max-w-xs">
                   <Label htmlFor="encerramento_auto_minutos">Tempo sem retorno do cliente (minutos)</Label>
                   <Input
                     id="encerramento_auto_minutos"
+                    className="h-8"
                     type="number"
                     min={15}
                     max={1440}
@@ -8865,20 +8911,20 @@ const saveConfig = async () => {
         </Card>
 
         {/* Row 2: Distribuição de Tickets + Mensagem de Finalização */}
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2">
           {/* Distribuição de Tickets */}
           <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="shrink-0">
               <CardTitle className="flex items-center gap-2">
-                <UserCheck className="h-5 w-5" />
+                <UserCheck className="h-4 w-4" />
                 Distribuição de Tickets
               </CardTitle>
               <p className="text-sm text-muted-foreground mt-1">
                 Configure como os tickets são distribuídos automaticamente entre os atendentes.
               </p>
             </CardHeader>
-            <CardContent className="space-y-5 overflow-y-auto">
-              <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+            <CardContent className="space-y-4 overflow-y-auto">
+              <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
                 <div className="space-y-0.5">
                   <p className="text-sm font-medium">Atribuição Automática</p>
                   <p className="text-xs text-muted-foreground">
@@ -8897,6 +8943,7 @@ const saveConfig = async () => {
                 <Label htmlFor="max_tickets">Limite de tickets por atendente</Label>
                 <Input
                   id="max_tickets"
+                  className="h-8"
                   type="number"
                   min={1}
                   max={100}
@@ -8924,7 +8971,7 @@ const saveConfig = async () => {
                 Esta mensagem será enviada automaticamente via WhatsApp quando um ticket for encerrado.
               </p>
             </CardHeader>
-            <CardContent className="space-y-4 overflow-y-auto">
+            <CardContent className="space-y-3 overflow-y-auto">
               <Textarea
                 value={configForm.mensagem_finalizacao}
                 onChange={(e) =>
@@ -8968,17 +9015,18 @@ const saveConfig = async () => {
               </p>
             </div>
             <Button
+              size="sm"
               onClick={() => {
                 setEditingCanal(null)
                 resetCanalForm()
                 setIsCanalModalOpen(true)
               }}
             >
-              <Plus className="mr-2 h-4 w-4" />
+              <Plus className="mr-2 h-3.5 w-3.5" />
               Adicionar Canal
             </Button>
           </CardHeader>
-          <CardContent className="flex-1 overflow-hidden p-0 px-6 pb-6">
+          <CardContent className="flex-1 overflow-hidden p-0 px-4 pb-4">
             {canais.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
                 <Globe className="h-12 w-12 mx-auto mb-4 opacity-50" />
@@ -9123,23 +9171,23 @@ const saveConfig = async () => {
                             )}
                             <Button
                               variant="ghost"
-                              size="icon"
+                              size="icon-sm"
                               onClick={() => openEditCanal(canal)}
                               aria-label={`Editar canal ${canal.nome || canal.id}`}
                               title="Editar canal"
                             >
-                              <Pencil className="h-4 w-4" />
+                              <Pencil className="h-3.5 w-3.5" />
                             </Button>
                             <Button
                               variant="ghost"
-                              size="icon"
+                              size="icon-sm"
                               onClick={() => deleteCanal(canal.id)}
                               disabled={deletingCanalId === canal.id}
                               className="text-destructive hover:text-destructive"
                               aria-label={`Excluir canal ${canal.nome || canal.id}`}
                               title="Excluir canal"
                             >
-                              <Trash2 className="h-4 w-4" />
+                              <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           </div>
                         </TableCell>
@@ -9156,12 +9204,12 @@ const saveConfig = async () => {
         <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5" />
+              <Sparkles className="h-4 w-4" />
               Inteligência Artificial
             </CardTitle>
             <CardDescription>Configure a IA para melhorar mensagens dos atendentes</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium">Ativar Melhoria com IA</p>
@@ -9180,6 +9228,7 @@ const saveConfig = async () => {
                 <Label htmlFor="openai_api_key">Chave da API OpenAI</Label>
                 <Input
                   id="openai_api_key"
+                  className="h-8"
                   type="password"
                   placeholder="sk-..."
                   value={configForm.openai_api_key}
@@ -9213,6 +9262,7 @@ const saveConfig = async () => {
                     <Label htmlFor="openai_base_url">URL personalizada da IA</Label>
                     <Input
                       id="openai_base_url"
+                      className="h-8"
                       type="url"
                       placeholder="https://meu-endpoint.com/v1"
                       value={configForm.openai_base_url}
@@ -9261,7 +9311,7 @@ const saveConfig = async () => {
         <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Pencil className="h-5 w-5" />
+              <Pencil className="h-4 w-4" />
               Assinatura do Atendente
             </CardTitle>
             <CardDescription>Adiciona o nome do atendente automaticamente antes de cada mensagem enviada</CardDescription>
@@ -9287,7 +9337,7 @@ const saveConfig = async () => {
         <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <ArrowUpDown className="h-5 w-5" />
+              <ArrowUpDown className="h-4 w-4" />
               Ordenação de Conversas
             </CardTitle>
             <CardDescription>Controla se a lista de chats do WorkDesk sobe automaticamente conversas com mensagens novas</CardDescription>
@@ -9317,7 +9367,7 @@ const saveConfig = async () => {
         </Card>
 
         {/* Row 3: Templates de Mensagem + Webhooks */}
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2">
           {/* Templates de Mensagem */}
           <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[400px]">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0">
@@ -9328,17 +9378,18 @@ const saveConfig = async () => {
                 </p>
               </div>
               <Button
+                size="sm"
                 onClick={() => {
                   setEditingTemplate(null)
                   setTemplateForm({ atalho: '', mensagem: '' })
                   setIsTemplateModalOpen(true)
                 }}
               >
-                <Plus className="mr-2 h-4 w-4" />
+                <Plus className="mr-2 h-3.5 w-3.5" />
                 Novo Template
               </Button>
             </CardHeader>
-            <CardContent className="flex-1 overflow-hidden p-0 px-6 pb-6">
+            <CardContent className="flex-1 overflow-hidden p-0 px-4 pb-4">
               {templates.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
                   <FileText className="h-12 w-12 mx-auto mb-4 opacity-50" />
@@ -9350,7 +9401,7 @@ const saveConfig = async () => {
                   {templates.map((template) => (
                     <div
                       key={template.id}
-                      className="flex items-start justify-between p-4 rounded-lg border bg-muted/30"
+                      className="flex items-start justify-between p-3 rounded-lg border bg-muted/30"
                     >
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-1">
@@ -9361,7 +9412,7 @@ const saveConfig = async () => {
                       <div className="flex items-center gap-1 ml-4">
                         <Button
                           variant="ghost"
-                          size="icon"
+                          size="icon-sm"
                           onClick={() => {
                             setEditingTemplate(template)
                             setTemplateForm({
@@ -9373,17 +9424,17 @@ const saveConfig = async () => {
                           aria-label={`Editar mensagem rápida ${template.atalho}`}
                           title="Editar mensagem rápida"
                         >
-                          <Pencil className="h-4 w-4" />
+                          <Pencil className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           variant="ghost"
-                          size="icon"
+                          size="icon-sm"
                           onClick={() => deleteTemplate(template.id)}
                           className="text-destructive hover:text-destructive"
                           aria-label={`Excluir mensagem rápida ${template.atalho}`}
                           title="Excluir mensagem rápida"
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </div>
@@ -9399,7 +9450,7 @@ const saveConfig = async () => {
               <CardTitle>Webhooks</CardTitle>
               <p className="text-sm text-muted-foreground">Dispare notificações para sistemas externos quando eventos ocorrerem neste setor.</p>
             </CardHeader>
-            <CardContent className="space-y-4 overflow-y-auto">
+            <CardContent className="space-y-3 overflow-y-auto">
               <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
                 <div>
                   <p className="text-sm font-medium">Enviar ao encerrar ticket</p>
@@ -9433,7 +9484,7 @@ const saveConfig = async () => {
         <Card className="glass-card-elevated rounded-lg flex flex-col max-h-[420px]">
           <CardHeader className="shrink-0">
             <CardTitle className="flex items-center gap-2">
-              <ArrowRightLeft className="h-5 w-5" />
+              <ArrowRightLeft className="h-4 w-4" />
               Setores para Transferência
             </CardTitle>
             <p className="text-sm text-muted-foreground mt-1">
@@ -9443,12 +9494,12 @@ const saveConfig = async () => {
           <CardContent className="flex-1 overflow-hidden flex flex-col gap-3 pb-4">
             {/* Busca */}
             <div className="relative shrink-0">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/60" />
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
               <Input
                 placeholder="Buscar setor..."
                 value={searchSetorDestino}
                 onChange={(e) => setSearchSetorDestino(e.target.value)}
-                className="pl-9 h-9 text-sm"
+                className="pl-9 h-8 text-sm"
               />
             </div>
 
@@ -9514,19 +9565,19 @@ const saveConfig = async () => {
           <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Radio className="h-5 w-5" />
+                <Radio className="h-4 w-4" />
                 Receptor / Transmissor
               </CardTitle>
               <p className="text-sm text-muted-foreground">
                 Configure o encaminhamento automático de tickets quando não houver atendentes disponíveis.
               </p>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className="space-y-4">
               {/* Switch: Setor Receptor */}
-              <div className="flex items-center justify-between rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between rounded-lg border border-border p-3">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-950">
-                    <Inbox className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-950">
+                    <Inbox className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
                   </div>
                   <div>
                     <p className="text-sm font-medium">Setor Receptor</p>
@@ -9550,13 +9601,13 @@ const saveConfig = async () => {
 
               {/* Switch: Transmissão Ativa */}
               <div className={cn(
-                "rounded-lg border border-border p-4 transition-opacity",
+                "rounded-lg border border-border p-3 transition-opacity",
                 configForm.is_receptor && "opacity-50 pointer-events-none"
               )}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-950">
-                      <Radio className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-950">
+                      <Radio className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
                     </div>
                     <div>
                       <p className="text-sm font-medium">Transmissão Ativa</p>
@@ -9588,7 +9639,7 @@ const saveConfig = async () => {
                         setConfigForm((prev) => ({ ...prev, setor_receptor_id: v === 'none' ? '' : v }))
                       }
                     >
-                      <SelectTrigger>
+                      <SelectTrigger className="h-8">
                         <SelectValue placeholder="Selecione o setor receptor..." />
                       </SelectTrigger>
                       <SelectContent>
@@ -9622,7 +9673,7 @@ const saveConfig = async () => {
           <Card className="glass-card-elevated rounded-lg">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Clock className="h-5 w-5" />
+                <Clock className="h-4 w-4" />
                 Bloqueio de Transbordo
               </CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -9660,13 +9711,13 @@ const saveConfig = async () => {
                         </div>
                         <Button
                           variant="ghost"
-                          size="icon"
-                          className="ml-auto h-8 w-8 text-destructive hover:text-destructive"
+                          size="icon-sm"
+                          className="ml-auto text-destructive hover:text-destructive"
                           onClick={() => removeTransbordoBloqueio(i)}
                           aria-label={`Remover janela de bloqueio ${i + 1}`}
                           title="Remover janela"
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -9694,7 +9745,7 @@ const saveConfig = async () => {
                 </div>
               )}
               <Button variant="outline" size="sm" className="gap-2" onClick={addTransbordoBloqueio}>
-                <Plus className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5" />
                 Adicionar janela
               </Button>
             </CardContent>
@@ -9705,7 +9756,7 @@ const saveConfig = async () => {
         <Card className="glass-card-elevated rounded-lg border-destructive/50">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle className="h-5 w-5" />
+              <AlertTriangle className="h-4 w-4" />
               Zona de Perigo
             </CardTitle>
             <p className="text-sm text-muted-foreground">
@@ -9713,8 +9764,8 @@ const saveConfig = async () => {
             </p>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between p-4 rounded-lg border border-destructive/30 bg-destructive/5">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg border border-destructive/30 bg-destructive/5">
                 <div>
                   <p className="font-medium">Excluir Setor</p>
                   <p className="text-sm text-muted-foreground">
@@ -9724,14 +9775,14 @@ const saveConfig = async () => {
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
                     <Button variant="destructive" size="sm">
-                      <Trash2 className="h-4 w-4 mr-2" />
+                      <Trash2 className="h-3.5 w-3.5 mr-2" />
                       Excluir Setor
                     </Button>
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>
                       <AlertDialogTitle className="flex items-center gap-2 text-destructive">
-                        <AlertTriangle className="h-5 w-5" />
+                        <AlertTriangle className="h-4 w-4" />
                         Excluir Setor Permanentemente
                       </AlertDialogTitle>
                       <AlertDialogDescription className="space-y-3">
@@ -9752,7 +9803,7 @@ const saveConfig = async () => {
                           </Label>
                           <Input
                             id="confirm-delete"
-                            className="mt-2"
+                            className="mt-2 h-8"
                             placeholder="Digite o nome do setor"
                             value={deleteSetorConfirmText}
                             onChange={(e) => setDeleteSetorConfirmText(e.target.value)}
@@ -9766,17 +9817,18 @@ const saveConfig = async () => {
                       </AlertDialogCancel>
                       <Button
                         variant="destructive"
+                        size="sm"
                         onClick={handleDeleteSetor}
                         disabled={deletingSetor || deleteSetorConfirmText !== setor?.nome}
                       >
                         {deletingSetor ? (
                           <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                             Excluindo...
                           </>
                         ) : (
                           <>
-                            <Trash2 className="mr-2 h-4 w-4" />
+                            <Trash2 className="mr-2 h-3.5 w-3.5" />
                             Excluir Setor Permanentemente
                           </>
                         )}

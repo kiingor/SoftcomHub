@@ -213,9 +213,9 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
   return (
     <Card className="glass-card-elevated rounded-2xl border-0">
       <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-3">
           <CardTitle className="text-base flex items-center gap-2">
-            <History className="h-4 w-4" />
+            <History className="h-3.5 w-3.5" />
             Histórico por Cliente
           </CardTitle>
           {cliente && (
@@ -226,25 +226,25 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
         </div>
       </CardHeader>
 
-      <CardContent className="px-4 pb-4 pt-2">
+      <CardContent className="px-3 pb-3 pt-2">
         {!cliente && (
           <div className="space-y-3">
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder="Buscar cliente por nome, telefone, CNPJ ou Registro..."
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                className="pl-8"
+                className="h-8 pl-8"
               />
             </div>
 
             {qDebounced.trim() && (
               <div className="rounded-lg border max-h-[360px] overflow-y-auto">
                 {matchesLoading ? (
-                  <div className="p-4 text-center text-sm text-muted-foreground">Buscando...</div>
+                  <div className="p-3 text-center text-sm text-muted-foreground">Buscando...</div>
                 ) : matches.length === 0 ? (
-                  <div className="p-4 text-center text-sm text-muted-foreground">
+                  <div className="p-3 text-center text-sm text-muted-foreground">
                     Nenhum cliente encontrado.
                   </div>
                 ) : (
@@ -256,7 +256,7 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
                           className="w-full text-left p-3 hover:bg-accent/50 transition flex items-center gap-3"
                           onClick={() => handlePickCliente(c)}
                         >
-                          <User className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium truncate">
                               {c.nome || <span className="text-muted-foreground">sem nome</span>}
@@ -282,10 +282,10 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
         )}
 
         {cliente && (
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border">
-              <div className="flex items-center gap-3 min-w-0">
-                <User className="h-5 w-5 text-muted-foreground shrink-0" />
+              <div className="flex items-center gap-2 min-w-0">
+                <User className="h-4 w-4 text-muted-foreground shrink-0" />
                 <div className="min-w-0">
                   <p className="font-medium truncate">
                     {cliente.nome || 'Sem nome'}
@@ -302,14 +302,14 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
             </div>
 
             {loading ? (
-              <div className="text-center py-12 text-sm text-muted-foreground">Carregando...</div>
+              <div className="text-center py-8 text-sm text-muted-foreground">Carregando...</div>
             ) : tickets.length === 0 ? (
-              <div className="text-center py-12 text-sm text-muted-foreground">
+              <div className="text-center py-8 text-sm text-muted-foreground">
                 Este cliente nunca foi atendido neste setor.
               </div>
             ) : (
               <>
-                <div ref={messagesScrollRef} className="rounded-lg border bg-background/40 max-h-[640px] overflow-y-auto p-4 space-y-6">
+                <div ref={messagesScrollRef} className="rounded-lg border bg-background/40 max-h-[640px] overflow-y-auto p-3 space-y-4">
                   {tickets.map((t) => {
                     const msgs = msgsByTicket.get(t.id) || []
                     return (
@@ -336,19 +336,19 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
                     <div className="flex gap-2">
                       <Button
                         variant="outline"
-                        size="sm"
+                        size="icon-sm"
                         onClick={() => setPage((p) => Math.max(1, p - 1))}
                         disabled={page === 1 || loading}
                       >
-                        <ChevronLeft className="h-4 w-4" />
+                        <ChevronLeft className="h-3.5 w-3.5" />
                       </Button>
                       <Button
                         variant="outline"
-                        size="sm"
+                        size="icon-sm"
                         onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                         disabled={page === totalPages || loading}
                       >
-                        <ChevronRight className="h-4 w-4" />
+                        <ChevronRight className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </div>
@@ -367,7 +367,7 @@ export function HistoricoClienteSection({ setorId }: { setorId: string }) {
 function TicketStartSeparator({ ticket }: { ticket: TicketLite }) {
   const atendente = ticket.colaboradores?.nome || '—'
   return (
-    <div className="flex items-center gap-3 py-1">
+    <div className="flex items-center gap-2 py-1">
       <div className="flex-1 border-t border-dashed border-emerald-500/40" />
       <div className="flex items-center gap-2 text-[11px] font-medium text-emerald-700 dark:text-emerald-400 whitespace-nowrap">
         <Clock className="h-3.5 w-3.5" />
@@ -383,7 +383,7 @@ function TicketStartSeparator({ ticket }: { ticket: TicketLite }) {
 function TicketEndSeparator({ ticket }: { ticket: TicketLite }) {
   if (ticket.status !== 'encerrado' && ticket.status !== 'avaliar') {
     return (
-      <div className="flex items-center gap-3 py-1">
+      <div className="flex items-center gap-2 py-1">
         <div className="flex-1 border-t border-dashed border-amber-500/40" />
         <div className="flex items-center gap-2 text-[11px] font-medium text-amber-700 dark:text-amber-400 whitespace-nowrap">
           <Clock className="h-3.5 w-3.5" />
@@ -397,7 +397,7 @@ function TicketEndSeparator({ ticket }: { ticket: TicketLite }) {
     ? formatDateTime(ticket.encerrado_em)
     : 'aguardando avaliação'
   return (
-    <div className="flex items-center gap-3 py-1">
+    <div className="flex items-center gap-2 py-1">
       <div className="flex-1 border-t border-dashed border-red-500/40" />
       <div className="flex items-center gap-2 text-[11px] font-medium text-red-700 dark:text-red-400 whitespace-nowrap">
         <CheckCircle2 className="h-3.5 w-3.5" />

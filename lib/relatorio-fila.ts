@@ -1,11 +1,20 @@
 /**
  * Indicadores de fila para o relatório de atendimento.
  *
- * A "fila" aqui é a espera do cliente pela PRIMEIRA RESPOSTA — da criação do
- * ticket, ou da resposta do cliente quando o atendimento veio de um disparo.
- * É o único recorte reconstruível historicamente:
- * `atribuido_em` só passou a ser gravado em 28/07/2026, e antes disso não há
- * registro de quando o ticket saiu da fila.
+ * FILA é o tempo SEM ATENDENTE: da entrada do cliente até `atribuido_em`. Não
+ * até a primeira resposta — essa era a definição antiga e media outra coisa.
+ * Medido em 04/08/2026 no ServiceDesk: dos 79 clientes Prime contados como
+ * "esperaram", só 11 estavam sem dono; os outros 68 já tinham atendente em 6
+ * segundos e aguardavam ele DIGITAR (mediana de 122s). Ou seja, 86% do que a
+ * tela chamava de fila era tempo de resposta, e nenhum ajuste de limiar
+ * consertava: é problema de equipe lenta, não de equipe faltando.
+ *
+ * A definição antiga se justificava porque `atribuido_em` só passou a ser
+ * gravado em 28/07/2026. Para não perder o histórico, `resolverFimDaEspera`
+ * mantém a cadeia: sem carimbo de atribuição cai na primeira resposta, depois
+ * no encerramento. Consequência a conhecer: num relatório que atravesse
+ * 28/07/2026 os dias anteriores seguem inflados pela regra velha, e a série tem
+ * um degrau ali. Não há como reconstruir o que não foi gravado.
  *
  * `resumirFila` conta CLIENTES que passaram do limite; `contarEpisodiosDeFila`
  * conta VEZES que a fila se formou. Medir "vezes" sobre vários dias de uma vez
@@ -16,12 +25,16 @@
 
 type ClienteEmbed = { nome?: string | null }
 
-export type TicketFila = {
-  numero?: number | string | null
-  criado_em?: string | null
-  /** Disparo só entra na fila após o cliente responder. */
-  is_disparo?: boolean | null
-  cliente_respondeu_em?: string | null
+/**
+ * O que fecha a espera na fila, em ordem de preferência.
+ *
+ * `atribuido_em` é a saída de verdade: o cliente deixou a fila quando ganhou um
+ * atendente. Os outros dois são degradação para o histórico anterior a
+ * 28/07/2026, quando a coluna não era gravada.
+ */
+type TicketComSaidaDeFila = {
+  /** Primeira atribuição. Só existe a partir de 28/07/2026. */
+  atribuido_em?: string | null
   primeira_resposta_em?: string | null
   /**
    * Fecha a espera de quem foi encerrado sem nunca receber resposta. Sem isto a
@@ -30,6 +43,14 @@ export type TicketFila = {
    * esperando" no card de maior espera.
    */
   encerrado_em?: string | null
+}
+
+export type TicketFila = TicketComSaidaDeFila & {
+  numero?: number | string | null
+  criado_em?: string | null
+  /** Disparo só entra na fila após o cliente responder. */
+  is_disparo?: boolean | null
+  cliente_respondeu_em?: string | null
   /**
    * O PostgREST devolve o embed como objeto ou como array conforme infere a
    * relação: no relatório vem objeto, na consulta do monitoramento vem array.
@@ -65,13 +86,20 @@ export function resolverEntradaDeFila(ticket: TicketComEntradaDeFila): number {
 }
 
 /**
- * Instante em que o cliente parou de esperar, ou `NaN` se ainda espera.
+ * Instante em que o cliente saiu da fila, ou `NaN` se ainda espera.
  *
- * A primeira resposta encerra a espera. Encerrar o ticket também: quem foi
- * fechado sem nunca ser respondido saiu da fila ali, não segue esperando.
- * Considerar só a resposta fazia a espera desses tickets crescer para sempre.
+ * Ganhar um atendente é sair da fila — o que vier depois é tempo de resposta,
+ * não de fila. Sem o carimbo de atribuição (histórico anterior a 28/07/2026),
+ * cai na primeira resposta e depois no encerramento: quem foi fechado sem nunca
+ * ser respondido saiu da fila ali, não segue esperando. Considerar só a resposta
+ * fazia a espera desses tickets crescer para sempre.
  */
-function resolverFimDaEspera(ticket: TicketFila): number {
+function resolverFimDaEspera(ticket: TicketComSaidaDeFila): number {
+  const atribuido = ticket.atribuido_em
+    ? Date.parse(ticket.atribuido_em)
+    : Number.NaN
+  if (Number.isFinite(atribuido)) return atribuido
+
   const respondido = ticket.primeira_resposta_em
     ? Date.parse(ticket.primeira_resposta_em)
     : Number.NaN
@@ -119,9 +147,31 @@ export type ResumoFila = {
 export const LIMITE_FILA_PADRAO_MIN = 1
 export const LIMITE_SLA_PADRAO_MIN = 15
 
+export type OpcoesDeFila = {
+  agoraMs: number
+  limiteFilaMin?: number
+  /**
+   * Desconta as horas em que o setor está fechado — venha de
+   * `criarMedidorDeExpediente`. Sem ele a conta segue em tempo corrido, que é
+   * o comportamento de quem não tem horário cadastrado.
+   *
+   * Medido em 04/08/2026 no ServiceDesk: sem descontar, a maior espera do dia
+   * era 6h37 de um cliente que escreveu 00:28 e foi atendido 07:05, cinco
+   * minutos depois da abertura. Descontando, a pior espera real foi de 15 min.
+   * A CONTAGEM de quem esperou quase não muda (70 contra 70 no mesmo dia) —
+   * quem se distorce é o extremo.
+   */
+  expediente?: ((deMs: number, ateMs: number) => number) | null
+}
+
+/** A espera que conta: fora do expediente não havia como atender. */
+function medirEspera(inicioMs: number, fimMs: number, opts: OpcoesDeFila): number {
+  return opts.expediente ? opts.expediente(inicioMs, fimMs) : fimMs - inicioMs
+}
+
 export function resumirFila(
   tickets: readonly TicketFila[],
-  opts: { agoraMs: number; limiteFilaMin?: number; limiteSlaMin?: number },
+  opts: OpcoesDeFila & { limiteSlaMin?: number },
 ): ResumoFila {
   const filaMs = Math.max(0, opts.limiteFilaMin ?? LIMITE_FILA_PADRAO_MIN) * 60_000
   const slaMs = Math.max(0, opts.limiteSlaMin ?? LIMITE_SLA_PADRAO_MIN) * 60_000
@@ -139,10 +189,10 @@ export function resumirFila(
 
     const fimDaEspera = resolverFimDaEspera(ticket)
     const emAndamento = !Number.isFinite(fimDaEspera)
-    // Sem resposta e sem encerramento, a espera corre até agora — é o caso que
-    // mais importa, porque é o cliente que continua esperando.
+    // Sem nenhum carimbo, a espera corre até agora — é o caso que mais importa,
+    // porque é o cliente que continua esperando.
     const fim = emAndamento ? opts.agoraMs : fimDaEspera
-    const espera = fim - inicio
+    const espera = medirEspera(inicio, fim, opts)
     if (!Number.isFinite(espera) || espera < 0) continue
 
     if (espera > filaMs) {
@@ -202,14 +252,10 @@ export function faixaDeSaude(percentual: number): 'boa' | 'atencao' | 'critica' 
   return 'critica'
 }
 
-export type TicketNaFila = {
+export type TicketNaFila = TicketComSaidaDeFila & {
   criado_em?: string | null
   is_disparo?: boolean | null
   cliente_respondeu_em?: string | null
-  /** Saída da fila: o cliente deixou de esperar quando alguém respondeu. */
-  primeira_resposta_em?: string | null
-  /** Encerrado sem nenhuma resposta — a espera acabou aqui, mesmo assim. */
-  encerrado_em?: string | null
   status?: string | null
 }
 
@@ -229,24 +275,22 @@ export type EpisodiosDeFila = {
  * menos alguém esperando. Uma fila que nasce às 9h e absorve 40 clientes até
  * esvaziar é UMA vez, não 40.
  *
- * A saída da fila é a PRIMEIRA RESPOSTA, não a atribuição. Duas razões: é o
- * instante em que o cliente de fato deixou de esperar (ter dono e ainda não ter
- * recebido mensagem é esperar), e é reconstruível para todo o histórico —
- * `atribuido_em` só passou a ser gravado em 28/07/2026. Encerrado sem resposta
- * usa `encerrado_em`; sem os dois, o cliente ainda está esperando agora.
+ * A saída da fila é a ATRIBUIÇÃO — ver `resolverFimDaEspera` e a nota do topo
+ * do módulo. Sem nenhum dos carimbos, o cliente ainda está esperando agora.
  *
  * Quem foi atendido abaixo do limite não forma fila: sem isso, cada ticket
- * respondido em 10 segundos abriria um episódio e o número viraria contagem de
+ * atribuído em 10 segundos abriria um episódio e o número viraria contagem de
  * cliente de novo.
  *
- * O recorte importa. Medido em 28/07/2026: o subsetor Suporte no dia dá 8
- * episódios, mas o SETOR INTEIRO dá 3 — misturando subsetores a fila quase não
- * esvazia. Sobre vários dias seguidos degenera para 1, porque a espera da
- * madrugada emenda um dia no outro. Use por dia e por subsetor.
+ * Esta função mede UMA fila. Passar vários subsetores de uma vez subconta, e
+ * muito: misturando-os a fila quase não esvazia, porque um cobre o vazio do
+ * outro. Para um recorte com várias filas use `somarEpisodiosPorFila`. Sobre
+ * vários DIAS seguidos degenera igual, para 1 — a espera da madrugada emenda um
+ * dia no outro —, e para isso não há função: meça um dia de cada vez.
  */
 export function contarEpisodiosDeFila(
   tickets: readonly TicketNaFila[],
-  opts: { agoraMs: number; limiteFilaMin?: number },
+  opts: OpcoesDeFila,
 ): EpisodiosDeFila {
   const filaMs = Math.max(0, opts.limiteFilaMin ?? LIMITE_FILA_PADRAO_MIN) * 60_000
   const eventos: Array<[number, number]> = []
@@ -256,17 +300,18 @@ export function contarEpisodiosDeFila(
     const entrada = resolverEntradaDeFila(ticket)
     if (!Number.isFinite(entrada)) continue
 
-    const respondido = ticket.primeira_resposta_em ? Date.parse(ticket.primeira_resposta_em) : Number.NaN
-    const encerrado = ticket.encerrado_em ? Date.parse(ticket.encerrado_em) : Number.NaN
-    // Sem resposta e sem encerramento, a espera segue correndo agora.
-    const saida = Number.isFinite(respondido)
-      ? respondido
-      : (Number.isFinite(encerrado) ? encerrado : opts.agoraMs)
+    // Sem nenhum dos carimbos, a espera segue correndo agora.
+    const fim = resolverFimDaEspera(ticket)
+    const saida = Number.isFinite(fim) ? fim : opts.agoraMs
 
-    if (saida - entrada < filaMs) {
+    // O teste de "isto foi fila?" desconta o expediente igual a `resumirFila`,
+    // senão o card diria que ninguém esperou e mesmo assim contaria episódios.
+    if (medirEspera(entrada, saida, opts) <= filaMs) {
       semEspera += 1
       continue
     }
+    // A linha do tempo fica em hora corrida de propósito: o pico responde
+    // quantos clientes esperavam JUNTOS, e isso acontece em hora real.
     eventos.push([entrada, 1], [saida, -1])
   }
 
@@ -289,4 +334,44 @@ export function contarEpisodiosDeFila(
   }
 
   return { vezes, pico, semEspera }
+}
+
+/**
+ * Episódios somados FILA A FILA, para quando o recorte cobre várias.
+ *
+ * Cada subsetor tem os seus atendentes, logo é uma fila própria: uma fila em
+ * Suporte e outra em Prime ao mesmo tempo são dois episódios, não um. Jogar as
+ * duas numa linha do tempo só quase nunca deixa o contador voltar a zero — a
+ * fila de um cobre o vazio do outro — e o total despenca. Medido em 04/08/2026
+ * no ServiceDesk Matriz Chat: 31 na linha única contra 80 somando por subsetor,
+ * e a mesma proporção nos sete dias anteriores.
+ *
+ * `filaDoTicket` decide a que fila cada ticket pertence. Quem chama resolve o
+ * ticket sem subsetor — no ServiceDesk ele cai no Suporte, que é para onde vai
+ * o trabalho não classificado.
+ *
+ * `pico` e `semEspera` continuam vindo do conjunto inteiro: "quantos clientes
+ * esperavam no pior instante" é pergunta sobre o recorte todo, não sobre uma
+ * fila só, e somar picos de filas diferentes daria um instante que nunca houve.
+ */
+export function somarEpisodiosPorFila<TTicket extends TicketNaFila>(
+  tickets: readonly TTicket[],
+  filaDoTicket: (ticket: TTicket) => string,
+  opts: OpcoesDeFila,
+): EpisodiosDeFila {
+  const porFila = new Map<string, TTicket[]>()
+  for (const ticket of tickets) {
+    const chave = filaDoTicket(ticket)
+    const daFila = porFila.get(chave)
+    if (daFila) daFila.push(ticket)
+    else porFila.set(chave, [ticket])
+  }
+
+  let vezes = 0
+  for (const daFila of porFila.values()) {
+    vezes += contarEpisodiosDeFila(daFila, opts).vezes
+  }
+
+  const doConjunto = contarEpisodiosDeFila(tickets, opts)
+  return { vezes, pico: doConjunto.pico, semEspera: doConjunto.semEspera }
 }

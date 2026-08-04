@@ -78,7 +78,7 @@ export function AtendentesStatusModal({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
-            <DialogTitle>Status dos atendentes</DialogTitle>
+            <DialogTitle className="text-base">Status dos atendentes</DialogTitle>
             <DialogDescription>
               Online = entrou no workdesk e heartbeat dos últimos 2 minutos, sem pausa.
               Browser fechado por mais de 2 minutos sem clicar &quot;offline&quot; aparece como Offline.
@@ -87,7 +87,7 @@ export function AtendentesStatusModal({
 
           <div className="flex-1 overflow-y-auto -mx-6 px-6">
             {sorted.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">
+              <p className="text-sm text-muted-foreground text-center py-6">
                 Nenhum atendente vinculado a este setor.
               </p>
             ) : (
@@ -96,7 +96,7 @@ export function AtendentesStatusModal({
                   const status = getAtendenteStatus(a)
                   const c = STATUS_COLORS[status]
                   return (
-                    <li key={a.id} className="flex items-center gap-3 py-3">
+                    <li key={a.id} className="flex items-center gap-2 py-2">
                       <span className={`h-2.5 w-2.5 rounded-full ${c.dot}`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{a.nome || '—'}</p>
@@ -204,18 +204,19 @@ function HistoricoStatusModal({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-md max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>Histórico — {atendente.nome || '—'}</DialogTitle>
+          <DialogTitle className="text-base">Histórico — {atendente.nome || '—'}</DialogTitle>
           <DialogDescription>
             Selecione um dia para ver todos os eventos de status registrados.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 flex-1 overflow-hidden flex flex-col">
+        <div className="space-y-2 flex-1 overflow-hidden flex flex-col">
           <Input
             type="date"
             value={date}
             max={today}
             onChange={(e) => setDate(e.target.value)}
+            className="h-8 text-sm"
           />
 
           {!loading && previousLog && (
@@ -241,10 +242,10 @@ function HistoricoStatusModal({
 
           <div className="rounded-lg border flex-1 overflow-y-auto">
             {loading ? (
-              <p className="text-sm text-muted-foreground text-center py-8">Carregando...</p>
+              <p className="text-sm text-muted-foreground text-center py-6">Carregando...</p>
             ) : logs.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10 text-center">
-                <Clock className="h-8 w-8 text-muted-foreground/40 mb-2" />
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <Clock className="h-6 w-6 text-muted-foreground/40 mb-1.5" />
                 <p className="text-sm text-muted-foreground">Sem eventos registrados nesse dia.</p>
                 {previousLog && (
                   <p className="text-xs text-muted-foreground/70 mt-1 max-w-[280px]">
@@ -258,7 +259,7 @@ function HistoricoStatusModal({
                   const desc = describeLog(l.status)
                   const t = new Date(l.timestamp)
                   return (
-                    <li key={l.id} className="flex items-center gap-3 p-2.5 text-sm">
+                    <li key={l.id} className="flex items-center gap-2 p-2 text-sm">
                       <span className={`h-2 w-2 rounded-full ${desc.dot} shrink-0`} />
                       <span className="flex-1">
                         {desc.label} às{' '}
