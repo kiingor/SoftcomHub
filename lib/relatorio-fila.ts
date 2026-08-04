@@ -306,7 +306,7 @@ export function contarEpisodiosDeFila(
 
     // O teste de "isto foi fila?" desconta o expediente igual a `resumirFila`,
     // senão o card diria que ninguém esperou e mesmo assim contaria episódios.
-    if (medirEspera(entrada, saida, opts) < filaMs) {
+    if (medirEspera(entrada, saida, opts) <= filaMs) {
       semEspera += 1
       continue
     }

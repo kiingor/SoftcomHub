@@ -233,6 +233,20 @@ test('atendido dentro do limite não forma fila', () => {
   assert.equal(r.semEspera, 1)
 })
 
+test('exatamente no limite não forma episódio de fila', () => {
+  const ticket = {
+    criado_em: seg(360),
+    atribuido_em: seg(300),
+  }
+
+  assert.equal(resumirFila([ticket], base).entraramNaFila, 0)
+
+  const episodios = contarEpisodiosDeFila([ticket], { agoraMs: AGORA })
+  assert.equal(episodios.vezes, 0)
+  assert.equal(episodios.pico, 0)
+  assert.equal(episodios.semEspera, 1)
+})
+
 test('ticket ainda sem resposta conta como fila correndo agora', () => {
   const r = contarEpisodiosDeFila([
     { criado_em: seg(120), primeira_resposta_em: null },

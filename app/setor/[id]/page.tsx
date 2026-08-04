@@ -2065,6 +2065,7 @@ function SetorPageInner() {
     () => fetchSetorData(setorId),
     MONITORING_REFRESH_OPTIONS,
   )
+  const horarios = data?.horarios || []
 
   // Relatório separado: recarrega quando filtro de data muda (server-side filtering)
   const { from: dateFrom, to: dateTo } = getDateCutoffs(dateFilter, customRange)
@@ -2392,6 +2393,13 @@ function SetorPageInner() {
     [ticketsRelatorioFiltrados, searchCliente],
   )
 
+  // Fila sempre mede só o tempo em que o setor podia atender. Reutilizar o
+  // mesmo medidor no Monitoramento e nos Relatórios impede números conflitantes.
+  const expediente = useMemo(
+    () => criarMedidorDeExpediente(horarios as any[]),
+    [horarios],
+  )
+
   /**
    * Fila do período — calculada sobre `ticketsRelatorio`, que já respeita
    * período, atendente, canal e subsetor. Sem consulta nova.
@@ -2400,8 +2408,8 @@ function SetorPageInner() {
    * corre com o relógio.
    */
   const resumoFilaPeriodo = useMemo(
-    () => resumirFila(ticketsRelatorio, { agoraMs: monitoringTick }),
-    [ticketsRelatorio, monitoringTick],
+    () => resumirFila(ticketsRelatorio, { agoraMs: monitoringTick, expediente }),
+    [ticketsRelatorio, monitoringTick, expediente],
   )
 
   // KPIs numéricos do período atual e do anterior (para o Δ%)
@@ -2729,7 +2737,6 @@ function SetorPageInner() {
     } catch {}
   }
 
-  const horarios = data?.horarios || []
   const permissoes = data?.permissoes || []
   const pausasData = data?.pausas || []
 
@@ -2779,17 +2786,6 @@ function SetorPageInner() {
    * respeita o filtro rápido quando está em "todos", o secundário é sempre um
    * subsetor.
    */
-  /**
-   * Desconta as horas em que o setor está fechado. Sem isto a maior espera do
-   * dia era de quem escreve de madrugada: o #155513 chegou 00:28, foi atendido
-   * 07:05 — cinco minutos após a abertura — e o card dizia 6h37. `null` quando
-   * o setor não tem horário cadastrado, e aí a conta segue em tempo corrido.
-   */
-  const expediente = useMemo(
-    () => criarMedidorDeExpediente(horarios as any[]),
-    [horarios],
-  )
-
   const filaDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
     resumirFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick, expediente })
   ), [ticketsHojePorTag, monitoringTick, expediente])
