@@ -7,7 +7,9 @@ import {
   LIMITE_FILA_PADRAO_MIN,
   LIMITE_SLA_PADRAO_MIN,
   contarEpisodiosDeFila,
+  somarEpisodiosPorFila,
 } from '../lib/relatorio-fila.ts'
+import { criarMedidorDeExpediente } from '../lib/horario-atendimento.ts'
 
 const AGORA = Date.parse('2026-07-28T18:00:00.000Z')
 const min = (n) => new Date(AGORA - n * 60_000).toISOString()
@@ -273,6 +275,159 @@ test('o limite de fila é configurável', () => {
 test('lista vazia não inventa episódio', () => {
   const r = contarEpisodiosDeFila([], { agoraMs: AGORA })
   assert.deepEqual([r.vezes, r.pico, r.semEspera], [0, 0, 0])
+})
+
+test('a fila acaba na ATRIBUIÇÃO, não na primeira resposta', () => {
+  // O caso que motivou a mudança: medido em 04/08/2026, 86% do que o card
+  // chamava de fila no Prime era ticket já atribuído em segundos cujo atendente
+  // demorou a escrever. Isso é tempo de resposta, não falta de gente.
+  const r = resumirFila([
+    { criado_em: min(10), atribuido_em: min(9.5), primeira_resposta_em: min(2) },
+  ], base)
+
+  assert.equal(r.entraramNaFila, 0, 'atribuído em 30s: nunca formou fila')
+  assert.equal(r.maiorEspera.esperaMs, 30_000, 'a espera para na atribuição')
+})
+
+test('ficar sem atendente além do limite é fila, mesmo respondido logo depois', () => {
+  const r = resumirFila([
+    { criado_em: min(30), atribuido_em: min(10), primeira_resposta_em: min(9) },
+  ], base)
+
+  assert.equal(r.entraramNaFila, 1)
+  assert.equal(r.maiorEspera.esperaMs, 20 * 60_000)
+})
+
+test('sem carimbo de atribuição cai na primeira resposta — histórico pré-28/07', () => {
+  // `atribuido_em` não existia antes de 28/07/2026. Sem a degradação, todo
+  // ticket antigo viraria "ainda esperando" e o relatório de 90 dias quebraria.
+  const r = resumirFila([
+    { criado_em: min(30), atribuido_em: null, primeira_resposta_em: min(10) },
+  ], base)
+
+  assert.equal(r.entraramNaFila, 1)
+  assert.equal(r.maiorEspera.esperaMs, 20 * 60_000)
+})
+
+test('episódios também param na atribuição', () => {
+  // Dois tickets atribuídos rápido, cada um com resposta lenta. Pela regra
+  // antiga seriam 2 episódios de fila; não são fila nenhuma.
+  const tickets = [
+    { criado_em: seg(900), atribuido_em: seg(890), primeira_resposta_em: seg(300) },
+    { criado_em: seg(400), atribuido_em: seg(395), primeira_resposta_em: seg(100) },
+  ]
+  const r = contarEpisodiosDeFila(tickets, { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 0)
+  assert.equal(r.semEspera, 2)
+})
+
+test('ticket nunca atribuído segue na fila correndo agora', () => {
+  const r = contarEpisodiosDeFila([
+    { criado_em: seg(120), atribuido_em: null, primeira_resposta_em: null },
+  ], { agoraMs: AGORA })
+
+  assert.equal(r.vezes, 1)
+  assert.equal(r.pico, 1)
+})
+
+test('a espera fora do expediente não conta quando há medidor', () => {
+  // #155513: chegou 00:28 de terça (fechado desde 22:00), atendido 07:05 —
+  // cinco minutos após a abertura. Sem descontar, liderava o dia com 6h37.
+  const expediente = criarMedidorDeExpediente([
+    { dia_semana: 2, ativo: true, hora_inicio: '07:00:00', hora_fim: '22:00:00' },
+  ])
+  const madrugada = [{
+    numero: '155513',
+    criado_em: '2026-08-04T03:28:33Z',
+    atribuido_em: '2026-08-04T10:05:44Z',
+  }]
+  const agoraMs = Date.parse('2026-08-04T23:00:00Z')
+
+  const corrido = resumirFila(madrugada, { agoraMs })
+  assert.ok(corrido.maiorEspera.esperaMs > 6 * 3_600_000, 'sem medidor conta as 6h37')
+
+  const util = resumirFila(madrugada, { agoraMs, expediente })
+  assert.ok(
+    util.maiorEspera.esperaMs < 6 * 60_000,
+    `com medidor sobram ~5min, veio ${util.maiorEspera.esperaMs / 60_000}min`,
+  )
+  assert.equal(util.entraramNaFila, 1, 'ainda esperou mais de 1 min de expediente')
+  assert.equal(util.acimaDoSla, 0, '5 min não estouram o SLA de 15')
+})
+
+test('episódio usa o mesmo teste de expediente que resumirFila', () => {
+  // Sem isto o card diria "ninguém esperou" e ainda assim contaria episódios.
+  const expediente = criarMedidorDeExpediente([
+    { dia_semana: 2, ativo: true, hora_inicio: '07:00:00', hora_fim: '22:00:00' },
+  ])
+  const madrugada = [{
+    criado_em: '2026-08-04T03:28:33Z',
+    atribuido_em: '2026-08-04T07:00:00Z', // 04:00 BRT, ainda fechado
+  }]
+  const agoraMs = Date.parse('2026-08-04T23:00:00Z')
+
+  assert.equal(contarEpisodiosDeFila(madrugada, { agoraMs }).vezes, 1, 'em tempo corrido é fila')
+  assert.equal(
+    contarEpisodiosDeFila(madrugada, { agoraMs, expediente }).vezes,
+    0,
+    'no expediente, não houve espera nenhuma',
+  )
+})
+
+test('filas simultâneas de subsetores diferentes são episódios diferentes', () => {
+  // Duas filas sobrepostas no tempo. Numa linha do tempo só o contador nunca
+  // volta a zero e vira 1 episódio; são duas equipes esperando, logo 2.
+  const tickets = [
+    { subsetor_id: 'suporte', criado_em: seg(900), primeira_resposta_em: seg(300) },
+    { subsetor_id: 'prime', criado_em: seg(600), primeira_resposta_em: seg(120) },
+  ]
+  const opts = { agoraMs: AGORA }
+
+  assert.equal(contarEpisodiosDeFila(tickets, opts).vezes, 1, 'linha única funde as duas')
+  assert.equal(somarEpisodiosPorFila(tickets, (t) => t.subsetor_id, opts).vezes, 2)
+})
+
+test('o pico da soma é o do conjunto, não a soma dos picos', () => {
+  // Os dois esperam ao mesmo tempo: no pior instante havia 2 clientes no setor.
+  const tickets = [
+    { subsetor_id: 'suporte', criado_em: seg(900), primeira_resposta_em: seg(300) },
+    { subsetor_id: 'prime', criado_em: seg(600), primeira_resposta_em: seg(120) },
+  ]
+  const r = somarEpisodiosPorFila(tickets, (t) => t.subsetor_id, { agoraMs: AGORA })
+
+  assert.equal(r.pico, 2)
+})
+
+test('ticket sem subsetor entra na fila que o chamador indicar', () => {
+  // No ServiceDesk o trabalho não classificado é do Suporte. Sem dobrar, ele
+  // viraria uma terceira fila fantasma e somaria um episódio a mais.
+  const tickets = [
+    { subsetor_id: 'suporte', criado_em: seg(900), primeira_resposta_em: seg(300) },
+    { subsetor_id: null, criado_em: seg(800), primeira_resposta_em: seg(400) },
+  ]
+  const opts = { agoraMs: AGORA }
+
+  assert.equal(somarEpisodiosPorFila(tickets, (t) => t.subsetor_id || 'sem', opts).vezes, 2)
+  assert.equal(
+    somarEpisodiosPorFila(tickets, (t) => t.subsetor_id || 'suporte', opts).vezes,
+    1,
+    'dobrado no Suporte, os dois estão na MESMA fila contínua',
+  )
+})
+
+test('somar uma fila só dá o mesmo que contar direto', () => {
+  // Garante que o card com um subsetor escolhido não muda de número.
+  const tickets = [
+    { subsetor_id: 'suporte', criado_em: seg(900), primeira_resposta_em: seg(800) },
+    { subsetor_id: 'suporte', criado_em: seg(400), primeira_resposta_em: seg(300) },
+  ]
+  const opts = { agoraMs: AGORA }
+
+  assert.deepEqual(
+    somarEpisodiosPorFila(tickets, (t) => t.subsetor_id, opts),
+    contarEpisodiosDeFila(tickets, opts),
+  )
 })
 
 test('ticket encerrado sem resposta para de esperar no encerramento', () => {
