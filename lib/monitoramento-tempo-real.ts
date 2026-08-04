@@ -18,6 +18,9 @@ export type TicketTempoReal = {
   subsetor_id?: string | null
   criado_em?: string | null
   primeira_resposta_em?: string | null
+  /** Ticket iniciado pelo atendente via disparo — nesses o cliente é quem
+   *  deve responder, então não contam pra "maior espera sem 1ª resposta". */
+  is_disparo?: boolean | null
 }
 
 export type ResumoTempoReal = {
@@ -71,7 +74,7 @@ export function calcularTempoReal<TTicket extends TicketTempoReal, TAtendente>({
     emAtendimento: emAtendimento.length,
     finalizadosHoje: finalizados.length,
     maiorEsperaFilaMs: maiorEspera(naFila, () => true),
-    maiorEsperaRespostaMs: maiorEspera(emAtendimento, (t) => !t.primeira_resposta_em),
+    maiorEsperaRespostaMs: maiorEspera(emAtendimento, (t) => !t.primeira_resposta_em && !t.is_disparo),
     // A carga fica com quem chama: `calculateWorkloadOs` mora noutro módulo, e
     // manter esta lib sem dependência é o que permite testá-la direto no
     // executor do Node, sem bundler.

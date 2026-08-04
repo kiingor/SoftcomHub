@@ -124,28 +124,28 @@ export function DisparoLogsSection({ setorId }: { setorId: string }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight">Log de Disparos</h2>
-        <p className="text-muted-foreground">
+        <h2 className="text-xl font-bold tracking-tight">Log de Disparos</h2>
+        <p className="text-sm text-muted-foreground">
           Historico de todos os disparos realizados neste setor
         </p>
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-3">
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="pt-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                <Megaphone className="h-5 w-5 text-primary" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                <Megaphone className="h-4 w-4 text-primary" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Disparos Hoje</p>
-                <p className="text-2xl font-bold">
+                <p className="text-xs text-muted-foreground">Disparos Hoje</p>
+                <p className="text-xl font-bold">
                   {todayCount}
                   {maxLimit > 0 && (
-                    <span className="text-sm font-normal text-muted-foreground">
+                    <span className="text-xs font-normal text-muted-foreground">
                       {' '}/ {maxLimit}
                     </span>
                   )}
@@ -156,14 +156,14 @@ export function DisparoLogsSection({ setorId }: { setorId: string }) {
         </Card>
 
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="pt-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-                <Megaphone className="h-5 w-5 text-muted-foreground" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+                <Megaphone className="h-4 w-4 text-muted-foreground" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Total de Disparos</p>
-                <p className="text-2xl font-bold">{totalCount}</p>
+                <p className="text-xs text-muted-foreground">Total de Disparos</p>
+                <p className="text-xl font-bold">{totalCount}</p>
               </div>
             </div>
           </CardContent>
@@ -171,13 +171,13 @@ export function DisparoLogsSection({ setorId }: { setorId: string }) {
 
         {maxLimit > 0 && (
           <Card>
-            <CardContent className="pt-6">
+            <CardContent className="pt-4">
               <div className="flex items-center gap-3">
-                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${todayCount >= maxLimit ? 'bg-destructive/10' : 'bg-green-500/10'}`}>
-                  <Megaphone className={`h-5 w-5 ${todayCount >= maxLimit ? 'text-destructive' : 'text-green-600'}`} />
+                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${todayCount >= maxLimit ? 'bg-destructive/10' : 'bg-green-500/10'}`}>
+                  <Megaphone className={`h-4 w-4 ${todayCount >= maxLimit ? 'text-destructive' : 'text-green-600'}`} />
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Status do Limite</p>
+                  <p className="text-xs text-muted-foreground">Status do Limite</p>
                   <Badge variant={todayCount >= maxLimit ? 'destructive' : 'secondary'}>
                     {todayCount >= maxLimit ? 'Limite atingido' : `${maxLimit - todayCount} restantes`}
                   </Badge>
@@ -190,57 +190,57 @@ export function DisparoLogsSection({ setorId }: { setorId: string }) {
 
       {/* Search + Table */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
           <CardTitle className="text-base">Historico</CardTitle>
           <div className="flex items-center gap-2">
             <div className="relative">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder="Buscar por nome ou telefone..."
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(0) }}
-                className="pl-9 w-[250px]"
+                className="pl-9 h-8 w-[250px]"
               />
             </div>
-            <Button variant="outline" size="icon" onClick={fetchLogs}>
-              <RefreshCw className="h-4 w-4" />
+            <Button variant="outline" size="icon-sm" onClick={fetchLogs}>
+              <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           </div>
         </CardHeader>
         <CardContent>
           {loading ? (
             <div className="flex items-center justify-center py-12">
-              <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
+              <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />
             </div>
           ) : logs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-              <Megaphone className="h-10 w-10 mb-3 opacity-40" />
-              <p className="font-medium">Nenhum disparo registrado</p>
-              <p className="text-sm">Os disparos realizados aparecerão aqui</p>
+              <Megaphone className="h-9 w-9 mb-3 opacity-40" />
+              <p className="text-sm font-medium">Nenhum disparo registrado</p>
+              <p className="text-xs">Os disparos realizados aparecerão aqui</p>
             </div>
           ) : (
             <>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Data/Hora</TableHead>
-                    <TableHead>Cliente</TableHead>
-                    <TableHead>Telefone</TableHead>
-                    <TableHead>Template</TableHead>
-                    <TableHead>Realizado por</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead className="text-xs">Data/Hora</TableHead>
+                    <TableHead className="text-xs">Cliente</TableHead>
+                    <TableHead className="text-xs">Telefone</TableHead>
+                    <TableHead className="text-xs">Template</TableHead>
+                    <TableHead className="text-xs">Realizado por</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {logs.map((log) => (
                     <TableRow key={log.id}>
-                      <TableCell className="text-sm whitespace-nowrap">
+                      <TableCell className="text-xs whitespace-nowrap">
                         {formatDate(log.criado_em)}
                       </TableCell>
-                      <TableCell className="font-medium">
+                      <TableCell className="text-sm font-medium">
                         {log.cliente_nome}
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground font-mono">
+                      <TableCell className="text-xs text-muted-foreground font-mono">
                         {formatPhone(log.cliente_telefone)}
                       </TableCell>
                       <TableCell>
@@ -248,7 +248,7 @@ export function DisparoLogsSection({ setorId }: { setorId: string }) {
                           {log.template_name || '-'}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-sm">
+                      <TableCell className="text-xs">
                         {log.colaboradores?.nome || log.colaborador_nome || '-'}
                       </TableCell>
                       <TableCell>
@@ -266,29 +266,29 @@ export function DisparoLogsSection({ setorId }: { setorId: string }) {
 
               {/* Pagination */}
               {totalPages > 1 && (
-                <div className="flex items-center justify-between pt-4">
-                  <p className="text-sm text-muted-foreground">
+                <div className="flex items-center justify-between pt-3">
+                  <p className="text-xs text-muted-foreground">
                     Mostrando {page * pageSize + 1}-{Math.min((page + 1) * pageSize, totalCount)} de {totalCount}
                   </p>
                   <div className="flex items-center gap-2">
                     <Button
                       variant="outline"
-                      size="sm"
+                      size="icon-sm"
                       onClick={() => setPage(p => Math.max(0, p - 1))}
                       disabled={page === 0}
                     >
-                      <ChevronLeft className="h-4 w-4" />
+                      <ChevronLeft className="h-3.5 w-3.5" />
                     </Button>
-                    <span className="text-sm text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       {page + 1} / {totalPages}
                     </span>
                     <Button
                       variant="outline"
-                      size="sm"
+                      size="icon-sm"
                       onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
                       disabled={page >= totalPages - 1}
                     >
-                      <ChevronRight className="h-4 w-4" />
+                      <ChevronRight className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>

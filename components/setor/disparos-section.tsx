@@ -122,9 +122,9 @@ export function DisparosSection({ setor }: { setor: Setor }) {
   if (evolutionOk === null) {
     return (
       <Card className="glass-card-elevated rounded-2xl border-0">
-        <CardHeader>
+        <CardHeader className="pb-2">
           <CardTitle className="flex items-center gap-2">
-            <Megaphone className="h-5 w-5" />
+            <Megaphone className="h-4 w-4" />
             Disparos
           </CardTitle>
         </CardHeader>
@@ -138,15 +138,15 @@ export function DisparosSection({ setor }: { setor: Setor }) {
   if (evolutionOk === false) {
     return (
       <Card className="glass-card-elevated rounded-2xl border-0">
-        <CardHeader>
+        <CardHeader className="pb-2">
           <CardTitle className="flex items-center gap-2">
-            <Megaphone className="h-5 w-5" />
+            <Megaphone className="h-4 w-4" />
             Disparos
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-start gap-3 p-4 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800">
-            <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex items-start gap-2 p-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
             <div>
               <p className="font-medium text-amber-900 dark:text-amber-100">
                 Evolution API não configurada neste setor
@@ -164,12 +164,12 @@ export function DisparosSection({ setor }: { setor: Setor }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <Card className="glass-card-elevated rounded-2xl border-0">
-        <CardHeader className="flex flex-row items-center justify-between">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <Megaphone className="h-5 w-5" />
+              <Megaphone className="h-4 w-4" />
               Disparos
             </CardTitle>
             <p className="text-sm text-muted-foreground mt-1">
@@ -179,10 +179,10 @@ export function DisparosSection({ setor }: { setor: Setor }) {
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={fetchLotes} disabled={loading}>
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             </Button>
-            <Button onClick={() => setWizardOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
+            <Button size="sm" onClick={() => setWizardOpen(true)}>
+              <Plus className="h-3.5 w-3.5 mr-2" />
               Novo Disparo
             </Button>
           </div>
@@ -243,7 +243,7 @@ export function DisparosSection({ setor }: { setor: Setor }) {
               </Table>
 
               {totalPages > 1 && (
-                <div className="flex items-center justify-between mt-4">
+                <div className="flex items-center justify-between mt-3">
                   <span className="text-sm text-muted-foreground">
                     Página {page} de {totalPages} — {total} lote(s)
                   </span>
@@ -254,7 +254,7 @@ export function DisparosSection({ setor }: { setor: Setor }) {
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
                       disabled={page === 1}
                     >
-                      <ChevronLeft className="h-4 w-4" />
+                      <ChevronLeft className="h-3.5 w-3.5" />
                     </Button>
                     <Button
                       variant="outline"
@@ -262,7 +262,7 @@ export function DisparosSection({ setor }: { setor: Setor }) {
                       onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                       disabled={page === totalPages}
                     >
-                      <ChevronRight className="h-4 w-4" />
+                      <ChevronRight className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>

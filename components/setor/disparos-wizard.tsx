@@ -176,7 +176,7 @@ export function DisparosWizard({
       <DialogContent className="w-[95vw] max-w-6xl max-h-[90vh] overflow-hidden flex flex-col sm:max-w-6xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Send className="h-5 w-5" />
+            <Send className="h-4 w-4" />
             Novo Disparo — Passo {step} de 3
           </DialogTitle>
           <DialogDescription>
@@ -186,7 +186,7 @@ export function DisparosWizard({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 py-2">
+        <div className="flex-1 overflow-y-auto space-y-3 py-2">
           {step === 1 && (
             <Step1Destinatarios
               setor={setor}
@@ -219,30 +219,36 @@ export function DisparosWizard({
           )}
         </div>
 
-        <DialogFooter className="border-t pt-4">
+        <DialogFooter className="border-t pt-3">
           {step > 1 && (
-            <Button variant="outline" onClick={() => setStep((s) => (s - 1) as Step)} disabled={submitting}>
-              <ChevronLeft className="h-4 w-4 mr-1" /> Voltar
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setStep((s) => (s - 1) as Step)}
+              disabled={submitting}
+            >
+              <ChevronLeft className="h-3.5 w-3.5 mr-1" /> Voltar
             </Button>
           )}
-          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>
             Cancelar
           </Button>
           {step < 3 && (
             <Button
+              size="sm"
               onClick={() => setStep((s) => (s + 1) as Step)}
               disabled={(step === 1 && !canNextFromStep1) || (step === 2 && !canNextFromStep2)}
             >
-              Próximo <ChevronRight className="h-4 w-4 ml-1" />
+              Próximo <ChevronRight className="h-3.5 w-3.5 ml-1" />
             </Button>
           )}
           {step === 3 && (
-            <Button onClick={handleSubmit} disabled={!canSubmit || submitting}>
+            <Button size="sm" onClick={handleSubmit} disabled={!canSubmit || submitting}>
               {submitting ? (
                 <>Enviando...</>
               ) : (
                 <>
-                  <Send className="h-4 w-4 mr-2" />
+                  <Send className="h-3.5 w-3.5 mr-2" />
                   Enviar Disparo ({destinatarios.length})
                 </>
               )}
@@ -304,9 +310,9 @@ function Step1Destinatarios({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3">
-        <FileSpreadsheet className="h-6 w-6 shrink-0 text-emerald-600" />
+    <div className="space-y-3">
+      <div className="flex items-start gap-2 rounded-lg border bg-muted/30 p-3">
+        <FileSpreadsheet className="h-5 w-5 shrink-0 text-emerald-600" />
         <div>
           <p className="text-sm font-semibold">Importar Planilha (XLS)</p>
           <p className="mt-0.5 text-xs text-muted-foreground">
@@ -317,8 +323,8 @@ function Step1Destinatarios({
       </div>
 
       <div className="flex gap-2">
-        <Button variant="outline" onClick={handleDownloadTemplate}>
-          <Download className="h-4 w-4 mr-2" />
+        <Button variant="outline" size="sm" onClick={handleDownloadTemplate}>
+          <Download className="h-3.5 w-3.5 mr-2" />
           Baixar modelo
         </Button>
         <input
@@ -333,10 +339,11 @@ function Step1Destinatarios({
         />
         <Button
           variant="default"
+          size="sm"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
         >
-          <Upload className="h-4 w-4 mr-2" />
+          <Upload className="h-3.5 w-3.5 mr-2" />
           {uploading ? 'Processando...' : 'Selecionar planilha'}
         </Button>
       </div>
@@ -365,7 +372,7 @@ function Step1Destinatarios({
               {destinatarios.length} destinatário(s) selecionado(s)
             </p>
             <Button variant="ghost" size="sm" onClick={() => setDestinatarios([])}>
-              <Trash2 className="h-4 w-4 mr-1" />
+              <Trash2 className="h-3.5 w-3.5 mr-1" />
               Limpar
             </Button>
           </div>
@@ -421,7 +428,7 @@ function Step2Mensagem({
           onClick={onMelhorarIA}
           disabled={!iaDisponivel || iaLoading || mensagem.trim().length < 5}
         >
-          <Sparkles className={`h-4 w-4 mr-2 ${iaLoading ? 'animate-pulse' : ''}`} />
+          <Sparkles className={`h-3.5 w-3.5 mr-2 ${iaLoading ? 'animate-pulse' : ''}`} />
           {iaLoading ? 'Melhorando...' : 'Melhorar com IA'}
         </Button>
       </div>
@@ -431,7 +438,7 @@ function Step2Mensagem({
         value={mensagem}
         onChange={(e) => setMensagem(e.target.value)}
         placeholder="Digite a mensagem que será enviada..."
-        rows={8}
+        rows={6}
         className="resize-none"
       />
 
@@ -450,7 +457,7 @@ function Step2Mensagem({
       </div>
 
       {mensagem.trim().length > 0 && (
-        <div className="mt-4">
+        <div className="mt-3">
           <p className="text-xs text-muted-foreground mb-2">Preview (como o cliente verá):</p>
           <div className="max-w-md rounded-lg bg-[#dcf8c6] dark:bg-emerald-900/40 p-3 text-sm whitespace-pre-wrap">
             {mensagem}
@@ -493,12 +500,12 @@ function Step3Destino({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3">
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2">
         <button
           type="button"
           onClick={() => setDestinoTipo('subsetor')}
-          className={`p-4 rounded-lg border-2 text-left transition ${
+          className={`p-3 rounded-lg border-2 text-left transition ${
             destinoTipo === 'subsetor'
               ? 'border-primary bg-primary/5'
               : 'border-border hover:border-muted-foreground'
@@ -513,7 +520,7 @@ function Step3Destino({
         <button
           type="button"
           onClick={() => setDestinoTipo('atendentes')}
-          className={`p-4 rounded-lg border-2 text-left transition ${
+          className={`p-3 rounded-lg border-2 text-left transition ${
             destinoTipo === 'atendentes'
               ? 'border-primary bg-primary/5'
               : 'border-border hover:border-muted-foreground'
@@ -566,7 +573,7 @@ function Step3Destino({
                 return (
                   <div
                     key={a.id}
-                    className="flex items-center gap-3 p-2 border-b last:border-0 cursor-pointer hover:bg-accent/30"
+                    className="flex items-center gap-2 p-2 border-b last:border-0 cursor-pointer hover:bg-accent/30"
                     onClick={() => toggleAtendente(a.id)}
                   >
                     <Checkbox
@@ -599,7 +606,7 @@ function Step3Destino({
       )}
 
       {destinoTipo && (
-        <div className="mt-4 p-3 rounded-lg bg-muted/30 border">
+        <div className="mt-3 p-3 rounded-lg bg-muted/30 border">
           <p className="text-sm font-medium">Resumo</p>
           <p className="text-xs text-muted-foreground mt-1">
             Enviando <strong>{totalDestinatarios}</strong> disparo(s) para{' '}

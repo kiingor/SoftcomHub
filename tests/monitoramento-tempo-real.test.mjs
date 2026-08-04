@@ -77,6 +77,18 @@ test('espera por resposta só conta quem ainda não recebeu a primeira', () => {
   assert.equal(r.maiorEsperaRespostaMs, 12 * 60_000)
 })
 
+test('espera por resposta ignora tickets de disparo — quem responde é o cliente', () => {
+  const r = calcularTempoReal({
+    ...base,
+    tickets: [
+      { status: 'em_atendimento', criado_em: minAtras(40), primeira_resposta_em: null, is_disparo: true },
+      { status: 'em_atendimento', criado_em: minAtras(12), primeira_resposta_em: null, is_disparo: false },
+    ],
+  })
+
+  assert.equal(r.maiorEsperaRespostaMs, 12 * 60_000)
+})
+
 test('data inválida ou no futuro não vira espera negativa nem NaN', () => {
   const r = calcularTempoReal({
     ...base,

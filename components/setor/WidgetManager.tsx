@@ -95,7 +95,7 @@ export function WidgetManager({ setorId }: { setorId: string }) {
 
   return (
     <Card className="glass-card-elevated rounded-2xl border-0 flex flex-col">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 shrink-0 pb-2">
         <div>
           <CardTitle>Widget de Chat</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
@@ -103,14 +103,14 @@ export function WidgetManager({ setorId }: { setorId: string }) {
             Roteamento de Atendimento deste setor.
           </p>
         </div>
-        <Button onClick={() => setCreateOpen((o) => !o)} className="gap-2">
-          <Plus className="h-4 w-4" /> Novo widget
+        <Button onClick={() => setCreateOpen((o) => !o)} size="sm" className="gap-1.5">
+          <Plus className="h-3.5 w-3.5" /> Novo widget
         </Button>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-3">
         {/* Preview das opções (vêm do Roteamento de Atendimento) */}
-        <div className="rounded-xl border p-3 bg-black/5">
+        <div className="rounded-xl border px-2.5 py-2 bg-black/5">
           <p className="text-xs font-medium flex items-center gap-1.5 mb-2">
             <ArrowRightLeft className="h-3.5 w-3.5" />
             Opções que o cliente verá
@@ -122,11 +122,11 @@ export function WidgetManager({ setorId }: { setorId: string }) {
               para o widget ter opções.
             </p>
           ) : (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-1.5">
               {routing.map((r) => (
                 <span
                   key={r.tipo}
-                  className="inline-flex items-center gap-1 rounded-full bg-background border px-2.5 py-1 text-xs"
+                  className="inline-flex items-center gap-1 rounded-full bg-background border px-2 py-0.5 text-xs"
                 >
                   {r.label}
                   {r.destino_nome && (
@@ -141,7 +141,7 @@ export function WidgetManager({ setorId }: { setorId: string }) {
         {createOpen && (
           <form
             onSubmit={handleCreate}
-            className="border rounded-xl p-4 space-y-3 bg-black/5"
+            className="border rounded-xl p-3 space-y-2 bg-black/5"
           >
             <div>
               <label className="text-sm font-medium block mb-1">
@@ -151,7 +151,7 @@ export function WidgetManager({ setorId }: { setorId: string }) {
                 name="nome"
                 required
                 placeholder="Ex: Atendimento do site"
-                className="w-full px-3 py-2 border rounded-lg text-sm bg-background"
+                className="w-full px-2.5 py-1.5 border rounded-lg text-sm bg-background"
               />
             </div>
             <div>
@@ -161,7 +161,7 @@ export function WidgetManager({ setorId }: { setorId: string }) {
               <input
                 name="canal"
                 placeholder="Ex: landpag, softcomshop, softshop..."
-                className="w-full px-3 py-2 border rounded-lg text-sm bg-background"
+                className="w-full px-2.5 py-1.5 border rounded-lg text-sm bg-background"
               />
               <p className="text-[11px] text-muted-foreground mt-1">
                 Aparece como “canal” do ticket nos relatórios. Em branco, usa “widget”.
@@ -174,16 +174,17 @@ export function WidgetManager({ setorId }: { setorId: string }) {
               <input
                 name="allowed_domains"
                 placeholder="Ex: site.com.br, www.site.com.br"
-                className="w-full px-3 py-2 border rounded-lg text-sm bg-background"
+                className="w-full px-2.5 py-1.5 border rounded-lg text-sm bg-background"
               />
             </div>
-            <div className="flex gap-2">
-              <Button type="submit" disabled={creating}>
+            <div className="flex gap-1.5">
+              <Button type="submit" size="sm" disabled={creating}>
                 {creating ? 'Criando...' : 'Criar'}
               </Button>
               <Button
                 type="button"
                 variant="ghost"
+                size="sm"
                 onClick={() => setCreateOpen(false)}
               >
                 Cancelar
@@ -205,10 +206,10 @@ export function WidgetManager({ setorId }: { setorId: string }) {
               <div key={w.id} className="border rounded-xl overflow-hidden">
                 <button
                   onClick={() => setExpanded(isOpen ? null : w.id)}
-                  className="w-full p-3 flex items-center justify-between hover:bg-black/5"
+                  className="w-full px-2.5 py-2 flex items-center justify-between hover:bg-black/5"
                 >
                   <div className="text-left">
-                    <p className="font-medium text-sm flex items-center gap-2">
+                    <p className="font-medium text-sm flex items-center gap-1.5">
                       {w.nome}
                       {w.canal && (
                         <span className="text-[10px] font-normal rounded-full bg-primary/10 text-primary px-2 py-0.5">
@@ -223,19 +224,19 @@ export function WidgetManager({ setorId }: { setorId: string }) {
                     </p>
                   </div>
                   <ChevronDown
-                    className={`h-4 w-4 transition-transform ${
+                    className={`h-3.5 w-3.5 transition-transform ${
                       isOpen ? 'rotate-180' : ''
                     }`}
                   />
                 </button>
 
                 {isOpen && (
-                  <div className="p-3 border-t space-y-3 bg-black/5">
+                  <div className="px-2.5 py-2 border-t space-y-2 bg-black/5">
                     <div>
                       <p className="text-xs font-medium mb-1">
                         Código de incorporação
                       </p>
-                      <div className="flex items-start gap-2 bg-background border rounded-lg p-2">
+                      <div className="flex items-start gap-1.5 bg-background border rounded-lg p-2">
                         <pre className="flex-1 text-[11px] overflow-x-auto whitespace-pre-wrap">
                           {embedCode(w.api_key)}
                         </pre>

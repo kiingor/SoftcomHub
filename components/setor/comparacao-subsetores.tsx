@@ -52,8 +52,8 @@ export function ComparacaoSubsetores({
   const porChaveDireita = new Map(indicadoresDireita.map((i) => [i.chave, i]))
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <SeletorColuna rotulo="Coluna da esquerda" valor={esquerda} opcoes={opcoes} aoTrocar={aoTrocarEsquerda} />
         <SeletorColuna rotulo="Coluna da direita" valor={direita} opcoes={opcoes} aoTrocar={aoTrocarDireita} />
       </div>
@@ -69,11 +69,11 @@ export function ComparacaoSubsetores({
         <table className="w-full min-w-[520px] border-separate border-spacing-y-2">
           <thead>
             <tr className="text-xs uppercase tracking-wide text-muted-foreground">
-              <th className="px-3 pb-1 text-left font-medium">Indicador</th>
-              <th className="px-3 pb-1 text-right font-medium">
+              <th className="px-2.5 pb-1 text-left font-medium">Indicador</th>
+              <th className="px-2.5 pb-1 text-right font-medium">
                 {opcoes.find((o) => o.id === esquerda)?.nome || '—'}
               </th>
-              <th className="px-3 pb-1 text-right font-medium">
+              <th className="px-2.5 pb-1 text-right font-medium">
                 {opcoes.find((o) => o.id === direita)?.nome || '—'}
               </th>
             </tr>
@@ -85,17 +85,17 @@ export function ComparacaoSubsetores({
 
               return (
                 <tr key={indicador.chave} className="bg-card/60">
-                  <td className="rounded-l-lg px-3 py-2.5 text-sm text-muted-foreground">
+                  <td className="rounded-l-lg px-2.5 py-2 text-sm text-muted-foreground">
                     {indicador.rotulo}
                   </td>
                   <td className={cn(
-                    'px-3 py-2.5 text-right text-base font-semibold tabular-nums',
+                    'px-2.5 py-2 text-right text-sm font-semibold tabular-nums',
                     lider === 'esquerda' && 'text-green-600 dark:text-green-400',
                   )}>
                     {indicador.valor}
                   </td>
                   <td className={cn(
-                    'rounded-r-lg px-3 py-2.5 text-right text-base font-semibold tabular-nums',
+                    'rounded-r-lg px-2.5 py-2 text-right text-sm font-semibold tabular-nums',
                     lider === 'direita' && 'text-green-600 dark:text-green-400',
                   )}>
                     {oposto?.valor ?? '—'}
@@ -141,7 +141,7 @@ function SeletorColuna({
     <label className="space-y-1.5">
       <span className="text-xs text-muted-foreground">{rotulo}</span>
       <Select value={valor} onValueChange={aoTrocar}>
-        <SelectTrigger className="h-10 w-full" aria-label={rotulo}>
+        <SelectTrigger className="w-full" size="sm" aria-label={rotulo}>
           <SelectValue placeholder="Escolha um subsetor" />
         </SelectTrigger>
         <SelectContent>
