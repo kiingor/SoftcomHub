@@ -44,6 +44,8 @@ const atendentesNavigation = [
 interface DashboardSidebarProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Minimizada no desktop: a aside some e o conteúdo ocupa a largura toda. */
+  collapsed?: boolean
 }
 
 function SidebarContent({ onClose }: { onClose?: () => void }) {
@@ -198,16 +200,18 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
   )
 }
 
-export function DashboardSidebar({ open, onOpenChange }: DashboardSidebarProps) {
+export function DashboardSidebar({ open, onOpenChange, collapsed }: DashboardSidebarProps) {
   return (
     <>
-      {/* Desktop sidebar */}
-      <aside
-        className="inset-y-0 left-0 z-50 hidden w-64 lg:block glass-panel"
-        style={{ position: 'fixed', top: 0, bottom: 0, left: 0, width: '16rem' }}
-      >
-        <SidebarContent />
-      </aside>
+      {/* Desktop sidebar — minimizada (collapsed) simplesmente não renderiza no lg+ */}
+      {!collapsed && (
+        <aside
+          className="inset-y-0 left-0 z-50 hidden w-64 lg:block glass-panel"
+          style={{ position: 'fixed', top: 0, bottom: 0, left: 0, width: '16rem' }}
+        >
+          <SidebarContent />
+        </aside>
+      )}
 
       {/* Mobile sidebar */}
       <Sheet open={open} onOpenChange={onOpenChange}>

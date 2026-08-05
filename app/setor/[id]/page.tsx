@@ -136,6 +136,8 @@ import {
   ArrowDown,
   ArrowUpDown,
   RotateCcw,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
@@ -1516,6 +1518,21 @@ function SetorPageInner() {
   const [isPending, startTransition] = useTransition()
   const [isNavigatingBack, setIsNavigatingBack] = useState(false)
   const [activeSection, setActiveSection] = useState('monitoramento')
+  // Minimizar a barra de seções: preferência persistida, o gestor não quer
+  // reabrir isso a cada navegação.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  useEffect(() => {
+    try {
+      setSidebarCollapsed(window.localStorage.getItem('setor-sidebar-collapsed') === '1')
+    } catch { /* preferência corrompida cai no padrão (expandida) */ }
+  }, [])
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev
+      try { window.localStorage.setItem('setor-sidebar-collapsed', next ? '1' : '0') } catch {}
+      return next
+    })
+  }
   const [activeTab, setActiveTab] = useState('em-andamento')
   const [activeTicketsSort, setActiveTicketsSort] = useState<SortState<ActiveTicketSortKey>>({
     key: 'ticket',
@@ -5564,9 +5581,13 @@ const saveConfig = async () => {
 
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-52 shrink-0 overflow-y-auto border-r glass-panel p-2.5">
-          <nav className="space-y-0.5">
+        {/* Sidebar — minimizada vira um trilho só de ícones; o botão de
+            minimizar mora no rodapé da própria barra. */}
+        <aside className={cn(
+          'flex shrink-0 flex-col border-r glass-panel transition-[width] duration-200',
+          sidebarCollapsed ? 'w-12' : 'w-52'
+        )}>
+          <nav className={cn('flex-1 space-y-0.5 overflow-y-auto', sidebarCollapsed ? 'p-1.5' : 'p-2.5')}>
             {sidebarItems.filter((item) => !(item as any).whatsappOnly || configForm.canal !== 'discord').map((item) => {
               const Icon = item.icon
               const isActive = activeSection === item.id
@@ -5574,22 +5595,44 @@ const saveConfig = async () => {
                 <button
                   key={item.id}
                   onClick={() => setActiveSection(item.id)}
+                  title={sidebarCollapsed ? item.name : undefined}
                   className={cn(
-                    'flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'flex w-full rounded-lg text-left text-xs transition-all cursor-pointer select-none active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    sidebarCollapsed ? 'items-center justify-center px-2 py-2' : 'items-start gap-2 px-2.5 py-2',
                     isActive
                       ? 'bg-primary/10 text-primary'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                   )}
                 >
-                  <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <div className="min-w-0">
-                    <p className={cn('font-medium leading-tight', !isActive && 'text-foreground')}>{item.name}</p>
-                    <p className="text-[11px] leading-tight text-muted-foreground">{item.description}</p>
-                  </div>
+                  <Icon className={cn('h-3.5 w-3.5 shrink-0', !sidebarCollapsed && 'mt-0.5')} />
+                  {!sidebarCollapsed && (
+                    <div className="min-w-0">
+                      <p className={cn('font-medium leading-tight', !isActive && 'text-foreground')}>{item.name}</p>
+                      <p className="text-[11px] leading-tight text-muted-foreground">{item.description}</p>
+                    </div>
+                  )}
                 </button>
               )
             })}
           </nav>
+
+          {/* Rodapé — minimizar/expandir a barra */}
+          <div className="shrink-0 border-t p-1.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleSidebarCollapsed}
+              className={cn(
+                'h-7 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors',
+                sidebarCollapsed ? 'w-full' : 'w-full justify-start gap-2 px-2.5'
+              )}
+              aria-label={sidebarCollapsed ? 'Mostrar menu' : 'Minimizar menu'}
+              title={sidebarCollapsed ? 'Mostrar menu' : 'Minimizar menu'}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+              {!sidebarCollapsed && <span className="text-xs">Minimizar</span>}
+            </Button>
+          </div>
         </aside>
 
         {/* Content */}
