@@ -277,7 +277,6 @@ body {
   }
 
   .glass-panel {
-    position: relative;
     background: var(--sidebar);
     border-right: 1px solid var(--border);
   }
