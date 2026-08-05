@@ -170,7 +170,16 @@ import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
 import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
-import { atendimentoStatusBadgeClass, computeAtendimentoStatus, formatAtendimentoStatusLabel } from '@/lib/atendimento-status'
+import {
+  atendimentoStatusBadgeClass,
+  computeAtendimentoStatus,
+  DEFAULT_ATENCAO_MINUTOS,
+  DEFAULT_CRITICO_MINUTOS,
+  formatAtendimentoStatusLabel,
+  isValidAtendimentoStatusThresholds,
+  MAX_ATENDIMENTO_STATUS_MINUTOS,
+  MIN_ATENDIMENTO_STATUS_MINUTOS,
+} from '@/lib/atendimento-status'
 import {
   AreaChart,
   Area,
@@ -1632,6 +1641,7 @@ function SetorPageInner() {
   // Vira true se detectarmos que a coluna setores.travar_ordenacao_chat ainda não existe
   // no banco (rollout de migration pendente) — usado só pra avisar na UI, não bloqueia o resto.
   const [travarOrdenacaoChatIndisponivel, setTravarOrdenacaoChatIndisponivel] = useState(false)
+  const [limitesStatusAtendimentoIndisponiveis, setLimitesStatusAtendimentoIndisponiveis] = useState(false)
   const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
   // Dirty tracking das outras seções da página Configurações — alimenta a
   // FloatingSaveBar para unificar os múltiplos saves em um único CTA.
@@ -1763,7 +1773,10 @@ function SetorPageInner() {
   encerramento_auto_ativo: false,
   encerramento_auto_minutos: 30,
   travar_ordenacao_chat: false,
+  atendimento_status_atencao_minutos: DEFAULT_ATENCAO_MINUTOS,
+  atendimento_status_critico_minutos: DEFAULT_CRITICO_MINUTOS,
   })
+  const statusAtencaoInputRef = useRef<HTMLInputElement>(null)
 
 // Templates state
   const [templates, setTemplates] = useState<any[]>([])
@@ -2262,6 +2275,10 @@ function SetorPageInner() {
   }, [setorId])
 
   const setor = data?.setor
+  const atendimentoStatusThresholds = {
+    atencaoMinutos: setor?.atendimento_status_atencao_minutos,
+    criticoMinutos: setor?.atendimento_status_critico_minutos,
+  }
   const baseAtendentesStats = data?.atendentesStats || { online: 0, pausa: 0, invisivel: 0 }
   const baseTicketsHoje = data?.ticketsHoje || { perdidos: 0, abandonados: 0, finalizados: 0, fechados: 0 }
   const baseTemposHoje = data?.temposHoje || {
@@ -2976,6 +2993,8 @@ function SetorPageInner() {
         encerramento_auto_ativo: setor.encerramento_auto_ativo || false,
         encerramento_auto_minutos: setor.encerramento_auto_minutos ?? 30,
         travar_ordenacao_chat: setor.travar_ordenacao_chat || false,
+        atendimento_status_atencao_minutos: setor.atendimento_status_atencao_minutos ?? DEFAULT_ATENCAO_MINUTOS,
+        atendimento_status_critico_minutos: setor.atendimento_status_critico_minutos ?? DEFAULT_CRITICO_MINUTOS,
       })
       fetchTemplates()
       fetchCanais()
@@ -4072,6 +4091,17 @@ const handleLogout = async () => {
 
   // Save configuration
 const saveConfig = async () => {
+    const statusThresholds = {
+      atencaoMinutos: configForm.atendimento_status_atencao_minutos,
+      criticoMinutos: configForm.atendimento_status_critico_minutos,
+    }
+
+    if (!isValidAtendimentoStatusThresholds(statusThresholds)) {
+      toast.error('O limite crítico deve ser maior que o limite de atenção, entre 1 e 1.440 minutos.')
+      statusAtencaoInputRef.current?.focus()
+      return
+    }
+
     setSaving(true)
     try {
       const basePayload: Record<string, unknown> = {
@@ -4111,28 +4141,64 @@ const saveConfig = async () => {
         encerramento_auto_ativo: configForm.encerramento_auto_ativo,
         encerramento_auto_minutos: configForm.encerramento_auto_minutos,
       }
+      const statusPayload = {
+        atendimento_status_atencao_minutos: configForm.atendimento_status_atencao_minutos,
+        atendimento_status_critico_minutos: configForm.atendimento_status_critico_minutos,
+      }
 
       // travar_ordenacao_chat pode ainda não existir em produção (rollout de coluna
       // pendente). Tenta com o campo; se a coluna não existir, refaz sem ele
       // pra não derrubar o salvamento do resto das configurações do setor.
-      let { error } = await supabase
-        .from('setores')
-        .update({ ...basePayload, travar_ordenacao_chat: configForm.travar_ordenacao_chat })
-        .eq('id', setorId)
+      const updateCandidates = [
+        {
+          payload: { ...basePayload, ...statusPayload, travar_ordenacao_chat: configForm.travar_ordenacao_chat },
+          travarOrdenacaoIndisponivel: false,
+          limitesStatusIndisponiveis: false,
+        },
+        {
+          payload: { ...basePayload, ...statusPayload },
+          travarOrdenacaoIndisponivel: true,
+          limitesStatusIndisponiveis: false,
+        },
+        {
+          payload: { ...basePayload, travar_ordenacao_chat: configForm.travar_ordenacao_chat },
+          travarOrdenacaoIndisponivel: false,
+          limitesStatusIndisponiveis: true,
+        },
+        {
+          payload: basePayload,
+          travarOrdenacaoIndisponivel: true,
+          limitesStatusIndisponiveis: true,
+        },
+      ]
 
+      let updateError: any = null
       let travarOrdenacaoIndisponivel = false
-      if (error?.code === '42703' || error?.code === 'PGRST204') {
-        travarOrdenacaoIndisponivel = true
-        setTravarOrdenacaoChatIndisponivel(true)
-        ;({ error } = await supabase.from('setores').update(basePayload).eq('id', setorId))
-      } else if (!error) {
-        setTravarOrdenacaoChatIndisponivel(false)
+      let limitesStatusIndisponiveis = false
+
+      for (const candidate of updateCandidates) {
+        const { error } = await supabase
+          .from('setores')
+          .update(candidate.payload)
+          .eq('id', setorId)
+        if (!error) {
+          travarOrdenacaoIndisponivel = candidate.travarOrdenacaoIndisponivel
+          limitesStatusIndisponiveis = candidate.limitesStatusIndisponiveis
+          updateError = null
+          break
+        }
+
+        updateError = error
+        if (error.code !== '42703' && error.code !== 'PGRST204') break
       }
 
-      if (error) throw error
+      if (updateError) throw updateError
+
+      setTravarOrdenacaoChatIndisponivel(travarOrdenacaoIndisponivel)
+      setLimitesStatusAtendimentoIndisponiveis(limitesStatusIndisponiveis)
       toast.success(
-        travarOrdenacaoIndisponivel
-          ? 'Configurações salvas! (Trava de ordenação ainda não disponível neste ambiente — fale com o suporte técnico.)'
+        travarOrdenacaoIndisponivel || limitesStatusIndisponiveis
+          ? 'Configurações salvas! (Algumas opções aguardam a migration neste ambiente.)'
           : 'Configurações salvas com sucesso!',
       )
       setHasUnsavedConfig(false)
@@ -6047,7 +6113,7 @@ const saveConfig = async () => {
                           ) : (
                             paginatedTicketsEmAndamento.map((ticket: any) => {
                               const aguardandoResposta = ticket.status === 'em_atendimento' && !ticket.primeira_resposta_em
-                              const statusLevel = computeAtendimentoStatus(ticket.statusMs)
+                              const statusLevel = computeAtendimentoStatus(ticket.statusMs, atendimentoStatusThresholds)
                               return (
                                 <TableRow
                                   key={ticket.id}
@@ -6179,8 +6245,8 @@ const saveConfig = async () => {
                             paginatedTicketsAguardando.map((ticket: any) => (
                               <TableRow key={ticket.id} className="bg-yellow-50/50 dark:bg-yellow-950/20">
                                 <TableCell>
-                                  <Badge variant="outline" className={cn('text-[10px]', atendimentoStatusBadgeClass(computeAtendimentoStatus(ticket.tempoNaFilaMs)))}>
-                                    {formatAtendimentoStatusLabel(computeAtendimentoStatus(ticket.tempoNaFilaMs))}
+                                  <Badge variant="outline" className={cn('text-[10px]', atendimentoStatusBadgeClass(computeAtendimentoStatus(ticket.tempoNaFilaMs, atendimentoStatusThresholds)))}>
+                                    {formatAtendimentoStatusLabel(computeAtendimentoStatus(ticket.tempoNaFilaMs, atendimentoStatusThresholds))}
                                   </Badge>
                                 </TableCell>
                                 <TableCell>
@@ -8742,6 +8808,95 @@ const saveConfig = async () => {
           </Card>
         </div>
 
+        <Card className="glass-card-elevated rounded-lg">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Timer aria-hidden="true" className="h-5 w-5" />
+              Status dos atendimentos
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Defina quando um ticket aberto passa de Normal para Atenção e depois para Crítico no monitoramento.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="atendimento_status_atencao_minutos">Atenção após (minutos)</Label>
+                <Input
+                  id="atendimento_status_atencao_minutos"
+                  ref={statusAtencaoInputRef}
+                  name="atendimento_status_atencao_minutos"
+                  type="number"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  min={MIN_ATENDIMENTO_STATUS_MINUTOS}
+                  max={MAX_ATENDIMENTO_STATUS_MINUTOS}
+                  value={configForm.atendimento_status_atencao_minutos}
+                  onChange={(event) => {
+                    const minutes = Number.parseInt(event.target.value, 10)
+                    setConfigForm((prev) => ({
+                      ...prev,
+                      atendimento_status_atencao_minutos: Number.isNaN(minutes)
+                        ? DEFAULT_ATENCAO_MINUTOS
+                        : Math.min(MAX_ATENDIMENTO_STATUS_MINUTOS, Math.max(MIN_ATENDIMENTO_STATUS_MINUTOS, minutes)),
+                    }))
+                  }}
+                />
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span aria-hidden="true" className="h-2 w-2 rounded-full bg-amber-500" />
+                  Exibe Atenção a partir de {configForm.atendimento_status_atencao_minutos} min.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="atendimento_status_critico_minutos">Crítico após (minutos)</Label>
+                <Input
+                  id="atendimento_status_critico_minutos"
+                  name="atendimento_status_critico_minutos"
+                  type="number"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  min={MIN_ATENDIMENTO_STATUS_MINUTOS}
+                  max={MAX_ATENDIMENTO_STATUS_MINUTOS}
+                  value={configForm.atendimento_status_critico_minutos}
+                  onChange={(event) => {
+                    const minutes = Number.parseInt(event.target.value, 10)
+                    setConfigForm((prev) => ({
+                      ...prev,
+                      atendimento_status_critico_minutos: Number.isNaN(minutes)
+                        ? DEFAULT_CRITICO_MINUTOS
+                        : Math.min(MAX_ATENDIMENTO_STATUS_MINUTOS, Math.max(MIN_ATENDIMENTO_STATUS_MINUTOS, minutes)),
+                    }))
+                  }}
+                />
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span aria-hidden="true" className="h-2 w-2 rounded-full bg-red-500" />
+                  Exibe Crítico a partir de {configForm.atendimento_status_critico_minutos} min.
+                </p>
+              </div>
+            </div>
+
+            {!isValidAtendimentoStatusThresholds({
+              atencaoMinutos: configForm.atendimento_status_atencao_minutos,
+              criticoMinutos: configForm.atendimento_status_critico_minutos,
+            }) && (
+              <p role="alert" className="flex items-center gap-2 text-xs text-destructive">
+                <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5" />
+                O limite Crítico deve ser maior que o limite de Atenção.
+              </p>
+            )}
+
+            {limitesStatusAtendimentoIndisponiveis && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Os limites continuarão no padrão até a migration deste ambiente ser executada.
+              </p>
+            )}
+
+            <p className="text-xs text-muted-foreground">
+              O cálculo considera o tempo total que o ticket está aberto, desde sua criação.
+            </p>
+          </CardContent>
+        </Card>
+
         {/* Encerramento Automático por Inatividade */}
         <Card className="glass-card-elevated rounded-lg">
           <CardHeader>
@@ -9735,7 +9890,7 @@ const saveConfig = async () => {
           saving={saving || savingTiposAtendimento || savingDistribution || savingSetoresDestino || savingTransbordoBloqueio}
           onSave={saveAllDirty}
           dirtyLabels={[
-            ...(hasUnsavedConfig ? ['Informações e aparência'] : []),
+            ...(hasUnsavedConfig ? ['Informações, aparência e limites'] : []),
             ...(hasUnsavedTipos ? ['Roteamento'] : []),
             ...(hasUnsavedDistribution ? ['Distribuição'] : []),
             ...(hasUnsavedDestino ? ['Transferência'] : []),

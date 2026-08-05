@@ -4,16 +4,67 @@
 
 export type AtendimentoStatusLevel = 'normal' | 'atencao' | 'critico'
 
-export const ATENCAO_MINUTOS = 5
-export const CRITICO_MINUTOS = 10
+export interface AtendimentoStatusThresholds {
+  atencaoMinutos?: number | null
+  criticoMinutos?: number | null
+}
 
-const ATENCAO_MS = ATENCAO_MINUTOS * 60_000
-const CRITICO_MS = CRITICO_MINUTOS * 60_000
+export interface ResolvedAtendimentoStatusThresholds {
+  atencaoMinutos: number
+  criticoMinutos: number
+}
 
-export function computeAtendimentoStatus(elapsedMs: number | null | undefined): AtendimentoStatusLevel {
+export const DEFAULT_ATENCAO_MINUTOS = 30
+export const DEFAULT_CRITICO_MINUTOS = 40
+export const MIN_ATENDIMENTO_STATUS_MINUTOS = 1
+export const MAX_ATENDIMENTO_STATUS_MINUTOS = 1_440
+
+// Mantidos para não quebrar consumidores que já usavam os limites originais.
+export const ATENCAO_MINUTOS = DEFAULT_ATENCAO_MINUTOS
+export const CRITICO_MINUTOS = DEFAULT_CRITICO_MINUTOS
+
+const DEFAULT_THRESHOLDS: ResolvedAtendimentoStatusThresholds = {
+  atencaoMinutos: DEFAULT_ATENCAO_MINUTOS,
+  criticoMinutos: DEFAULT_CRITICO_MINUTOS,
+}
+
+function isValidStatusMinute(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= MIN_ATENDIMENTO_STATUS_MINUTOS
+    && value <= MAX_ATENDIMENTO_STATUS_MINUTOS
+}
+
+export function isValidAtendimentoStatusThresholds(
+  thresholds: AtendimentoStatusThresholds | null | undefined,
+): thresholds is ResolvedAtendimentoStatusThresholds {
+  if (!thresholds) return false
+
+  return isValidStatusMinute(thresholds.atencaoMinutos)
+    && isValidStatusMinute(thresholds.criticoMinutos)
+    && thresholds.criticoMinutos > thresholds.atencaoMinutos
+}
+
+export function resolveAtendimentoStatusThresholds(
+  thresholds?: AtendimentoStatusThresholds | null,
+): ResolvedAtendimentoStatusThresholds {
+  if (!isValidAtendimentoStatusThresholds(thresholds)) return DEFAULT_THRESHOLDS
+
+  return {
+    atencaoMinutos: thresholds.atencaoMinutos,
+    criticoMinutos: thresholds.criticoMinutos,
+  }
+}
+
+export function computeAtendimentoStatus(
+  elapsedMs: number | null | undefined,
+  thresholds?: AtendimentoStatusThresholds | null,
+): AtendimentoStatusLevel {
   if (elapsedMs == null || !Number.isFinite(elapsedMs) || elapsedMs < 0) return 'normal'
-  if (elapsedMs >= CRITICO_MS) return 'critico'
-  if (elapsedMs >= ATENCAO_MS) return 'atencao'
+
+  const { atencaoMinutos, criticoMinutos } = resolveAtendimentoStatusThresholds(thresholds)
+  if (elapsedMs >= criticoMinutos * 60_000) return 'critico'
+  if (elapsedMs >= atencaoMinutos * 60_000) return 'atencao'
   return 'normal'
 }
 

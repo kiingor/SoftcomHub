@@ -67,6 +67,7 @@ import {
   FileSpreadsheet,
   ShieldCheck,
   Pencil,
+  MoreHorizontal,
   Save,
   Sparkles,
   Star,
@@ -106,6 +107,12 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Checkbox } from '@/components/ui/checkbox'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
@@ -150,6 +157,22 @@ interface ClienteSelecionado {
   PDV: string | null
   software?: string | null
   prime?: string | boolean | null
+}
+
+interface MdmMachine {
+  clientId: string
+  hostname: string
+  online: boolean
+  hasMdm: boolean
+  mdmVersion: string
+  lastInventory: string | null
+}
+
+interface MdmResult {
+  hasMdm: boolean
+  installedCount: number
+  totalMachines: number
+  machines: MdmMachine[]
 }
 
 interface Setor {
@@ -236,6 +259,19 @@ function buildOcorrenciaRapidaUrl(ticket: Ticket | null): string {
   const tel = stripBrazilCountryCode(ticket.clientes?.telefone)
   const q = cnpjDigits || tel || registroDigits
   return `https://agenda.softcomtecnologia.com/service-desk/ocorrencia-rapida?q=${encodeURIComponent(q)}&ticket=${encodeURIComponent(String(ticket.numero))}&tel=${encodeURIComponent(tel)}`
+}
+
+// Campanha de ação preventiva pra instalação do MDM Agent Plus — mesma base
+// de URL da agenda, aberta com o CNPJ do cliente já preenchido.
+function buildMdmCampanhaUrl(cnpj: string | null | undefined): string {
+  const params = new URLSearchParams({
+    cnpj: (cnpj || '').replace(/\D/g, ''),
+    campanha: 'AÇÃO PREVENTIVA',
+    campanhaTipo: 'MAPEAMENTO',
+    acaoId: '146',
+    acaoDescricao: 'MDM Agent Plus - Instalação',
+  })
+  return `https://agenda.softcomtecnologia.com/clientes?${params.toString()}`
 }
 
 // Converte payload de erro dos endpoints /api/evolution/send e /api/whatsapp/send
@@ -2716,6 +2752,45 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
 
   // Helper: cliente tem CNPJ informado
   const clienteTemCNPJ = !!(selectedTicket?.clientes?.CNPJ)
+
+  // Verificar MDM — consulta se as máquinas do CNPJ do cliente têm o agente instalado
+  const [mdmPopoverOpen, setMdmPopoverOpen] = useState(false)
+  const [mdmLoading, setMdmLoading] = useState(false)
+  const [mdmError, setMdmError] = useState<string | null>(null)
+  const [mdmResult, setMdmResult] = useState<MdmResult | null>(null)
+
+  const fetchMdmStatus = useCallback(() => {
+    const cnpj = selectedTicket?.clientes?.CNPJ
+    if (!cnpj) return
+    setMdmLoading(true)
+    setMdmError(null)
+    fetch(`/api/mdm?cnpj=${cnpj.replace(/\D/g, '')}`)
+      .then(async (res) => {
+        const data = await res.json()
+        if (!res.ok) throw new Error(data?.error || 'Falha ao consultar o MDM')
+        setMdmResult(data)
+      })
+      .catch((err: Error) => setMdmError(err.message || 'Falha ao consultar o MDM'))
+      .finally(() => setMdmLoading(false))
+  }, [selectedTicket?.clientes?.CNPJ])
+
+  // Ao abrir um ticket, já consulta o MDM em segundo plano (sem precisar
+  // clicar) pra que o botão já apareça avisando se o cliente não tiver o
+  // agente configurado.
+  useEffect(() => {
+    setMdmPopoverOpen(false)
+    setMdmResult(null)
+    setMdmError(null)
+    if (selectedTicket?.clientes?.CNPJ) {
+      fetchMdmStatus()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTicket?.id])
+
+  const handleMdmPopoverChange = useCallback((open: boolean) => {
+    setMdmPopoverOpen(open)
+    if (open) fetchMdmStatus()
+  }, [fetchMdmStatus])
 
   // Abrir dialog de encerramento — carrega os tipos de atendimento do setor
   const handleAbrirEncerrar = async () => {
@@ -5568,36 +5643,42 @@ const insertEmoji = (emoji: string) => {
                   Dados do Cliente
                   <ChevronDown className={cn('h-3 w-3 transition-transform', collapsedSections.cliente && '-rotate-90')} />
                 </button>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6 text-[10px] px-2 gap-1 border-amber-400/50 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20"
-                    onClick={handleAbrirEditarCliente}
-                  >
-                    <Pencil className="h-3 w-3" />
-                    Editar
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6 text-[10px] px-2 gap-1 border-primary/40 text-primary hover:bg-primary/10"
-                    onClick={() => {
-                      setEncerrarAposVinculoCliente(false)
-                      setSelecionarClienteCnpj('')
-                      setSelecionarClienteData(null)
-                      setSelecionarClienteDialogOpen(true)
-                    }}
-                  >
-                    <Search className="h-3 w-3" />
-                    {clienteTemCNPJ ? 'Trocar' : 'Selecionar'}
-                  </Button>
-                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 shrink-0"
+                      aria-label="Mais opções do cliente"
+                      title="Mais opções"
+                    >
+                      <MoreHorizontal className="h-3.5 w-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-40">
+                    <DropdownMenuItem onClick={handleAbrirEditarCliente} className="gap-2">
+                      <Pencil className="h-3.5 w-3.5 text-amber-600" />
+                      Editar
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setEncerrarAposVinculoCliente(false)
+                        setSelecionarClienteCnpj('')
+                        setSelecionarClienteData(null)
+                        setSelecionarClienteDialogOpen(true)
+                      }}
+                      className="gap-2"
+                    >
+                      <Search className="h-3.5 w-3.5 text-primary" />
+                      {clienteTemCNPJ ? 'Trocar' : 'Selecionar'}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
 
               {/* Campo linha: label + valor + copy */}
               {!collapsedSections.cliente && (
-              <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-xs">
+              <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-[11px]">
                 {/* Nome */}
                 <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
                   <span className="text-muted-foreground shrink-0 w-16">Nome</span>
@@ -5710,6 +5791,135 @@ const insertEmoji = (emoji: string) => {
                 )}
               </div>
               )}
+
+              {/* Verificar MDM — consulta o agente de gestão de máquinas pelo CNPJ do cliente.
+                  Sempre visível: sem CNPJ cadastrado, o popover orienta a preencher em Editar
+                  em vez de esconder a ação inteira. */}
+              <Popover open={mdmPopoverOpen} onOpenChange={handleMdmPopoverChange}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      'w-full mt-2 h-8 text-xs gap-2',
+                      mdmResult && !mdmResult.hasMdm && 'border-amber-400/50 text-amber-700 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40',
+                    )}
+                  >
+                    {mdmResult && !mdmResult.hasMdm ? (
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <img src="/softcom-mdm-logo.png" alt="" className="h-3.5 w-3.5 shrink-0 rounded-sm" />
+                    )}
+                    {mdmResult && !mdmResult.hasMdm ? 'MDM não configurado' : 'Verificar MDM'}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-72 text-xs">
+                  {!clienteTemCNPJ && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-200">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        <p>Cliente sem CNPJ cadastrado.</p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 w-full justify-center text-[10px] px-2 gap-1"
+                        onClick={() => {
+                          setMdmPopoverOpen(false)
+                          handleAbrirEditarCliente()
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                        Preencher CNPJ em Editar
+                      </Button>
+                    </div>
+                  )}
+                  {clienteTemCNPJ && mdmLoading && (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Consultando MDM...
+                      </div>
+                    )}
+                    {clienteTemCNPJ && !mdmLoading && mdmError && (
+                      <p className="text-destructive">{mdmError}</p>
+                    )}
+                    {clienteTemCNPJ && !mdmLoading && !mdmError && mdmResult && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="font-semibold text-foreground">
+                            {mdmResult.hasMdm ? 'MDM instalado' : 'Sem MDM instalado'}
+                          </p>
+                          <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 shrink-0">
+                            {mdmResult.totalMachines} {mdmResult.totalMachines === 1 ? 'máquina' : 'máquinas'}
+                          </Badge>
+                        </div>
+                        {mdmResult.machines.length > 0 && (
+                          <div className="rounded-lg border border-border divide-y divide-border overflow-hidden">
+                            {mdmResult.machines.map((maquina) => (
+                              <div key={maquina.clientId} className="flex items-center justify-between px-2.5 py-1.5 gap-2">
+                                <div className="min-w-0">
+                                  <p className="font-medium text-foreground truncate">{maquina.hostname}</p>
+                                  <p className="text-[11px] text-muted-foreground truncate">
+                                    {maquina.hasMdm ? `MDM v${maquina.mdmVersion}` : 'sem MDM'}
+                                    {maquina.lastInventory && (
+                                      ` · ${formatDistanceToNow(new Date(maquina.lastInventory), { locale: ptBR, addSuffix: true })}`
+                                    )}
+                                  </p>
+                                </div>
+                                <span className={cn(
+                                  'shrink-0 flex items-center gap-1 text-[10px]',
+                                  maquina.online ? 'text-green-500' : 'text-muted-foreground',
+                                )}>
+                                  <span className={cn('h-1.5 w-1.5 rounded-full', maquina.online ? 'bg-green-500' : 'bg-muted-foreground/50')} />
+                                  {maquina.online ? 'Online' : 'Offline'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {mdmResult.hasMdm && (
+                          <Button
+                            asChild
+                            variant="outline"
+                            size="sm"
+                            className="h-6 w-full justify-center text-[10px] px-2 gap-1"
+                          >
+                            <a
+                              href={buildMdmCampanhaUrl(selectedTicket.clientes.CNPJ)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              Abrir campanha de instalação
+                            </a>
+                          </Button>
+                        )}
+                        {!mdmResult.hasMdm && (
+                          <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">
+                            <div className="flex items-center gap-1.5">
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                              <p>
+                                {mdmResult.totalMachines === 0
+                                  ? 'Nenhuma máquina no MDM configurada para este CNPJ.'
+                                  : 'Nenhuma máquina com o agente instalado.'}
+                              </p>
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-6 w-full justify-center text-[10px] px-2 gap-1 border-amber-400/50 text-amber-700 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40"
+                              onClick={fetchMdmStatus}
+                              disabled={mdmLoading}
+                            >
+                              <RefreshCw className={cn('h-3 w-3', mdmLoading && 'animate-spin')} />
+                              Verificar novamente
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </PopoverContent>
+                </Popover>
               </>
               ))}
 
@@ -5727,7 +5937,7 @@ const insertEmoji = (emoji: string) => {
                 </button>
 
                 {!collapsedSections.ticket && (
-                <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-xs">
+                <div className="rounded-lg border border-border bg-muted/30 divide-y divide-border overflow-hidden text-[11px]">
                   {/* Número */}
                   <div className="flex items-center justify-between px-2.5 py-1.5 gap-2">
                     <span className="text-muted-foreground shrink-0 w-16">Número</span>
