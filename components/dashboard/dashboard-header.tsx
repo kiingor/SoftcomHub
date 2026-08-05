@@ -23,7 +23,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Menu, LogOut, User as UserIcon, ChevronDown, KeyRound, Camera } from 'lucide-react'
+import { Menu, LogOut, User as UserIcon, ChevronDown, KeyRound, Camera, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { useColaborador } from '@/lib/hooks/use-data'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
@@ -33,9 +33,11 @@ import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 interface DashboardHeaderProps {
   user: User
   onMenuClick: () => void
+  sidebarCollapsed: boolean
+  onToggleSidebarCollapsed: () => void
 }
 
-export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
+export function DashboardHeader({ user, onMenuClick, sidebarCollapsed, onToggleSidebarCollapsed }: DashboardHeaderProps) {
   const router = useRouter()
   const { data: colaborador, mutate: mutateColaborador } = useColaborador()
   const [fotoDialogOpen, setFotoDialogOpen] = useState(false)
@@ -123,6 +125,7 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
     <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-4 lg:px-6">
       {/* Left side */}
       <div className="flex items-center gap-3">
+        {/* Mobile: abre a sidebar em drawer */}
         <Button
           variant="ghost"
           size="icon"
@@ -133,6 +136,17 @@ export function DashboardHeader({ user, onMenuClick }: DashboardHeaderProps) {
           <span className="sr-only">Abrir menu</span>
         </Button>
 
+        {/* Desktop: minimiza/restaura a sidebar fixa */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onToggleSidebarCollapsed}
+          className="hidden lg:inline-flex h-9 w-9 rounded-md hover:bg-muted transition-colors"
+          aria-label={sidebarCollapsed ? 'Mostrar menu' : 'Minimizar menu'}
+          title={sidebarCollapsed ? 'Mostrar menu' : 'Minimizar menu'}
+        >
+          {sidebarCollapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
+        </Button>
       </div>
 
       {/* Right side */}
