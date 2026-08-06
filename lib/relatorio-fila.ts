@@ -377,6 +377,22 @@ export function somarEpisodiosPorFila<TTicket extends TicketNaFila>(
 }
 
 /**
+ * Calcula o resumo e os episódios sobre a mesma população de tickets.
+ * Assim, o percentual de fila nunca mistura o numerador de um recorte com o
+ * denominador de outro.
+ */
+export function calcularIndicadoresDaFila<TTicket extends TicketFila>(
+  tickets: readonly TTicket[],
+  filaDoTicket: (ticket: TTicket) => string,
+  opts: OpcoesDeFila & { limiteSlaMin?: number },
+) {
+  return {
+    fila: resumirFila(tickets, opts),
+    episodios: somarEpisodiosPorFila(tickets, filaDoTicket, opts),
+  }
+}
+
+/**
  * Com que frequência a fila se formou, relativo ao volume do dia.
  *
  * ATENÇÃO ao ler: é EVENTO dividido por TICKET, não a fatia dos tickets que

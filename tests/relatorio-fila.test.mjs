@@ -8,6 +8,7 @@ import {
   LIMITE_SLA_PADRAO_MIN,
   contarEpisodiosDeFila,
   somarEpisodiosPorFila,
+  calcularIndicadoresDaFila,
   percentualDeFila,
 } from '../lib/relatorio-fila.ts'
 import { criarMedidorDeExpediente } from '../lib/horario-atendimento.ts'
@@ -428,6 +429,24 @@ test('ticket sem subsetor entra na fila que o chamador indicar', () => {
     somarEpisodiosPorFila(tickets, (t) => t.subsetor_id || 'suporte', opts).vezes,
     1,
     'dobrado no Suporte, os dois estão na MESMA fila contínua',
+  )
+})
+
+test('percentual inclui o ticket sem subsetor absorvido pelo Suporte', () => {
+  const tickets = [
+    { subsetor_id: 'suporte', criado_em: seg(900), atribuido_em: seg(300) },
+    { subsetor_id: null, criado_em: seg(800), atribuido_em: seg(400) },
+  ]
+  const filaDoTicket = (ticket) => ticket.subsetor_id || 'suporte'
+  const ticketsDoSuporte = tickets.filter((ticket) => filaDoTicket(ticket) === 'suporte')
+  const { fila, episodios } = calcularIndicadoresDaFila(ticketsDoSuporte, filaDoTicket, base)
+
+  assert.equal(fila.total, 2)
+  assert.equal(episodios.vezes, 1)
+  assert.equal(
+    percentualDeFila(episodios.vezes, fila.total),
+    50,
+    'o denominador inclui os mesmos dois tickets usados para os episódios',
   )
 })
 

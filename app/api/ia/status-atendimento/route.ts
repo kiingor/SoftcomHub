@@ -10,6 +10,7 @@ import {
   montarTranscricao,
   normalizarMotivoAberturaNexus,
   PROMPT_STATUS_ATENDIMENTO,
+  VERSAO_PROMPT_STATUS_ATENDIMENTO,
   type AnaliseSalva,
   type MensagemParaAnalise,
 } from '@/lib/analise-atendimento'
@@ -19,6 +20,11 @@ import {
 } from '@/lib/nexus-historico-ticket'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import {
+  assinarConteudoAnalisado,
+  reservarGeracaoStatusAtendimento,
+  type MetadadosPromptStatusAtendimento,
+} from '@/lib/server/status-atendimento-analise'
 
 /**
  * POST /api/ia/status-atendimento
@@ -27,9 +33,10 @@ import { createServiceClient } from '@/lib/supabase/service'
  * Monitoramento do setor. Devolve markdown com as seções que o diálogo
  * renderiza (ver `PROMPT_STATUS_ATENDIMENTO`).
  *
- * O resultado é guardado em `ticket_analises_ia` amarrado à última mensagem do
- * ticket: reabrir o diálogo sem mensagem nova devolve o texto salvo e não gasta
- * chamada de LLM. `forcar: true` refaz mesmo assim.
+ * O resultado é guardado em `ticket_analises_ia` com assinatura da entrada
+ * efetivamente enviada ao modelo. Reabrir o diálogo sem mudança na conversa ou
+ * no contexto devolve o texto salvo; `forcar: true` ignora o cache, mas respeita
+ * o intervalo mínimo entre gerações.
  *
  * Body:
  * - ticket_id: string (obrigatório)
@@ -62,12 +69,28 @@ const CABECALHOS_SSE = {
 } as const
 
 /** Um SSE de uma mensagem só, para erro e para resposta que veio do cache. */
-function respostaSseImediata(eventos: Array<[string, unknown]>): Response {
+function respostaSseImediata(
+  eventos: Array<[string, unknown]>,
+  status = 200,
+  cabecalhos: HeadersInit = {},
+): Response {
   const corpo = eventos.map(([nome, dados]) => sse(nome, dados)).join('')
-  return new Response(corpo, { headers: CABECALHOS_SSE })
+  return new Response(corpo, {
+    status,
+    headers: { ...CABECALHOS_SSE, ...cabecalhos },
+  })
 }
 
-const COLUNAS_ANALISE = 'markdown, ultima_mensagem_id, ultima_mensagem_em, total_mensagens, modelo, gerado_em, motivo_abertura_nexus'
+const COLUNAS_ANALISE = [
+  'markdown',
+  'ultima_mensagem_id',
+  'ultima_mensagem_em',
+  'total_mensagens',
+  'modelo',
+  'gerado_em',
+  'assinatura_conteudo',
+  'versao_prompt',
+].join(', ')
 
 type MensagemDoBanco = MensagemParaAnalise & { ticket_id: string | null }
 
@@ -117,11 +140,17 @@ export async function POST(request: Request) {
     // Em streaming o status HTTP já foi para 200 quando o texto começa a sair,
     // então a falha precisa viajar como evento. Antes disso, um JSON normal
     // serviria — mas manter um caminho só evita divergência entre os dois.
-    const falha = (mensagem: string, status: number) => (
-      emStream
-        ? respostaSseImediata([['erro', { error: mensagem }]])
-        : NextResponse.json({ error: mensagem }, { status })
-    )
+    const falha = (
+      mensagem: string,
+      status: number,
+      detalhes: Record<string, unknown> = {},
+      cabecalhos: HeadersInit = {},
+    ) => {
+      const corpo = { error: mensagem, ...detalhes }
+      return emStream
+        ? respostaSseImediata([['erro', corpo]], status, cabecalhos)
+        : NextResponse.json(corpo, { status, headers: cabecalhos })
+    }
 
     if (!ticketId) return falha('ticket_id é obrigatório', 400)
 
@@ -186,9 +215,63 @@ export async function POST(request: Request) {
     // Aritmética sobre os carimbos das mensagens: sai de graça e sempre igual,
     // então é recalculada mesmo quando o texto vem do cache.
     const metricas = calcularMetricasDeTempo(mensagens)
+
+    const { data: atendente, error: atendenteError } = ticket.colaborador_id
+      ? await db.from('colaboradores').select('nome').eq('id', ticket.colaborador_id).maybeSingle()
+      : { data: null, error: null }
+
+    if (atendenteError) {
+      console.warn('[StatusAtendimento] erro ao buscar atendente:', atendenteError.message)
+    }
+
+    const transcricao = montarTranscricao(mensagens)
+    if (!transcricao) {
+      return falha('As mensagens deste atendimento não têm conteúdo legível para analisar.', 409)
+    }
+
+    const clienteDoPrompt = cliente?.nome || cliente?.telefone || null
+    const atendenteDoPrompt = atendente?.nome ?? null
+    const entradaDaAnalise = montarEntradaDaAnalise({
+      numero: ticket.numero,
+      cliente: clienteDoPrompt,
+      atendente: atendenteDoPrompt,
+      status: ticket.status,
+      abertoEm: ticket.criado_em,
+      motivoAberturaNexus,
+      transcricao,
+    })
+    const metadadosPrompt: MetadadosPromptStatusAtendimento = {
+      ticket: {
+        id: ticket.id,
+        numero: ticket.numero ?? null,
+        status: ticket.status ?? null,
+        aberto_em: ticket.criado_em ?? null,
+      },
+      cliente_id: ticket.cliente_id ?? null,
+      cliente: clienteDoPrompt,
+      atendente_id: ticket.colaborador_id ?? null,
+      atendente: atendenteDoPrompt,
+      modelo: provedor.modelo,
+      versao: VERSAO_PROMPT_STATUS_ATENDIMENTO,
+    }
+    const assinaturaConteudo = assinarConteudoAnalisado({
+      prompt: PROMPT_STATUS_ATENDIMENTO,
+      entrada: entradaDaAnalise,
+      transcricao,
+      metadados: metadadosPrompt,
+    })
     const salva = await lerAnaliseSalva(db, ticket.id)
 
-    if (salva && !forcar && analiseContinuaValida(salva, assinatura, motivoAberturaNexus)) {
+    if (
+      salva
+      && !forcar
+      && analiseContinuaValida(
+        salva,
+        assinatura,
+        assinaturaConteudo,
+        VERSAO_PROMPT_STATUS_ATENDIMENTO,
+      )
+    ) {
       const resposta = {
         markdown: salva.markdown,
         gerado_em: salva.gerado_em,
@@ -210,17 +293,23 @@ export async function POST(request: Request) {
         : NextResponse.json(resposta)
     }
 
-    const { data: atendente, error: atendenteError } = ticket.colaborador_id
-      ? await db.from('colaboradores').select('nome').eq('id', ticket.colaborador_id).maybeSingle()
-      : { data: null, error: null }
-
-    if (atendenteError) {
-      console.warn('[StatusAtendimento] erro ao buscar atendente:', atendenteError.message)
+    const reserva = await reservarGeracaoStatusAtendimento(db, ticket.id)
+    if (!reserva.ok) {
+      console.error('[StatusAtendimento] não foi possível reservar a geração:', reserva.erro)
+      return falha('Não foi possível reservar uma análise segura. Tente novamente em instantes.', 503)
     }
-
-    const transcricao = montarTranscricao(mensagens)
-    if (!transcricao) {
-      return falha('As mensagens deste atendimento não têm conteúdo legível para analisar.', 409)
+    if (!reserva.permitida) {
+      const unidade = reserva.retryAfterSeconds === 1 ? 'segundo' : 'segundos'
+      return falha(
+        `Uma análise deste ticket já foi iniciada. Aguarde ${reserva.retryAfterSeconds} ${unidade} para reanalisar.`,
+        429,
+        {
+          code: 'ANALISE_GERACAO_LIMITADA',
+          retry_after_seconds: reserva.retryAfterSeconds,
+          retry_after_at: reserva.proximaGeracaoEm,
+        },
+        { 'Retry-After': String(reserva.retryAfterSeconds) },
+      )
     }
 
     const corpoDaChamada = {
@@ -229,15 +318,7 @@ export async function POST(request: Request) {
         { role: 'system', content: PROMPT_STATUS_ATENDIMENTO },
         {
           role: 'user',
-          content: montarEntradaDaAnalise({
-            numero: ticket.numero,
-            cliente: cliente?.nome || cliente?.telefone || null,
-            atendente: atendente?.nome ?? null,
-            status: ticket.status,
-            abertoEm: ticket.criado_em,
-            motivoAberturaNexus,
-            transcricao,
-          }),
+          content: entradaDaAnalise,
         },
       ],
       max_tokens: 800,
@@ -259,7 +340,9 @@ export async function POST(request: Request) {
         total_mensagens: assinatura.totalMensagens,
         modelo: provedor.modelo,
         gerado_em: geradoEm,
-        motivo_abertura_nexus: motivoAberturaNexus,
+        assinatura_conteudo: assinaturaConteudo,
+        metadados_prompt: metadadosPrompt,
+        versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
       })
       return {
         markdown,
@@ -410,7 +493,7 @@ async function carregarConversa(
     .select(colunas)
     .eq('ticket_id', ticket.id)
     .order('enviado_em', { ascending: false })
-    .limit(LIMITE_MENSAGENS_ANALISE)
+    .range(0, LIMITE_MENSAGENS_ANALISE - 1)
 
   if (erroTicket) {
     console.error('[StatusAtendimento] erro ao buscar mensagens:', erroTicket.message)
@@ -445,7 +528,7 @@ async function carregarConversa(
       .in('remetente', ['cliente-nexus', 'bot-nexus'])
       .gte('enviado_em', calcularInicioJanelaHistoricoIso(ticket.criado_em))
       .order('enviado_em', { ascending: false })
-      .limit(LIMITE_MENSAGENS_ANALISE)
+      .range(0, LIMITE_MENSAGENS_ANALISE - 1)
 
     if (erroOrfas) {
       console.warn('[StatusAtendimento] erro ao buscar histórico do Nexus:', erroOrfas.message)

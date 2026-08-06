@@ -7,6 +7,9 @@ import { pathToFileURL } from 'node:url'
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === 'server-only') {
+      return { url: 'data:text/javascript,export default {}', shortCircuit: true }
+    }
     if (!specifier.startsWith('@/')) return nextResolve(specifier, context)
 
     let resolvedPath = path.resolve(specifier.slice(2))
@@ -28,9 +31,12 @@ const {
   normalizarMotivoAberturaNexus,
   papelDoRemetente,
   PROMPT_STATUS_ATENDIMENTO,
+  VERSAO_PROMPT_STATUS_ATENDIMENTO,
 } = await import('../lib/analise-atendimento.ts')
+const { assinarConteudoAnalisado } = await import('../lib/server/status-atendimento-analise.ts')
 
 const ONTEM = '2026-08-06T13:05:00.000Z' // 10:05 em São Paulo
+const ASSINATURA_CONTEUDO = 'a'.repeat(64)
 
 function mensagem(campos) {
   return { id: 'm1', remetente: 'cliente', conteudo: 'oi', tipo: 'texto', enviado_em: ONTEM, ...campos }
@@ -110,17 +116,24 @@ test('conversa vazia assina em branco', () => {
   })
 })
 
-test('sem mensagem nova a análise salva continua valendo', () => {
+test('sem mudança na entrada analisada a análise salva continua valendo', () => {
   const salva = {
     markdown: '## Resumo\nPDV travando.',
     ultima_mensagem_id: 'b',
     ultima_mensagem_em: ONTEM,
     total_mensagens: 2,
     gerado_em: ONTEM,
+    assinatura_conteudo: ASSINATURA_CONTEUDO,
+    versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
   }
 
   assert.equal(
-    analiseContinuaValida(salva, { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 2 }),
+    analiseContinuaValida(
+      salva,
+      { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 2 },
+      ASSINATURA_CONTEUDO,
+      VERSAO_PROMPT_STATUS_ATENDIMENTO,
+    ),
     true,
   )
 })
@@ -132,10 +145,17 @@ test('mensagem nova invalida a análise', () => {
     ultima_mensagem_em: ONTEM,
     total_mensagens: 2,
     gerado_em: ONTEM,
+    assinatura_conteudo: ASSINATURA_CONTEUDO,
+    versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
   }
 
   assert.equal(
-    analiseContinuaValida(salva, { ultimaMensagemId: 'c', ultimaMensagemEm: ONTEM, totalMensagens: 3 }),
+    analiseContinuaValida(
+      salva,
+      { ultimaMensagemId: 'c', ultimaMensagemEm: ONTEM, totalMensagens: 3 },
+      ASSINATURA_CONTEUDO,
+      VERSAO_PROMPT_STATUS_ATENDIMENTO,
+    ),
     false,
   )
 })
@@ -147,46 +167,152 @@ test('mensagem apagada também invalida, mesmo com a última mantida', () => {
     ultima_mensagem_em: ONTEM,
     total_mensagens: 5,
     gerado_em: ONTEM,
+    assinatura_conteudo: ASSINATURA_CONTEUDO,
+    versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
   }
 
   assert.equal(
-    analiseContinuaValida(salva, { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 4 }),
+    analiseContinuaValida(
+      salva,
+      { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 4 },
+      ASSINATURA_CONTEUDO,
+      VERSAO_PROMPT_STATUS_ATENDIMENTO,
+    ),
     false,
   )
 })
 
-test('motivo da abertura pelo Nexus também faz parte da validade do cache', () => {
-  const salva = {
-    markdown: '## Resumo\nPDV travando.',
+test('cache sem markdown, sem id, sem assinatura ou de conversa vazia é sempre refeito', () => {
+  const base = {
     ultima_mensagem_id: 'b',
     ultima_mensagem_em: ONTEM,
     total_mensagens: 2,
     gerado_em: ONTEM,
-    motivo_abertura_nexus: 'Cliente relatou falha no PDV.',
+    assinatura_conteudo: ASSINATURA_CONTEUDO,
+    versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
   }
   const assinatura = { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 2 }
 
-  assert.equal(
-    analiseContinuaValida(salva, assinatura, 'Cliente relatou falha no PDV.'),
-    true,
-  )
-  assert.equal(
-    analiseContinuaValida(salva, assinatura, 'Cliente pediu segunda via de boleto.'),
-    false,
-  )
-})
-
-test('cache sem markdown, sem id ou de conversa vazia é sempre refeito', () => {
-  const base = { ultima_mensagem_id: 'b', ultima_mensagem_em: ONTEM, total_mensagens: 2, gerado_em: ONTEM }
-  const assinatura = { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 2 }
-
-  assert.equal(analiseContinuaValida(null, assinatura), false)
-  assert.equal(analiseContinuaValida({ ...base, markdown: '' }, assinatura), false)
-  assert.equal(analiseContinuaValida({ ...base, markdown: '##', ultima_mensagem_id: null }, assinatura), false)
+  assert.equal(analiseContinuaValida(null, assinatura, ASSINATURA_CONTEUDO, VERSAO_PROMPT_STATUS_ATENDIMENTO), false)
+  assert.equal(analiseContinuaValida({ ...base, markdown: '' }, assinatura, ASSINATURA_CONTEUDO, VERSAO_PROMPT_STATUS_ATENDIMENTO), false)
+  assert.equal(analiseContinuaValida({ ...base, markdown: '##', ultima_mensagem_id: null }, assinatura, ASSINATURA_CONTEUDO, VERSAO_PROMPT_STATUS_ATENDIMENTO), false)
+  assert.equal(analiseContinuaValida({ ...base, markdown: '##', assinatura_conteudo: null }, assinatura, ASSINATURA_CONTEUDO, VERSAO_PROMPT_STATUS_ATENDIMENTO), false)
+  assert.equal(analiseContinuaValida({ ...base, markdown: '##', versao_prompt: null }, assinatura, ASSINATURA_CONTEUDO, VERSAO_PROMPT_STATUS_ATENDIMENTO), false)
   assert.equal(
     analiseContinuaValida(
       { ...base, markdown: '##', ultima_mensagem_id: null, total_mensagens: 0 },
       { ultimaMensagemId: null, ultimaMensagemEm: null, totalMensagens: 0 },
+      ASSINATURA_CONTEUDO,
+      VERSAO_PROMPT_STATUS_ATENDIMENTO,
+    ),
+    false,
+  )
+})
+
+test('a assinatura SHA-256 cobre o conteúdo analisado e seus metadados', () => {
+  const audioAntesDaTranscricao = mensagem({
+    id: 'audio-1',
+    conteudo: '',
+    tipo: 'audio',
+    media_type: 'audio/ogg',
+  })
+  const audioTranscrito = { ...audioAntesDaTranscricao, conteudo: 'o PDV não abre desde cedo' }
+  const transcricaoInicial = montarTranscricao([audioAntesDaTranscricao])
+  const transcricaoAtualizada = montarTranscricao([audioTranscrito])
+  const metadados = {
+    ticket: { id: 'ticket-1', numero: 42, status: 'aberto', aberto_em: ONTEM },
+    cliente_id: 'cliente-1',
+    cliente: 'Padaria do Zé',
+    atendente_id: 'atendente-1',
+    atendente: 'Ana',
+    modelo: 'cx/gpt-5.4',
+    versao: VERSAO_PROMPT_STATUS_ATENDIMENTO,
+  }
+  const assinar = (transcricao, dados = metadados, motivoAberturaNexus = null) => assinarConteudoAnalisado({
+    prompt: PROMPT_STATUS_ATENDIMENTO,
+    entrada: montarEntradaDaAnalise({
+      numero: dados.ticket.numero,
+      cliente: dados.cliente,
+      atendente: dados.atendente,
+      status: dados.ticket.status,
+      abertoEm: dados.ticket.aberto_em,
+      motivoAberturaNexus,
+      transcricao,
+    }),
+    transcricao,
+    metadados: dados,
+  })
+
+  const assinaturaInicial = assinar(transcricaoInicial)
+  const assinaturaAtualizada = assinar(transcricaoAtualizada)
+  const assinaturaMotivoA = assinar(transcricaoInicial, metadados, 'Falha A')
+  const assinaturaMotivoB = assinar(transcricaoInicial, metadados, 'Falha B')
+
+  assert.match(assinaturaInicial, /^[0-9a-f]{64}$/)
+  assert.notEqual(assinaturaInicial, assinaturaAtualizada)
+  assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, cliente_id: 'cliente-2' }))
+  assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, cliente: 'Mercado Azul' }))
+  assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, atendente_id: 'atendente-2' }))
+  assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, atendente: 'Bia' }))
+  assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, modelo: 'gpt-4o-mini' }))
+  assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, versao: 'outra-versao' }))
+  assert.notEqual(
+    assinaturaInicial,
+    assinaturaMotivoA,
+  )
+  assert.notEqual(assinaturaMotivoA, assinaturaMotivoB)
+  assert.equal(
+    analiseContinuaValida(
+      {
+        markdown: '## Resumo',
+        ultima_mensagem_id: 'audio-1',
+        ultima_mensagem_em: ONTEM,
+        total_mensagens: 1,
+        gerado_em: ONTEM,
+        assinatura_conteudo: assinaturaMotivoA,
+        versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
+      },
+      assinarConversa([audioAntesDaTranscricao]),
+      assinaturaMotivoB,
+      VERSAO_PROMPT_STATUS_ATENDIMENTO,
+    ),
+    false,
+  )
+  assert.notEqual(
+    assinaturaInicial,
+    assinar(transcricaoInicial, { ...metadados, ticket: { ...metadados.ticket, numero: 43 } }),
+  )
+  assert.equal(
+    analiseContinuaValida(
+      {
+        markdown: '## Resumo',
+        ultima_mensagem_id: 'audio-1',
+        ultima_mensagem_em: ONTEM,
+        total_mensagens: 1,
+        gerado_em: ONTEM,
+        assinatura_conteudo: assinaturaInicial,
+        versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
+      },
+      assinarConversa([audioAntesDaTranscricao]),
+      assinaturaInicial,
+      'outra-versao',
+    ),
+    false,
+  )
+  assert.equal(
+    analiseContinuaValida(
+      {
+        markdown: '## Resumo',
+        ultima_mensagem_id: 'audio-1',
+        ultima_mensagem_em: ONTEM,
+        total_mensagens: 1,
+        gerado_em: ONTEM,
+        assinatura_conteudo: assinaturaInicial,
+        versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
+      },
+      assinarConversa([audioTranscrito]),
+      assinaturaAtualizada,
+      VERSAO_PROMPT_STATUS_ATENDIMENTO,
     ),
     false,
   )
@@ -269,8 +395,8 @@ test('mede FRT, médias e maior espera sobre pares de lados diferentes', () => {
   assert.equal(m.respostasDoAtendente, 2)
 })
 
-test('mensagens seguidas do mesmo lado não viram espera de ninguém', () => {
-  // Três falas do cliente em sequência: nenhum intervalo conta.
+test('a primeira resposta parte da última mensagem do bloco consecutivo do cliente', () => {
+  // Três falas do cliente em sequência: a resposta humana mede a partir da última.
   const m = calcularMetricasDeTempo(conversa(
     ['cliente', 0], ['cliente', 30], ['cliente', 60], ['colaborador', 61],
   ))

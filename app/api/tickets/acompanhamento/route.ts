@@ -76,9 +76,31 @@ export async function POST(request: Request) {
 
     const { data: salvo, error } = await db
       .from('ticket_acompanhamentos')
-      .upsert(linha, { onConflict: 'ticket_id' })
+      .insert(linha)
       .select('ticket_id, colaborador_id, colaborador_nome, iniciado_em')
       .maybeSingle()
+
+    if (error?.code === '23505') {
+      const { data: existente, error: existenteError } = await db
+        .from('ticket_acompanhamentos')
+        .select('ticket_id, colaborador_id, colaborador_nome, iniciado_em')
+        .eq('ticket_id', ticketId)
+        .maybeSingle()
+
+      if (existenteError || !existente) {
+        console.error('[Acompanhamento] erro ao consultar acompanhamento existente:', existenteError?.message)
+        return NextResponse.json({ error: 'Erro ao registrar o acompanhamento' }, { status: 500 })
+      }
+
+      if (existente.colaborador_id !== colaborador.id) {
+        return NextResponse.json(
+          { error: 'Outro gestor já está acompanhando este atendimento' },
+          { status: 409 },
+        )
+      }
+
+      return NextResponse.json({ acompanhamento: existente })
+    }
 
     if (error) {
       console.error('[Acompanhamento] erro ao registrar:', error.message)

@@ -34,10 +34,9 @@ function tempoRelativo(iso: string | null | undefined): string {
  * A barra lateral "Status do atendimento", ao lado da conversa do Monitoramento.
  *
  * Fica colada no balão do chat de propósito: o supervisor lê a conclusão da IA
- * e confere na conversa ao lado sem trocar de tela. A análise só é refeita
- * quando chega mensagem nova — quem decide isso é a rota, comparando a última
- * mensagem com a que foi analisada; aqui só mostramos se o texto veio do cache
- * e oferecemos o reanalisar à força.
+ * e confere na conversa ao lado sem trocar de tela. A rota reutiliza a análise
+ * somente enquanto a conversa e o contexto efetivamente enviados ao modelo são
+ * iguais; aqui só mostramos se o texto veio do cache e oferecemos o reanalisar.
  *
  * Monta e desmonta junto com a barra: reabrir dispara outra requisição, mas ela
  * volta do cache do servidor sem gastar chamada de IA.
@@ -190,7 +189,7 @@ export function StatusAtendimentoPanel({
       <div className="space-y-1.5 border-t px-3 py-2">
         <p className="text-[11px] leading-tight text-muted-foreground">
           {!analise
-            ? 'A análise é refeita apenas quando chega mensagem nova.'
+            ? 'A análise é atualizada quando a conversa ou o contexto analisado muda.'
             : analise.parcial
               ? `Escrevendo… · ${analise.total_mensagens} ${analise.total_mensagens === 1 ? 'mensagem' : 'mensagens'}`
               : `Analisado ${tempoRelativo(analise.gerado_em)} · ${analise.total_mensagens} ${analise.total_mensagens === 1 ? 'mensagem' : 'mensagens'}`}
@@ -237,7 +236,7 @@ function Metricas({ dados }: { dados: MetricasDeTempo }) {
         <Metrica
           rotulo="1ª resposta"
           valor={formatarDuracao(dados.primeiraRespostaMs)}
-          titulo="Da primeira fala do cliente até a primeira resposta humana. O bot não conta."
+          titulo="Da última mensagem do bloco consecutivo do cliente até a primeira resposta humana. O bot não conta."
         />
         <Metrica
           rotulo="Média atendente"
