@@ -25,6 +25,7 @@ const {
   formatarDuracao,
   montarEntradaDaAnalise,
   montarTranscricao,
+  normalizarMotivoAberturaNexus,
   papelDoRemetente,
   PROMPT_STATUS_ATENDIMENTO,
 } = await import('../lib/analise-atendimento.ts')
@@ -150,6 +151,27 @@ test('mensagem apagada também invalida, mesmo com a última mantida', () => {
 
   assert.equal(
     analiseContinuaValida(salva, { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 4 }),
+    false,
+  )
+})
+
+test('motivo da abertura pelo Nexus também faz parte da validade do cache', () => {
+  const salva = {
+    markdown: '## Resumo\nPDV travando.',
+    ultima_mensagem_id: 'b',
+    ultima_mensagem_em: ONTEM,
+    total_mensagens: 2,
+    gerado_em: ONTEM,
+    motivo_abertura_nexus: 'Cliente relatou falha no PDV.',
+  }
+  const assinatura = { ultimaMensagemId: 'b', ultimaMensagemEm: ONTEM, totalMensagens: 2 }
+
+  assert.equal(
+    analiseContinuaValida(salva, assinatura, 'Cliente relatou falha no PDV.'),
+    true,
+  )
+  assert.equal(
+    analiseContinuaValida(salva, assinatura, 'Cliente pediu segunda via de boleto.'),
     false,
   )
 })
@@ -300,6 +322,7 @@ test('duração sai legível em segundos, minutos e horas', () => {
 
 test('o prompt proíbe a IA de calcular tempo — quem mede é o código', () => {
   assert.match(PROMPT_STATUS_ATENDIMENTO, /NÃO calcule tempos/)
+  assert.match(PROMPT_STATUS_ATENDIMENTO, /Motivo da abertura pelo Nexus/)
   for (const secao of ['## Status do diálogo', '## Ajuda e escalonamento', '## Pendências']) {
     assert.ok(PROMPT_STATUS_ATENDIMENTO.includes(secao), `faltou a seção ${secao}`)
   }
@@ -312,6 +335,7 @@ test('a entrada da IA carrega o cabeçalho do ticket antes da conversa', () => {
     atendente: null,
     status: 'aberto',
     abertoEm: ONTEM,
+    motivoAberturaNexus: 'Cliente relatou que o PDV não imprime cupom.',
     transcricao: '[06/08, 10:05] Cliente: bom dia',
   })
 
@@ -319,5 +343,19 @@ test('a entrada da IA carrega o cabeçalho do ticket antes da conversa', () => {
   assert.match(entrada, /Cliente: Padaria do Zé/)
   assert.match(entrada, /Atendente: sem atendente atribuído/)
   assert.match(entrada, /Aberto em: 06\/08, 10:05/)
+  assert.match(entrada, /Motivo da abertura pelo Nexus: Cliente relatou que o PDV não imprime cupom/)
   assert.match(entrada, /Conversa:\n\[06\/08, 10:05\] Cliente: bom dia$/)
+})
+
+test('motivo da abertura pelo Nexus vazio não entra no contexto', () => {
+  assert.equal(normalizarMotivoAberturaNexus('  '), null)
+  assert.equal(normalizarMotivoAberturaNexus(null), null)
+  assert.equal(normalizarMotivoAberturaNexus(' Falha ao emitir nota '), 'Falha ao emitir nota')
+
+  const entrada = montarEntradaDaAnalise({
+    motivoAberturaNexus: ' ',
+    transcricao: '[06/08, 10:05] Cliente: bom dia',
+  })
+
+  assert.equal(entrada.includes('Motivo da abertura pelo Nexus'), false)
 })

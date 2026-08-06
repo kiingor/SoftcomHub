@@ -8,6 +8,7 @@ import {
   LIMITE_MENSAGENS_ANALISE,
   montarEntradaDaAnalise,
   montarTranscricao,
+  normalizarMotivoAberturaNexus,
   PROMPT_STATUS_ATENDIMENTO,
   type AnaliseSalva,
   type MensagemParaAnalise,
@@ -66,7 +67,7 @@ function respostaSseImediata(eventos: Array<[string, unknown]>): Response {
   return new Response(corpo, { headers: CABECALHOS_SSE })
 }
 
-const COLUNAS_ANALISE = 'markdown, ultima_mensagem_id, ultima_mensagem_em, total_mensagens, modelo, gerado_em'
+const COLUNAS_ANALISE = 'markdown, ultima_mensagem_id, ultima_mensagem_em, total_mensagens, modelo, gerado_em, motivo_abertura_nexus'
 
 type MensagemDoBanco = MensagemParaAnalise & { ticket_id: string | null }
 
@@ -132,7 +133,7 @@ export async function POST(request: Request) {
 
     const { data: ticket, error: ticketError } = await db
       .from('tickets')
-      .select('id, numero, setor_id, status, criado_em, cliente_id, colaborador_id')
+      .select('id, numero, setor_id, status, criado_em, cliente_id, colaborador_id, validacao_transf')
       .eq('id', ticketId)
       .maybeSingle()
 
@@ -141,6 +142,8 @@ export async function POST(request: Request) {
       return falha('Erro ao buscar o ticket', 500)
     }
     if (!ticket) return falha('Ticket não encontrado', 404)
+
+    const motivoAberturaNexus = normalizarMotivoAberturaNexus(ticket.validacao_transf)
 
     const { data: setor, error: setorError } = await db
       .from('setores')
@@ -185,7 +188,7 @@ export async function POST(request: Request) {
     const metricas = calcularMetricasDeTempo(mensagens)
     const salva = await lerAnaliseSalva(db, ticket.id)
 
-    if (salva && !forcar && analiseContinuaValida(salva, assinatura)) {
+    if (salva && !forcar && analiseContinuaValida(salva, assinatura, motivoAberturaNexus)) {
       const resposta = {
         markdown: salva.markdown,
         gerado_em: salva.gerado_em,
@@ -232,6 +235,7 @@ export async function POST(request: Request) {
             atendente: atendente?.nome ?? null,
             status: ticket.status,
             abertoEm: ticket.criado_em,
+            motivoAberturaNexus,
             transcricao,
           }),
         },
@@ -255,6 +259,7 @@ export async function POST(request: Request) {
         total_mensagens: assinatura.totalMensagens,
         modelo: provedor.modelo,
         gerado_em: geradoEm,
+        motivo_abertura_nexus: motivoAberturaNexus,
       })
       return {
         markdown,

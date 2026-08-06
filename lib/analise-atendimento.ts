@@ -56,6 +56,14 @@ export interface AnaliseSalva {
   total_mensagens: number
   gerado_em: string
   modelo?: string | null
+  motivo_abertura_nexus?: string | null
+}
+
+export function normalizarMotivoAberturaNexus(valor: unknown): string | null {
+  if (typeof valor !== 'string') return null
+
+  const motivo = valor.trim()
+  return motivo || null
 }
 
 /**
@@ -304,7 +312,7 @@ export function assinarConversa(mensagens: MensagemParaAnalise[]): AssinaturaDaC
 }
 
 /**
- * A análise salva ainda descreve a conversa atual?
+ * A análise salva ainda descreve a conversa e o contexto de abertura atual?
  *
  * Só devolve `true` com mensagem identificada dos dois lados: análise antiga
  * gravada sem `ultima_mensagem_id` (ou de conversa vazia) é sempre refeita, em
@@ -314,12 +322,14 @@ export function assinarConversa(mensagens: MensagemParaAnalise[]): AssinaturaDaC
 export function analiseContinuaValida(
   salva: AnaliseSalva | null | undefined,
   assinatura: AssinaturaDaConversa,
+  motivoAberturaNexus: string | null = null,
 ): boolean {
   if (!salva?.markdown) return false
   if (!salva.ultima_mensagem_id || !assinatura.ultimaMensagemId) return false
 
   return salva.ultima_mensagem_id === assinatura.ultimaMensagemId
     && salva.total_mensagens === assinatura.totalMensagens
+    && (salva.motivo_abertura_nexus ?? null) === motivoAberturaNexus
 }
 
 /**
@@ -366,7 +376,8 @@ export const PROMPT_STATUS_ATENDIMENTO = [
   '- Sinais de irritação, cobrança, repetição de pergunta ou silêncio longo do atendente.',
   '',
   'Regras:',
-  '- Baseie-se apenas na conversa. Não invente dado que não esteja lá.',
+  '- Baseie-se apenas na conversa e no contexto do ticket. Não invente dado que não esteja lá.',
+  '- Quando houver "Motivo da abertura pelo Nexus" no contexto do ticket, informe-o claramente no Resumo: ele é a razão declarada para o Nexus abrir o ticket.',
   '- Seja direto: no máximo 4 itens por seção, uma linha cada.',
   '- Não repita a transcrição nem cite horários item a item.',
   // Os tempos são calculados em código e mostrados ao lado do texto: pedir ao
@@ -382,14 +393,19 @@ export function montarEntradaDaAnalise(contexto: {
   atendente?: string | null
   status?: string | null
   abertoEm?: string | null
+  motivoAberturaNexus?: string | null
   transcricao: string
 }): string {
+  const motivoAberturaNexus = normalizarMotivoAberturaNexus(contexto.motivoAberturaNexus)
   const cabecalho = [
     `Ticket: #${contexto.numero ?? '—'}`,
     `Cliente: ${contexto.cliente || 'não informado'}`,
     `Atendente: ${contexto.atendente || 'sem atendente atribuído'}`,
     `Status: ${contexto.status || 'não informado'}`,
     `Aberto em: ${horario(contexto.abertoEm)}`,
+    ...(motivoAberturaNexus
+      ? ['Motivo da abertura pelo Nexus: ' + motivoAberturaNexus]
+      : []),
   ].join('\n')
 
   return `${cabecalho}\n\nConversa:\n${contexto.transcricao}`
