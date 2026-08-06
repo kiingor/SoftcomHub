@@ -8,6 +8,7 @@ import {
   LIMITE_SLA_PADRAO_MIN,
   contarEpisodiosDeFila,
   somarEpisodiosPorFila,
+  percentualDeFila,
 } from '../lib/relatorio-fila.ts'
 import { criarMedidorDeExpediente } from '../lib/horario-atendimento.ts'
 
@@ -470,4 +471,37 @@ test('sem resposta e sem encerramento a espera segue correndo', () => {
 
   assert.equal(r.maiorEspera.esperaMs, 45 * 60_000)
   assert.equal(r.maiorEspera.emAndamento, true)
+})
+
+// --- percentual de fila (filas ÷ tickets do dia) ---
+
+test('percentual de fila divide filas por tickets', () => {
+  // Caso real de 06/08/2026 no ServiceDesk: 9 filas em 33 tickets.
+  assert.equal(percentualDeFila(9, 33), 27)
+  assert.equal(percentualDeFila(1, 4), 25)
+  assert.equal(percentualDeFila(0, 50), 0, 'nenhuma fila em 50 tickets é 0%')
+})
+
+test('percentual de fila NÃO é a fatia de tickets que esperou', () => {
+  // O mesmo dia tinha 17 tickets que esperaram (52%), contra 9 filas (27%).
+  // Guarda a distinção: são perguntas diferentes sobre o mesmo dia.
+  const filas = percentualDeFila(9, 33)
+  const fatiaDeClientes = Math.round((17 / 33) * 100)
+
+  assert.equal(filas, 27)
+  assert.equal(fatiaDeClientes, 52)
+  assert.notEqual(filas, fatiaDeClientes)
+})
+
+test('sem tickets devolve null, não 0%', () => {
+  // 0% leria como "nunca deu fila"; sem movimento não há frequência a relatar.
+  assert.equal(percentualDeFila(0, 0), null)
+  assert.equal(percentualDeFila(3, 0), null)
+  assert.equal(percentualDeFila(1, -5), null)
+})
+
+test('entrada inválida não vira NaN no card', () => {
+  assert.equal(percentualDeFila(Number.NaN, 10), null)
+  assert.equal(percentualDeFila(2, Number.NaN), null)
+  assert.equal(percentualDeFila(-2, 10), 0, 'contagem negativa não vira percentual negativo')
 })

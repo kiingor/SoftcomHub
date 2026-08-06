@@ -375,3 +375,22 @@ export function somarEpisodiosPorFila<TTicket extends TicketNaFila>(
   const doConjunto = contarEpisodiosDeFila(tickets, opts)
   return { vezes, pico: doConjunto.pico, semEspera: doConjunto.semEspera }
 }
+
+/**
+ * Com que frequência a fila se formou, relativo ao volume do dia.
+ *
+ * ATENÇÃO ao ler: é EVENTO dividido por TICKET, não a fatia dos tickets que
+ * esperou. Medido em 06/08/2026 no ServiceDesk, 9 filas em 33 tickets dão 27%,
+ * mas quem de fato esperou foram 17 tickets — 52%. São perguntas diferentes:
+ * aqui é "com que frequência formou fila para o volume que entrou", e um valor
+ * alto com volume baixo é o sinal de que a fila se forma fácil. Quem quer a
+ * fatia de clientes afetados usa `entraramNaFila / total` de `resumirFila`.
+ *
+ * `null` sem tickets: não existe frequência a relatar, e 0% leria como "nunca
+ * deu fila", que é conclusão diferente de "não houve movimento".
+ */
+export function percentualDeFila(vezes: number, totalDeTickets: number): number | null {
+  if (!Number.isFinite(vezes) || !Number.isFinite(totalDeTickets)) return null
+  if (totalDeTickets <= 0) return null
+  return Math.round((Math.max(0, vezes) / totalDeTickets) * 100)
+}
