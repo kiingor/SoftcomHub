@@ -3,11 +3,11 @@
  *
  * O supervisor abre o mesmo ticket várias vezes enquanto acompanha a fila do
  * Monitoramento, e cada abertura custaria uma chamada de LLM sobre a conversa
- * inteira. Por isso a análise é amarrada à ÚLTIMA MENSAGEM do ticket: enquanto
- * nada novo chega, o texto já gerado continua valendo e nenhuma chamada é
- * feita. É o mesmo raciocínio do resumo por ticket do painel Mapa do Maroto,
- * só que sobre as mensagens do próprio Hub — os tickets do ticket-x-api são de
- * outro sistema e não compartilham numeração com os daqui.
+ * inteira. Por isso a análise é reutilizada apenas enquanto a entrada enviada
+ * ao modelo (conversa, prompt e contexto) não muda. É o mesmo raciocínio do
+ * resumo por ticket do painel Mapa do Maroto, só que sobre as mensagens do
+ * próprio Hub — os tickets do ticket-x-api são de outro sistema e não
+ * compartilham numeração com os daqui.
  *
  * Aqui ficam só as partes puras (transcrição, assinatura da conversa e o
  * prompt). A chamada da IA e o cache moram em `app/api/ia/status-atendimento`.
@@ -26,6 +26,9 @@ const FUSO = 'America/Sao_Paulo'
  * de um problema já resolvido.
  */
 export const LIMITE_MENSAGENS_ANALISE = 200
+
+/** Incrementar quando as instruções ou o formato da análise mudarem. */
+export const VERSAO_PROMPT_STATUS_ATENDIMENTO = '2026-08-06.2'
 
 export interface MensagemParaAnalise {
   id: string
@@ -56,6 +59,8 @@ export interface AnaliseSalva {
   total_mensagens: number
   gerado_em: string
   modelo?: string | null
+  assinatura_conteudo?: string | null
+  versao_prompt?: string | null
 }
 
 /**
@@ -178,7 +183,7 @@ export function extrairDeltasSse(
 export const LIMITE_OUTLIER_MS = 10 * 60_000
 
 export interface MetricasDeTempo {
-  /** FRT: da 1ª fala do cliente até a 1ª resposta HUMANA. */
+  /** FRT: da última fala do bloco consecutivo do cliente até a 1ª resposta HUMANA. */
   primeiraRespostaMs: number | null
   /** Média dos intervalos cliente → atendente. */
   mediaAtendenteMs: number | null
@@ -224,8 +229,9 @@ function paraMs(valor?: string | null): number | null {
  * erra aritmética e cada recálculo sai diferente, enquanto os carimbos já estão
  * todos aqui — em código o resultado é exato, instantâneo e de graça.
  *
- * Só conta par de lados DIFERENTES: duas mensagens seguidas do cliente não são
- * espera de ninguém.
+ * Só conta par de lados DIFERENTES: em um bloco consecutivo do cliente, a
+ * primeira resposta começa na última fala dele. As anteriores não são espera
+ * separada de ninguém.
  */
 export function calcularMetricasDeTempo(mensagens: MensagemParaAnalise[]): MetricasDeTempo {
   const falas = mensagens
@@ -306,20 +312,24 @@ export function assinarConversa(mensagens: MensagemParaAnalise[]): AssinaturaDaC
 /**
  * A análise salva ainda descreve a conversa atual?
  *
- * Só devolve `true` com mensagem identificada dos dois lados: análise antiga
- * gravada sem `ultima_mensagem_id` (ou de conversa vazia) é sempre refeita, em
- * vez de empatar `null === null` e congelar um texto que ninguém consegue
- * invalidar.
+ * Só devolve `true` com mensagem identificada e assinatura completa dos dois
+ * lados: cache legado, de conversa vazia ou sem a entrada efetivamente
+ * analisada é sempre refeito.
  */
 export function analiseContinuaValida(
   salva: AnaliseSalva | null | undefined,
   assinatura: AssinaturaDaConversa,
+  assinaturaConteudo: string,
+  versaoPrompt: string,
 ): boolean {
   if (!salva?.markdown) return false
   if (!salva.ultima_mensagem_id || !assinatura.ultimaMensagemId) return false
+  if (!salva.assinatura_conteudo || !salva.versao_prompt) return false
 
   return salva.ultima_mensagem_id === assinatura.ultimaMensagemId
     && salva.total_mensagens === assinatura.totalMensagens
+    && salva.assinatura_conteudo === assinaturaConteudo
+    && salva.versao_prompt === versaoPrompt
 }
 
 /**

@@ -146,7 +146,7 @@ import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
-import { resumirFila, somarEpisodiosPorFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
+import { calcularIndicadoresDaFila, resumirFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
 import { escolherSubsetorPadrao } from '@/lib/subsetor-padrao'
 import { criarMedidorDeExpediente } from '@/lib/horario-atendimento'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
@@ -2839,21 +2839,6 @@ function SetorPageInner() {
   )
 
   /**
-   * Fila de hoje, sobre os tickets que a tela já carregou. Mesmo cálculo do
-   * relatório — `resumirFila` — para os dois números não divergirem entre as
-   * telas. `monitoringTick` porque a espera de quem não foi respondido corre.
-   */
-  /**
-   * Fila de hoje sob o mesmo recorte de cada card de tempo real. Recebe o
-   * predicado em vez de um subsetor para servir aos dois casos: o principal
-   * respeita o filtro rápido quando está em "todos", o secundário é sempre um
-   * subsetor.
-   */
-  const filaDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    resumirFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick, expediente })
-  ), [ticketsHojePorTag, monitoringTick, expediente])
-
-  /**
    * Destino do ticket sem subsetor — no ServiceDesk, o Suporte, que é para onde
    * vai o trabalho não classificado. Mesma regra que a distribuição usa, para o
    * número contar a fila de quem de fato atende esses tickets em vez de abrir
@@ -2872,42 +2857,29 @@ function SetorPageInner() {
   )
 
   /**
-   * Soma fila a fila em vez de medir tudo numa linha do tempo só: cada subsetor
-   * tem atendentes próprios, e duas filas simultâneas são dois episódios. Ver
-   * `somarEpisodiosPorFila` — na linha única o total do ServiceDesk caía de 80
-   * para 31 porque a fila de um subsetor cobria o vazio do outro.
+   * Os dois indicadores recebem a mesma lista de tickets: o percentual divide
+   * episódios pelo total dessa população, inclusive quando o ticket sem subsetor
+   * cai no subsetor padrão.
    */
-  const episodiosDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    somarEpisodiosPorFila(
-      ticketsHojePorTag.filter(aceitaTicket),
-      filaDoTicket,
-      { agoraMs: monitoringTick, expediente },
-    )
-  ), [ticketsHojePorTag, filaDoTicket, monitoringTick, expediente])
+  const indicadoresDeFilaHoje = useCallback((aceitaTicket: (t: any) => boolean) => {
+    const ticketsDoCard = ticketsHojePorTag.filter(aceitaTicket)
+    const opcoesDeFila = { agoraMs: monitoringTick, expediente }
 
-  const filaCardPrincipal = useMemo(() => filaDeHoje((t: any) => (
-    subsetorCardPrincipal === TODOS_SUBSETORES
-      ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
-      : t.subsetor_id === subsetorCardPrincipal
-  )), [filaDeHoje, subsetorCardPrincipal, subsetorFilter])
-
-  const filaCardSecundario = useMemo(
-    () => filaDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
-    [filaDeHoje, subsetorCardSecundario],
-  )
+    return calcularIndicadoresDaFila(ticketsDoCard, filaDoTicket, opcoesDeFila)
+  }, [ticketsHojePorTag, filaDoTicket, monitoringTick, expediente])
 
   // O recorte de um subsetor usa `filaDoTicket`, não `subsetor_id` cru: senão
   // "Todos" (onde o ticket sem subsetor entra no Suporte) deixaria de ser a
   // soma dos cards individuais, que é justamente o que o gestor confere.
-  const episodiosPrincipal = useMemo(() => episodiosDeHoje((t: any) => (
+  const indicadoresCardPrincipal = useMemo(() => indicadoresDeFilaHoje((t: any) => (
     subsetorCardPrincipal === TODOS_SUBSETORES
       ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
       : filaDoTicket(t) === subsetorCardPrincipal
-  )), [episodiosDeHoje, filaDoTicket, subsetorCardPrincipal, subsetorFilter])
+  )), [indicadoresDeFilaHoje, filaDoTicket, subsetorCardPrincipal, subsetorFilter])
 
-  const episodiosSecundario = useMemo(
-    () => episodiosDeHoje((t: any) => filaDoTicket(t) === subsetorCardSecundario),
-    [episodiosDeHoje, filaDoTicket, subsetorCardSecundario],
+  const indicadoresCardSecundario = useMemo(
+    () => indicadoresDeFilaHoje((t: any) => filaDoTicket(t) === subsetorCardSecundario),
+    [indicadoresDeFilaHoje, filaDoTicket, subsetorCardSecundario],
   )
 
   const ticketsHoje = useMemo(() => {
@@ -5883,8 +5855,8 @@ const saveConfig = async () => {
                   tomCarga={WORKLOAD_OS_TONES[cargaCardPrincipal.level]}
                   tempoMaximoFila={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaFilaMs)}
                   tempoMaximoResposta={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaRespostaMs)}
-                  fila={filaCardPrincipal}
-                  episodios={episodiosPrincipal}
+                  fila={indicadoresCardPrincipal.fila}
+                  episodios={indicadoresCardPrincipal.episodios}
                   opcoes={opcoesSubsetorTempoReal}
                   subsetorSelecionado={subsetorCardPrincipal}
                   aoTrocarSubsetor={setSubsetorCardPrincipal}
@@ -5951,8 +5923,8 @@ const saveConfig = async () => {
                     tomCarga={WORKLOAD_OS_TONES[cargaCardSecundario.level]}
                     tempoMaximoFila={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaFilaMs)}
                     tempoMaximoResposta={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaRespostaMs)}
-                    fila={filaCardSecundario}
-                    episodios={episodiosSecundario}
+                    fila={indicadoresCardSecundario.fila}
+                    episodios={indicadoresCardSecundario.episodios}
                     opcoes={opcoesSubsetorTempoReal}
                     subsetorSelecionado={subsetorCardSecundario}
                     aoTrocarSubsetor={setSubsetorCardSecundario}
