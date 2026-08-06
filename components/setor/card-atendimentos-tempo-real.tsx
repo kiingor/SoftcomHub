@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { type ResumoTempoReal } from '@/lib/monitoramento-tempo-real'
-import { formatarEsperaLonga, type EpisodiosDeFila, type ResumoFila } from '@/lib/relatorio-fila'
+import { formatarEsperaLonga, percentualDeFila, type EpisodiosDeFila, type ResumoFila } from '@/lib/relatorio-fila'
 import { type WorkloadOs } from '@/lib/workload-os'
 import { cn } from '@/lib/utils'
 
@@ -47,7 +47,7 @@ export function CardAtendimentosTempoReal({
   tempoMaximoFila: string
   tempoMaximoResposta: string
   /** Fila do DIA, no mesmo recorte do card. Sem isto, a faixa não aparece. */
-  fila?: Pick<ResumoFila, 'maiorEspera' | 'entraramNaFila'>
+  fila?: Pick<ResumoFila, 'maiorEspera' | 'entraramNaFila' | 'total'>
   /** Vezes que a fila se formou hoje. Depende de `atribuido_em`. */
   episodios?: EpisodiosDeFila
   opcoes?: OpcaoSubsetor[]
@@ -55,6 +55,7 @@ export function CardAtendimentosTempoReal({
   aoTrocarSubsetor?: (id: string) => void
 }) {
   const temSeletor = Boolean(opcoes?.length && aoTrocarSubsetor)
+  const percentualFila = fila ? percentualDeFila(episodios?.vezes ?? 0, fila.total) : null
 
   return (
     <Card className="glass-card-elevated @container h-full overflow-auto rounded-lg border-l-4 border-l-primary">
@@ -143,7 +144,9 @@ export function CardAtendimentosTempoReal({
         </div>
 
         {fila && (
-          <div className="grid grid-cols-2 gap-2 border-t border-border/70 pt-2 text-center">
+          // Três indicadores: no card estreito a maior espera cai para a linha
+          // de baixo inteira, em vez de deixar um buraco na grade de duas.
+          <div className="grid grid-cols-2 gap-2 border-t border-border/70 pt-2 text-center @md:grid-cols-3">
             <div>
               <p className={cn(
                 'text-xl font-bold tabular-nums',
@@ -170,7 +173,24 @@ export function CardAtendimentosTempoReal({
                   : 'ninguém esperou hoje'}
               </p>
             </div>
-            <div className="min-w-0">
+            <div>
+              <p className="text-xl font-bold tabular-nums text-foreground">
+                {percentualFila === null ? '—' : `${percentualFila}%`}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">% de fila no dia</p>
+              {/* A fração crua fica visível de propósito: "27%" sozinho é lido
+                  como "27% dos tickets pegaram fila", e não é isso — são filas
+                  divididas por tickets. Ver `percentualDeFila`. */}
+              <p
+                className="text-[11px] text-muted-foreground tabular-nums"
+                title="Quantas filas se formaram para o volume de tickets do dia. Não é a fatia de tickets que esperou."
+              >
+                {percentualFila === null
+                  ? 'sem tickets hoje'
+                  : `${episodios?.vezes ?? 0} em ${fila.total} tickets`}
+              </p>
+            </div>
+            <div className="min-w-0 col-span-2 @md:col-span-1">
               <p className={cn(
                 'whitespace-nowrap text-xl font-bold tabular-nums',
                 fila.maiorEspera?.emAndamento ? 'text-red-600 dark:text-red-400' : 'text-foreground',

@@ -146,7 +146,7 @@ import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
-import { resumirFila, somarEpisodiosPorFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
+import { calcularIndicadoresDaFila, resumirFila, formatarEsperaLonga, faixaDeSaude, LIMITE_FILA_PADRAO_MIN as LIMITE_FILA_MIN, LIMITE_SLA_PADRAO_MIN as LIMITE_SLA_MIN } from '@/lib/relatorio-fila'
 import { escolherSubsetorPadrao } from '@/lib/subsetor-padrao'
 import { criarMedidorDeExpediente } from '@/lib/horario-atendimento'
 import { CardAtendimentosTempoReal, TODOS_SUBSETORES } from '@/components/setor/card-atendimentos-tempo-real'
@@ -165,6 +165,7 @@ import { DisparoLogsSection } from '@/components/disparo-logs-section'
 import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
+import { StatusAtendimentoPanel } from '@/components/setor/status-atendimento-panel'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
@@ -491,11 +492,35 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
       assignmentEventsMap.set(event.ticket_id, arr)
     }
   }
+  // Quem está acompanhando cada ticket. Tabela própria (ver a migration
+  // 20260806140000): coluna em `tickets` daria uma 2ª FK para `colaboradores` e
+  // quebraria os embeds `colaboradores(nome)` já usados aqui.
+  const acompanhamentosMap = new Map<string, any>()
+  if (ticketsAtivosIds.length > 0) {
+    // `loadRowsByValues` não serve aqui: ele ordena por `id` para paginar, e
+    // esta tabela é chaveada por `ticket_id`. A paginação por página com ordem
+    // determinística é a mesma; só muda a coluna.
+    const acompanhamentos = await loadRowsByPages(() => (
+      supabase
+        .from('ticket_acompanhamentos')
+        .select('ticket_id, colaborador_id, colaborador_nome, iniciado_em')
+        .in('ticket_id', ticketsAtivosIds)
+        .order('ticket_id', { ascending: true })
+    )).catch((error: any) => {
+      // Sem a migration aplicada a coluna só não aparece — o resto da tela segue.
+      console.warn('[Setor] Falha ao carregar acompanhamentos:', error?.message)
+      return [] as any[]
+    })
+
+    for (const a of acompanhamentos) acompanhamentosMap.set(a.ticket_id, a)
+  }
+
   // Anexa _logs em cada ticket ativo (mesma chave usada no relatório)
   for (const t of ticketsAtivos as any[]) {
     const ticket = t as any
     ticket._logs = logsMap.get(t.id) || []
     ticket._assignmentEvents = assignmentEventsMap.get(t.id) || []
+    ticket._acompanhamento = acompanhamentosMap.get(t.id) || null
   }
   // Agrupar subsetores por colaborador
   const colabSubsetoresMap: Record<string, { id: string; nome: string }[]> = {}
@@ -2053,6 +2078,10 @@ function SetorPageInner() {
   // Nota interna do supervisor (mensagem privada pro atendente — nunca vai pro cliente)
   const [notaInterna, setNotaInterna] = useState('')
   const [enviandoNota, setEnviandoNota] = useState(false)
+  // Barra lateral "Status do atendimento" — a leitura de IA ao lado da conversa
+  const [statusAtendimentoAberto, setStatusAtendimentoAberto] = useState(false)
+  // Acompanhamento do gestor no ticket aberto na conversa
+  const [salvandoAcompanhamento, setSalvandoAcompanhamento] = useState(false)
 
   // Ao abrir uma conversa com contexto Nexus, mostra primeiro a transição para
   // o atendimento humano. Sem esse contexto, a conversa continua abrindo no fim.
@@ -2810,21 +2839,6 @@ function SetorPageInner() {
   )
 
   /**
-   * Fila de hoje, sobre os tickets que a tela já carregou. Mesmo cálculo do
-   * relatório — `resumirFila` — para os dois números não divergirem entre as
-   * telas. `monitoringTick` porque a espera de quem não foi respondido corre.
-   */
-  /**
-   * Fila de hoje sob o mesmo recorte de cada card de tempo real. Recebe o
-   * predicado em vez de um subsetor para servir aos dois casos: o principal
-   * respeita o filtro rápido quando está em "todos", o secundário é sempre um
-   * subsetor.
-   */
-  const filaDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    resumirFila(ticketsHojePorTag.filter(aceitaTicket), { agoraMs: monitoringTick, expediente })
-  ), [ticketsHojePorTag, monitoringTick, expediente])
-
-  /**
    * Destino do ticket sem subsetor — no ServiceDesk, o Suporte, que é para onde
    * vai o trabalho não classificado. Mesma regra que a distribuição usa, para o
    * número contar a fila de quem de fato atende esses tickets em vez de abrir
@@ -2843,42 +2857,29 @@ function SetorPageInner() {
   )
 
   /**
-   * Soma fila a fila em vez de medir tudo numa linha do tempo só: cada subsetor
-   * tem atendentes próprios, e duas filas simultâneas são dois episódios. Ver
-   * `somarEpisodiosPorFila` — na linha única o total do ServiceDesk caía de 80
-   * para 31 porque a fila de um subsetor cobria o vazio do outro.
+   * Os dois indicadores recebem a mesma lista de tickets: o percentual divide
+   * episódios pelo total dessa população, inclusive quando o ticket sem subsetor
+   * cai no subsetor padrão.
    */
-  const episodiosDeHoje = useCallback((aceitaTicket: (t: any) => boolean) => (
-    somarEpisodiosPorFila(
-      ticketsHojePorTag.filter(aceitaTicket),
-      filaDoTicket,
-      { agoraMs: monitoringTick, expediente },
-    )
-  ), [ticketsHojePorTag, filaDoTicket, monitoringTick, expediente])
+  const indicadoresDeFilaHoje = useCallback((aceitaTicket: (t: any) => boolean) => {
+    const ticketsDoCard = ticketsHojePorTag.filter(aceitaTicket)
+    const opcoesDeFila = { agoraMs: monitoringTick, expediente }
 
-  const filaCardPrincipal = useMemo(() => filaDeHoje((t: any) => (
-    subsetorCardPrincipal === TODOS_SUBSETORES
-      ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
-      : t.subsetor_id === subsetorCardPrincipal
-  )), [filaDeHoje, subsetorCardPrincipal, subsetorFilter])
-
-  const filaCardSecundario = useMemo(
-    () => filaDeHoje((t: any) => t.subsetor_id === subsetorCardSecundario),
-    [filaDeHoje, subsetorCardSecundario],
-  )
+    return calcularIndicadoresDaFila(ticketsDoCard, filaDoTicket, opcoesDeFila)
+  }, [ticketsHojePorTag, filaDoTicket, monitoringTick, expediente])
 
   // O recorte de um subsetor usa `filaDoTicket`, não `subsetor_id` cru: senão
   // "Todos" (onde o ticket sem subsetor entra no Suporte) deixaria de ser a
   // soma dos cards individuais, que é justamente o que o gestor confere.
-  const episodiosPrincipal = useMemo(() => episodiosDeHoje((t: any) => (
+  const indicadoresCardPrincipal = useMemo(() => indicadoresDeFilaHoje((t: any) => (
     subsetorCardPrincipal === TODOS_SUBSETORES
       ? matchesSubsetorFilter(subsetorFilter, t.subsetor_id)
       : filaDoTicket(t) === subsetorCardPrincipal
-  )), [episodiosDeHoje, filaDoTicket, subsetorCardPrincipal, subsetorFilter])
+  )), [indicadoresDeFilaHoje, filaDoTicket, subsetorCardPrincipal, subsetorFilter])
 
-  const episodiosSecundario = useMemo(
-    () => episodiosDeHoje((t: any) => filaDoTicket(t) === subsetorCardSecundario),
-    [episodiosDeHoje, filaDoTicket, subsetorCardSecundario],
+  const indicadoresCardSecundario = useMemo(
+    () => indicadoresDeFilaHoje((t: any) => filaDoTicket(t) === subsetorCardSecundario),
+    [indicadoresDeFilaHoje, filaDoTicket, subsetorCardSecundario],
   )
 
   const ticketsHoje = useMemo(() => {
@@ -3309,6 +3310,7 @@ function SetorPageInner() {
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
         fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
         atendente: t.colaboradores?.nome || null,
+        acompanhamento: t._acompanhamento || null,
         prioridade: t.prioridade,
         status: t.status,
         criado_em: t.criado_em,
@@ -5438,11 +5440,42 @@ const saveConfig = async () => {
     }
   }
 
+  // Entra ou sai do acompanhamento do ticket aberto. O gestor marca a si
+  // mesmo — quem acompanha vem da sessão, no servidor.
+  const alternarAcompanhamento = async () => {
+    if (!selectedTicket?.id) return
+    const acompanhando = selectedTicket.acompanhamento?.colaborador_id === colaboradorLogado?.id
+
+    setSalvandoAcompanhamento(true)
+    try {
+      const resposta = await fetch('/api/tickets/acompanhamento', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_id: selectedTicket.id, acompanhar: !acompanhando }),
+      })
+      const dados = await resposta.json().catch(() => ({}))
+      if (!resposta.ok) throw new Error(dados?.error || 'Falha ao salvar')
+
+      // A conversa fica aberta enquanto isso, então o estado local precisa
+      // refletir na hora; o `mutate` sincroniza a tabela por baixo.
+      setSelectedTicket((atual: any) => (
+        atual ? { ...atual, acompanhamento: dados.acompanhamento ?? null } : atual
+      ))
+      toast.success(acompanhando ? 'Acompanhamento encerrado' : 'Você está acompanhando este atendimento')
+      mutate()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao salvar o acompanhamento')
+    } finally {
+      setSalvandoAcompanhamento(false)
+    }
+  }
+
   // Close conversation
   const closeConversation = () => {
     setSelectedTicket(null)
     setConversationMessages([])
     setNotaInterna('')
+    setStatusAtendimentoAberto(false)
   }
 
   // Envia uma NOTA INTERNA (mensagem privada do supervisor) para o ticket.
@@ -5822,8 +5855,8 @@ const saveConfig = async () => {
                   tomCarga={WORKLOAD_OS_TONES[cargaCardPrincipal.level]}
                   tempoMaximoFila={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaFilaMs)}
                   tempoMaximoResposta={formatarTempoMonitoramento(resumoCardPrincipal.maiorEsperaRespostaMs)}
-                  fila={filaCardPrincipal}
-                  episodios={episodiosPrincipal}
+                  fila={indicadoresCardPrincipal.fila}
+                  episodios={indicadoresCardPrincipal.episodios}
                   opcoes={opcoesSubsetorTempoReal}
                   subsetorSelecionado={subsetorCardPrincipal}
                   aoTrocarSubsetor={setSubsetorCardPrincipal}
@@ -5890,8 +5923,8 @@ const saveConfig = async () => {
                     tomCarga={WORKLOAD_OS_TONES[cargaCardSecundario.level]}
                     tempoMaximoFila={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaFilaMs)}
                     tempoMaximoResposta={formatarTempoMonitoramento(resumoCardSecundario.maiorEsperaRespostaMs)}
-                    fila={filaCardSecundario}
-                    episodios={episodiosSecundario}
+                    fila={indicadoresCardSecundario.fila}
+                    episodios={indicadoresCardSecundario.episodios}
                     opcoes={opcoesSubsetorTempoReal}
                     subsetorSelecionado={subsetorCardSecundario}
                     aoTrocarSubsetor={setSubsetorCardSecundario}
@@ -6082,6 +6115,7 @@ const saveConfig = async () => {
                               direction={activeTicketsSort.direction}
                               onSort={() => setActiveTicketsSort((current) => getNextSort(current, 'attendant'))}
                             />
+                            <TableHead className="text-xs" title="Gestor acompanhando o atendimento">Acompanhando</TableHead>
                             <TableHead className="text-xs w-[60px]"></TableHead>
                           </TableRow>
                         </TableHeader>
@@ -6097,12 +6131,13 @@ const saveConfig = async () => {
                                 <TableCell><Skeleton className="h-5 w-16" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                                 <TableCell><Skeleton className="h-4 w-40" /></TableCell>
+                                <TableCell><Skeleton className="h-5 w-20" /></TableCell>
                                 <TableCell><Skeleton className="h-6 w-6" /></TableCell>
                               </TableRow>
                             ))
                           ) : ticketsEmAndamento.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={9} className="h-32 text-center">
+                              <TableCell colSpan={10} className="h-32 text-center">
                                 <div className="flex flex-col items-center justify-center text-muted-foreground">
                                   <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground/50" />
                                   <p className="text-sm font-medium tracking-tight text-foreground">Nenhum atendimento no momento</p>
@@ -6145,10 +6180,24 @@ const saveConfig = async () => {
                                     <span className="block truncate" title={ticket.fila && ticket.fila !== setor?.nome ? `${setor?.nome} / ${ticket.fila}` : setor?.nome}>{ticket.fila || setor?.nome}</span>
                                   </TableCell>
                                   <TableCell className="text-sm text-foreground">{ticket.atendente || '-'}</TableCell>
+                                  <TableCell className="max-w-[150px]">
+                                    {ticket.acompanhamento ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="max-w-full gap-1 border-primary/40 bg-primary/10 text-[10px] text-primary"
+                                        title={`${ticket.acompanhamento.colaborador_nome || 'Gestor'} acompanha desde ${new Date(ticket.acompanhamento.iniciado_em).toLocaleString('pt-BR')}`}
+                                      >
+                                        <UserCheck className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                        <span className="truncate">{ticket.acompanhamento.colaborador_nome || 'Gestor'}</span>
+                                      </Badge>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">—</span>
+                                    )}
+                                  </TableCell>
                                   <TableCell>
-                                    <Button 
-                                      variant="ghost" 
-                                      size="icon" 
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
                                       className="h-7 w-7"
                                       onClick={() => openConversation(ticket)}
                                       aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
@@ -6277,9 +6326,9 @@ const saveConfig = async () => {
                                   </Badge>
                                 </TableCell>
                                 <TableCell>
-                                  <Button 
-                                    variant="ghost" 
-                                    size="icon" 
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
                                     className="h-7 w-7"
                                     onClick={() => openConversation(ticket)}
                                     aria-label={`Abrir conversa do ticket ${ticket.numero ? `#${ticket.numero}` : ''}`.trim()}
@@ -10781,26 +10830,85 @@ const saveConfig = async () => {
             onClick={closeConversation}
           />
 
-          {/* Balão — centralizado, bordas arredondadas, altura fixa (não varia
-              conforme o conteúdo de cada aba: Atendimento/Transferir/Info) */}
-          <div className="relative flex h-[85vh] max-h-[760px] w-full max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-2xl">
+          {/* Conversa + barra da IA. Com a barra aberta o conjunto ganha
+              largura em vez de espremer o chat; abaixo de lg ela empilha em
+              cima, porque 340px ao lado não caberiam. */}
+          <div className={cn(
+            'relative flex h-[85vh] max-h-[760px] w-full flex-col items-stretch gap-3 lg:flex-row',
+            statusAtendimentoAberto ? 'max-w-6xl' : 'max-w-4xl',
+          )}>
+            {statusAtendimentoAberto && (
+              <aside className="flex max-h-[40%] w-full shrink-0 flex-col overflow-hidden rounded-lg border bg-background shadow-2xl lg:max-h-none lg:w-[340px]">
+                <StatusAtendimentoPanel
+                  ticketId={selectedTicket.id}
+                  onFechar={() => setStatusAtendimentoAberto(false)}
+                />
+              </aside>
+            )}
+
+          {/* Balão — bordas arredondadas, altura fixa (não varia conforme o
+              conteúdo de cada aba: Atendimento/Transferir/Info) */}
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background shadow-2xl">
             {/* Header */}
-            <div className="flex items-center justify-between border-b px-4 py-3">
-              <div>
+            <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+              <div className="min-w-0">
                 <h2 className="font-semibold">Ticket <span className="font-mono tabnums">#{selectedTicket.numero}</span></h2>
-                <p className="text-sm text-muted-foreground">
+                <p className="truncate text-sm text-muted-foreground">
                   Conversa com {selectedTicket.clientes?.nome || selectedTicket.clientes?.telefone || 'Cliente'}
                 </p>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={closeConversation}
-                aria-label="Fechar conversa"
-                title="Fechar conversa"
-              >
-                <X className="h-5 w-5" />
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                {(() => {
+                  const acompanhamento = selectedTicket.acompanhamento
+                  const souEu = acompanhamento?.colaborador_id === colaboradorLogado?.id
+                  const outro = acompanhamento && !souEu
+
+                  return (
+                    <Button
+                      variant={souEu ? 'secondary' : 'outline'}
+                      size="sm"
+                      className={cn('h-8 gap-1.5 text-xs', souEu && 'border-primary/40 text-primary')}
+                      onClick={alternarAcompanhamento}
+                      // Só quem entrou pode sair: com outro gestor no ticket o
+                      // botão vira indicador, não um jeito de tomar o lugar dele.
+                      disabled={salvandoAcompanhamento || Boolean(outro)}
+                      aria-pressed={Boolean(souEu)}
+                      title={outro
+                        ? `${acompanhamento.colaborador_nome || 'Outro gestor'} está acompanhando desde ${new Date(acompanhamento.iniciado_em).toLocaleString('pt-BR')}`
+                        : souEu
+                          ? 'Você está acompanhando — clique para encerrar'
+                          : 'Marcar que você está acompanhando e ajudando o técnico'}
+                    >
+                      {salvandoAcompanhamento
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <UserCheck className="h-3.5 w-3.5" />}
+                      {outro
+                        ? <span className="max-w-[120px] truncate">{acompanhamento.colaborador_nome || 'Gestor'}</span>
+                        : souEu ? 'Acompanhando' : 'Acompanhar'}
+                    </Button>
+                  )
+                })()}
+                <Button
+                  variant={statusAtendimentoAberto ? 'secondary' : 'outline'}
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => setStatusAtendimentoAberto((aberto) => !aberto)}
+                  aria-pressed={statusAtendimentoAberto}
+                  title="Leitura da conversa por IA"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Status do atendimento
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={closeConversation}
+                  aria-label="Fechar conversa"
+                  title="Fechar conversa"
+                >
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
             </div>
 
             {/* Tabs */}
@@ -11000,6 +11108,7 @@ const saveConfig = async () => {
                 </div>
               )}
             </div>
+          </div>
           </div>
         </div>
       )}

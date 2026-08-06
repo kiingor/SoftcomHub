@@ -37,3 +37,23 @@ export function estaNoFimDaConversa(
 
   return distanciaDoFim <= limiar
 }
+
+/**
+ * Se a conversa deve abrir na transição do bot para o humano, em vez do fim.
+ *
+ * Ticket vindo do Nexus abre no "início do ticket" para o atendente ver o que o
+ * bot já tratou. Isso vale na PRIMEIRA vez — depois vira estorvo: ele troca de
+ * chat para ler a mensagem que acabou de chegar e cai lá em cima, num trecho
+ * que já leu, com a mensagem nova fora da tela. Quanto mais movimentada a
+ * conversa, mais longe do fim ele aterrissa.
+ *
+ * Por isso a decisão é por ticket e por sessão: mostra a transição uma vez,
+ * e a partir daí a conversa abre onde qualquer chat abre — no fim.
+ */
+export function devePosicionarNoInicioDoTicket(
+  ticketId: string | null | undefined,
+  ticketsJaVistos: ReadonlySet<string>,
+): boolean {
+  if (!ticketId) return false
+  return !ticketsJaVistos.has(ticketId)
+}

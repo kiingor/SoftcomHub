@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { estaNoFimDaConversa, LIMIAR_FIM_CONVERSA_PX } from '../lib/scroll-conversa.ts'
+import {
+  devePosicionarNoInicioDoTicket,
+  estaNoFimDaConversa,
+  LIMIAR_FIM_CONVERSA_PX,
+} from '../lib/scroll-conversa.ts'
 
 // Conversa de 2000px numa janela de 500px: o fim é scrollTop 1500.
 const conversa = (scrollTop) => ({ scrollTop, scrollHeight: 2000, clientHeight: 500 })
@@ -48,4 +52,36 @@ test('limiar zero exige o fim exato', () => {
 test('rolagem elástica além do fim continua sendo fim', () => {
   // iOS/trackpad pode reportar scrollTop maior que o máximo por um instante.
   assert.equal(estaNoFimDaConversa(conversa(1560)), true)
+})
+
+// --- abrir na transição do bot: só na primeira vez ---
+
+test('a primeira abertura do ticket mostra a transição do bot', () => {
+  assert.equal(devePosicionarNoInicioDoTicket('t1', new Set()), true)
+})
+
+test('trocar de chat e voltar abre no fim, não lá em cima', () => {
+  // O caso reportado: o atendente troca para ler a mensagem que chegou e
+  // aterrissava no início do ticket, com a mensagem nova fora da tela.
+  const jaVistos = new Set(['t1'])
+
+  assert.equal(devePosicionarNoInicioDoTicket('t1', jaVistos), false)
+  assert.equal(devePosicionarNoInicioDoTicket('t2', jaVistos), true)
+})
+
+test('cada ticket tem a sua primeira vez', () => {
+  const jaVistos = new Set()
+  for (const id of ['t1', 't2', 't3']) {
+    assert.equal(devePosicionarNoInicioDoTicket(id, jaVistos), true, `${id} deveria abrir na transição`)
+    jaVistos.add(id)
+  }
+  for (const id of ['t1', 't2', 't3']) {
+    assert.equal(devePosicionarNoInicioDoTicket(id, jaVistos), false, `${id} não deveria repetir`)
+  }
+})
+
+test('sem ticket selecionado não posiciona nada', () => {
+  assert.equal(devePosicionarNoInicioDoTicket(null, new Set()), false)
+  assert.equal(devePosicionarNoInicioDoTicket(undefined, new Set()), false)
+  assert.equal(devePosicionarNoInicioDoTicket('', new Set()), false)
 })
