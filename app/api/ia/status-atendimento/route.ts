@@ -8,6 +8,7 @@ import {
   LIMITE_MENSAGENS_ANALISE,
   montarEntradaDaAnalise,
   montarTranscricao,
+  normalizarMotivoAberturaNexus,
   PROMPT_STATUS_ATENDIMENTO,
   VERSAO_PROMPT_STATUS_ATENDIMENTO,
   type AnaliseSalva,
@@ -161,7 +162,7 @@ export async function POST(request: Request) {
 
     const { data: ticket, error: ticketError } = await db
       .from('tickets')
-      .select('id, numero, setor_id, status, criado_em, cliente_id, colaborador_id')
+      .select('id, numero, setor_id, status, criado_em, cliente_id, colaborador_id, validacao_transf')
       .eq('id', ticketId)
       .maybeSingle()
 
@@ -170,6 +171,8 @@ export async function POST(request: Request) {
       return falha('Erro ao buscar o ticket', 500)
     }
     if (!ticket) return falha('Ticket não encontrado', 404)
+
+    const motivoAberturaNexus = normalizarMotivoAberturaNexus(ticket.validacao_transf)
 
     const { data: setor, error: setorError } = await db
       .from('setores')
@@ -234,6 +237,7 @@ export async function POST(request: Request) {
       atendente: atendenteDoPrompt,
       status: ticket.status,
       abertoEm: ticket.criado_em,
+      motivoAberturaNexus,
       transcricao,
     })
     const metadadosPrompt: MetadadosPromptStatusAtendimento = {

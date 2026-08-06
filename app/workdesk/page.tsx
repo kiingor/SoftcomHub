@@ -122,7 +122,7 @@ import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
 import { telefoneSemDDI } from '@/lib/telefone'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
-import { estaNoFimDaConversa } from '@/lib/scroll-conversa'
+import { devePosicionarNoInicioDoTicket, estaNoFimDaConversa } from '@/lib/scroll-conversa'
 import {
   calcularInicioJanelaHistoricoIso,
   ehMensagemNexus as isNexusMessage,
@@ -1610,6 +1610,9 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // para o atendente é a abertura do ticket — não a primeira mensagem do bot.
   // Esta guarda é consumida uma única vez após o carregamento inicial.
   const devePosicionarNoInicioDoTicketRef = useRef(false)
+  // Tickets cuja transição do bot para o humano o atendente já viu nesta
+  // sessão. A partir da segunda abertura a conversa volta a abrir no fim.
+  const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
 
   const posicionarNoInicioDoTicket = useCallback(() => {
     const container = messagesContainerRef.current
@@ -1748,6 +1751,11 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (!posicionarNoInicioDoTicket()) return
 
     devePosicionarNoInicioDoTicketRef.current = false
+    // Marca só depois de posicionar de fato: se o marcador ainda não estava no
+    // DOM, `posicionarNoInicioDoTicket` devolve false e a conversa não chegou a
+    // ser mostrada na transição — dar como vista aqui a mandaria para o fim.
+    const ticketPosicionado = selectedTicketIdRef.current
+    if (ticketPosicionado) ticketsJaPosicionadosRef.current.add(ticketPosicionado)
     acompanhandoOFimRef.current = false
   }, [mensagens, loadingMensagens, posicionarNoInicioDoTicket])
 
@@ -1763,6 +1771,8 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
     container.scrollTop = Math.max(0, container.scrollTop - 16)
+    const ticketPosicionado = selectedTicketIdRef.current
+    if (ticketPosicionado) ticketsJaPosicionadosRef.current.add(ticketPosicionado)
   }, [mensagens, loadingMensagens, mobileDrawerOpen])
 
   // Acompanha o fim da conversa — mas só de quem já estava no fim.
@@ -1780,7 +1790,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // Abrir outra conversa começa no fim, independente de onde a anterior parou.
   useEffect(() => {
     acompanhandoOFimRef.current = true
-    devePosicionarNoInicioDoTicketRef.current = true
+    devePosicionarNoInicioDoTicketRef.current = devePosicionarNoInicioDoTicket(
+      selectedTicketId,
+      ticketsJaPosicionadosRef.current,
+    )
   }, [selectedTicketId])
 
 // Real-time subscription for tickets
@@ -2483,7 +2496,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     setSelectedTicket(ticket)
 
     if (!isSameTicket) {
-      devePosicionarNoInicioDoTicketMobileRef.current = true
+      devePosicionarNoInicioDoTicketMobileRef.current = devePosicionarNoInicioDoTicket(
+        ticket.id,
+        ticketsJaPosicionadosRef.current,
+      )
       // Clear messages only when switching to a DIFFERENT ticket — prevents flash of old
       // conversation while new messages load. Re-clicking the same ticket must NOT clear
       // messages because the useEffect won't re-fire (selectedTicketId didn't change).

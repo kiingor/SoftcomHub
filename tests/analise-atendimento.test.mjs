@@ -28,6 +28,7 @@ const {
   formatarDuracao,
   montarEntradaDaAnalise,
   montarTranscricao,
+  normalizarMotivoAberturaNexus,
   papelDoRemetente,
   PROMPT_STATUS_ATENDIMENTO,
   VERSAO_PROMPT_STATUS_ATENDIMENTO,
@@ -227,7 +228,7 @@ test('a assinatura SHA-256 cobre o conteúdo analisado e seus metadados', () => 
     modelo: 'cx/gpt-5.4',
     versao: VERSAO_PROMPT_STATUS_ATENDIMENTO,
   }
-  const assinar = (transcricao, dados = metadados) => assinarConteudoAnalisado({
+  const assinar = (transcricao, dados = metadados, motivoAberturaNexus = null) => assinarConteudoAnalisado({
     prompt: PROMPT_STATUS_ATENDIMENTO,
     entrada: montarEntradaDaAnalise({
       numero: dados.ticket.numero,
@@ -235,6 +236,7 @@ test('a assinatura SHA-256 cobre o conteúdo analisado e seus metadados', () => 
       atendente: dados.atendente,
       status: dados.ticket.status,
       abertoEm: dados.ticket.aberto_em,
+      motivoAberturaNexus,
       transcricao,
     }),
     transcricao,
@@ -243,6 +245,8 @@ test('a assinatura SHA-256 cobre o conteúdo analisado e seus metadados', () => 
 
   const assinaturaInicial = assinar(transcricaoInicial)
   const assinaturaAtualizada = assinar(transcricaoAtualizada)
+  const assinaturaMotivoA = assinar(transcricaoInicial, metadados, 'Falha A')
+  const assinaturaMotivoB = assinar(transcricaoInicial, metadados, 'Falha B')
 
   assert.match(assinaturaInicial, /^[0-9a-f]{64}$/)
   assert.notEqual(assinaturaInicial, assinaturaAtualizada)
@@ -252,6 +256,28 @@ test('a assinatura SHA-256 cobre o conteúdo analisado e seus metadados', () => 
   assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, atendente: 'Bia' }))
   assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, modelo: 'gpt-4o-mini' }))
   assert.notEqual(assinaturaInicial, assinar(transcricaoInicial, { ...metadados, versao: 'outra-versao' }))
+  assert.notEqual(
+    assinaturaInicial,
+    assinaturaMotivoA,
+  )
+  assert.notEqual(assinaturaMotivoA, assinaturaMotivoB)
+  assert.equal(
+    analiseContinuaValida(
+      {
+        markdown: '## Resumo',
+        ultima_mensagem_id: 'audio-1',
+        ultima_mensagem_em: ONTEM,
+        total_mensagens: 1,
+        gerado_em: ONTEM,
+        assinatura_conteudo: assinaturaMotivoA,
+        versao_prompt: VERSAO_PROMPT_STATUS_ATENDIMENTO,
+      },
+      assinarConversa([audioAntesDaTranscricao]),
+      assinaturaMotivoB,
+      VERSAO_PROMPT_STATUS_ATENDIMENTO,
+    ),
+    false,
+  )
   assert.notEqual(
     assinaturaInicial,
     assinar(transcricaoInicial, { ...metadados, ticket: { ...metadados.ticket, numero: 43 } }),
@@ -422,6 +448,7 @@ test('duração sai legível em segundos, minutos e horas', () => {
 
 test('o prompt proíbe a IA de calcular tempo — quem mede é o código', () => {
   assert.match(PROMPT_STATUS_ATENDIMENTO, /NÃO calcule tempos/)
+  assert.match(PROMPT_STATUS_ATENDIMENTO, /Motivo da abertura pelo Nexus/)
   for (const secao of ['## Status do diálogo', '## Ajuda e escalonamento', '## Pendências']) {
     assert.ok(PROMPT_STATUS_ATENDIMENTO.includes(secao), `faltou a seção ${secao}`)
   }
@@ -434,6 +461,7 @@ test('a entrada da IA carrega o cabeçalho do ticket antes da conversa', () => {
     atendente: null,
     status: 'aberto',
     abertoEm: ONTEM,
+    motivoAberturaNexus: 'Cliente relatou que o PDV não imprime cupom.',
     transcricao: '[06/08, 10:05] Cliente: bom dia',
   })
 
@@ -441,5 +469,19 @@ test('a entrada da IA carrega o cabeçalho do ticket antes da conversa', () => {
   assert.match(entrada, /Cliente: Padaria do Zé/)
   assert.match(entrada, /Atendente: sem atendente atribuído/)
   assert.match(entrada, /Aberto em: 06\/08, 10:05/)
+  assert.match(entrada, /Motivo da abertura pelo Nexus: Cliente relatou que o PDV não imprime cupom/)
   assert.match(entrada, /Conversa:\n\[06\/08, 10:05\] Cliente: bom dia$/)
+})
+
+test('motivo da abertura pelo Nexus vazio não entra no contexto', () => {
+  assert.equal(normalizarMotivoAberturaNexus('  '), null)
+  assert.equal(normalizarMotivoAberturaNexus(null), null)
+  assert.equal(normalizarMotivoAberturaNexus(' Falha ao emitir nota '), 'Falha ao emitir nota')
+
+  const entrada = montarEntradaDaAnalise({
+    motivoAberturaNexus: ' ',
+    transcricao: '[06/08, 10:05] Cliente: bom dia',
+  })
+
+  assert.equal(entrada.includes('Motivo da abertura pelo Nexus'), false)
 })

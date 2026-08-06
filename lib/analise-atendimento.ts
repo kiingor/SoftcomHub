@@ -28,7 +28,7 @@ const FUSO = 'America/Sao_Paulo'
 export const LIMITE_MENSAGENS_ANALISE = 200
 
 /** Incrementar quando as instruções ou o formato da análise mudarem. */
-export const VERSAO_PROMPT_STATUS_ATENDIMENTO = '2026-08-06.2'
+export const VERSAO_PROMPT_STATUS_ATENDIMENTO = '2026-08-06.3'
 
 export interface MensagemParaAnalise {
   id: string
@@ -61,6 +61,13 @@ export interface AnaliseSalva {
   modelo?: string | null
   assinatura_conteudo?: string | null
   versao_prompt?: string | null
+}
+
+export function normalizarMotivoAberturaNexus(valor: unknown): string | null {
+  if (typeof valor !== 'string') return null
+
+  const motivo = valor.trim()
+  return motivo || null
 }
 
 /**
@@ -310,7 +317,7 @@ export function assinarConversa(mensagens: MensagemParaAnalise[]): AssinaturaDaC
 }
 
 /**
- * A análise salva ainda descreve a conversa atual?
+ * A análise salva ainda descreve a conversa e o contexto de abertura atual?
  *
  * Só devolve `true` com mensagem identificada e assinatura completa dos dois
  * lados: cache legado, de conversa vazia ou sem a entrada efetivamente
@@ -376,7 +383,8 @@ export const PROMPT_STATUS_ATENDIMENTO = [
   '- Sinais de irritação, cobrança, repetição de pergunta ou silêncio longo do atendente.',
   '',
   'Regras:',
-  '- Baseie-se apenas na conversa. Não invente dado que não esteja lá.',
+  '- Baseie-se apenas na conversa e no contexto do ticket. Não invente dado que não esteja lá.',
+  '- Quando houver "Motivo da abertura pelo Nexus" no contexto do ticket, informe-o claramente no Resumo: ele é a razão declarada para o Nexus abrir o ticket.',
   '- Seja direto: no máximo 4 itens por seção, uma linha cada.',
   '- Não repita a transcrição nem cite horários item a item.',
   // Os tempos são calculados em código e mostrados ao lado do texto: pedir ao
@@ -392,14 +400,19 @@ export function montarEntradaDaAnalise(contexto: {
   atendente?: string | null
   status?: string | null
   abertoEm?: string | null
+  motivoAberturaNexus?: string | null
   transcricao: string
 }): string {
+  const motivoAberturaNexus = normalizarMotivoAberturaNexus(contexto.motivoAberturaNexus)
   const cabecalho = [
     `Ticket: #${contexto.numero ?? '—'}`,
     `Cliente: ${contexto.cliente || 'não informado'}`,
     `Atendente: ${contexto.atendente || 'sem atendente atribuído'}`,
     `Status: ${contexto.status || 'não informado'}`,
     `Aberto em: ${horario(contexto.abertoEm)}`,
+    ...(motivoAberturaNexus
+      ? ['Motivo da abertura pelo Nexus: ' + motivoAberturaNexus]
+      : []),
   ].join('\n')
 
   return `${cabecalho}\n\nConversa:\n${contexto.transcricao}`

@@ -70,7 +70,7 @@ test('a reserva chama a RPC com o intervalo fixo e falha fechada', async () => {
 })
 
 test('a migration reserva no banco com lock e limita a RPC ao service role', () => {
-  const migration = lerArquivo('supabase/migrations/20260806150000_status_atendimento_cache_assinatura_limite.sql')
+  const migration = lerArquivo('supabase/migrations/20260806160000_status_atendimento_cache_assinatura_limite.sql')
 
   assert.match(migration, /ticket_analises_ia_geracoes/)
   assert.match(migration, /FOR UPDATE/)
