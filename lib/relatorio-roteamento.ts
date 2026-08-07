@@ -1,22 +1,32 @@
 export type TipoOrigemRoteamento = 'setor' | 'pdv' | 'fluxo' | 'desconhecida'
 export type TipoMovimentoRoteamento = 'transferencia' | 'transbordo'
+export type FonteEntradaRoteamento = 'assignment_log' | 'ticket_log_legado'
 
 export interface EntradaRoteamento {
   id: string
   ticketId?: string | null
   setorOrigemId?: string | null
   setorDestinoId?: string | null
+  origemNome?: string | null
   ocorridoEm?: string | null
   pdv?: string | null
   canal?: string | null
+  colaboradorId?: string | null
+  subsetorId?: string | null
   tipoMovimento?: TipoMovimentoRoteamento | null
+  fonte?: FonteEntradaRoteamento
 }
 
 export interface LogRoteamento {
+  id?: string | null
   ticketId: string
   tipo?: string | null
   descricao?: string | null
   criadoEm?: string | null
+  pdv?: string | null
+  canal?: string | null
+  colaboradorId?: string | null
+  subsetorId?: string | null
 }
 
 export interface SetorRoteamento {
@@ -30,7 +40,8 @@ export interface OrigemRoteamento {
   tipo: TipoOrigemRoteamento
   fluxo: string | null
   quantidade: number
-  taxa: number
+  movimentosClassificados: number
+  taxaTransbordo: number
   transferencias: number
   transbordos: number
   semClassificacao: number
@@ -40,11 +51,13 @@ export interface OrigemRoteamento {
 
 export interface ResumoOrigensRoteamento {
   totalEntradas: number
+  movimentosClassificados: number
+  entradasLegadas: number
   transferencias: number
   transbordos: number
   semClassificacao: number
   origens: OrigemRoteamento[]
-  maiorIndice: OrigemRoteamento | null
+  maiorTaxaTransbordo: OrigemRoteamento | null
 }
 
 interface AcumuladorOrigem {
@@ -57,6 +70,15 @@ interface AcumuladorOrigem {
   transbordos: number
   semClassificacao: number
   ocorrenciasPorDia: Map<string, number>
+}
+
+interface CorrespondenciaLog {
+  indiceLog: number
+  resultado: {
+    tipoMovimento: TipoMovimentoRoteamento
+    diferencaMs: number
+    rotaConfere: boolean
+  }
 }
 
 const JANELA_CORRELACAO_LOG_MS = 5 * 60 * 1000
@@ -85,6 +107,15 @@ function criarMapaDeNomesDosSetores(setores: readonly SetorRoteamento[]) {
     setores.flatMap((setor) => {
       const nome = normalizarTexto(setor.nome)
       return nome ? [[setor.id, nome] as const] : []
+    }),
+  )
+}
+
+function criarMapaDeIdsDosSetoresPorNome(setores: readonly SetorRoteamento[]) {
+  return new Map(
+    setores.flatMap((setor) => {
+      const nome = normalizarParaComparacao(setor.nome)
+      return nome ? [[nome, setor.id] as const] : []
     }),
   )
 }
@@ -121,18 +152,102 @@ function pontuarCorrespondencia(
     && descricao.includes(normalizarParaComparacao(destino) || ''),
   )
 
-  // Se os dois nomes existem no lookup, exigir que a rota escrita pelo log
-  // corresponda ao evento evita classificar uma troca só de subsetor.
   if (origem && destino && !rotaConfere) return null
 
   return { tipoMovimento, diferencaMs, rotaConfere }
 }
 
-/**
- * Acrescenta a classificação do log ao evento estruturado quando há evidência
- * do mesmo ticket, da mesma rota e de um instante próximo. O log só pode
- * classificar um evento para evitar duplicidade em transferências consecutivas.
- */
+function encontrarMelhorCorrespondencia(
+  entrada: EntradaRoteamento,
+  logs: readonly LogRoteamento[],
+  nomesDosSetores: Map<string, string>,
+  logsUsados: ReadonlySet<number>,
+): CorrespondenciaLog | null {
+  let melhor: CorrespondenciaLog | null = null
+
+  for (const [indiceLog, log] of logs.entries()) {
+    if (logsUsados.has(indiceLog)) continue
+    const resultado = pontuarCorrespondencia(entrada, log, nomesDosSetores)
+    if (!resultado) continue
+    if (
+      !melhor
+      || Number(resultado.rotaConfere) > Number(melhor.resultado.rotaConfere)
+      || (
+        resultado.rotaConfere === melhor.resultado.rotaConfere
+        && resultado.diferencaMs < melhor.resultado.diferencaMs
+      )
+    ) {
+      melhor = { indiceLog, resultado }
+    }
+  }
+
+  return melhor
+}
+
+function extrairRotaDoLog(descricao: string | null | undefined) {
+  const texto = normalizarTexto(descricao)
+  if (!texto) return null
+
+  const separador = texto.includes('→') ? '→' : texto.includes('->') ? '->' : null
+  if (!separador) return null
+
+  const indiceSeparador = texto.indexOf(separador)
+  const antes = texto.slice(0, indiceSeparador)
+  const depois = texto.slice(indiceSeparador + separador.length)
+  const origem = normalizarTexto(antes.slice(antes.lastIndexOf(':') + 1))
+  const destino = normalizarTexto(depois.replace(/\s*\(.*/, ''))
+  return origem && destino ? { origem, destino } : null
+}
+
+export function reconstruirEntradasDeRoteamento(
+  entradas: readonly EntradaRoteamento[],
+  logs: readonly LogRoteamento[],
+  setores: readonly SetorRoteamento[],
+  setorDestinoId: string,
+): EntradaRoteamento[] {
+  const nomesDosSetores = criarMapaDeNomesDosSetores(setores)
+  const idsDosSetoresPorNome = criarMapaDeIdsDosSetoresPorNome(setores)
+  const logsUsados = new Set<number>()
+  const estruturadas = entradas.filter((entrada) => (
+    Boolean(entrada.setorOrigemId)
+    && entrada.setorDestinoId === setorDestinoId
+    && entrada.setorOrigemId !== setorDestinoId
+  ))
+
+  for (const entrada of estruturadas) {
+    const correspondencia = encontrarMelhorCorrespondencia(entrada, logs, nomesDosSetores, logsUsados)
+    if (correspondencia) logsUsados.add(correspondencia.indiceLog)
+  }
+
+  const legadas = logs.flatMap((log, indiceLog) => {
+    if (logsUsados.has(indiceLog)) return []
+    const tipoMovimento = tipoDoMovimentoDoLog(log.tipo)
+    const rota = extrairRotaDoLog(log.descricao)
+    if (!tipoMovimento || !rota) return []
+
+    const setorOrigemId = idsDosSetoresPorNome.get(normalizarParaComparacao(rota.origem) || '') || null
+    const destinoId = idsDosSetoresPorNome.get(normalizarParaComparacao(rota.destino) || '') || null
+    if (destinoId !== setorDestinoId || setorOrigemId === setorDestinoId) return []
+
+    return [{
+      id: `ticket-log:${log.id || `${log.ticketId}:${log.criadoEm || indiceLog}`}`,
+      ticketId: log.ticketId,
+      setorOrigemId,
+      setorDestinoId,
+      origemNome: rota.origem,
+      ocorridoEm: log.criadoEm,
+      pdv: log.pdv,
+      canal: log.canal,
+      colaboradorId: log.colaboradorId,
+      subsetorId: log.subsetorId,
+      tipoMovimento,
+      fonte: 'ticket_log_legado' as const,
+    }]
+  })
+
+  return [...estruturadas, ...legadas]
+}
+
 export function classificarEntradasDeRoteamento(
   entradas: readonly EntradaRoteamento[],
   logs: readonly LogRoteamento[],
@@ -153,22 +268,7 @@ export function classificarEntradasDeRoteamento(
       continue
     }
 
-    const correspondencia = logs
-      .map((log, indiceLog) => ({
-        indiceLog,
-        resultado: logsUsados.has(indiceLog)
-          ? null
-          : pontuarCorrespondencia(entrada, log, nomesDosSetores),
-      }))
-      .filter((candidato): candidato is {
-        indiceLog: number
-        resultado: { tipoMovimento: TipoMovimentoRoteamento; diferencaMs: number; rotaConfere: boolean }
-      } => candidato.resultado !== null)
-      .sort((primeira, segunda) => (
-        Number(segunda.resultado.rotaConfere) - Number(primeira.resultado.rotaConfere)
-        || primeira.resultado.diferencaMs - segunda.resultado.diferencaMs
-      ))[0]
-
+    const correspondencia = encontrarMelhorCorrespondencia(entrada, logs, nomesDosSetores, logsUsados)
     if (!correspondencia) continue
     logsUsados.add(correspondencia.indiceLog)
     classificacoes.set(indice, correspondencia.resultado.tipoMovimento)
@@ -177,6 +277,16 @@ export function classificarEntradasDeRoteamento(
   return entradas.map((entrada, indice) => ({
     ...entrada,
     tipoMovimento: classificacoes.get(indice) || entrada.tipoMovimento || null,
+  }))
+}
+
+export function filtrarEntradasDeRoteamentoPorFiltroDeTicket(
+  entradas: readonly EntradaRoteamento[],
+  correspondeAoFiltro: (ticket: { colaborador_id: string | null; subsetor_id: string | null }) => boolean,
+): EntradaRoteamento[] {
+  return entradas.filter((entrada) => correspondeAoFiltro({
+    colaborador_id: entrada.colaboradorId || null,
+    subsetor_id: entrada.subsetorId || null,
   }))
 }
 
@@ -189,6 +299,15 @@ function obterIdentidadeDaOrigem(
     : null
   if (setorOrigem) {
     return { id: `setor:${entrada.setorOrigemId}`, nome: setorOrigem, tipo: 'setor' as const }
+  }
+
+  const origemNome = normalizarTexto(entrada.origemNome)
+  if (origemNome) {
+    return {
+      id: `setor-legado:${normalizarParaComparacao(origemNome)}`,
+      nome: origemNome,
+      tipo: 'setor' as const,
+    }
   }
 
   const pdv = normalizarTexto(entrada.pdv)
@@ -209,9 +328,18 @@ function obterFluxo(
   return destino ? `${nomeDaOrigem} → ${destino}` : null
 }
 
-function calcularTaxa(quantidade: number, total: number) {
+function calcularTaxa(parte: number, total: number) {
   if (total === 0) return 0
-  return Math.round((quantidade / total) * 1000) / 10
+  return Math.round((parte / total) * 1000) / 10
+}
+
+function compararOrigensPorTaxaDeTransbordo(primeira: OrigemRoteamento, segunda: OrigemRoteamento) {
+  return (
+    segunda.taxaTransbordo - primeira.taxaTransbordo
+    || segunda.transbordos - primeira.transbordos
+    || segunda.movimentosClassificados - primeira.movimentosClassificados
+    || primeira.nome.localeCompare(segunda.nome, 'pt-BR')
+  )
 }
 
 export function resumirOrigensDeRoteamento(
@@ -248,33 +376,34 @@ export function resumirOrigensDeRoteamento(
     acumuladores.set(origem.id, acumulador)
   }
 
-  const totalEntradas = entradas.length
   const origens = [...acumuladores.values()]
-    .map<OrigemRoteamento>((origem) => ({
-      id: origem.id,
-      nome: origem.nome,
-      tipo: origem.tipo,
-      fluxo: origem.fluxo,
-      quantidade: origem.quantidade,
-      taxa: calcularTaxa(origem.quantidade, totalEntradas),
-      transferencias: origem.transferencias,
-      transbordos: origem.transbordos,
-      semClassificacao: origem.semClassificacao,
-      diasComOcorrencia: origem.ocorrenciasPorDia.size,
-      maiorPicoDiario: Math.max(0, ...origem.ocorrenciasPorDia.values()),
-    }))
-    .sort((primeira, segunda) => (
-      segunda.quantidade - primeira.quantidade
-      || segunda.diasComOcorrencia - primeira.diasComOcorrencia
-      || primeira.nome.localeCompare(segunda.nome, 'pt-BR')
-    ))
+    .map<OrigemRoteamento>((origem) => {
+      const movimentosClassificados = origem.transferencias + origem.transbordos
+      return {
+        id: origem.id,
+        nome: origem.nome,
+        tipo: origem.tipo,
+        fluxo: origem.fluxo,
+        quantidade: origem.quantidade,
+        movimentosClassificados,
+        taxaTransbordo: calcularTaxa(origem.transbordos, movimentosClassificados),
+        transferencias: origem.transferencias,
+        transbordos: origem.transbordos,
+        semClassificacao: origem.semClassificacao,
+        diasComOcorrencia: origem.ocorrenciasPorDia.size,
+        maiorPicoDiario: Math.max(0, ...origem.ocorrenciasPorDia.values()),
+      }
+    })
+    .sort(compararOrigensPorTaxaDeTransbordo)
 
   return {
-    totalEntradas,
+    totalEntradas: entradas.length,
+    movimentosClassificados: origens.reduce((total, origem) => total + origem.movimentosClassificados, 0),
+    entradasLegadas: entradas.filter((entrada) => entrada.fonte === 'ticket_log_legado').length,
     transferencias: origens.reduce((total, origem) => total + origem.transferencias, 0),
     transbordos: origens.reduce((total, origem) => total + origem.transbordos, 0),
     semClassificacao: origens.reduce((total, origem) => total + origem.semClassificacao, 0),
     origens,
-    maiorIndice: origens[0] || null,
+    maiorTaxaTransbordo: origens.find((origem) => origem.transbordos > 0) || null,
   }
 }
