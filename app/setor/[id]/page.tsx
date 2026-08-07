@@ -143,6 +143,12 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn } from '@/lib/utils'
 import { calculateWorkloadOs, type WorkloadOsLevel } from '@/lib/workload-os'
 import { calcularOrigem, type OrigemTicket } from '@/lib/ticket-origem'
+import {
+  classificarEntradasDeRoteamento,
+  resumirOrigensDeRoteamento,
+  type EntradaRoteamento,
+  type LogRoteamento,
+} from '@/lib/relatorio-roteamento'
 import { isExactSubsetorMatch, matchesAtendenteSubsetorFilter, sanitizeSubsetorFilterSelection, SEM_SUBSETOR_ID } from '@/lib/subsetor-routing'
 import { exportRelatorioCsv, exportRelatorioXlsx } from '@/lib/export-relatorio'
 import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
@@ -269,6 +275,17 @@ const PRIORITY_ORDER: Record<string, number> = {
   media: 3,
   alta: 4,
   urgente: 5,
+}
+
+function formatarTaxaRoteamento(taxa: number) {
+  return `${taxa.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`
+}
+
+function extrairPdvDoCliente(cliente: unknown) {
+  const registro = Array.isArray(cliente) ? cliente[0] : cliente
+  if (!registro || typeof registro !== 'object') return null
+  const pdv = (registro as { PDV?: unknown }).PDV
+  return typeof pdv === 'string' && pdv.trim() ? pdv.trim() : null
 }
 
 function getDurationMs(startDate: string | null, endDate: string | Date | null) {
@@ -817,7 +834,7 @@ const RELATORIO_DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   nps: { w: 6, h: 4 },
   canal: { w: 4, h: 4 },
   status: { w: 4, h: 4 },
-  roteamento: { w: 4, h: 4 },
+  roteamento: { w: 6, h: 6 },
   rankAtendente: { w: 4, h: 6 },
   rankPDV: { w: 4, h: 6 },
   rankTipo: { w: 4, h: 6 },
@@ -896,7 +913,7 @@ const RELATORIO_DEFAULT_LAYOUT: Layout[] = [
   { i: 'heatmap', x: 6, y: 5, w: 4, h: 8 },
   { i: 'status', x: 10, y: 5, w: 2, h: 4 },
   { i: 'sla', x: 0, y: 6, w: 6, h: 5 },
-  { i: 'roteamento', x: 10, y: 9, w: 2, h: 4 },
+  { i: 'roteamento', x: 6, y: 18, w: 6, h: 6 },
   { i: 'rankAtendente', x: 0, y: 11, w: 6, h: 7 },
   { i: 'rankPDV', x: 6, y: 13, w: 6, h: 5 },
   { i: 'tabela', x: 0, y: 24, w: 12, h: 7 },
@@ -2196,6 +2213,96 @@ function SetorPageInner() {
     { revalidateOnFocus: false }
   )
 
+  // Entradas no setor são eventos, não o estado atual do ticket. A fonte
+  // estruturada registra origem, destino e instante da mudança de setor.
+  const {
+    data: entradasRoteamentoData,
+    isLoading: entradasRoteamentoLoading,
+    error: entradasRoteamentoError,
+  } = useSWR(
+    setorId ? ['setor-roteamento-origens', setorId, dateFrom, dateTo] : null,
+    async () => {
+      const movimentos = await loadRowsByPages<{
+        id: string
+        ticket_id: string
+        previous_setor_id: string | null
+        setor_id: string | null
+        created_at: string | null
+      }>(() => {
+        let query = supabase
+          .from('ticket_assignment_logs')
+          .select('id, ticket_id, previous_setor_id, setor_id, created_at')
+          .eq('setor_id', setorId)
+          .eq('action', 'transferred')
+          .not('previous_setor_id', 'is', null)
+          .neq('previous_setor_id', setorId)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+        if (dateFrom) query = query.gte('created_at', dateFrom)
+        if (dateTo) query = query.lte('created_at', dateTo)
+        return query
+      })
+      const ticketIds = [...new Set(movimentos.map((movimento) => movimento.ticket_id).filter(Boolean))]
+      const [tickets, logs] = await Promise.all([
+        ticketIds.length === 0
+          ? []
+          : loadRowsByValues<{ id: string; canal: string | null; clientes: unknown }>(
+            supabase,
+            'tickets',
+            'id, canal, clientes(PDV)',
+            'id',
+            ticketIds,
+          ).catch((error) => {
+            console.warn('[Setor] Falha ao enriquecer origens de roteamento:', error.message)
+            return []
+          }),
+        ticketIds.length === 0
+          ? []
+          : loadRowsByValues<{
+            ticket_id: string
+            tipo: string | null
+            descricao: string | null
+            criado_em: string | null
+          }>(
+            supabase,
+            'ticket_logs',
+            'ticket_id, tipo, descricao, criado_em',
+            'ticket_id',
+            ticketIds,
+            (query) => query
+              .in('tipo', ['transferencia', 'transferencia_automatica'])
+              .order('criado_em', { ascending: true }),
+          ).catch((error) => {
+            console.warn('[Setor] Falha ao classificar entradas de roteamento:', error.message)
+            return []
+          }),
+      ])
+      const ticketsPorId = new Map(tickets.map((ticket) => [ticket.id, ticket]))
+
+      return {
+        entradas: movimentos.map<EntradaRoteamento>((movimento) => {
+          const ticket = ticketsPorId.get(movimento.ticket_id)
+          return {
+            id: movimento.id,
+            ticketId: movimento.ticket_id,
+            setorOrigemId: movimento.previous_setor_id,
+            setorDestinoId: movimento.setor_id,
+            ocorridoEm: movimento.created_at,
+            pdv: extrairPdvDoCliente(ticket?.clientes),
+            canal: ticket?.canal || null,
+          }
+        }),
+        logs: logs.map<LogRoteamento>((log) => ({
+          ticketId: log.ticket_id,
+          tipo: log.tipo,
+          descricao: log.descricao,
+          criadoEm: log.criado_em,
+        })),
+      }
+    },
+    { revalidateOnFocus: false },
+  )
+
   // Período anterior equivalente (para o Δ% dos KPIs). Fetch enxuto — só os
   // campos necessários pros indicadores numéricos + joins p/ aplicar os mesmos
   // filtros client-side. NPS fica de fora (precisaria de avaliacoes).
@@ -2439,9 +2546,22 @@ function SetorPageInner() {
     return m
   }, [setoresParaOrigem])
 
-  // Mapa de "origem" pra todos os tickets (ativos + relatório).
-  // Construído uma vez quando tickets mudam — usado nas tabelas pra renderizar
-  // o badge de origem sem recalcular por linha.
+  // Entradas registradas no setor no período, agrupadas pela origem real.
+  const entradasRoteamentoClassificadas = useMemo(
+    () => classificarEntradasDeRoteamento(
+      entradasRoteamentoData?.entradas || [],
+      entradasRoteamentoData?.logs || [],
+      setoresParaOrigem,
+    ),
+    [entradasRoteamentoData, setoresParaOrigem],
+  )
+  const resumoOrigensRoteamento = useMemo(
+    () => resumirOrigensDeRoteamento(entradasRoteamentoClassificadas, setoresParaOrigem),
+    [entradasRoteamentoClassificadas, setoresParaOrigem],
+  )
+  const origensRoteamentoCarregando = isLoading || entradasRoteamentoLoading
+
+  // Mapa de origem dos tickets ainda usado pelas tabelas do relatório.
   const origensMap = useMemo(() => {
     const allTickets = [...tickets, ...ticketsRelatorioFiltrados]
     const allLogs = allTickets.flatMap((t: any) => t._logs || [])
@@ -7433,14 +7553,14 @@ const saveConfig = async () => {
             {visibleCards.roteamento && (
             <div key="roteamento" className="overflow-hidden">
             <ReportWidget {...wprops('roteamento')}>
-                <Card className="glass-card-elevated rounded-lg py-4">
+                <Card className="glass-card-elevated flex h-full flex-col rounded-lg py-4">
                   <CardHeader className="px-4 pb-1.5">
                     <CardTitle className="text-base flex items-center gap-2">
-                      <ArrowRightLeft className="h-3.5 w-3.5" />
+                      <ArrowRightLeft aria-hidden="true" className="h-3.5 w-3.5" />
                       Transferências &amp; transbordos
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-2 px-4 pt-1.5">
+                  <CardContent className="flex min-h-0 flex-1 flex-col gap-2 px-4 pt-1.5">
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-muted-foreground">Transferidos</span>
                       <span className="text-sm font-semibold">{roteamentoStats.transferidos} <span className="text-muted-foreground font-normal">({roteamentoStats.pctTransferidos}%)</span></span>
@@ -7453,7 +7573,106 @@ const saveConfig = async () => {
                       <span className="text-sm text-muted-foreground">Saltos médios (hops)</span>
                       <span className="text-sm font-semibold">{roteamentoStats.hopsMedio}</span>
                     </div>
-                    <p className="text-[11px] text-muted-foreground pt-0.5">Altas taxas indicam possível erro de roteamento inicial.</p>
+                    <div className="min-h-0 flex-1 overflow-y-auto border-t pt-2" aria-live="polite">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium">Entradas por origem</span>
+                        {!origensRoteamentoCarregando && !entradasRoteamentoError && (
+                          <span className="text-[11px] text-muted-foreground tabular-nums">
+                            {resumoOrigensRoteamento.totalEntradas} no período
+                          </span>
+                        )}
+                      </div>
+                      {!origensRoteamentoCarregando
+                        && !entradasRoteamentoError
+                        && resumoOrigensRoteamento.totalEntradas > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                          <span>Por tipo:</span>
+                          {resumoOrigensRoteamento.transferencias > 0 && (
+                            <span className="tabular-nums text-foreground">
+                              {resumoOrigensRoteamento.transferencias} {resumoOrigensRoteamento.transferencias === 1 ? 'transferência' : 'transferências'}
+                            </span>
+                          )}
+                          {resumoOrigensRoteamento.transbordos > 0 && (
+                            <span className="tabular-nums text-foreground">
+                              {resumoOrigensRoteamento.transbordos} {resumoOrigensRoteamento.transbordos === 1 ? 'transbordo' : 'transbordos'}
+                            </span>
+                          )}
+                          {resumoOrigensRoteamento.semClassificacao > 0 && (
+                            <span className="tabular-nums">
+                              {resumoOrigensRoteamento.semClassificacao} sem classificação no log
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {origensRoteamentoCarregando ? (
+                        <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                          <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                          Carregando origens…
+                        </div>
+                      ) : entradasRoteamentoError ? (
+                        <p className="py-3 text-xs text-muted-foreground">
+                          Não foi possível carregar as origens. Atualize a página para tentar novamente.
+                        </p>
+                      ) : resumoOrigensRoteamento.totalEntradas === 0 ? (
+                        <p className="py-3 text-xs text-muted-foreground">
+                          Nenhuma entrada por roteamento no período.
+                        </p>
+                      ) : (
+                        <div className="space-y-2 pt-2">
+                          {resumoOrigensRoteamento.maiorIndice && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Maior índice: <span className="font-medium text-foreground">{resumoOrigensRoteamento.maiorIndice.nome}</span>{' '}
+                              <span className="tabular-nums">{formatarTaxaRoteamento(resumoOrigensRoteamento.maiorIndice.taxa)}</span>
+                            </p>
+                          )}
+                          <ul className="space-y-2">
+                            {resumoOrigensRoteamento.origens.map((origem, index) => (
+                              <li key={origem.id} className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <span className="block truncate text-xs font-medium" title={origem.nome}>
+                                      {index + 1}. {origem.nome}
+                                    </span>
+                                    {origem.fluxo && (
+                                      <p className="truncate text-[10px] text-muted-foreground" title={origem.fluxo}>
+                                        {origem.fluxo}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <span className="shrink-0 text-xs font-semibold tabular-nums">{origem.quantidade}</span>
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                                  {origem.transferencias > 0 && (
+                                    <span className="tabular-nums text-foreground">
+                                      {origem.transferencias} {origem.transferencias === 1 ? 'transferência' : 'transferências'}
+                                    </span>
+                                  )}
+                                  {origem.transbordos > 0 && (
+                                    <span className="tabular-nums text-foreground">
+                                      {origem.transbordos} {origem.transbordos === 1 ? 'transbordo' : 'transbordos'}
+                                    </span>
+                                  )}
+                                  {origem.semClassificacao > 0 && (
+                                    <span className="tabular-nums">
+                                      {origem.semClassificacao} sem classificação no log
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                  <span className="tabular-nums">{formatarTaxaRoteamento(origem.taxa)} das entradas</span>
+                                  <span className="shrink-0 tabular-nums">
+                                    {origem.diasComOcorrencia} {origem.diasComOcorrencia === 1 ? 'dia recorrente' : 'dias recorrentes'} · pico {origem.maiorPicoDiario}/dia
+                                  </span>
+                                </div>
+                                <div className="mt-1 h-1 overflow-hidden rounded-sm bg-muted">
+                                  <div className="h-full rounded-sm bg-primary" style={{ width: `${origem.taxa}%` }} />
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
             </ReportWidget>
