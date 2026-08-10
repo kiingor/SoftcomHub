@@ -60,6 +60,19 @@ test('the WorkDesk exposes browser push activation to its attendant', () => {
   assert.match(pushToggle, /bg-amber-500/)
 })
 
+test('non-subscribed browsers receive a mandatory activation prompt', () => {
+  const prompt = source('components/push-activation-prompt.tsx')
+  const dashboardHeader = source('components/dashboard/dashboard-header.tsx')
+  const workdeskLayout = source('app/workdesk/layout.tsx')
+
+  assert.match(prompt, /state !== 'subscribed'/)
+  assert.match(prompt, /showCloseButton=\{false\}/)
+  assert.match(prompt, /onEscapeKeyDown=\{\(event\) => event\.preventDefault\(\)\}/)
+  assert.match(prompt, /Ativar notificações/)
+  assert.match(dashboardHeader, /<PushActivationPrompt\s*\/>/)
+  assert.match(workdeskLayout, /<PushActivationPrompt\s*\/>/)
+})
+
 test('new client messages notify only the active ticket owner', () => {
   const notifier = source('lib/notify-mensagem.ts')
   const webhook = source('app/api/whatsapp/webhook/route.ts')
