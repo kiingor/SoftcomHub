@@ -280,8 +280,8 @@ const PRIORITY_ORDER: Record<string, number> = {
   urgente: 5,
 }
 
-function formatarTaxaRoteamento(taxa: number) {
-  return `${taxa.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`
+function escaparPadraoIlike(value: string) {
+  return value.replace(/[\\%_]/g, '\\$&')
 }
 
 function extrairPdvDoCliente(cliente: unknown) {
@@ -2145,6 +2145,9 @@ function SetorPageInner() {
     MONITORING_REFRESH_OPTIONS,
   )
   const horarios = data?.horarios || []
+  const nomeSetorParaRoteamento = typeof data?.setor?.nome === 'string'
+    ? data.setor.nome.trim()
+    : ''
 
   // Relatório separado: recarrega quando filtro de data muda (server-side filtering)
   const { from: dateFrom, to: dateTo } = getDateCutoffs(dateFilter, customRange)
@@ -2224,9 +2227,33 @@ function SetorPageInner() {
     isLoading: entradasRoteamentoLoading,
     error: entradasRoteamentoError,
   } = useSWR(
-    setorId ? ['setor-roteamento-origens', setorId, dateFrom, dateTo] : null,
+    setorId && nomeSetorParaRoteamento
+      ? ['setor-roteamento-origens', setorId, nomeSetorParaRoteamento, dateFrom, dateTo]
+      : null,
     async () => {
-      const [movimentos, logs] = await Promise.all([
+      const carregarLogsPorDestino = (separador: '→' | '->') => loadRowsByPages<{
+        id: string
+        ticket_id: string
+        tipo: string | null
+        descricao: string | null
+        criado_em: string | null
+      }>(() => {
+        let query = supabase
+          .from('ticket_logs')
+          .select('id, ticket_id, tipo, descricao, criado_em')
+          .in('tipo', ['transferencia', 'transferencia_automatica'])
+          .ilike('descricao', `%${separador} ${escaparPadraoIlike(nomeSetorParaRoteamento)}%`)
+          .order('criado_em', { ascending: false })
+          .order('id', { ascending: false })
+        if (dateFrom) query = query.gte('criado_em', dateFrom)
+        if (dateTo) query = query.lte('criado_em', dateTo)
+        return query
+      }).catch((error) => {
+        console.warn('[Setor] Falha ao carregar logs de roteamento:', error.message)
+        return []
+      })
+
+      const [movimentos, logsComSeta, logsComSetaAscii] = await Promise.all([
         loadRowsByPages<{
           id: string
           ticket_id: string
@@ -2245,27 +2272,12 @@ function SetorPageInner() {
           if (dateTo) query = query.lte('created_at', dateTo)
           return query
         }),
-        loadRowsByPages<{
-          id: string
-          ticket_id: string
-          tipo: string | null
-          descricao: string | null
-          criado_em: string | null
-        }>(() => {
-          let query = supabase
-            .from('ticket_logs')
-            .select('id, ticket_id, tipo, descricao, criado_em')
-            .in('tipo', ['transferencia', 'transferencia_automatica'])
-            .order('criado_em', { ascending: false })
-            .order('id', { ascending: false })
-          if (dateFrom) query = query.gte('criado_em', dateFrom)
-          if (dateTo) query = query.lte('criado_em', dateTo)
-          return query
-        }).catch((error) => {
-          console.warn('[Setor] Falha ao carregar logs de roteamento:', error.message)
-          return []
-        }),
+        carregarLogsPorDestino('→'),
+        carregarLogsPorDestino('->'),
       ])
+      const logs = [...new Map(
+        [...logsComSeta, ...logsComSetaAscii].map((log) => [log.id, log]),
+      ).values()]
       const ticketIds = [...new Set([
         ...movimentos.map((movimento) => movimento.ticket_id),
         ...logs.map((log) => log.ticket_id),
@@ -7619,48 +7631,16 @@ const saveConfig = async () => {
                     </div>
                     <div className="min-h-0 flex-1 overflow-y-auto border-t pt-2" aria-live="polite">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-medium">Entradas roteadas por origem</span>
+                        <span className="text-xs font-medium">Origem das entradas</span>
                         {!origensRoteamentoCarregando && !entradasRoteamentoError && (
                           <span className="text-[11px] text-muted-foreground tabular-nums">
                             {resumoOrigensRoteamento.totalEntradas} no período
                           </span>
                         )}
                       </div>
-                      {!origensRoteamentoCarregando
-                        && !entradasRoteamentoError
-                        && resumoOrigensRoteamento.totalEntradas > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                          <span>Movimentos classificados:</span>
-                          {resumoOrigensRoteamento.transferencias > 0 && (
-                            <span className="tabular-nums text-foreground">
-                              {resumoOrigensRoteamento.transferencias} {resumoOrigensRoteamento.transferencias === 1 ? 'transferência' : 'transferências'}
-                            </span>
-                          )}
-                          {resumoOrigensRoteamento.transbordos > 0 && (
-                            <span className="tabular-nums text-foreground">
-                              {resumoOrigensRoteamento.transbordos} {resumoOrigensRoteamento.transbordos === 1 ? 'transbordo' : 'transbordos'}
-                            </span>
-                          )}
-                          {resumoOrigensRoteamento.semClassificacao > 0 && (
-                            <span className="tabular-nums">
-                              {resumoOrigensRoteamento.semClassificacao} sem classificação no log
-                            </span>
-                          )}
-                          {resumoOrigensRoteamento.entradasLegadas > 0 && (
-                            <span className="tabular-nums">
-                              {resumoOrigensRoteamento.entradasLegadas} do histórico legado
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {!origensRoteamentoCarregando && !entradasRoteamentoError && (
-                        <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
-                          Período do movimento; filtros de tag, atendente e subsetor usam o estado atual do ticket. No histórico legado, só entram logs com rota identificável.
-                        </p>
-                      )}
                       {origensRoteamentoCarregando ? (
                         <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-                          <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                          <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
                           Carregando origens…
                         </div>
                       ) : entradasRoteamentoError ? (
@@ -7672,65 +7652,30 @@ const saveConfig = async () => {
                           Nenhuma entrada por roteamento no período.
                         </p>
                       ) : (
-                        <div className="space-y-2 pt-2">
-                          {resumoOrigensRoteamento.maiorTaxaTransbordo && (
-                            <p className="text-[11px] text-muted-foreground">
-                              Maior taxa de transbordo: <span className="font-medium text-foreground">{resumoOrigensRoteamento.maiorTaxaTransbordo.nome}</span>{' '}
-                              <span className="tabular-nums">
-                                {formatarTaxaRoteamento(resumoOrigensRoteamento.maiorTaxaTransbordo.taxaTransbordo)}
-                                {' '}({resumoOrigensRoteamento.maiorTaxaTransbordo.transbordos} de {resumoOrigensRoteamento.maiorTaxaTransbordo.movimentosClassificados})
-                              </span>
-                            </p>
-                          )}
-                          <ul className="space-y-2">
-                            {resumoOrigensRoteamento.origens.map((origem, index) => (
-                              <li key={origem.id} className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <span className="block truncate text-xs font-medium" title={origem.nome}>
-                                      {index + 1}. {origem.nome}
-                                    </span>
-                                    {origem.fluxo && (
-                                      <p className="truncate text-[10px] text-muted-foreground" title={origem.fluxo}>
-                                        {origem.fluxo}
-                                      </p>
-                                    )}
-                                  </div>
-                                  <span className="shrink-0 text-xs font-semibold tabular-nums">{origem.quantidade} entradas</span>
-                                </div>
-                                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                                  {origem.transferencias > 0 && (
-                                    <span className="tabular-nums text-foreground">
-                                      {origem.transferencias} {origem.transferencias === 1 ? 'transferência' : 'transferências'}
-                                    </span>
-                                  )}
-                                  {origem.transbordos > 0 && (
-                                    <span className="tabular-nums text-foreground">
-                                      {origem.transbordos} {origem.transbordos === 1 ? 'transbordo' : 'transbordos'}
-                                    </span>
-                                  )}
-                                  {origem.semClassificacao > 0 && (
-                                    <span className="tabular-nums">
-                                      {origem.semClassificacao} sem classificação no log
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                                  <span className="tabular-nums">
-                                    {origem.movimentosClassificados > 0
-                                      ? `${formatarTaxaRoteamento(origem.taxaTransbordo)} de transbordo (${origem.transbordos} de ${origem.movimentosClassificados})`
-                                      : 'Sem base classificada'}
-                                  </span>
-                                  <span className="shrink-0 tabular-nums">
-                                    {origem.diasComOcorrencia} {origem.diasComOcorrencia === 1 ? 'dia recorrente' : 'dias recorrentes'} · pico {origem.maiorPicoDiario}/dia
-                                  </span>
-                                </div>
-                                <div className="mt-1 h-1 overflow-hidden rounded-sm bg-muted">
-                                  <div className="h-full rounded-sm bg-primary" style={{ width: `${origem.taxaTransbordo}%` }} />
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
+                        <div className="mt-2 overflow-hidden rounded-md border">
+                          <Table className="table-fixed text-xs">
+                            <caption className="sr-only">Origens das entradas roteadas no período</caption>
+                            <TableHeader className="bg-muted/40">
+                              <TableRow className="hover:bg-transparent">
+                                <TableHead className="h-8 w-[46%] px-2 text-[10px] uppercase">Origem</TableHead>
+                                <TableHead className="h-8 px-2 text-right text-[10px] uppercase">Entrada</TableHead>
+                                <TableHead className="h-8 px-2 text-right text-[10px] uppercase">Transb.</TableHead>
+                                <TableHead className="h-8 px-2 text-right text-[10px] uppercase">Transf.</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {resumoOrigensRoteamento.origens.map((origem) => (
+                                <TableRow key={origem.id}>
+                                  <TableCell className="px-2 py-1.5 font-medium">
+                                    <span className="block truncate" title={origem.nome}>{origem.nome}</span>
+                                  </TableCell>
+                                  <TableCell className="px-2 py-1.5 text-right tabular-nums">{origem.quantidade}</TableCell>
+                                  <TableCell className="px-2 py-1.5 text-right tabular-nums">{origem.transbordos}</TableCell>
+                                  <TableCell className="px-2 py-1.5 text-right tabular-nums">{origem.transferencias}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
                         </div>
                       )}
                     </div>
