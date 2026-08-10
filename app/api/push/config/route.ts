@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getVapidConfiguration } from '@/lib/push'
 
 /**
  * GET /api/push/config
@@ -18,24 +19,10 @@ export async function GET() {
     return NextResponse.json({ error: 'Sessão inválida.' }, { status: 401 })
   }
 
-  const serverPublicKey = process.env.VAPID_PUBLIC_KEY
-  const clientPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
-  const privateKey = process.env.VAPID_PRIVATE_KEY
-  const publicKey = serverPublicKey || clientPublicKey
-
-  if (!publicKey || !privateKey) {
-    return NextResponse.json(
-      { error: 'As notificações não foram configuradas neste ambiente.' },
-      { status: 503 },
-    )
+  const configuration = getVapidConfiguration()
+  if ('error' in configuration) {
+    return NextResponse.json({ error: configuration.error }, { status: 503 })
   }
 
-  if (serverPublicKey && clientPublicKey && serverPublicKey !== clientPublicKey) {
-    return NextResponse.json(
-      { error: 'A configuração de notificações está inconsistente.' },
-      { status: 503 },
-    )
-  }
-
-  return NextResponse.json({ publicKey })
+  return NextResponse.json({ publicKey: configuration.publicKey })
 }

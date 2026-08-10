@@ -53,6 +53,20 @@ async function getVapidPublicKey(): Promise<string> {
   return body.publicKey
 }
 
+async function removeSubscriptionFromServer(subscription: PushSubscription): Promise<void> {
+  const response = await fetch('/api/push/unsubscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  })
+  if (!response.ok) throw new Error('Falha ao remover subscription')
+}
+
+async function removeSubscription(subscription: PushSubscription): Promise<void> {
+  await removeSubscriptionFromServer(subscription)
+  await subscription.unsubscribe()
+}
+
 export async function unsubscribeCurrentBrowser(): Promise<void> {
   if (
     typeof window === 'undefined' ||
@@ -66,14 +80,7 @@ export async function unsubscribeCurrentBrowser(): Promise<void> {
   const subscription = registration ? await registration.pushManager.getSubscription() : null
   if (!subscription) return
 
-  const response = await fetch('/api/push/unsubscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ endpoint: subscription.endpoint }),
-  })
-  if (!response.ok) throw new Error('Falha ao remover subscription')
-
-  await subscription.unsubscribe()
+  await removeSubscription(subscription)
   window.dispatchEvent(new Event(PUSH_STATE_EVENT))
 }
 
@@ -84,6 +91,41 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const arr = new Uint8Array(raw.length)
   for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i)
   return arr
+}
+
+function subscriptionUsesVapidPublicKey(subscription: PushSubscription, key: string) {
+  const currentKey = subscription.options.applicationServerKey
+  if (!currentKey) return false
+
+  const expectedKey = urlBase64ToUint8Array(key)
+  const currentBytes = new Uint8Array(currentKey)
+  if (currentBytes.length !== expectedKey.length) return false
+
+  for (let index = 0; index < expectedKey.length; index++) {
+    if (currentBytes[index] !== expectedKey[index]) return false
+  }
+
+  return true
+}
+
+function subscribeWithVapidKey(registration: ServiceWorkerRegistration, key: string) {
+  return registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(key) as unknown as BufferSource,
+  })
+}
+
+async function getOrReplaceSubscription(
+  registration: ServiceWorkerRegistration,
+  key: string,
+): Promise<PushSubscription> {
+  const existing = await registration.pushManager.getSubscription()
+  if (!existing || subscriptionUsesVapidPublicKey(existing, key)) {
+    return existing || subscribeWithVapidKey(registration, key)
+  }
+
+  await removeSubscription(existing)
+  return subscribeWithVapidKey(registration, key)
 }
 
 export type PushState = 'unsupported' | 'default' | 'granted' | 'denied' | 'subscribed'
@@ -115,6 +157,12 @@ export function usePushNotifications() {
       const reg = await navigator.serviceWorker.getRegistration()
       const sub = reg ? await reg.pushManager.getSubscription() : null
       if (!sub) {
+        setState(Notification.permission as PushState)
+        return
+      }
+
+      const key = await getVapidPublicKey()
+      if (!subscriptionUsesVapidPublicKey(sub, key)) {
         setState(Notification.permission as PushState)
         return
       }
@@ -152,13 +200,7 @@ export function usePushNotifications() {
       const reg = await navigator.serviceWorker.ready
       const key = await getVapidPublicKey()
 
-      const existing = await reg.pushManager.getSubscription()
-      const sub =
-        existing ||
-        (await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(key) as any,
-        }))
+      const sub = await getOrReplaceSubscription(reg, key)
 
       await syncSubscription(sub)
       setState('subscribed')

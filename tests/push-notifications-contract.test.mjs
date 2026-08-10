@@ -17,8 +17,18 @@ test('a ativação busca a chave VAPID no servidor e preserva o gesto do clique'
 
   const configRoute = source('app/api/push/config/route.ts')
   assert.match(configRoute, /auth\.auth\.getUser\(\)/)
-  assert.match(configRoute, /process\.env\.VAPID_PUBLIC_KEY/)
-  assert.match(configRoute, /process\.env\.VAPID_PRIVATE_KEY/)
+  assert.match(configRoute, /getVapidConfiguration/)
+})
+
+test('a configuração valida as chaves VAPID e renova inscrições antigas', () => {
+  const push = source('lib/push.ts')
+  const hook = source('lib/use-push-notifications.ts')
+
+  assert.match(push, /createECDH\('prime256v1'\)/)
+  assert.match(push, /As chaves VAPID não correspondem/)
+  assert.match(push, /Falha ao entregar notificações/)
+  assert.match(hook, /subscriptionUsesVapidPublicKey/)
+  assert.match(hook, /getOrReplaceSubscription/)
 })
 
 test('o clique do Web Push aguarda a navegação e o Dashboard mostra os avisos internos', () => {
