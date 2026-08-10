@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 5. Notifica atendente (se houver atribuído)
+    // 5. Notifica apenas o responsável pelo ticket.
     if (ticket.colaborador_id) {
       try {
         await notifyAtendenteNovaMensagem({

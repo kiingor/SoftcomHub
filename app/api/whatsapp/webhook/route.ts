@@ -611,8 +611,7 @@ export async function POST(request: NextRequest) {
       console.warn('[webhook] Unable to register a dispatch reply:', replyTimestampError.message)
     }
 
-    // Web Push para o atendente atribuído (não notifica se em fila/encerrado,
-    // nem se o WorkDesk já estiver em foco — o service worker decide isso).
+    // Web Push somente para o responsável pelo ticket.
     if (ticket.colaborador_id) {
       const { notifyAtendenteNovaMensagem } = await import('@/lib/notify-mensagem')
       await notifyAtendenteNovaMensagem({

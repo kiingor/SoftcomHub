@@ -11,10 +11,7 @@ const TIPO_PREVIEW: Record<string, string> = {
 
 /**
  * Notifica (Web Push) o atendente atribuído ao ticket sobre uma nova mensagem
- * do cliente. Faz uma única consulta no ticket para descobrir o atendente, o
- * status e o nome do cliente. Não notifica se:
- *  - o ticket não tem atendente atribuído (ainda na fila), ou
- *  - o ticket está encerrado.
+ * do cliente. Não notifica tickets sem atendente ou encerrados.
  *
  * Seguro para chamar em qualquer fluxo de entrada de mensagem — resolve tudo
  * pelo ticketId, então não depende do que o chamador já tem em mãos.
@@ -27,20 +24,22 @@ export async function notifyAtendenteNovaMensagem(args: {
   try {
     const service = createServiceClient()
 
-    const { data: ticket } = await service
+    const { data: ticket, error: ticketError } = await service
       .from('tickets')
       .select('colaborador_id, status, clientes:cliente_id(nome)')
       .eq('id', args.ticketId)
       .single()
+    if (ticketError) throw ticketError
 
     if (!ticket || !ticket.colaborador_id || ticket.status === 'encerrado') return
 
-    const { data: colaborador } = await service
+    const { data: collaborator, error: collaboratorError } = await service
       .from('colaboradores')
       .select('ativo')
       .eq('id', ticket.colaborador_id)
       .single()
-    if (!colaborador?.ativo) return
+    if (collaboratorError) throw collaboratorError
+    if (!collaborator?.ativo) return
 
     const clienteNome =
       (ticket.clientes as { nome?: string | null } | null)?.nome || null

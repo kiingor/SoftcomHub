@@ -29,6 +29,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { DisponibilidadePanel } from '@/components/workdesk/disponibilidade-panel'
 import { PushToggle } from '@/components/push-toggle'
+import { PushActivationPrompt } from '@/components/push-activation-prompt'
 import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
 import { useAudioAlert, type TicketSoundType } from '@/hooks/use-audio-alert'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
@@ -353,6 +354,9 @@ export default function WorkdeskLayout({
             setorIds={colaborador.setores_vinculados?.map((s) => s.setor_id) || []}
           />
 
+          {/* Push do navegador: cada atendente ativa no próprio dispositivo. */}
+          <PushToggle />
+
           <ThemeToggle />
 
           <DropdownMenu>
@@ -538,6 +542,8 @@ export default function WorkdeskLayout({
           />
         </div>
       </header>
+
+      <PushActivationPrompt />
 
       <CommandPalette />
 

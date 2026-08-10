@@ -180,7 +180,7 @@ export async function POST(request: NextRequest) {
       `[Mensagens Save] Mensagem salva: id=${mensagem.id}, cliente=${resolvedClienteId}, ticket=${ticket_id || 'sem ticket'}, remetente=${remetente}`
     )
 
-    // Web Push para o atendente: só em mensagens DO CLIENTE com ticket atribuído.
+    // Web Push para o responsável: só em mensagens do cliente com ticket.
     if (ticket_id && typeof remetente === 'string' && remetente.startsWith('cliente')) {
       const { notifyAtendenteNovaMensagem } = await import('@/lib/notify-mensagem')
       await notifyAtendenteNovaMensagem({

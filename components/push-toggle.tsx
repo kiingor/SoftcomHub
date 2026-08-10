@@ -133,7 +133,10 @@ export function PushToggle({
       {subscribed ? (
         <BellRing className="h-5 w-5 text-primary" />
       ) : (
-        <Bell className="h-5 w-5" />
+        <span className="relative flex h-5 w-5" aria-hidden>
+          <Bell className="h-5 w-5" />
+          <span className="absolute right-0 top-0 h-1.5 w-1.5 rounded-full bg-amber-500 ring-1 ring-background" />
+        </span>
       )}
     </Button>
   )

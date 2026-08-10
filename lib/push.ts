@@ -1,20 +1,71 @@
+import { createECDH } from 'node:crypto'
 import webpush from 'web-push'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 let configured = false
 
+const DEFAULT_VAPID_SUBJECT = 'mailto:suporte@softcomtecnologia.com'
+
+interface VapidConfiguration {
+  publicKey: string
+  privateKey: string
+  subject: string
+}
+
+interface VapidConfigurationError {
+  error: string
+}
+
+function environmentValue(name: string) {
+  return process.env[name]?.trim() || undefined
+}
+
+function matchesVapidKeyPair(publicKey: string, privateKey: string) {
+  try {
+    const curve = createECDH('prime256v1')
+    curve.setPrivateKey(Buffer.from(privateKey, 'base64url'))
+    return curve.getPublicKey(undefined, 'uncompressed').toString('base64url') === publicKey
+  } catch {
+    return false
+  }
+}
+
+export function getVapidConfiguration(): VapidConfiguration | VapidConfigurationError {
+  const serverPublicKey = environmentValue('VAPID_PUBLIC_KEY')
+  const clientPublicKey = environmentValue('NEXT_PUBLIC_VAPID_PUBLIC_KEY')
+  const privateKey = environmentValue('VAPID_PRIVATE_KEY')
+  const publicKey = serverPublicKey || clientPublicKey
+
+  if (!publicKey || !privateKey) {
+    return { error: 'As notificações não foram configuradas neste ambiente.' }
+  }
+
+  if (serverPublicKey && clientPublicKey && serverPublicKey !== clientPublicKey) {
+    return { error: 'A configuração de notificações está inconsistente.' }
+  }
+
+  if (!matchesVapidKeyPair(publicKey, privateKey)) {
+    return { error: 'As chaves VAPID não correspondem. Gere e configure um único par de chaves.' }
+  }
+
+  return {
+    publicKey,
+    privateKey,
+    subject: environmentValue('VAPID_SUBJECT') || DEFAULT_VAPID_SUBJECT,
+  }
+}
+
 function ensureConfigured() {
   if (configured) return
-  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || process.env.VAPID_PUBLIC_KEY
-  const privateKey = process.env.VAPID_PRIVATE_KEY
-  const subject = process.env.VAPID_SUBJECT || 'mailto:suporte@softcomtecnologia.com'
-  if (!publicKey || !privateKey) {
-    throw new Error('[push] VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY não configuradas')
+  const configuration = getVapidConfiguration()
+  if ('error' in configuration) {
+    throw new Error(`[push] ${configuration.error}`)
   }
-  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PUBLIC_KEY !== publicKey) {
-    throw new Error('[push] VAPID_PUBLIC_KEY e NEXT_PUBLIC_VAPID_PUBLIC_KEY precisam ser iguais')
-  }
-  webpush.setVapidDetails(subject, publicKey, privateKey)
+  webpush.setVapidDetails(
+    configuration.subject,
+    configuration.publicKey,
+    configuration.privateKey,
+  )
   configured = true
 }
 
@@ -27,7 +78,7 @@ export interface PushPayload {
   tag?: string
   /** Categoria — o service worker usa para decidir comportamento (ex: suprimir
    *  notificação de mensagem quando o WorkDesk já está em foco). */
-  type?: 'instancia' | 'mensagem'
+  type?: 'instancia' | 'mensagem' | 'aviso'
 }
 
 interface SubRow {
@@ -35,6 +86,21 @@ interface SubRow {
   endpoint: string
   p256dh: string
   auth: string
+}
+
+interface PushDeliveryFailure {
+  statusCode: number | null
+  message: string
+}
+
+function getPushDeliveryFailure(error: unknown): PushDeliveryFailure {
+  const statusCode =
+    typeof (error as { statusCode?: unknown })?.statusCode === 'number'
+      ? (error as { statusCode: number }).statusCode
+      : null
+  const message = error instanceof Error ? error.message : 'Erro desconhecido'
+
+  return { statusCode, message: message.slice(0, 500) }
 }
 
 /**
@@ -61,6 +127,7 @@ export async function sendPushToColaboradores(
 
   const body = JSON.stringify(payload)
   const deadIds: string[] = []
+  const failures: PushDeliveryFailure[] = []
   let sent = 0
   let failed = 0
 
@@ -74,6 +141,7 @@ export async function sendPushToColaboradores(
         sent++
       } catch (err: unknown) {
         failed++
+        failures.push(getPushDeliveryFailure(err))
         const status = (err as { statusCode?: number })?.statusCode
         if (status === 404 || status === 410) deadIds.push(s.id)
       }
@@ -86,6 +154,13 @@ export async function sendPushToColaboradores(
       .delete()
       .in('id', deadIds)
     if (cleanupError) console.error('[push] Falha ao limpar subscriptions expiradas:', cleanupError)
+  }
+
+  if (failures.length > 0) {
+    console.error('[push] Falha ao entregar notificações:', {
+      failures,
+      total: failures.length,
+    })
   }
 
   return { sent, failed }

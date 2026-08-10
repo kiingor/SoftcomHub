@@ -28,6 +28,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { useColaborador, useSetores } from '@/lib/hooks/use-data'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { PushToggle } from '@/components/push-toggle'
+import { PushActivationPrompt } from '@/components/push-activation-prompt'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
 
@@ -129,7 +130,8 @@ export function DashboardHeader({ user, onMenuClick, sidebarCollapsed, onToggleS
     : (colaborador?.permissoes as { nome?: string } | null)?.nome || 'Usuário'
 
   return (
-    <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-4 lg:px-6">
+    <>
+      <header className="sticky top-0 z-40 flex h-16 items-center justify-between glass-header px-4 lg:px-6">
       {/* Left side */}
       <div className="flex items-center gap-3">
         {/* Mobile: abre a sidebar em drawer */}
@@ -340,6 +342,8 @@ export function DashboardHeader({ user, onMenuClick, sidebarCollapsed, onToggleS
           onUpdated={() => mutateColaborador()}
         />
       </div>
-    </header>
+      </header>
+      <PushActivationPrompt />
+    </>
   )
 }
