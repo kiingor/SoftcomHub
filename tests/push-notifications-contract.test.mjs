@@ -51,3 +51,11 @@ test('a notification without a target opens a dialog with its full message', () 
   assert.match(notificationsPanel, /<DialogContent className="[^"]*sm:max-w-md[^"]*">/)
   assert.match(notificationsPanel, /whitespace-pre-wrap break-words/)
 })
+
+test('the WorkDesk exposes browser push activation to its attendant', () => {
+  const workdeskLayout = source('app/workdesk/layout.tsx')
+  const pushToggle = source('components/push-toggle.tsx')
+
+  assert.match(workdeskLayout, /<PushToggle\s*\/>/)
+  assert.match(pushToggle, /bg-amber-500/)
+})

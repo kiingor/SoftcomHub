@@ -353,6 +353,9 @@ export default function WorkdeskLayout({
             setorIds={colaborador.setores_vinculados?.map((s) => s.setor_id) || []}
           />
 
+          {/* Push do navegador: cada atendente ativa no próprio dispositivo. */}
+          <PushToggle />
+
           <ThemeToggle />
 
           <DropdownMenu>
