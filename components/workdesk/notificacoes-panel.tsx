@@ -10,6 +10,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
@@ -62,6 +69,7 @@ export function NotificacoesPanel({
   const [isOpen, setIsOpen] = useState(false)
   const [showNewNotification, setShowNewNotification] = useState(false)
   const [newNotificationData, setNewNotificationData] = useState<Notificacao | null>(null)
+  const [selectedNotification, setSelectedNotification] = useState<Notificacao | null>(null)
   const popupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const receivedNotificationIdsRef = useRef(new Set<string>())
 
@@ -133,17 +141,27 @@ export function NotificacoesPanel({
     return true
   }, [colaboradorId, notificacoes, supabase])
 
+  const openNotificationDetails = useCallback((notificacao: Notificacao) => {
+    setIsOpen(false)
+    setShowNewNotification(false)
+    setSelectedNotification(notificacao)
+    void markAsRead(notificacao.id)
+  }, [markAsRead])
+
   const handleNotificationClick = useCallback(async (notificacao: Notificacao) => {
+    const target = notificationTarget(notificacao)
+    if (!target) {
+      openNotificationDetails(notificacao)
+      return
+    }
+
     const markedAsRead = await markAsRead(notificacao.id)
     if (!markedAsRead) return
-
-    const target = notificationTarget(notificacao)
-    if (!target) return
 
     setIsOpen(false)
     setShowNewNotification(false)
     router.push(target)
-  }, [markAsRead, router])
+  }, [markAsRead, openNotificationDetails, router])
 
   const handlePopupClick = useCallback(async () => {
     if (!newNotificationData) return
@@ -159,9 +177,8 @@ export function NotificacoesPanel({
       return
     }
 
-    // Sem ticket ou rota associada, a pessoa vê a lista e o aviso já fica lido.
-    setIsOpen(true)
-  }, [markAsRead, newNotificationData, router])
+    openNotificationDetails(newNotificationData)
+  }, [markAsRead, newNotificationData, openNotificationDetails, router])
 
   useEffect(() => {
     void fetchNotificacoes()
@@ -266,14 +283,22 @@ export function NotificacoesPanel({
     return String(days) + 'd'
   }
 
+  const formatDateTime = (date: string) => new Intl.DateTimeFormat('pt-BR', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(date))
+
   return (
     <>
       {showNewNotification && newNotificationData && (
-        <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-top-2 fade-in duration-300">
+        <div
+          className="fixed top-4 right-4 z-50 animate-in slide-in-from-top-2 fade-in duration-300"
+          role="status"
+        >
           <div className="glass-card flex max-w-sm items-start gap-3 rounded-xl border-0 p-4">
             <button
               type="button"
-              className="flex min-w-0 flex-1 items-start gap-3 text-left"
+              className="flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               onClick={() => {
                 void handlePopupClick()
               }}
@@ -305,6 +330,33 @@ export function NotificacoesPanel({
           </div>
         </div>
       )}
+
+      <Dialog
+        open={Boolean(selectedNotification)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedNotification(null)
+        }}
+      >
+        {selectedNotification && (
+          <DialogContent className="max-h-[80vh] gap-0 overflow-hidden p-0 sm:max-w-md">
+            <DialogHeader className="border-b p-4 pr-12">
+              <DialogTitle className="break-words text-base">
+                {selectedNotification.titulo || 'Notificação'}
+              </DialogTitle>
+              <DialogDescription>
+                De: {selectedNotification.remetente?.nome || 'Desconhecido'}
+                {selectedNotification.setor && ' • ' + selectedNotification.setor.nome}
+                {' • ' + formatDateTime(selectedNotification.criado_em)}
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="max-h-[60vh] overscroll-contain">
+              <p className="whitespace-pre-wrap break-words p-4 text-sm leading-6 text-foreground">
+                {selectedNotification.mensagem || 'Sem mensagem.'}
+              </p>
+            </ScrollArea>
+          </DialogContent>
+        )}
+      </Dialog>
 
       <Popover open={isOpen} onOpenChange={setIsOpen}>
         <PopoverTrigger asChild>
@@ -346,7 +398,7 @@ export function NotificacoesPanel({
                     key={notif.id}
                     type="button"
                     className={cn(
-                      'block w-full p-3 text-left transition-colors hover:bg-accent/50',
+                      'block w-full p-3 text-left transition-colors hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                       !notif.lida && 'bg-primary/5',
                     )}
                     onClick={() => {

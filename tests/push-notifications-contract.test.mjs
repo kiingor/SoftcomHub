@@ -32,3 +32,12 @@ test('o clique do Web Push aguarda a navegação e o Dashboard mostra os avisos 
   assert.match(notificationsPanel, /ticket_id\?: string \| null/)
   assert.match(notificationsPanel, /router\.push\(target\)/)
 })
+
+test('a notification without a target opens a dialog with its full message', () => {
+  const notificationsPanel = source('components/workdesk/notificacoes-panel.tsx')
+
+  assert.match(notificationsPanel, /if \(!target\) \{\s*openNotificationDetails\(notificacao\)/)
+  assert.match(notificationsPanel, /openNotificationDetails\(newNotificationData\)/)
+  assert.match(notificationsPanel, /<DialogContent className="[^"]*sm:max-w-md[^"]*">/)
+  assert.match(notificationsPanel, /whitespace-pre-wrap break-words/)
+})
