@@ -49,8 +49,13 @@ export function PushToggle({
           toast.success('Notificações ativadas')
         }
       }
-    } catch {
-      toast.error('Não foi possível alterar as notificações')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      toast.error(
+        message && message !== 'Internal error'
+          ? message
+          : 'Não foi possível alterar as notificações. Tente novamente.',
+      )
     }
   }
 

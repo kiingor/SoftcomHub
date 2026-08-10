@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -25,10 +25,11 @@ import { Label } from '@/components/ui/label'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Menu, LogOut, User as UserIcon, ChevronDown, KeyRound, Camera, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme-toggle'
-import { useColaborador } from '@/lib/hooks/use-data'
+import { useColaborador, useSetores } from '@/lib/hooks/use-data'
 import { ProfilePhotoDialog } from '@/components/profile-photo-dialog'
 import { PushToggle } from '@/components/push-toggle'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
+import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
 
 interface DashboardHeaderProps {
   user: User
@@ -40,7 +41,13 @@ interface DashboardHeaderProps {
 export function DashboardHeader({ user, onMenuClick, sidebarCollapsed, onToggleSidebarCollapsed }: DashboardHeaderProps) {
   const router = useRouter()
   const { data: colaborador, mutate: mutateColaborador } = useColaborador()
+  const { data: setores } = useSetores(colaborador?.id, colaborador?.is_master)
   const [fotoDialogOpen, setFotoDialogOpen] = useState(false)
+
+  const setorIds = useMemo(
+    () => (setores as Array<{ id: string }> | undefined)?.map((setor) => setor.id) || [],
+    [setores],
+  )
 
   // — Alterar senha
   const [senhaDialogOpen, setSenhaDialogOpen] = useState(false)
@@ -151,6 +158,10 @@ export function DashboardHeader({ user, onMenuClick, sidebarCollapsed, onToggleS
 
       {/* Right side */}
       <div className="flex items-center gap-1.5">
+        {colaborador && (
+          <NotificacoesPanel colaboradorId={colaborador.id} setorIds={setorIds} />
+        )}
+
         {/* Notificações de desconexão de instância (Web Push) */}
         <PushToggle />
 

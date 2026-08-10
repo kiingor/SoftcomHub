@@ -3,19 +3,54 @@
 import { useCallback, useEffect, useState } from 'react'
 
 const PUSH_STATE_EVENT = 'softcomhub:push-state-change'
-let subscriptionSync: Promise<Response> | null = null
+let subscriptionSync: Promise<void> | null = null
 
-function syncSubscription(subscription: PushSubscription): Promise<Response> {
+async function responseError(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: unknown }
+    if (typeof body.error === 'string' && body.error.trim()) return body.error
+  } catch {
+    // A resposta pode não ter JSON; nesse caso usa a mensagem segura de fallback.
+  }
+
+  return fallback
+}
+
+function syncSubscription(subscription: PushSubscription): Promise<void> {
   if (!subscriptionSync) {
     subscriptionSync = fetch('/api/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subscription: subscription.toJSON() }),
-    }).finally(() => {
-      subscriptionSync = null
     })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(
+            await responseError(response, 'Não foi possível salvar as notificações neste navegador.'),
+          )
+        }
+      })
+      .finally(() => {
+        subscriptionSync = null
+      })
   }
   return subscriptionSync
+}
+
+async function getVapidPublicKey(): Promise<string> {
+  const response = await fetch('/api/push/config', { cache: 'no-store' })
+  if (!response.ok) {
+    throw new Error(
+      await responseError(response, 'Não foi possível preparar as notificações neste momento.'),
+    )
+  }
+
+  const body = (await response.json()) as { publicKey?: unknown }
+  if (typeof body.publicKey !== 'string' || !body.publicKey.trim()) {
+    throw new Error('A configuração de notificações está inválida.')
+  }
+
+  return body.publicKey
 }
 
 export async function unsubscribeCurrentBrowser(): Promise<void> {
@@ -84,8 +119,8 @@ export function usePushNotifications() {
         return
       }
 
-      const response = await syncSubscription(sub)
-      setState(response.ok ? 'subscribed' : (Notification.permission as PushState))
+      await syncSubscription(sub)
+      setState('subscribed')
     } catch {
       setState(Notification.permission as PushState)
     } finally {
@@ -103,17 +138,19 @@ export function usePushNotifications() {
     if (!supported) return
     setBusy(true)
     try {
-      await navigator.serviceWorker.register('/sw.js')
+      // A permissão precisa ser solicitada durante o gesto de clique. Registrar o
+      // service worker antes dela pode fazer alguns navegadores perderem esse gesto.
       const permission = await Notification.requestPermission()
       if (permission !== 'granted') {
         setState(permission as PushState)
         return
       }
+
+      await navigator.serviceWorker.register('/sw.js')
       // Aguarda o SW ficar ATIVO — subscribe() falha com "no active Service
       // Worker" se chamado logo após register() (o SW ainda está instalando).
       const reg = await navigator.serviceWorker.ready
-      const key = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
-      if (!key) throw new Error('NEXT_PUBLIC_VAPID_PUBLIC_KEY ausente')
+      const key = await getVapidPublicKey()
 
       const existing = await reg.pushManager.getSubscription()
       const sub =
@@ -123,8 +160,7 @@ export function usePushNotifications() {
           applicationServerKey: urlBase64ToUint8Array(key) as any,
         }))
 
-      const res = await syncSubscription(sub)
-      if (!res.ok) throw new Error('Falha ao salvar subscription')
+      await syncSubscription(sub)
       setState('subscribed')
       window.dispatchEvent(new Event(PUSH_STATE_EVENT))
     } finally {

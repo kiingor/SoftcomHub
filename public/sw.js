@@ -48,8 +48,12 @@ self.addEventListener('notificationclick', (event) => {
       .then((clientsList) => {
         for (const client of clientsList) {
           if ('focus' in client) {
-            client.navigate(url)
-            return client.focus()
+            // A navegação precisa fazer parte do waitUntil. Sem aguardar
+            // navigate(), o service worker pode ser encerrado antes de abrir o
+            // ticket solicitado pela notificação.
+            return client.navigate(url).then((navigatedClient) =>
+              (navigatedClient || client).focus(),
+            )
           }
         }
         if (self.clients.openWindow) return self.clients.openWindow(url)
