@@ -78,7 +78,7 @@ export interface PushPayload {
   tag?: string
   /** Categoria — o service worker usa para decidir comportamento (ex: suprimir
    *  notificação de mensagem quando o WorkDesk já está em foco). */
-  type?: 'instancia' | 'mensagem'
+  type?: 'instancia' | 'mensagem' | 'aviso'
 }
 
 interface SubRow {

@@ -60,17 +60,27 @@ test('the WorkDesk exposes browser push activation to its attendant', () => {
   assert.match(pushToggle, /bg-amber-500/)
 })
 
-test('new client messages also notify active administrators and supervisors', () => {
+test('new client messages notify only the active ticket owner', () => {
   const notifier = source('lib/notify-mensagem.ts')
   const webhook = source('app/api/whatsapp/webhook/route.ts')
   const widget = source('app/api/widget/messages/route.ts')
 
-  assert.match(notifier, /getActiveManagementIdsForSetor/)
-  assert.match(notifier, /from\('colaboradores_setores'\)/)
-  assert.match(notifier, /can_see_all_tickets', true/)
-  assert.match(notifier, /eq\('is_master', true\)/)
-  assert.match(notifier, /getActiveManagementIdsForSetor\(service, ticket\.setor_id\)/)
-  assert.match(notifier, /sendPushToColaboradores\(service, \[\.\.\.recipientIds\]/)
-  assert.match(webhook, /await notifyAtendenteNovaMensagem\(/)
-  assert.match(widget, /await notifyAtendenteNovaMensagem\(/)
+  assert.match(notifier, /!ticket\.colaborador_id/)
+  assert.match(notifier, /sendPushToColaboradores\(service, \[ticket\.colaborador_id\]/)
+  assert.doesNotMatch(notifier, /getActiveManagementIds/)
+  assert.match(webhook, /if \(ticket\.colaborador_id\)/)
+  assert.match(widget, /if \(ticket\.colaborador_id\)/)
+})
+
+test('internal notices are stored through the server and also trigger Web Push', () => {
+  const route = source('app/api/notificacoes/route.ts')
+  const sectorPage = source('app/setor/[id]/page.tsx')
+  const push = source('lib/push.ts')
+
+  assert.match(route, /auth\.auth\.getUser\(\)/)
+  assert.match(route, /sendPushToColaboradores/)
+  assert.match(route, /destinatario_id: destinatarioId/)
+  assert.match(sectorPage, /fetch\('\/api\/notificacoes'/)
+  assert.doesNotMatch(sectorPage, /from\('notificacoes'\)\.insert/)
+  assert.match(push, /'instancia' \| 'mensagem' \| 'aviso'/)
 })

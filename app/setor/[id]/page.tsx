@@ -4177,56 +4177,40 @@ const handleLogout = async () => {
 
     setSendingNotification(true)
     try {
-      // Get current user as sender
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) {
-        toast.error('Usuário não autenticado')
+      if (!setor?.id) {
+        toast.error('Setor não encontrado')
         return
       }
 
-      // Get sender name
-      const { data: senderData } = await supabase
-        .from('colaboradores')
-        .select('id, nome')
-        .eq('email', user.email)
-        .single()
-
-      if (!senderData) {
-        toast.error('Remetente não encontrado')
-        return
-      }
-
-      if (notificationForm.destinatario === 'todos') {
-        // Send to all colaboradores in this setor
-        const { error } = await supabase.from('notificacoes').insert({
-          setor_id: setor?.id,
-          remetente_id: senderData.id,
-          destinatario_id: null, // null means all in setor
+      const response = await fetch('/api/notificacoes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          setorId: setor.id,
+          destinatarioId:
+            notificationForm.destinatario === 'todos'
+              ? null
+              : notificationForm.destinatario,
           titulo: notificationForm.titulo,
           mensagem: notificationForm.mensagem,
-        })
-
-        if (error) throw error
-        toast.success('Notificação enviada para todos do setor')
-      } else {
-        // Send to specific colaborador
-        const { error } = await supabase.from('notificacoes').insert({
-          setor_id: setor?.id,
-          remetente_id: senderData.id,
-          destinatario_id: notificationForm.destinatario,
-          titulo: notificationForm.titulo,
-          mensagem: notificationForm.mensagem,
-        })
-
-        if (error) throw error
-        toast.success('Notificação enviada')
+        }),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(result?.error || 'Erro ao enviar notificação')
       }
+
+      toast.success(
+        notificationForm.destinatario === 'todos'
+          ? 'Notificação enviada para todos do setor'
+          : 'Notificação enviada',
+      )
 
       setNotificationForm({ destinatario: 'todos', titulo: '', mensagem: '' })
       await fetchAvisosEnviados()
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error sending notification:', error)
-      toast.error('Erro ao enviar notificação')
+      toast.error(error instanceof Error ? error.message : 'Erro ao enviar notificação')
     } finally {
       setSendingNotification(false)
     }
