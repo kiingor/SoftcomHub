@@ -59,3 +59,18 @@ test('the WorkDesk exposes browser push activation to its attendant', () => {
   assert.match(workdeskLayout, /<PushToggle\s*\/>/)
   assert.match(pushToggle, /bg-amber-500/)
 })
+
+test('new client messages also notify active administrators and supervisors', () => {
+  const notifier = source('lib/notify-mensagem.ts')
+  const webhook = source('app/api/whatsapp/webhook/route.ts')
+  const widget = source('app/api/widget/messages/route.ts')
+
+  assert.match(notifier, /getActiveManagementIdsForSetor/)
+  assert.match(notifier, /from\('colaboradores_setores'\)/)
+  assert.match(notifier, /can_see_all_tickets', true/)
+  assert.match(notifier, /eq\('is_master', true\)/)
+  assert.match(notifier, /getActiveManagementIdsForSetor\(service, ticket\.setor_id\)/)
+  assert.match(notifier, /sendPushToColaboradores\(service, \[\.\.\.recipientIds\]/)
+  assert.match(webhook, /await notifyAtendenteNovaMensagem\(/)
+  assert.match(widget, /await notifyAtendenteNovaMensagem\(/)
+})

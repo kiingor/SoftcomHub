@@ -98,18 +98,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 5. Notifica atendente (se houver atribuído)
-    if (ticket.colaborador_id) {
-      try {
-        await notifyAtendenteNovaMensagem({
-          ticketId: ticket_id,
-          conteudo,
-          tipo,
-        })
-      } catch (notifyError) {
-        console.error('Error notifying attendant:', notifyError)
-        // Não falha a request por causa disso
-      }
+    // 5. Notifica o responsável e a gestão ativa do setor.
+    try {
+      await notifyAtendenteNovaMensagem({
+        ticketId: ticket_id,
+        conteudo,
+        tipo,
+      })
+    } catch (notifyError) {
+      console.error('Error notifying attendant:', notifyError)
+      // Não falha a request por causa disso
     }
 
     return NextResponse.json(
