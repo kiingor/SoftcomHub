@@ -15,6 +15,7 @@ import { formatDistanceToNow, format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { TransferirTicketDialog } from '@/components/tickets/transferir-ticket-dialog'
+import { ManagerSupport } from '@/components/tickets/manager-support'
 import { rotuloDuplicidade, ticketsAbertos } from '@/lib/tickets-duplicados'
 import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { upload } from '@vercel/blob/client'
@@ -700,6 +701,9 @@ export default function WorkdeskPage() {
   useEffect(() => { colaboradorCurrentRef.current = colaborador }, [colaborador])
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [requestedTicketId, setRequestedTicketId] = useState<string | null>(null)
+  const [requestedSupportId, setRequestedSupportId] = useState<string | null>(null)
+  const requestedTicketQueryRef = useRef<string | null>(null)
+  const requestedDeepLinkKeyRef = useRef<string | null>(null)
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null)
   const selectedTicketIdRef = useRef<string | null>(null)
   const previousTicketIdsRef = useRef<Set<string>>(new Set())
@@ -710,8 +714,17 @@ export default function WorkdeskPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setRequestedTicketId(new URLSearchParams(window.location.search).get('ticket'))
-  }, [])
+    const params = new URLSearchParams(window.location.search)
+    const ticketId = params.get('ticket')
+    const supportId = params.get('apoio')
+    const deepLinkKey = `${ticketId || ''}:${supportId || ''}`
+    if (deepLinkKey === requestedDeepLinkKeyRef.current) return
+
+    requestedDeepLinkKeyRef.current = deepLinkKey
+    requestedTicketQueryRef.current = ticketId
+    setRequestedTicketId(ticketId && ticketId !== selectedTicketIdRef.current ? ticketId : null)
+    setRequestedSupportId(supportId)
+  })
   
   // Filters
   const [statusFilter, setStatusFilter] = useState<string>('todos')
@@ -4886,6 +4899,16 @@ const insertEmoji = (emoji: string) => {
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
+                  <ManagerSupport
+                    ticketId={selectedTicket.id}
+                    ticketNumber={selectedTicket.numero}
+                    autoOpenSupportId={
+                      requestedTicketQueryRef.current === selectedTicket.id
+                        ? requestedSupportId
+                        : null
+                    }
+                  />
+
                   {/* Transfer Button — texto escondido em mobile (só ícone) */}
                   <Button
                     variant="outline"

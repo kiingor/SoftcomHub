@@ -21,6 +21,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { WidgetManager } from '@/components/setor/WidgetManager'
 import { FloatingSaveBar } from '@/components/dashboard/floating-save-bar'
@@ -178,6 +179,8 @@ import { StatusAtendimentoPanel } from '@/components/setor/status-atendimento-pa
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
+import { ManagerSupport } from '@/components/tickets/manager-support'
+import { NotificacoesPanel } from '@/components/workdesk/notificacoes-panel'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
 import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
 import {
@@ -463,7 +466,7 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
     // Tickets de hoje (para estatisticas)
     supabase.from('tickets').select('*, clientes(nome)').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
-    supabase.from('colaboradores_setores').select('colaborador_id, tag_setor_id, colaboradores(id, nome, email, is_online, ativo, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
+    supabase.from('colaboradores_setores').select('colaborador_id, tag_setor_id, colaboradores(id, nome, email, is_online, ativo, is_master, permissao_id, pausa_atual_id, last_heartbeat)').eq('setor_id', setorId),
     supabase.from('horarios_atendimento').select('*').eq('setor_id', setorId).order('dia_semana'),
     supabase.from('permissoes').select('*'),
     supabase.from('pausas').select('*').eq('setor_id', setorId).order('nome'),
@@ -2045,6 +2048,10 @@ function SetorPageInner() {
   const [isAtendenteModalOpen, setIsAtendenteModalOpen] = useState(false)
   const [editingAtendente, setEditingAtendente] = useState<any>(null)
   const [atendenteSubsetorIds, setAtendenteSubsetorIds] = useState<string[]>([])
+  const [isManagerSupportAgent, setIsManagerSupportAgent] = useState(false)
+  const [loadingManagerSupportAgent, setLoadingManagerSupportAgent] = useState(false)
+  const [managerSupportAssignmentLoaded, setManagerSupportAssignmentLoaded] = useState(false)
+  const [managerSupportAssignmentError, setManagerSupportAssignmentError] = useState(false)
   const [atendenteForm, setAtendenteForm] = useState({
     nome: '',
     email: '',
@@ -2090,6 +2097,7 @@ function SetorPageInner() {
 
   // Conversation slide-out state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
+  const openedConversationFromQueryRef = useRef<string | null>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
   const devePosicionarNoInicioDoTicketRef = useRef(false)
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
@@ -4217,13 +4225,15 @@ const handleLogout = async () => {
   }
 
   const fetchAvisosEnviados = async () => {
-    if (!setor?.id) return
+    if (!setor?.id || !colaboradorLogado?.id) return
     setLoadingAvisos(true)
     try {
       const { data, error } = await supabase
         .from('notificacoes')
-        .select('id, titulo, mensagem, criado_em, destinatario_id, colaboradores!notificacoes_destinatario_id_fkey(nome)')
+        .select('id, titulo, mensagem, criado_em, remetente_id, destinatario_id, colaboradores!notificacoes_destinatario_id_fkey(nome)')
         .eq('setor_id', setor.id)
+        .eq('remetente_id', colaboradorLogado.id)
+        .or('tipo.eq.aviso,tipo.eq.info,tipo.is.null')
         .order('criado_em', { ascending: false })
         .limit(50)
       if (!error && data) setAvisosEnviados(data)
@@ -5214,9 +5224,52 @@ const saveConfig = async () => {
   }
 
   // Atendentes functions
+  const fetchSetorManagerIds = async () => {
+    const response = await fetch(`/api/setores/${encodeURIComponent(setorId)}/gestores`, {
+      cache: 'no-store',
+    })
+    const data = await response.json().catch(() => null) as {
+      gestores?: Array<{ id: string }>
+      error?: string
+    } | null
+    if (!response.ok) {
+      throw new Error(data?.error || 'Não foi possível carregar o grupo Gestor.')
+    }
+    return (data?.gestores || []).map((gestor) => gestor.id)
+  }
+
+  const fetchSetorManagerIdsSafely = async () => {
+    try {
+      return { managerIds: await fetchSetorManagerIds(), error: null }
+    } catch (error) {
+      return { managerIds: [] as string[], error }
+    }
+  }
+
+  const saveManagerSupportAssignment = async (colaboradorId: string) => {
+    if (!managerSupportAssignmentLoaded) return
+
+    const response = await fetch(`/api/setores/${encodeURIComponent(setorId)}/gestores`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        colaboradorId,
+        incluir: isManagerSupportAgent,
+      }),
+    })
+    const data = await response.json().catch(() => null) as { error?: string } | null
+    if (!response.ok) {
+      throw new Error(data?.error || 'Não foi possível atualizar o grupo Gestor.')
+    }
+  }
+
   const openCreateAtendenteModal = () => {
     setEditingAtendente(null)
     setAtendenteSubsetorIds([])
+    setIsManagerSupportAgent(false)
+    setLoadingManagerSupportAgent(false)
+    setManagerSupportAssignmentLoaded(false)
+    setManagerSupportAssignmentError(false)
     setAtendenteForm({ nome: '', email: '', senha: '', confirmarSenha: '', novaSenha: '', confirmarNovaSenha: '', suporte_id: '' })
     setShowPassword(false)
     setShowConfirmPassword(false)
@@ -5228,24 +5281,40 @@ const saveConfig = async () => {
   const checkEmailExists = async (email: string) => {
     if (!email || !email.includes('@')) {
       setExistingColaborador(null)
+      setIsManagerSupportAgent(false)
+      setManagerSupportAssignmentLoaded(false)
+      setManagerSupportAssignmentError(false)
       return
     }
 
     setCheckingEmail(true)
+    setLoadingManagerSupportAgent(true)
+    setManagerSupportAssignmentLoaded(false)
+    setManagerSupportAssignmentError(false)
     try {
       // First check if colaborador exists
       const { data: colaborador } = await supabase
         .from('colaboradores')
-        .select('id, nome, email')
+        .select('id, nome, email, ativo, is_master, permissao_id')
         .eq('email', email.toLowerCase().trim())
         .maybeSingle()
 
       if (colaborador) {
-        // Fetch setores separately
-        const { data: setoresData } = await supabase
-          .from('colaboradores_setores')
-          .select('setor_id, setores(nome)')
-          .eq('colaborador_id', colaborador.id)
+        const [{ data: setoresData }, managerResult] = await Promise.all([
+          supabase
+            .from('colaboradores_setores')
+            .select('setor_id, setores(nome)')
+            .eq('colaborador_id', colaborador.id),
+          fetchSetorManagerIdsSafely(),
+        ])
+        setIsManagerSupportAgent(
+          !managerResult.error && managerResult.managerIds.includes(colaborador.id),
+        )
+        setManagerSupportAssignmentLoaded(!managerResult.error)
+        setManagerSupportAssignmentError(Boolean(managerResult.error))
+        if (managerResult.error) {
+          console.warn('[Setor] Falha ao carregar grupo Gestor:', managerResult.error)
+        }
 
         // Check if already in this setor
         const alreadyInSetor = setoresData?.some((s: any) => s.setor_id === setorId)
@@ -5264,24 +5333,49 @@ const saveConfig = async () => {
         }
       } else {
         setExistingColaborador(null)
+        setIsManagerSupportAgent(false)
+        setManagerSupportAssignmentLoaded(false)
+        setManagerSupportAssignmentError(false)
       }
     } catch (error) {
       console.error('Error checking email:', error)
+      setIsManagerSupportAgent(false)
+      setManagerSupportAssignmentLoaded(false)
+      setManagerSupportAssignmentError(true)
     } finally {
       setCheckingEmail(false)
+      setLoadingManagerSupportAgent(false)
     }
   }
 
   const openEditAtendenteModal = async (atendente: any) => {
     setEditingAtendente(atendente)
-    // Buscar subsetores atuais do atendente neste setor
-    const { data: colabSubsetores } = await supabase
-      .from('colaboradores_subsetores')
-      .select('subsetor_id')
-      .eq('colaborador_id', atendente.id)
-      .eq('setor_id', setorId)
+    setLoadingManagerSupportAgent(true)
+    setManagerSupportAssignmentLoaded(false)
+    setManagerSupportAssignmentError(false)
+    const [{ data: colabSubsetores }, managerResult] = await Promise.all([
+      supabase
+        .from('colaboradores_subsetores')
+        .select('subsetor_id')
+        .eq('colaborador_id', atendente.id)
+        .eq('setor_id', setorId),
+      fetchSetorManagerIdsSafely(),
+    ])
     
     setAtendenteSubsetorIds((colabSubsetores || []).map((cs: any) => cs.subsetor_id))
+    setIsManagerSupportAgent(
+      !managerResult.error && managerResult.managerIds.includes(atendente.id),
+    )
+    setManagerSupportAssignmentLoaded(!managerResult.error)
+    setManagerSupportAssignmentError(Boolean(managerResult.error))
+    if (managerResult.error) {
+      toast.error(
+        managerResult.error instanceof Error
+          ? managerResult.error.message
+          : 'Não foi possível carregar o grupo Gestor.',
+      )
+    }
+    setLoadingManagerSupportAgent(false)
     setAtendenteForm({
       nome: atendente.nome || '',
       email: atendente.email || '',
@@ -5335,6 +5429,7 @@ const saveConfig = async () => {
         if (error) throw error
 
         await saveSubsetores(existingColaborador.id)
+        await saveManagerSupportAssignment(existingColaborador.id)
 
         toast.success('Atendente adicionado ao setor!')
         setIsAtendenteModalOpen(false)
@@ -5399,6 +5494,7 @@ const saveConfig = async () => {
 
         // Salvar subsetores na nova tabela N:N
         await saveSubsetores(editingAtendente.id)
+        await saveManagerSupportAssignment(editingAtendente.id)
 
         toast.success('Atendente atualizado com sucesso!')
       } else {
@@ -5521,7 +5617,7 @@ const saveConfig = async () => {
 
   // Open conversation slide-out — inclui histórico pré-ticket (bot/orphans)
 
-  const openConversation = async (ticket: any) => {
+  const openConversation = useCallback(async (ticket: any) => {
     devePosicionarNoInicioDoTicketRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
@@ -5598,7 +5694,24 @@ const saveConfig = async () => {
     } finally {
       setLoadingMessages(false)
     }
-  }
+  }, [supabase])
+
+  useEffect(() => {
+    const requestedTicketId = searchParams.get('ticket')
+    const requestedSupportId = searchParams.get('apoio')
+    if (!requestedTicketId) {
+      openedConversationFromQueryRef.current = null
+      return
+    }
+    const requestedConversationKey = `${requestedTicketId}:${requestedSupportId ?? ''}`
+    if (openedConversationFromQueryRef.current === requestedConversationKey) return
+
+    const requestedTicket = tickets.find((ticket: any) => ticket.id === requestedTicketId)
+    if (!requestedTicket) return
+
+    openedConversationFromQueryRef.current = requestedConversationKey
+    void openConversation(requestedTicket)
+  }, [openConversation, searchParams, tickets])
 
   // Entra ou sai do acompanhamento do ticket aberto. O gestor marca a si
   // mesmo — quem acompanha vem da sessão, no servidor.
@@ -5694,6 +5807,18 @@ const saveConfig = async () => {
     }
   }
 
+  const managerSupportCandidate = editingAtendente || existingColaborador
+  const managerSupportPermission = permissoes.find(
+    (permission: any) => permission.id === managerSupportCandidate?.permissao_id,
+  )
+  const canConfigureManagerSupport = Boolean(
+    managerSupportCandidate?.ativo === true
+      && (managerSupportCandidate?.is_master === true || managerSupportPermission?.can_view_dashboard === true),
+  )
+  const canEditManagerSupportAssignment = canConfigureManagerSupport
+    && managerSupportAssignmentLoaded
+    && !managerSupportAssignmentError
+
   const IconComponent = getIconComponent(configForm.icon_url)
   const SetorIcon = getIconComponent(setor?.icon_url)
 
@@ -5747,6 +5872,13 @@ const saveConfig = async () => {
 
           {/* Busca rápida — atalho ⌘K (somente indicativo) */}
           <kbd className="kbd hidden md:inline-flex" aria-hidden="true">Ctrl K</kbd>
+
+          {colaboradorLogado?.id && (
+            <NotificacoesPanel
+              colaboradorId={colaboradorLogado.id}
+              setorIds={[setorId]}
+            />
+          )}
 
           <ThemeToggle />
 
@@ -10965,6 +11097,45 @@ const saveConfig = async () => {
               </p>
             </div>
 
+            <div className="rounded-lg border border-border p-3">
+              <Label
+                htmlFor="manager-support-agent"
+                className={cn(
+                  'flex min-h-11 touch-manipulation items-start gap-3',
+                  canEditManagerSupportAssignment ? 'cursor-pointer' : 'cursor-not-allowed',
+                )}
+              >
+                <Checkbox
+                  id="manager-support-agent"
+                  name="manager-support-agent"
+                  checked={isManagerSupportAgent}
+                  onCheckedChange={(checked) => setIsManagerSupportAgent(checked === true)}
+                  disabled={loadingManagerSupportAgent || savingAtendente || !canEditManagerSupportAssignment}
+                  aria-describedby="manager-support-agent-description"
+                  className="mt-0.5"
+                />
+                <div className="space-y-1">
+                  <span
+                    className={cn(
+                      'text-sm font-medium',
+                      !canEditManagerSupportAssignment && 'text-muted-foreground',
+                    )}
+                  >
+                    Gestor — apoio interno
+                  </span>
+                  <p id="manager-support-agent-description" className="text-xs text-muted-foreground">
+                    {loadingManagerSupportAgent
+                      ? 'Verificando participação no grupo Gestor…'
+                      : canConfigureManagerSupport && !managerSupportAssignmentLoaded
+                        ? 'Não foi possível verificar o grupo Gestor. Feche e reabra para tentar novamente; os demais dados podem ser salvos.'
+                        : canEditManagerSupportAssignment
+                        ? 'Recebe solicitações e pode iniciar apoio privado, sem alterar a fila de tickets.'
+                        : 'Disponível para colaboradores ativos com perfil Supervisor ou Administrador.'}
+                  </p>
+                </div>
+              </Label>
+            </div>
+
             {/* Subsetor selection - checkboxes para múltipla seleção */}
             {subsetores.filter(s => s.ativo).length > 0 && (
               <div className="space-y-2">
@@ -11067,6 +11238,15 @@ const saveConfig = async () => {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-1">
+                <ManagerSupport
+                  ticketId={selectedTicket.id}
+                  ticketNumber={selectedTicket.numero}
+                  autoOpenSupportId={
+                    searchParams.get('ticket') === selectedTicket.id
+                      ? searchParams.get('apoio')
+                      : null
+                  }
+                />
                 {(() => {
                   const acompanhamento = selectedTicket.acompanhamento
                   const souEu = acompanhamento?.colaborador_id === colaboradorLogado?.id
@@ -11449,7 +11629,7 @@ const saveConfig = async () => {
                   <p className="mt-1 text-xs text-muted-foreground">Os avisos disparados para o setor aparecem aqui.</p>
                 </div>
               ) : (
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                <div className="max-h-80 space-y-2 overflow-y-auto overscroll-contain pr-1">
                   {avisosEnviados.map((aviso) => (
                     <div key={aviso.id} className="flex items-start gap-3 rounded-lg border p-3 text-sm">
                       <div className="flex-1 min-w-0 space-y-0.5">
@@ -11469,20 +11649,25 @@ const saveConfig = async () => {
                           })}
                         </p>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                        disabled={deletingAvisoId === aviso.id}
-                        onClick={() => deleteAviso(aviso.id)}
-                        aria-label={`Excluir aviso ${aviso.titulo}`}
-                        title="Excluir aviso"
-                      >
-                        {deletingAvisoId === aviso.id
-                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          : <Trash2 className="h-3.5 w-3.5" />
-                        }
-                      </Button>
+                      {aviso.remetente_id === colaboradorLogado?.id && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          disabled={deletingAvisoId === aviso.id}
+                          onClick={() => deleteAviso(aviso.id)}
+                          aria-label={`Excluir aviso ${aviso.titulo}`}
+                          title="Excluir aviso"
+                        >
+                          {deletingAvisoId === aviso.id
+                            ? (
+                              <Loader2
+                                className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+                                aria-hidden="true"
+                              />
+                            ) : <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />}
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>

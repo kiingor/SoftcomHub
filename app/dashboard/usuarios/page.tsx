@@ -186,20 +186,35 @@ export default function UsuariosPage() {
           })
           .eq('id', editingUser.id)
 
-        // Update setores relationships
-        // First, remove all existing
-        await supabase
-          .from('colaborador_setores')
-          .delete()
-          .eq('colaborador_id', editingUser.id)
+        // Preserve unchanged links so saving the profile does not interrupt an
+        // active manager-support session in a sector that stayed selected.
+        const currentSectorIds = new Set(getSetoresDoColaborador(editingUser.id))
+        const nextSectorIds = new Set(
+          nextIsMaster ? [] : formData.setores_selecionados,
+        )
+        const removedSectorIds = Array.from(currentSectorIds).filter(
+          (setorId) => !nextSectorIds.has(setorId),
+        )
+        const addedSectorIds = Array.from(nextSectorIds).filter(
+          (setorId) => !currentSectorIds.has(setorId),
+        )
 
-        // Then add new ones for non-admin dashboard users.
-        if (!nextIsMaster && formData.setores_selecionados.length > 0) {
-          const newRelations = formData.setores_selecionados.map((setorId) => ({
+        if (removedSectorIds.length > 0) {
+          const { error } = await supabase
+            .from('colaborador_setores')
+            .delete()
+            .eq('colaborador_id', editingUser.id)
+            .in('setor_id', removedSectorIds)
+          if (error) throw error
+        }
+
+        if (addedSectorIds.length > 0) {
+          const newRelations = addedSectorIds.map((setorId) => ({
             colaborador_id: editingUser.id,
             setor_id: setorId,
           }))
-          await supabase.from('colaborador_setores').insert(newRelations)
+          const { error } = await supabase.from('colaborador_setores').insert(newRelations)
+          if (error) throw error
         }
       } else {
         // Create new user via Supabase Auth
@@ -235,7 +250,8 @@ export default function UsuariosPage() {
             colaborador_id: newColab.id,
             setor_id: setorId,
           }))
-          await supabase.from('colaborador_setores').insert(relations)
+          const { error } = await supabase.from('colaborador_setores').insert(relations)
+          if (error) throw error
         }
       }
 

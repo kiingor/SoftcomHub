@@ -48,7 +48,10 @@ test('a notification without a target opens a dialog with its full message', () 
 
   assert.match(notificationsPanel, /if \(!target\) \{\s*openNotificationDetails\(notificacao\)/)
   assert.match(notificationsPanel, /openNotificationDetails\(newNotificationData\)/)
-  assert.match(notificationsPanel, /<DialogContent className="[^"]*sm:max-w-md[^"]*">/)
+  assert.match(
+    notificationsPanel,
+    /<DialogContent[\s\S]{0,200}className="[^"]*sm:max-w-md[^"]*"/,
+  )
   assert.match(notificationsPanel, /whitespace-pre-wrap break-words/)
 })
 

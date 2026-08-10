@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/popover'
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -48,14 +49,14 @@ interface NotificacoesPanelProps {
 }
 
 function notificationTarget(notificacao: Notificacao): string | null {
+  const url = notificacao.url?.trim()
+  if (url && url.startsWith('/') && !url.startsWith('//')) return url
+
   if (notificacao.ticket_id) {
     return '/workdesk?ticket=' + encodeURIComponent(notificacao.ticket_id)
   }
 
-  const url = notificacao.url?.trim()
-  if (!url || !url.startsWith('/') || url.startsWith('//')) return null
-
-  return url
+  return null
 }
 
 export function NotificacoesPanel({
@@ -81,7 +82,9 @@ export function NotificacoesPanel({
 
   const fetchNotificacoes = useCallback(async () => {
     const filters = ['destinatario_id.eq.' + colaboradorId]
-    if (setorIdsKey) filters.unshift('setor_id.in.(' + setorIdsKey + ')')
+    if (setorIdsKey) {
+      filters.push('and(destinatario_id.is.null,setor_id.in.(' + setorIdsKey + '))')
+    }
 
     const { data, error } = await supabase
       .from('notificacoes')
@@ -193,9 +196,10 @@ export function NotificacoesPanel({
 
     const handleInsert = async (payload: RealtimeInsertPayload) => {
       const newNotif = payload.new
-      const isForMe =
-        (newNotif.setor_id && activeSetorIds.has(newNotif.setor_id)) ||
-        newNotif.destinatario_id === colaboradorId
+      const isDirect = newNotif.destinatario_id === colaboradorId
+      const isCollective = newNotif.destinatario_id === null
+        && Boolean(newNotif.setor_id && activeSetorIds.has(newNotif.setor_id))
+      const isForMe = isDirect || isCollective
 
       if (!isForMe || newNotif.remetente_id === colaboradorId) return
       if (receivedNotificationIdsRef.current.has(newNotif.id)) return
@@ -304,7 +308,7 @@ export function NotificacoesPanel({
               }}
             >
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                <Bell className="h-5 w-5 text-primary" />
+                <Bell className="h-5 w-5 text-primary" aria-hidden="true" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium text-foreground">
@@ -321,11 +325,11 @@ export function NotificacoesPanel({
             <Button
               variant="ghost"
               size="icon"
-              className="h-6 w-6 shrink-0"
+              className="h-11 w-11 shrink-0 touch-manipulation transition-colors"
               onClick={() => setShowNewNotification(false)}
               aria-label="Fechar notificação"
             >
-              <X className="h-4 w-4" />
+              <X className="h-4 w-4" aria-hidden="true" />
             </Button>
           </div>
         </div>
@@ -338,9 +342,12 @@ export function NotificacoesPanel({
         }}
       >
         {selectedNotification && (
-          <DialogContent className="max-h-[80vh] gap-0 overflow-hidden p-0 sm:max-w-md">
+          <DialogContent
+            showCloseButton={false}
+            className="max-h-[80vh] gap-0 overflow-hidden overscroll-contain p-0 sm:max-w-md"
+          >
             <DialogHeader className="border-b p-4 pr-12">
-              <DialogTitle className="break-words text-base">
+              <DialogTitle className="break-words text-balance text-base">
                 {selectedNotification.titulo || 'Notificação'}
               </DialogTitle>
               <DialogDescription>
@@ -349,7 +356,19 @@ export function NotificacoesPanel({
                 {' • ' + formatDateTime(selectedNotification.criado_em)}
               </DialogDescription>
             </DialogHeader>
-            <ScrollArea className="max-h-[60vh] overscroll-contain">
+            <DialogClose asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1 h-11 w-11 touch-manipulation transition-colors"
+                aria-label="Fechar notificação"
+                title="Fechar notificação"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </DialogClose>
+            <ScrollArea className="max-h-[60vh] overscroll-contain [&_[data-slot=scroll-area-viewport]]:overscroll-contain">
               <p className="whitespace-pre-wrap break-words p-4 text-sm leading-6 text-foreground">
                 {selectedNotification.mensagem || 'Sem mensagem.'}
               </p>
@@ -363,11 +382,11 @@ export function NotificacoesPanel({
           <Button
             variant="ghost"
             size="icon"
-            className="relative"
+            className="relative h-11 w-11 touch-manipulation transition-colors"
             aria-label="Abrir notificações"
             title="Notificações"
           >
-            <Bell className="h-5 w-5" />
+            <Bell className="h-5 w-5" aria-hidden="true" />
             {unreadCount > 0 && (
               <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-medium text-white">
                 {unreadCount > 9 ? '9+' : unreadCount}
@@ -385,10 +404,10 @@ export function NotificacoesPanel({
             )}
           </div>
 
-          <ScrollArea className="h-[300px]">
+          <ScrollArea className="h-[300px] overscroll-contain [&_[data-slot=scroll-area-viewport]]:overscroll-contain">
             {notificacoes.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-                <Bell className="mb-2 h-8 w-8 opacity-50" />
+                <Bell className="mb-2 h-8 w-8 opacity-50" aria-hidden="true" />
                 <p className="text-sm">Nenhuma notificação</p>
               </div>
             ) : (

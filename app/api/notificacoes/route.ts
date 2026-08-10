@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { sendPushToColaboradores } from '@/lib/push'
+import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 
 const MAX_TITLE_LENGTH = 160
 const MAX_MESSAGE_LENGTH = 5_000
@@ -75,33 +76,36 @@ async function getPushRecipients(args: {
   senderId: string
 }) {
   const { service, setorId, destinatarioId, senderId } = args
-  const recipientsQuery = service
-    .from('colaboradores_setores')
-    .select('colaborador_id')
-    .eq('setor_id', setorId)
+  const links = await loadRowsByPages<{ colaborador_id: string }>(() => {
+    let query = service
+      .from('colaboradores_setores')
+      .select('colaborador_id')
+      .eq('setor_id', setorId)
+      .order('colaborador_id', { ascending: true })
 
-  if (destinatarioId) recipientsQuery.eq('colaborador_id', destinatarioId)
-
-  const { data: links, error: linksError } = await recipientsQuery
-  if (linksError) throw linksError
+    if (destinatarioId) query = query.eq('colaborador_id', destinatarioId)
+    return query
+  })
 
   const linkedIds = Array.from(
-    new Set((links || []).map((link: { colaborador_id: string }) => link.colaborador_id)),
+    new Set(links.map((link) => link.colaborador_id)),
   )
   if (destinatarioId && linkedIds.length === 0) {
     throw new Error('Destinatário não pertence ao setor selecionado.')
   }
   if (linkedIds.length === 0) return []
 
-  const { data: activeCollaborators, error: collaboratorsError } = await service
-    .from('colaboradores')
-    .select('id')
-    .in('id', linkedIds)
-    .eq('ativo', true)
-  if (collaboratorsError) throw collaboratorsError
+  const activeCollaborators = await loadRowsByValues<{ id: string }>(
+    service,
+    'colaboradores',
+    'id',
+    'id',
+    linkedIds,
+    (query) => query.eq('ativo', true),
+  )
 
-  return (activeCollaborators || [])
-    .map((collaborator: { id: string }) => collaborator.id)
+  return activeCollaborators
+    .map((collaborator) => collaborator.id)
     .filter((id) => id !== senderId)
 }
 
@@ -156,6 +160,7 @@ export async function POST(request: Request) {
         destinatario_id: destinatarioId,
         titulo,
         mensagem,
+        tipo: 'aviso',
       })
       .select('id')
       .single()
