@@ -1225,10 +1225,14 @@ export default function WorkdeskPage() {
           // Walk DESC. A rajada termina quando bate em msg do colaborador/bot/sistema.
           // O âncora final fica na MAIS ANTIGA msg do cliente da rajada — i.e.
           // a primeira msg sem resposta.
+          // isClientMessage: msg vinda do Nexus ('cliente-nexus') encerrava a rajada
+          // como se fosse do suporte. Sem semente aqui, a sincronia logo abaixo
+          // APAGAVA o âncora que o realtime tinha acabado de gravar e o cronômetro
+          // do ticket sumia a cada refetch da lista.
           const burstEnded = new Set<string>()
           for (const msg of allLastMsgs) {
             if (burstEnded.has(msg.ticket_id)) continue
-            if (msg.remetente === 'cliente') {
+            if (isClientMessage(msg.remetente)) {
               firstUnreadSeed.set(msg.ticket_id, msg.enviado_em)
             } else {
               burstEnded.add(msg.ticket_id)
@@ -1504,8 +1508,12 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   setLastMessageTime(null)
   } else {
         // WhatsApp 24h window starts from the last message the CLIENT sent, not bot/colaborador
+        // isClientMessage e não `=== 'cliente'`: quem falou pelo Nexus chega como
+        // 'cliente-nexus'. Com a comparação estrita a janela era calculada como se
+        // o cliente nunca tivesse respondido e o campo de digitação travava em
+        // "Janela expirada" mesmo com resposta recente.
         const currentTicketClientMessages = data.filter(
-          (m) => m.ticket_id === ticketId && m.remetente === 'cliente'
+          (m) => m.ticket_id === ticketId && isClientMessage(m.remetente)
         )
         if (currentTicketClientMessages.length > 0) {
           const lastClientMsg = currentTicketClientMessages[currentTicketClientMessages.length - 1]
@@ -1619,14 +1627,6 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // Tickets cuja transição do bot para o humano o atendente já viu nesta
   // sessão. A partir da segunda abertura a conversa volta a abrir no fim.
   const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
-
-  const posicionarNoInicioDoTicket = useCallback(() => {
-    const container = messagesContainerRef.current
-    const ticketStart = container?.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
-    if (!container || !ticketStart) return false
-
-    const ticketId = selectedTicketIdRef.current
-    const posicionar = () => {
   // Decisão desta abertura, tomada uma vez só: o painel desktop e o drawer
   // mobile renderizam a mesma lista e podem posicionar no mesmo commit — sem
   // guardar a decisão, o primeiro a rodar marcaria o ticket como já visto e o
@@ -1653,6 +1653,14 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (alvo === 'inicio-do-ticket' && ticketId) ticketsJaPosicionadosRef.current.add(ticketId)
     return alvo
   }, [])
+
+  const posicionarNoInicioDoTicket = useCallback(() => {
+    const container = messagesContainerRef.current
+    const ticketStart = container?.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
+    if (!container || !ticketStart) return false
+
+    const ticketId = selectedTicketIdRef.current
+    const posicionar = () => {
       if (selectedTicketIdRef.current !== ticketId) return
 
       const currentContainer = messagesContainerRef.current
@@ -1828,14 +1836,14 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   }, [mensagens, loadingMensagens, scrollToBottom])
 
   // Abrir outra conversa começa no fim, independente de onde a anterior parou.
+  // A exceção da transição do bot é decidida só quando a lista existe no DOM —
+  // decidir aqui daria "início do ticket" a conversa que não tem nada acima.
   useEffect(() => {
     acompanhandoOFimRef.current = true
     alvoDaAberturaRef.current = null
     aberturaPendenteRef.current = true
   }, [selectedTicketId])
 
-  // A exceção da transição do bot é decidida só quando a lista existe no DOM —
-  // decidir aqui daria "início do ticket" a conversa que não tem nada acima.
 // Real-time subscription for tickets
   // Track known ticket IDs to detect truly new arrivals
   const knownTicketIdsRef = useRef<Set<string>>(new Set())
@@ -2445,8 +2453,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           // Only alert for messages in this colaborador's tickets
           if (!currentTickets.some((t) => t.id === newMessage.ticket_id)) return
 
-          // Only alert for client messages (remetente = 'cliente')
-          if (newMessage.remetente !== 'cliente') return
+          // Só alerta mensagem de cliente — incluindo 'cliente-nexus'. A comparação
+          // estrita descartava tudo que vinha do Nexus e matava som, badge de
+          // não-lida, toast e a reordenação do ticket no topo da lista.
+          if (!isClientMessage(newMessage.remetente)) return
 
           const isViewingThisTicket = selectedTicketIdRef.current === newMessage.ticket_id
 
@@ -7533,7 +7543,7 @@ function TicketList({
                             <span className="signal-dot signal-dot--pulse" aria-hidden="true" />
                             Sem resposta
                           </span>
-                        ) : ticket.ultima_mensagem_remetente === 'cliente' ? (
+                        ) : isClientMessage(ticket.ultima_mensagem_remetente) ? (
                           <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-foreground">
                             <span className="signal-dot signal-dot--pulse" aria-hidden="true" />
                             Cliente respondeu
@@ -7584,7 +7594,8 @@ function TicketList({
                       </span>
                       {(() => {
                         const firstUnread = firstUnreadAt.get(ticket.id)
-                        const isClientWaiting = ticket.ultima_mensagem_remetente === 'cliente'
+                        // isClientMessage: 'cliente-nexus' também é o cliente esperando.
+                        const isClientWaiting = isClientMessage(ticket.ultima_mensagem_remetente)
                         // Timer emerald (urgência): cliente foi o último a falar
                         // E temos o âncora da primeira msg sem resposta. Conta o
                         // tempo TOTAL aguardando — não zera quando o atendente
