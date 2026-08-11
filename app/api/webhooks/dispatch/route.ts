@@ -142,7 +142,7 @@ export async function POST(request: Request) {
     // Fetch all messages for this ticket (conversation history)
     const { data: mensagens } = await supabase
       .from('mensagens')
-      .select('id, remetente, conteudo, tipo, url_imagem, media_type, enviado_em, canal_envio, phone_number_id, atendente_bot')
+      .select('id, remetente, conteudo, tipo, url_imagem, media_type, enviado_em, canal_envio, phone_number_id, atendente_bot, atendente_bot_id')
       .eq('ticket_id', ticketId)
       .order('enviado_em', { ascending: true })
 
@@ -197,6 +197,8 @@ export async function POST(request: Request) {
     const msgCliente     = msgLista.filter(m => m.remetente === 'cliente')
     const msgColaborador = msgLista.filter(m => m.remetente === 'colaborador' || m.remetente === 'bot')
     const msgSistema     = msgLista.filter(m => m.remetente === 'sistema')
+
+    const atendenteBot = resolverAtendenteBotDoWebhook(msgLista)
 
     // ─── Build conversation history ───────────────────────────────────────────
     const conversa = msgLista.map((m, idx) => {
@@ -258,7 +260,10 @@ export async function POST(request: Request) {
         atendente: colaboradorNome
           ? { id: ticket.colaborador_id, nome: colaboradorNome, suporte_id: colaboradorSuporteId }
           : null,
-        atendente_bot: resolverAtendenteBotDoWebhook(msgLista),
+        // `atendente_bot` segue string pura: o fluxo da Maestro já lê esse campo
+        // como nome. O id vai ao lado, em campo novo, para não quebrar o consumidor.
+        atendente_bot: atendenteBot?.nome ?? null,
+        atendente_bot_id: atendenteBot?.id ?? null,
 
         // Timestamps ISO + BR
         criado_em:             ticket.criado_em || null,
