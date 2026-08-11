@@ -17,6 +17,15 @@ export const REPLYABLE_TICKET_SENDERS = [
   'bot-nexus',
 ] as const
 
+/**
+ * Remetentes cuja mensagem prova por qual canal a conversa entrou.
+ *
+ * É a mesma lista que as rotas de envio cobram como evidência histórica, e quem
+ * escolhe o canal de saída na tela precisa usar exatamente esta — divergir
+ * significa mandar um identificador que o servidor recusa com CHANNEL_MISMATCH.
+ */
+export const TRUSTED_INBOUND_CLIENT_SENDERS = ['cliente', 'cliente-nexus'] as const
+
 export interface TicketChannelEvidence {
   channelIdentifier: string | null | undefined
   sender: string | null | undefined
@@ -55,6 +64,30 @@ export function isTicketReplySenderAllowed(
   sender: string | null | undefined,
 ): boolean {
   return REPLYABLE_TICKET_SENDERS.some((candidate) => candidate === sender)
+}
+
+/**
+ * Escolhe a mensagem que define o canal de saída do ticket: a última fala do
+ * CLIENTE manda, e só na falta dela vale a última mensagem qualquer.
+ *
+ * "Última mensagem, qualquer remetente" era a regra da tela e é a origem do
+ * CHANNEL_MISMATCH ao responder: as mensagens `bot-nexus` são gravadas com um
+ * `phone_number_id` fixo (Financeiro Matriz) e as do atendente só repetem o que
+ * já tinha sido resolvido antes. Nenhum dos dois é prova de canal para o
+ * servidor — `selectAuthorizedTicketChannel` só aceita fala do cliente —, então
+ * a tela pedia um canal que a rota recusava.
+ *
+ * O fallback existe para o ticket nascido de disparo, em que o cliente ainda não
+ * falou: sem prova nenhuma, mantém o comportamento antigo em vez de travar.
+ *
+ * `messages` vem ordenado do mais recente para o mais antigo.
+ */
+export function selectOutboundChannelEvidence<
+  T extends { remetente?: string | null },
+>(messages: readonly T[]): T | null {
+  return messages.find((message) => isTrustedInboundClient(message.remetente))
+    ?? messages.find((message) => message.remetente !== 'sistema')
+    ?? null
 }
 
 export function canUseLegacyChannelFallback(

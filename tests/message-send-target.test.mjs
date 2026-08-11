@@ -9,6 +9,7 @@ import {
   resolvePersistedRecipient,
   resolveReplyQuote,
   selectAuthorizedTicketChannel,
+  selectOutboundChannelEvidence,
   selectRequestedActiveChannel,
   validateOutboundMediaUrl,
 } from '../lib/message-send-target.ts'
@@ -305,6 +306,81 @@ test('fails closed when an active identifier has an unknown ownership collision'
   })
 
   assert.equal(selected, null)
+})
+
+const kenobiChannel = {
+  id: 'kenobi-channel',
+  sectorId: 'kenobi',
+  identifier: 'shared-phone-id',
+}
+const kenobiFilialChannel = {
+  id: 'kenobi-filial-channel',
+  sectorId: 'kenobi-filial',
+  identifier: 'shared-phone-id',
+}
+
+test('canal compartilhado responde pelo setor do próprio ticket', () => {
+  // Caso #97049 no Kenobi: o número está cadastrado em dois setores e nenhum é o
+  // par ServiceDesk/Ouvidoria, então o dono saía null e o envio morria em
+  // CHANNEL_MISMATCH mesmo com o canal ativo no setor do ticket.
+  const selected = selectAuthorizedTicketChannel({
+    currentActiveChannels: [kenobiChannel],
+    matchingActiveChannels: [kenobiChannel, kenobiFilialChannel],
+    historicalEvidence: [],
+    requestedIdentifier: 'shared-phone-id',
+    getIdentifier: (channel) => channel.identifier,
+    getOwnerId: (channel) => channel.sectorId,
+    resolveOwnerId: (ownerIds) => resolveSharedChannelOwnerId(ownerIds, 'kenobi'),
+  })
+
+  assert.equal(selected, kenobiChannel)
+})
+
+test('o setor preferido não substitui a prova de que o canal é da conversa', () => {
+  const selected = selectAuthorizedTicketChannel({
+    currentActiveChannels: [],
+    matchingActiveChannels: [kenobiChannel, kenobiFilialChannel],
+    historicalEvidence: [{
+      sender: 'colaborador',
+      channelIdentifier: 'shared-phone-id',
+      providerMessageId: null,
+    }],
+    requestedIdentifier: 'shared-phone-id',
+    getIdentifier: (channel) => channel.identifier,
+    getOwnerId: (channel) => channel.sectorId,
+    resolveOwnerId: (ownerIds) => resolveSharedChannelOwnerId(ownerIds, 'kenobi'),
+  })
+
+  assert.equal(selected, null)
+})
+
+test('o canal de saída sai da última fala do cliente, não da última mensagem', () => {
+  // Caso #97049: o n8n grava toda mensagem bot-nexus com o phone_number_id fixo
+  // do Financeiro Matriz. Usando "última mensagem, qualquer remetente", a tela
+  // pedia esse número e a rota recusava com CHANNEL_MISMATCH.
+  const selected = selectOutboundChannelEvidence([
+    { remetente: 'bot-nexus', phone_number_id: '958565544008403' },
+    { remetente: 'colaborador', phone_number_id: '958565544008403' },
+    { remetente: 'cliente-nexus', phone_number_id: 'canal-de-entrada' },
+  ])
+
+  assert.equal(selected?.phone_number_id, 'canal-de-entrada')
+})
+
+test('sem fala do cliente, cai na última mensagem não-sistema', () => {
+  // Ticket nascido de disparo: não existe prova de canal nenhuma, então manter o
+  // comportamento antigo é melhor do que travar o envio.
+  const selected = selectOutboundChannelEvidence([
+    { remetente: 'sistema', phone_number_id: 'ruido' },
+    { remetente: 'colaborador', phone_number_id: 'canal-do-disparo' },
+  ])
+
+  assert.equal(selected?.phone_number_id, 'canal-do-disparo')
+  assert.equal(selectOutboundChannelEvidence([]), null)
+  assert.equal(
+    selectOutboundChannelEvidence([{ remetente: 'sistema', phone_number_id: 'ruido' }]),
+    null,
+  )
 })
 
 test('allows public HTTPS media and blocks local or private destinations', () => {

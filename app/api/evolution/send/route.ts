@@ -11,6 +11,7 @@ import {
 } from '@/lib/message-send-claim'
 import {
   REPLYABLE_TICKET_SENDERS,
+  TRUSTED_INBOUND_CLIENT_SENDERS,
   canUseLegacyChannelFallback,
   isConfiguredLegacyEvolutionChannel,
   resolveReplyQuote,
@@ -369,7 +370,7 @@ export async function POST(request: NextRequest) {
           .from('mensagens')
           .select('phone_number_id, remetente, whatsapp_message_id')
           .eq('ticket_id', ticketId)
-          .in('remetente', ['cliente', 'cliente-nexus'])
+          .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
           .eq('phone_number_id', requestedInstance)
           .limit(1)
 
@@ -382,6 +383,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Instância compartilhada entre setores: o setor do ticket é o dono
+    // preferido. A autorização de uso já aconteceu antes; aqui só se decide de
+    // qual linha de `setor_canais` vêm as credenciais.
+    const resolveOwnerId = (ownerIds: Iterable<string>) =>
+      resolveSharedChannelOwnerId(ownerIds, ticket.setor_id)
+
     const modernChannel = selectAuthorizedTicketChannel({
       currentActiveChannels,
       matchingActiveChannels,
@@ -389,7 +396,7 @@ export async function POST(request: NextRequest) {
       requestedIdentifier: requestedInstance,
       getIdentifier: (candidate) => candidate.instancia,
       getOwnerId: (candidate) => candidate.setor_id,
-      resolveOwnerId: resolveSharedChannelOwnerId,
+      resolveOwnerId,
     })
 
     let legacyChannel: {
@@ -463,7 +470,7 @@ export async function POST(request: NextRequest) {
         requestedIdentifier: requestedInstance,
         getIdentifier: (candidate) => candidate.channel_identifier,
         getOwnerId: (candidate) => candidate.setor_id,
-        resolveOwnerId: resolveSharedChannelOwnerId,
+        resolveOwnerId,
       })
     }
 

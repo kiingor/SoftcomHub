@@ -13,6 +13,11 @@ import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
 
+import { decidirAberturaDaConversa, SELETOR_INICIO_DO_TICKET } from '@/lib/scroll-conversa'
+import {
+  TRUSTED_INBOUND_CLIENT_SENDERS,
+  selectOutboundChannelEvidence,
+} from '@/lib/message-send-target'
 /** Marca a linha cujo cliente tem outro atendimento aberto ao mesmo tempo. */
 function BadgeDuplicado() {
   return (
@@ -1288,18 +1293,32 @@ export default function MonitoramentoPage() {
           .replace(/\{\{data_atual\}\}/g, now.toLocaleDateString('pt-BR'))
           .replace(/\{\{hora_atual\}\}/g, now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
 
-        // Detect channel from last message
-        const { data: lastMsgData } = await supabase
-          .from('mensagens')
-          .select('canal_envio, phone_number_id, discord_user_id')
-          .eq('ticket_id', selectedTicket.id)
-          .neq('remetente', 'sistema')
-          .order('enviado_em', { ascending: false })
-          .limit(1)
+        // Detect the channel from the last CLIENT message — the only evidence
+        // the send routes accept. The last message of any sender is a fallback.
+        const [{ data: lastClientMsgData }, { data: lastMsgData }] = await Promise.all([
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', selectedTicket.id)
+            .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', selectedTicket.id)
+            .neq('remetente', 'sistema')
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+        ])
 
-        const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
-        const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
-        const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+        const canalEvidencia = selectOutboundChannelEvidence([
+          ...(lastClientMsgData || []),
+          ...(lastMsgData || []),
+        ])
+        const lastCanalEnvio = canalEvidencia?.canal_envio || null
+        const lastPhoneNumberId = canalEvidencia?.phone_number_id || null
+        const lastDiscordUserId = canalEvidencia?.discord_user_id || null
 
         let setorCanal = 'whatsapp'
         let phoneNumberId: string | null = lastPhoneNumberId

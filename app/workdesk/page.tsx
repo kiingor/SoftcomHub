@@ -7,6 +7,10 @@ import { createClient } from '@/lib/supabase/client'
 import { logError } from '@/lib/error-logger'
 import { stripBrazilCountryCode } from '@/lib/phone'
 import { computeSendOutcome } from '@/lib/message-send-status'
+import {
+  TRUSTED_INBOUND_CLIENT_SENDERS,
+  selectOutboundChannelEvidence,
+} from '@/lib/message-send-target'
 import { areSetorSortConfigsEqual, sortTicketsBySetorConfig } from '@/lib/ticket-sort'
 import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
@@ -2628,18 +2632,32 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
 
       // Se há mensagem de finalização, detectar o canal correto e enviar
       if (setor?.mensagem_finalizacao && !isWindowExpired) {
-        // Detectar canal pela última mensagem (mesma lógica do handleSendMessage)
-        const { data: lastMsgData } = await supabase
-          .from('mensagens')
-          .select('canal_envio, phone_number_id, discord_user_id')
-          .eq('ticket_id', ticketToClose.id)
-          .neq('remetente', 'sistema')
-          .order('enviado_em', { ascending: false })
-          .limit(1)
+        // Detectar canal pela última fala do cliente (mesma lógica do
+        // handleSendMessage) — a última mensagem qualquer é só o fallback.
+        const [{ data: lastClientMsgData }, { data: lastMsgData }] = await Promise.all([
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', ticketToClose.id)
+            .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', ticketToClose.id)
+            .neq('remetente', 'sistema')
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+        ])
 
-        const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
-        const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
-        const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+        const canalEvidencia = selectOutboundChannelEvidence([
+          ...(lastClientMsgData || []),
+          ...(lastMsgData || []),
+        ])
+        const lastCanalEnvio = canalEvidencia?.canal_envio || null
+        const lastPhoneNumberId = canalEvidencia?.phone_number_id || null
+        const lastDiscordUserId = canalEvidencia?.discord_user_id || null
         const hasDiscordMsg = lastDiscordUserId || mensagens.some(m => m.discord_user_id)
 
         let setorCanal = 'whatsapp'
@@ -3993,19 +4011,35 @@ const insertEmoji = (emoji: string) => {
       let setorCanal = 'whatsapp'
       let phoneNumberId: string | null = null
 
-      // 1. Busca a última mensagem do ticket (exceto sistema)
-      //    Inclui discord_user_id — indicador definitivo de ticket Discord
-      const { data: lastMsgData } = await supabase
-        .from('mensagens')
-        .select('canal_envio, phone_number_id, discord_user_id')
-        .eq('ticket_id', capturedTicketId)
-        .neq('remetente', 'sistema')
-        .order('enviado_em', { ascending: false })
-        .limit(1)
+      // 1. Busca a última fala do cliente e a última mensagem do ticket.
+      //    Só a fala do cliente prova o canal — é a única evidência que as rotas
+      //    de envio aceitam. A última mensagem qualquer entra apenas como
+      //    fallback, para o ticket em que o cliente ainda não falou (disparo).
+      //    Inclui discord_user_id — indicador definitivo de ticket Discord.
+      const [{ data: lastClientMsgData }, { data: lastMsgData }] = await Promise.all([
+        supabase
+          .from('mensagens')
+          .select('remetente, canal_envio, phone_number_id, discord_user_id')
+          .eq('ticket_id', capturedTicketId)
+          .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
+          .order('enviado_em', { ascending: false })
+          .limit(1),
+        supabase
+          .from('mensagens')
+          .select('remetente, canal_envio, phone_number_id, discord_user_id')
+          .eq('ticket_id', capturedTicketId)
+          .neq('remetente', 'sistema')
+          .order('enviado_em', { ascending: false })
+          .limit(1),
+      ])
 
-      const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
-      const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
-      const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+      const canalEvidencia = selectOutboundChannelEvidence([
+        ...(lastClientMsgData || []),
+        ...(lastMsgData || []),
+      ])
+      const lastCanalEnvio = canalEvidencia?.canal_envio || null
+      const lastPhoneNumberId = canalEvidencia?.phone_number_id || null
+      const lastDiscordUserId = canalEvidencia?.discord_user_id || null
 
       // Também verificar se alguma mensagem do cliente tem discord_user_id (mais abrangente)
       const hasDiscordMsg = lastDiscordUserId || mensagens.some(m => m.discord_user_id)
