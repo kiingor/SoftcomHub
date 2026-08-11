@@ -57,3 +57,37 @@ export function devePosicionarNoInicioDoTicket(
   if (!ticketId) return false
   return !ticketsJaVistos.has(ticketId)
 }
+
+/**
+ * Marcador do DOM na transição do histórico do bot para o atendimento humano.
+ *
+ * Só é renderizado quando existe conversa do Nexus antes do ticket — é o que
+ * torna a exceção legítima: há algo acima para ler.
+ */
+export const SELETOR_INICIO_DO_TICKET = '[data-ticket-start]'
+
+export type AlvoDaAberturaDaConversa = 'inicio-do-ticket' | 'fim'
+
+/**
+ * Onde a conversa deve aterrissar ao ser aberta.
+ *
+ * Regra única das três telas (WorkDesk, monitoramento e a tela do setor), que
+ * antes tinham cópias divergentes: quem chamava direto o `scrollIntoView` de um
+ * marcador de topo abria TODA conversa no começo, que é o bug relatado.
+ *
+ * O padrão é o fim. A única exceção é a primeira abertura de um ticket que tem
+ * histórico anterior — sem esse histórico, "início do ticket" e "topo da lista"
+ * são o mesmo lugar, e mandar para lá é justamente esconder a mensagem nova.
+ */
+export function decidirAberturaDaConversa({
+  ticketId,
+  ticketsJaVistos,
+  temInicioDoTicket,
+}: {
+  ticketId: string | null | undefined
+  ticketsJaVistos: ReadonlySet<string>
+  temInicioDoTicket: boolean
+}): AlvoDaAberturaDaConversa {
+  if (!temInicioDoTicket) return 'fim'
+  return devePosicionarNoInicioDoTicket(ticketId, ticketsJaVistos) ? 'inicio-do-ticket' : 'fim'
+}

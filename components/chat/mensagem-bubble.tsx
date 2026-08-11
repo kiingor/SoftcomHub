@@ -199,10 +199,17 @@ export function MensagemSistema({
   )
 }
 
-/** Divisor tracejado que marca onde o ticket começa, depois do histórico do bot. */
+/**
+ * Divisor tracejado que marca onde o ticket começa, depois do histórico do bot.
+ *
+ * O `data-ticket-start` fica aqui, e não em quem usa o componente: as telas de
+ * supervisão procuravam esse marcador, nunca achavam (só o WorkDesk embrulhava
+ * o separador num div com o atributo) e caíam no marcador do histórico do bot —
+ * ou seja, no topo absoluto da conversa.
+ */
 export function SeparadorInicioTicket({ numero }: { numero?: number | null }) {
   return (
-    <div className="flex items-center gap-3 py-2">
+    <div data-ticket-start className="flex items-center gap-3 py-2 scroll-mt-4">
       <div className="flex-1 border-t border-dashed border-primary/30" />
       <span className="text-[10px] font-medium text-primary/70 whitespace-nowrap">
         Início do Ticket #{numero}
@@ -212,10 +219,15 @@ export function SeparadorInicioTicket({ numero }: { numero?: number | null }) {
   )
 }
 
-/** Divide a conversa que ocorreu com o Nexus do atendimento humano do ticket. */
+/**
+ * Divide a conversa que ocorreu com o Nexus do atendimento humano do ticket.
+ *
+ * Sem marcador de rolagem de propósito: este separador fica no topo da lista, e
+ * usá-lo como alvo era o mesmo que abrir a conversa no começo.
+ */
 export function SeparadorConversaNexus({ quantidade }: { quantidade?: number }) {
   return (
-    <div data-nexus-history-start className="flex items-center gap-3 py-2">
+    <div className="flex items-center gap-3 py-2">
       <div className="flex-1 border-t border-dashed border-blue-500/30" />
       <div className="flex items-center gap-1.5 rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-medium text-blue-700 dark:text-blue-300">
         <Sparkles className="h-3 w-3" aria-hidden="true" />

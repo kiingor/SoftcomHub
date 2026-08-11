@@ -126,7 +126,8 @@ import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
 import { telefoneSemDDI } from '@/lib/telefone'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
-import { devePosicionarNoInicioDoTicket, estaNoFimDaConversa } from '@/lib/scroll-conversa'
+import { decidirAberturaDaConversa, estaNoFimDaConversa, SELETOR_INICIO_DO_TICKET } from '@/lib/scroll-conversa'
+import type { AlvoDaAberturaDaConversa } from '@/lib/scroll-conversa'
 import {
   calcularInicioJanelaHistoricoIso,
   ehMensagemNexus as isNexusMessage,
@@ -860,7 +861,9 @@ export default function WorkdeskPage() {
   const messageTextareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const mobileMessagesViewportRef = useRef<HTMLDivElement>(null)
-  const devePosicionarNoInicioDoTicketMobileRef = useRef(false)
+  /** Abertura do drawer mobile ainda não posicionada. Onde ela cai é decidido
+   *  junto com a do painel desktop, em `resolverAlvoDaAbertura`. */
+  const aberturaPendenteMobileRef = useRef(false)
 
   // Voice recording (PTT) state — uses opus-recorder to produce ogg/opus directly
   // (Chrome's native MediaRecorder only emits webm/opus, which Meta Cloud API silently rejects).
@@ -1610,25 +1613,50 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
    * meio. O que decide é onde o atendente estava ANTES da atualização.
    */
   const acompanhandoOFimRef = useRef(true)
-  // Ao abrir uma conversa que traz o histórico do Nexus, a referência útil
-  // para o atendente é a abertura do ticket — não a primeira mensagem do bot.
-  // Esta guarda é consumida uma única vez após o carregamento inicial.
-  const devePosicionarNoInicioDoTicketRef = useRef(false)
+  // Abertura do painel desktop ainda não posicionada. Só a abertura decide onde
+  // a conversa aterrissa; as atualizações seguintes seguem o fim como sempre.
+  const aberturaPendenteRef = useRef(false)
   // Tickets cuja transição do bot para o humano o atendente já viu nesta
   // sessão. A partir da segunda abertura a conversa volta a abrir no fim.
   const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
 
   const posicionarNoInicioDoTicket = useCallback(() => {
     const container = messagesContainerRef.current
-    const ticketStart = container?.querySelector<HTMLElement>('[data-ticket-start]')
+    const ticketStart = container?.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
     if (!container || !ticketStart) return false
 
     const ticketId = selectedTicketIdRef.current
     const posicionar = () => {
+  // Decisão desta abertura, tomada uma vez só: o painel desktop e o drawer
+  // mobile renderizam a mesma lista e podem posicionar no mesmo commit — sem
+  // guardar a decisão, o primeiro a rodar marcaria o ticket como já visto e o
+  // segundo abriria no fim, perdendo a transição do bot.
+  const alvoDaAberturaRef = useRef<AlvoDaAberturaDaConversa | null>(null)
+
+  /**
+   * Onde esta abertura aterrissa. Devolve null enquanto não há DOM para
+   * consultar — decidir sem o container seria chutar que não há histórico.
+   */
+  const resolverAlvoDaAbertura = useCallback((container: HTMLElement | null) => {
+    if (alvoDaAberturaRef.current) return alvoDaAberturaRef.current
+    if (!container) return null
+
+    const ticketId = selectedTicketIdRef.current
+    const alvo = decidirAberturaDaConversa({
+      ticketId,
+      ticketsJaVistos: ticketsJaPosicionadosRef.current,
+      temInicioDoTicket: Boolean(container.querySelector(SELETOR_INICIO_DO_TICKET)),
+    })
+    alvoDaAberturaRef.current = alvo
+    // Marcado aqui, junto da decisão: só conta como "já vista" a abertura que de
+    // fato tinha a transição para mostrar.
+    if (alvo === 'inicio-do-ticket' && ticketId) ticketsJaPosicionadosRef.current.add(ticketId)
+    return alvo
+  }, [])
       if (selectedTicketIdRef.current !== ticketId) return
 
       const currentContainer = messagesContainerRef.current
-      const currentTicketStart = currentContainer?.querySelector<HTMLElement>('[data-ticket-start]')
+      const currentTicketStart = currentContainer?.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
       if (!currentContainer || !currentTicketStart) return
 
       currentTicketStart.scrollIntoView({ block: 'start', inline: 'nearest' })
@@ -1751,33 +1779,41 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // o efeito comum de rolagem a substitua antes do atendente vê-la.
   useLayoutEffect(() => {
     if (mensagens.length === 0 || loadingMensagens) return
-    if (!devePosicionarNoInicioDoTicketRef.current) return
+    if (!aberturaPendenteRef.current) return
+
+    const alvo = resolverAlvoDaAbertura(messagesContainerRef.current)
+    if (!alvo) return
+    aberturaPendenteRef.current = false
+    // No fim é onde qualquer conversa abre; quem cuida disso é o efeito de
+    // acompanhamento logo abaixo, com `acompanhandoOFimRef` ainda ligado.
+    if (alvo === 'fim') return
     if (!posicionarNoInicioDoTicket()) return
 
-    devePosicionarNoInicioDoTicketRef.current = false
-    // Marca só depois de posicionar de fato: se o marcador ainda não estava no
-    // DOM, `posicionarNoInicioDoTicket` devolve false e a conversa não chegou a
-    // ser mostrada na transição — dar como vista aqui a mandaria para o fim.
-    const ticketPosicionado = selectedTicketIdRef.current
-    if (ticketPosicionado) ticketsJaPosicionadosRef.current.add(ticketPosicionado)
     acompanhandoOFimRef.current = false
-  }, [mensagens, loadingMensagens, posicionarNoInicioDoTicket])
+  }, [mensagens, loadingMensagens, posicionarNoInicioDoTicket, resolverAlvoDaAbertura])
 
   useLayoutEffect(() => {
     if (!mobileDrawerOpen || mensagens.length === 0 || loadingMensagens) return
-    if (!devePosicionarNoInicioDoTicketMobileRef.current) return
+    if (!aberturaPendenteMobileRef.current) return
 
     const container = mobileMessagesViewportRef.current
-    const inicioDoTicket = container?.querySelector<HTMLElement>('[data-ticket-start]')
-      || container?.querySelector<HTMLElement>('[data-nexus-history-start]')
-    devePosicionarNoInicioDoTicketMobileRef.current = false
-    if (!container || !inicioDoTicket) return
+    const alvo = resolverAlvoDaAbertura(container)
+    if (!container || !alvo) return
+    aberturaPendenteMobileRef.current = false
+
+    const inicioDoTicket = alvo === 'inicio-do-ticket'
+      ? container.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
+      : null
+    if (!inicioDoTicket) {
+      // O `scrollToBottom` só enxerga o painel desktop; sem esta linha o drawer
+      // abria no topo da lista, que é exatamente o defeito relatado.
+      container.scrollTop = container.scrollHeight
+      return
+    }
 
     inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
     container.scrollTop = Math.max(0, container.scrollTop - 16)
-    const ticketPosicionado = selectedTicketIdRef.current
-    if (ticketPosicionado) ticketsJaPosicionadosRef.current.add(ticketPosicionado)
-  }, [mensagens, loadingMensagens, mobileDrawerOpen])
+  }, [mensagens, loadingMensagens, mobileDrawerOpen, resolverAlvoDaAbertura])
 
   // Acompanha o fim da conversa — mas só de quem já estava no fim.
   //
@@ -1794,12 +1830,12 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // Abrir outra conversa começa no fim, independente de onde a anterior parou.
   useEffect(() => {
     acompanhandoOFimRef.current = true
-    devePosicionarNoInicioDoTicketRef.current = devePosicionarNoInicioDoTicket(
-      selectedTicketId,
-      ticketsJaPosicionadosRef.current,
-    )
+    alvoDaAberturaRef.current = null
+    aberturaPendenteRef.current = true
   }, [selectedTicketId])
 
+  // A exceção da transição do bot é decidida só quando a lista existe no DOM —
+  // decidir aqui daria "início do ticket" a conversa que não tem nada acima.
 // Real-time subscription for tickets
   // Track known ticket IDs to detect truly new arrivals
   const knownTicketIdsRef = useRef<Set<string>>(new Set())
@@ -2500,10 +2536,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     setSelectedTicket(ticket)
 
     if (!isSameTicket) {
-      devePosicionarNoInicioDoTicketMobileRef.current = devePosicionarNoInicioDoTicket(
-        ticket.id,
-        ticketsJaPosicionadosRef.current,
-      )
+      aberturaPendenteMobileRef.current = true
       // Clear messages only when switching to a DIFFERENT ticket — prevents flash of old
       // conversation while new messages load. Re-clicking the same ticket must NOT clear
       // messages because the useEffect won't re-fire (selectedTicketId didn't change).
@@ -5071,9 +5104,7 @@ const insertEmoji = (emoji: string) => {
                                   <SeparadorConversaNexus quantidade={nexusConversationMessages.length} />
                                 )}
                                 {msg.id === inicioHumanoDoTicketId && (
-                                  <div data-ticket-start className="scroll-mt-4">
-                                    <SeparadorInicioTicket numero={selectedTicket?.numero} />
-                                  </div>
+                                  <SeparadorInicioTicket numero={selectedTicket?.numero} />
                                 )}
                                 {/* Ticket separator for history */}
                                 {isPreviousTicket && (
@@ -6342,9 +6373,7 @@ onClick={() => {
                                   <SeparadorConversaNexus quantidade={nexusConversationMessages.length} />
                                 )}
                                 {msg.id === inicioHumanoDoTicketId && (
-                                  <div data-ticket-start className="scroll-mt-4">
-                                    <SeparadorInicioTicket numero={selectedTicket?.numero} />
-                                  </div>
+                                  <SeparadorInicioTicket numero={selectedTicket?.numero} />
                                 )}
                                 {/* Ticket separator for history */}
                                 {isPreviousTicket && (

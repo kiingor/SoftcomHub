@@ -280,7 +280,11 @@ export default function MonitoramentoPage() {
   // Conversation panel state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
-  const devePosicionarNoInicioDoTicketRef = useRef(false)
+  // Abertura de conversa ainda não posicionada — onde ela cai é decidido no
+  // efeito abaixo, quando a lista já existe no DOM.
+  const aberturaPendenteRef = useRef(false)
+  // Tickets cuja transição do bot para o humano o gestor já viu nesta sessão.
+  const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [ticketHistory, setTicketHistory] = useState<any[]>([])
   const [historyMessages, setHistoryMessages] = useState<Record<string, any[]>>({})
@@ -301,8 +305,9 @@ export default function MonitoramentoPage() {
   // raiz re-renderizava as tabelas inteiras a cada segundo à toa — os tempos
   // delas vêm de useMemo e só mudam quando os dados chegam.
 
-  // Ao abrir uma conversa com contexto Nexus, a primeira leitura útil é onde o
-  // atendimento humano começa. Sem contexto, mantém o comportamento de abrir no fim.
+  // A conversa abre no fim, na mensagem mais recente. A única exceção é a
+  // primeira abertura de um ticket que tem conversa do Nexus antes dele: aí vale
+  // mostrar a transição para o atendimento humano, uma vez só.
   useEffect(() => {
     if (
       conversationTab !== 'atendimento' ||
@@ -313,11 +318,17 @@ export default function MonitoramentoPage() {
       return
     }
     const el = conversationScrollRef.current
-    if (devePosicionarNoInicioDoTicketRef.current) {
-      const inicioDoTicket = el.querySelector<HTMLElement>('[data-ticket-start]')
-        || el.querySelector<HTMLElement>('[data-nexus-history-start]')
-      devePosicionarNoInicioDoTicketRef.current = false
-      if (inicioDoTicket) {
+    if (aberturaPendenteRef.current) {
+      aberturaPendenteRef.current = false
+      const inicioDoTicket = el.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
+      const ticketId = selectedTicket?.id
+      const alvo = decidirAberturaDaConversa({
+        ticketId,
+        ticketsJaVistos: ticketsJaPosicionadosRef.current,
+        temInicioDoTicket: Boolean(inicioDoTicket),
+      })
+      if (alvo === 'inicio-do-ticket' && inicioDoTicket) {
+        ticketsJaPosicionadosRef.current.add(ticketId)
         inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
         el.scrollTop = Math.max(0, el.scrollTop - 16)
         return
@@ -337,7 +348,7 @@ export default function MonitoramentoPage() {
       observer.disconnect()
       clearTimeout(stop)
     }
-  }, [conversationTab, loadingMessages, conversationMessages])
+  }, [conversationTab, loadingMessages, conversationMessages, selectedTicket?.id])
 
   useEffect(() => {
     if (!selectedNexusConversation || !nexusConversationScrollRef.current) return
@@ -1092,7 +1103,7 @@ export default function MonitoramentoPage() {
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
-    devePosicionarNoInicioDoTicketRef.current = true
+    aberturaPendenteRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)

@@ -179,6 +179,7 @@ import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
+import { decidirAberturaDaConversa, SELETOR_INICIO_DO_TICKET } from '@/lib/scroll-conversa'
 import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
 import {
   atendimentoStatusBadgeClass,
@@ -2091,7 +2092,11 @@ function SetorPageInner() {
   // Conversation slide-out state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
-  const devePosicionarNoInicioDoTicketRef = useRef(false)
+  // Abertura de conversa ainda não posicionada — onde ela cai é decidido no
+  // efeito abaixo, quando a lista já existe no DOM.
+  const aberturaPendenteRef = useRef(false)
+  // Tickets cuja transição do bot para o humano o gestor já viu nesta sessão.
+  const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [conversationTab, setConversationTab] = useState<'atendimento' | 'transferir' | 'info'>('atendimento')
@@ -2103,8 +2108,9 @@ function SetorPageInner() {
   // Acompanhamento do gestor no ticket aberto na conversa
   const [salvandoAcompanhamento, setSalvandoAcompanhamento] = useState(false)
 
-  // Ao abrir uma conversa com contexto Nexus, mostra primeiro a transição para
-  // o atendimento humano. Sem esse contexto, a conversa continua abrindo no fim.
+  // A conversa abre no fim, na mensagem mais recente. A única exceção é a
+  // primeira abertura de um ticket que tem conversa do Nexus antes dele: aí vale
+  // mostrar a transição para o atendimento humano, uma vez só.
   useEffect(() => {
     if (
       conversationTab !== 'atendimento' ||
@@ -2115,11 +2121,17 @@ function SetorPageInner() {
       return
     }
     const el = conversationScrollRef.current
-    if (devePosicionarNoInicioDoTicketRef.current) {
-      const inicioDoTicket = el.querySelector<HTMLElement>('[data-ticket-start]')
-        || el.querySelector<HTMLElement>('[data-nexus-history-start]')
-      devePosicionarNoInicioDoTicketRef.current = false
-      if (inicioDoTicket) {
+    if (aberturaPendenteRef.current) {
+      aberturaPendenteRef.current = false
+      const inicioDoTicket = el.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
+      const ticketId = selectedTicket?.id
+      const alvo = decidirAberturaDaConversa({
+        ticketId,
+        ticketsJaVistos: ticketsJaPosicionadosRef.current,
+        temInicioDoTicket: Boolean(inicioDoTicket),
+      })
+      if (alvo === 'inicio-do-ticket' && inicioDoTicket) {
+        ticketsJaPosicionadosRef.current.add(ticketId)
         inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
         el.scrollTop = Math.max(0, el.scrollTop - 16)
         return
@@ -2137,7 +2149,7 @@ function SetorPageInner() {
       observer.disconnect()
       clearTimeout(stop)
     }
-  }, [conversationTab, loadingMessages, conversationMessages])
+  }, [conversationTab, loadingMessages, conversationMessages, selectedTicket?.id])
 
   const { data, isLoading, mutate } = useSWR(
     setorId ? ['setor-detail', setorId] : null,
@@ -5522,7 +5534,7 @@ const saveConfig = async () => {
   // Open conversation slide-out — inclui histórico pré-ticket (bot/orphans)
 
   const openConversation = async (ticket: any) => {
-    devePosicionarNoInicioDoTicketRef.current = true
+    aberturaPendenteRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)

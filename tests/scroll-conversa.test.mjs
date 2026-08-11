@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  decidirAberturaDaConversa,
   devePosicionarNoInicioDoTicket,
   estaNoFimDaConversa,
   LIMIAR_FIM_CONVERSA_PX,
@@ -84,4 +85,50 @@ test('sem ticket selecionado não posiciona nada', () => {
   assert.equal(devePosicionarNoInicioDoTicket(null, new Set()), false)
   assert.equal(devePosicionarNoInicioDoTicket(undefined, new Set()), false)
   assert.equal(devePosicionarNoInicioDoTicket('', new Set()), false)
+})
+
+// --- decisão de abertura: a regra única das três telas ---
+
+const abertura = (extra) => decidirAberturaDaConversa({
+  ticketId: 't1',
+  ticketsJaVistos: new Set(),
+  temInicioDoTicket: true,
+  ...extra,
+})
+
+test('o padrão de qualquer conversa é abrir no fim', () => {
+  // Sem histórico anterior o marcador nem existe: "início do ticket" seria o
+  // topo absoluto da lista, com a mensagem nova fora da tela.
+  assert.equal(abertura({ temInicioDoTicket: false }), 'fim')
+  assert.equal(abertura({ temInicioDoTicket: false, ticketsJaVistos: new Set(['t1']) }), 'fim')
+})
+
+test('ticket com histórico do Nexus abre uma vez na transição do bot', () => {
+  assert.equal(abertura(), 'inicio-do-ticket')
+})
+
+test('da segunda abertura em diante volta a abrir no fim', () => {
+  assert.equal(abertura({ ticketsJaVistos: new Set(['t1']) }), 'fim')
+})
+
+test('sem ticket não há transição a mostrar', () => {
+  assert.equal(abertura({ ticketId: null }), 'fim')
+  assert.equal(abertura({ ticketId: undefined }), 'fim')
+  assert.equal(abertura({ ticketId: '' }), 'fim')
+})
+
+test('o gestor alternando entre os chats dos técnicos nunca cai no topo', () => {
+  // A tela de monitoramento reabre o mesmo atendimento a cada verificação.
+  const jaVistos = new Set()
+  const abrir = (ticketId, temInicioDoTicket) => {
+    const alvo = decidirAberturaDaConversa({ ticketId, ticketsJaVistos: jaVistos, temInicioDoTicket })
+    if (alvo === 'inicio-do-ticket') jaVistos.add(ticketId)
+    return alvo
+  }
+
+  assert.equal(abrir('nexus', true), 'inicio-do-ticket')
+  assert.equal(abrir('nexus', true), 'fim')
+  assert.equal(abrir('direto', false), 'fim')
+  assert.equal(abrir('direto', false), 'fim')
+  assert.equal(abrir('nexus', true), 'fim')
 })
