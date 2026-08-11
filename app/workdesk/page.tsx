@@ -201,7 +201,10 @@ interface Ticket {
   colaborador_id: string | null
   setor_id: string
   subsetor_id: string | null
-  status: 'aberto' | 'em_atendimento' | 'encerrado'
+  // 'avaliar' é o estado entre finalizar o atendimento e o cliente responder a
+  // pesquisa. Faltava aqui, e por isso a tela tratava esse ticket como se ainda
+  // aceitasse envio — o compositor ficava habilitado e o servidor recusava.
+  status: 'aberto' | 'em_atendimento' | 'avaliar' | 'encerrado'
   prioridade: 'normal' | 'urgente'
   canal: string
   primeira_resposta_em: string | null
@@ -906,6 +909,22 @@ export default function WorkdeskPage() {
   // 24h window check
   const [isWindowExpired, setIsWindowExpired] = useState(false)
   const [lastMessageTime, setLastMessageTime] = useState<Date | null>(null)
+
+  /**
+   * Ticket fora destes status é recusado no envio por `authorizeTicketSend`
+   * (lib/ticket-send-auth.ts). Espelhar a regra aqui é o que permite travar o
+   * compositor ANTES de o atendente digitar, em vez de aceitar o texto e
+   * devolver "Este ticket não está mais ativo" com a mensagem já perdida.
+   */
+  const envioBloqueadoPorStatus = Boolean(
+    selectedTicket
+    && !(STATUS_QUE_ACEITAM_ENVIO as readonly string[]).includes(selectedTicket.status),
+  )
+  // 'avaliar' é o estado em que o cliente está sendo convidado a avaliar o
+  // atendimento; qualquer outro fora da lista é encerramento em andamento.
+  const avisoEnvioBloqueado = selectedTicket?.status === 'avaliar'
+    ? 'Aguardando avaliação do cliente — não é possível enviar'
+    : 'Este ticket não está mais ativo'
   
   // Disparo state
   const [disparoDialogOpen, setDisparoDialogOpen] = useState(false)
@@ -1937,6 +1956,22 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         const colab = colaboradorCurrentRef.current
         if (colab) fetchTickets(colab)
       }
+            } else if (
+              selectedTicketIdRef.current === updatedTicket.id
+              && !STATUS_QUE_ACEITAM_ENVIO.includes(updatedTicket.status)
+            ) {
+              // Saiu de ativo sem ser encerrado — na prática, entrou em
+              // 'avaliar'. O `fetchTickets` logo abaixo só carrega
+              // aberto/em_atendimento, então o ticket some da lista e o status
+              // de `selectedTicket` CONGELA em 'em_atendimento': o compositor
+              // seguia habilitado e o servidor recusava o envio, com a mensagem
+              // já digitada perdida. Propagar o status aqui é o que faz a tela
+              // contar a verdade.
+              setSelectedTicket((prev) => (
+                prev && prev.id === updatedTicket.id
+                  ? { ...prev, status: updatedTicket.status }
+                  : prev
+              ))
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
@@ -5403,7 +5438,7 @@ const insertEmoji = (emoji: string) => {
                         size="icon"
   onClick={() => fileInputRef.current?.click()}
   className="shrink-0"
-  disabled={isWindowExpired || isRecording || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+  disabled={envioBloqueadoPorStatus || isWindowExpired || isRecording || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                       >
                         <ImageIcon className="h-5 w-5 text-muted-foreground" />
                       </Button>
@@ -5438,7 +5473,7 @@ const insertEmoji = (emoji: string) => {
                           size="icon"
                           onClick={startRecording}
                           className="shrink-0"
-                          disabled={isWindowExpired || attachments.length > 0 || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                          disabled={envioBloqueadoPorStatus || isWindowExpired || attachments.length > 0 || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                           title="Gravar áudio"
                         >
                           <Mic className="h-5 w-5 text-muted-foreground" />
@@ -5449,7 +5484,7 @@ const insertEmoji = (emoji: string) => {
                           variant="ghost"
                           size="icon"
                           onClick={handleMelhorarIA}
-                          disabled={!messageInput.trim() || melhorandoIA || isWindowExpired}
+                          disabled={!messageInput.trim() || melhorandoIA || isWindowExpired || envioBloqueadoPorStatus}
                           className="shrink-0"
                           title="Melhorar com IA"
                         >
@@ -5467,9 +5502,9 @@ const insertEmoji = (emoji: string) => {
                   onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
                   onPaste={handlePaste}
-                  placeholder={(selectedTicket?.is_disparo && isDisparoLocked(selectedTicket)) ? 'Aguardando resposta do cliente...' : isWindowExpired ? 'Janela expirada - Encerre o ticket' : 'Digite / para atalhos...'}
+                  placeholder={envioBloqueadoPorStatus ? avisoEnvioBloqueado : (selectedTicket?.is_disparo && isDisparoLocked(selectedTicket)) ? 'Aguardando resposta do cliente...' : isWindowExpired ? 'Janela expirada - Encerre o ticket' : 'Digite / para atalhos...'}
                   className="w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                  disabled={envioBloqueadoPorStatus || isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="off"
@@ -5485,7 +5520,7 @@ const insertEmoji = (emoji: string) => {
                       <Button
                         size="icon"
                         onClick={() => handleSendMessage()}
-                        disabled={(!messageInput.trim() && attachments.length === 0) || isWindowExpired || uploadingFile || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                        disabled={(!messageInput.trim() && attachments.length === 0) || envioBloqueadoPorStatus || isWindowExpired || uploadingFile || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                         className="shrink-0"
                       >
                       {uploadingFile ? (
