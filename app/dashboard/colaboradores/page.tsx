@@ -41,9 +41,10 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search, Layers } from 'lucide-react'
+import { Users, Plus, Pencil, UserX, Loader2, Circle, Building2, Search, Layers, Eye, EyeOff } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { useColaborador } from '@/lib/hooks/use-data'
+import { canManageUsers } from '@/lib/permissions'
 import { MultiSelectFilter } from '@/components/monitoramento/multi-select-filter'
 import {
   agruparNpsPorColaborador,
@@ -112,6 +113,7 @@ function filtrarAtendentes(
 
 const MAX_VISIBLE_SETORES = 3
 const ELEVATED_PERMISSION_NAMES = new Set(['admin', 'supervisor'])
+const SENHA_MINIMA = 6
 
 function isElevatedPermission(permissao?: Permissao | null) {
   const permissionName = permissao?.nome?.toLowerCase()
@@ -185,11 +187,14 @@ export default function ColaboradoresPage() {
     nome: '',
     email: '',
     senha: '',
+    novaSenha: '',
+    confirmarNovaSenha: '',
     setor_id: '',
     permissao_id: '',
     suporte_id: '',
     setores_selecionados: [] as string[],
   })
+  const [mostrarNovaSenha, setMostrarNovaSenha] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
@@ -207,6 +212,8 @@ export default function ColaboradoresPage() {
   const { data: colaboradorLogado } = useColaborador()
   const canDeactivateColaborador = colaboradorLogado?.is_master === true
   const canManagePermissionLevel = colaboradorLogado?.is_master === true
+  const canResetPassword =
+    colaboradorLogado?.is_master === true || canManageUsers(colaboradorLogado?.permissoes)
 
   const [colaboradorSetores, setColaboradorSetores] = useState<VinculoSetor[]>([])
   // NPS já agregado por (atendente, tag de setor) — ver vw_nps_colaborador_tag_setor.
@@ -420,11 +427,14 @@ export default function ColaboradoresPage() {
       nome: '',
       email: '',
       senha: '',
+      novaSenha: '',
+      confirmarNovaSenha: '',
       setor_id: '',
       permissao_id: '',
       suporte_id: '',
       setores_selecionados: [],
     })
+    setMostrarNovaSenha(false)
     setSetorSearchTerm('')
     setError(null)
     setModalOpen(true)
@@ -436,11 +446,14 @@ export default function ColaboradoresPage() {
       nome: colaborador.nome,
       email: colaborador.email,
       senha: '',
+      novaSenha: '',
+      confirmarNovaSenha: '',
       setor_id: colaborador.setor_id || '',
       permissao_id: colaborador.permissao_id || '',
       suporte_id: (colaborador as any).suporte_id || '',
       setores_selecionados: getSetoresDoColaborador(colaborador.id),
     })
+    setMostrarNovaSenha(false)
     setSetorSearchTerm('')
     setError(null)
     setModalOpen(true)
@@ -530,6 +543,18 @@ export default function ColaboradoresPage() {
       return
     }
 
+    const trocandoSenha = !!(editingColaborador && canResetPassword && formData.novaSenha)
+    if (trocandoSenha) {
+      if (formData.novaSenha.length < SENHA_MINIMA) {
+        setError(`A nova senha deve ter no minimo ${SENHA_MINIMA} caracteres`)
+        return
+      }
+      if (formData.novaSenha !== formData.confirmarNovaSenha) {
+        setError('As senhas nao coincidem')
+        return
+      }
+    }
+
     setSaving(true)
     setError(null)
 
@@ -567,6 +592,28 @@ export default function ColaboradoresPage() {
         setError('Erro ao atualizar colaborador: ' + updateError.message)
         setSaving(false)
         return
+      }
+
+      // A senha vive no Supabase Auth, não em `colaboradores`: só a rota com
+      // service_role consegue sobrescrever. Fica antes dos vínculos para que
+      // uma falha aqui não deixe metade da edição aplicada.
+      if (trocandoSenha) {
+        try {
+          const response = await fetch('/api/admin/update-user-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: editingColaborador.email,
+              newPassword: formData.novaSenha,
+            }),
+          })
+          const resultado = await response.json()
+          if (!response.ok) throw new Error(resultado.error || 'Erro ao redefinir senha')
+        } catch (erro) {
+          setError(erro instanceof Error ? erro.message : 'Erro ao redefinir senha')
+          setSaving(false)
+          return
+        }
       }
 
       // Vínculos de atendimento por DIFERENÇA, não apaga-e-reinsere.
@@ -645,7 +692,9 @@ export default function ColaboradoresPage() {
 
       toast({
         title: 'Colaborador atualizado',
-        description: 'As alteracoes foram salvas com sucesso.',
+        description: trocandoSenha
+          ? 'Alteracoes salvas e nova senha definida.'
+          : 'As alteracoes foram salvas com sucesso.',
       })
     } else {
       // Create new colaborador
@@ -1155,6 +1204,65 @@ export default function ColaboradoresPage() {
                   }
                   className="border-border bg-card"
                 />
+              </div>
+            )}
+
+            {editingColaborador && canResetPassword && (
+              <div className="grid gap-3 rounded-lg border border-border p-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Trocar senha</p>
+                  <p className="text-xs text-muted-foreground">
+                    Deixe em branco para manter a senha atual
+                  </p>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="nova-senha" className="text-foreground">
+                    Nova senha
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="nova-senha"
+                      type={mostrarNovaSenha ? 'text' : 'password'}
+                      placeholder={`Minimo ${SENHA_MINIMA} caracteres`}
+                      autoComplete="new-password"
+                      value={formData.novaSenha}
+                      onChange={(e) =>
+                        setFormData({ ...formData, novaSenha: e.target.value })
+                      }
+                      className="border-border bg-card pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setMostrarNovaSenha(!mostrarNovaSenha)}
+                      aria-label={mostrarNovaSenha ? 'Ocultar senha' : 'Mostrar senha'}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {mostrarNovaSenha ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="confirmar-nova-senha" className="text-foreground">
+                    Confirmar nova senha
+                  </Label>
+                  <Input
+                    id="confirmar-nova-senha"
+                    type={mostrarNovaSenha ? 'text' : 'password'}
+                    placeholder="Repita a nova senha"
+                    autoComplete="new-password"
+                    value={formData.confirmarNovaSenha}
+                    onChange={(e) =>
+                      setFormData({ ...formData, confirmarNovaSenha: e.target.value })
+                    }
+                    className="border-border bg-card"
+                  />
+                  {formData.confirmarNovaSenha &&
+                    formData.novaSenha !== formData.confirmarNovaSenha && (
+                      <p className="text-xs text-destructive">As senhas nao coincidem</p>
+                    )}
+                </div>
               </div>
             )}
 
