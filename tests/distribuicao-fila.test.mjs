@@ -252,3 +252,106 @@ test('ninguém disponível devolve fila vazia em vez de escolher alguém no teto
   assert.equal(escolha.origem, 'ninguem')
   assert.equal(escolha.fila.length, 0)
 })
+
+// --- Transbordo entre subsetores restrito a Prime e Suporte ---
+//
+// O transbordo irrestrito engolia o transbordo de SETOR: numa filial, o
+// atendente do Financeiro puxava o ticket do Suporte, o ticket nunca envelhecia
+// na fila e nunca chegava à Matriz.
+
+const PRIME = 'sub-prime'
+const SUPORTE = 'sub-suporte'
+const FINANCEIRO = 'sub-financeiro'
+
+test('ticket do Suporte NÃO cai para o Financeiro — segura a fila para transbordar de setor', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: SUPORTE,
+    candidatos: [atendente('financeiro', 0, 0, { subsetorIds: [FINANCEIRO] })],
+    subsetoresComFila: [SUPORTE],
+    subsetoresComTransbordo: [PRIME, SUPORTE],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'ninguem')
+  assert.deepEqual(escolha.fila, [])
+})
+
+test('Suporte continua socorrendo Prime dentro do grupo', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: PRIME,
+    candidatos: [atendente('suporte', 0, 0, { subsetorIds: [SUPORTE] })],
+    subsetoresComFila: [PRIME],
+    subsetoresQuePodemReceberMesmoComFila: [SUPORTE],
+    subsetoresComTransbordo: [PRIME, SUPORTE],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'transbordo')
+  assert.deepEqual(escolha.fila.map((c) => c.id), ['suporte'])
+})
+
+test('atendente que acumula Financeiro e Suporte entra pelo Suporte', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: PRIME,
+    candidatos: [atendente('hibrido', 0, 0, { subsetorIds: [FINANCEIRO, SUPORTE] })],
+    subsetoresComFila: [PRIME],
+    subsetoresComTransbordo: [PRIME, SUPORTE],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'transbordo')
+})
+
+test('ticket de subsetor fora do grupo não transborda para ninguém', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: FINANCEIRO,
+    candidatos: [atendente('suporte', 0, 0, { subsetorIds: [SUPORTE] })],
+    subsetoresComFila: [FINANCEIRO],
+    subsetoresComTransbordo: [PRIME, SUPORTE],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'ninguem')
+})
+
+test('ticket sem subsetor não transborda quando o grupo está definido', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: null,
+    candidatos: [atendente('suporte', 0, 0, { subsetorIds: [SUPORTE] })],
+    subsetoresComFila: [null],
+    subsetoresComTransbordo: [PRIME, SUPORTE],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'ninguem')
+})
+
+test('setor sem Prime nem Suporte fica sem transbordo entre subsetores', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: FINANCEIRO,
+    candidatos: [atendente('outro', 0, 0, { subsetorIds: ['sub-comercial'] })],
+    subsetoresComFila: [FINANCEIRO],
+    subsetoresComTransbordo: [],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'ninguem')
+})
+
+test('sem o grupo definido o transbordo segue irrestrito', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: SUPORTE,
+    candidatos: [atendente('financeiro', 0, 0, { subsetorIds: [FINANCEIRO] })],
+    subsetoresComFila: [SUPORTE],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'transbordo')
+})
+
+// O atendente do próprio subsetor nunca foi transbordo: a restrição não pode
+// alcançá-lo, senão o ticket para de ser atendido por quem é dele.
+test('a restrição não afeta o atendente do próprio subsetor', () => {
+  const escolha = escolherDestino({
+    subsetorDoTicket: FINANCEIRO,
+    candidatos: [atendente('financeiro', 0, 0, { subsetorIds: [FINANCEIRO] })],
+    subsetoresComFila: [FINANCEIRO],
+    subsetoresComTransbordo: [PRIME, SUPORTE],
+    maxTicketsAbertos: 5,
+  })
+  assert.equal(escolha.origem, 'proprio')
+  assert.deepEqual(escolha.fila.map((c) => c.id), ['financeiro'])
+})
