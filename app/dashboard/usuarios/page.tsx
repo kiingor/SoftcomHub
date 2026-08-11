@@ -48,8 +48,12 @@ import {
 } from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { Plus, Pencil, Search, UserCog, Building2, Trash2 } from 'lucide-react'
+import { Plus, Pencil, Search, UserCog, Building2, Trash2, Eye, EyeOff } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { useColaborador } from '@/lib/hooks/use-data'
+import { canManageUsers } from '@/lib/permissions'
+
+const SENHA_MINIMA = 6
 
 interface Setor {
   id: string
@@ -106,11 +110,18 @@ export default function UsuariosPage() {
   const [saving, setSaving] = useState(false)
   const [deletingUser, setDeletingUser] = useState<Colaborador | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [mostrarNovaSenha, setMostrarNovaSenha] = useState(false)
+
+  const { data: colaboradorLogado } = useColaborador()
+  const canResetPassword =
+    colaboradorLogado?.is_master === true || canManageUsers(colaboradorLogado?.permissoes)
 
   const [formData, setFormData] = useState({
     nome: '',
     email: '',
     senha: '',
+    novaSenha: '',
+    confirmarNovaSenha: '',
     is_master: true,
     permissao_id: '',
     setores_selecionados: [] as string[],
@@ -148,10 +159,13 @@ export default function UsuariosPage() {
       nome: '',
       email: '',
       senha: '',
+      novaSenha: '',
+      confirmarNovaSenha: '',
       is_master: false,
       permissao_id: '',
       setores_selecionados: [],
     })
+    setMostrarNovaSenha(false)
     setIsModalOpen(true)
   }
 
@@ -161,21 +175,52 @@ export default function UsuariosPage() {
       nome: user.nome,
       email: user.email,
       senha: '',
+      novaSenha: '',
+      confirmarNovaSenha: '',
       is_master: user.is_master,
       permissao_id: user.permissao_id || '',
       setores_selecionados: getSetoresDoColaborador(user.id),
     })
+    setMostrarNovaSenha(false)
     setIsModalOpen(true)
   }
 
   async function handleSave() {
     if (!formData.nome || !formData.email) return
 
+    const trocandoSenha = !!(editingUser && canResetPassword && formData.novaSenha)
+    if (trocandoSenha) {
+      if (formData.novaSenha.length < SENHA_MINIMA) {
+        toast.error(`A nova senha deve ter no mínimo ${SENHA_MINIMA} caracteres`)
+        return
+      }
+      if (formData.novaSenha !== formData.confirmarNovaSenha) {
+        toast.error('As senhas não coincidem')
+        return
+      }
+    }
+
     setSaving(true)
     try {
       const nextIsMaster = isAdminPermission
 
       if (editingUser) {
+        // A senha mora no Supabase Auth, não em `colaboradores`: só a rota com
+        // service_role sobrescreve. Vai antes do resto para que uma falha aqui
+        // não deixe metade da edição aplicada.
+        if (trocandoSenha) {
+          const response = await fetch('/api/admin/update-user-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: editingUser.email,
+              newPassword: formData.novaSenha,
+            }),
+          })
+          const resultado = await response.json()
+          if (!response.ok) throw new Error(resultado.error || 'Erro ao redefinir senha')
+        }
+
         // Update existing user
         await supabase
           .from('colaboradores')
@@ -239,10 +284,15 @@ export default function UsuariosPage() {
         }
       }
 
+      if (trocandoSenha) {
+        toast.success(`Nova senha definida para ${formData.nome}`)
+      }
+
       setIsModalOpen(false)
       mutate()
     } catch (error) {
       console.error('Error saving user:', error)
+      toast.error(error instanceof Error ? error.message : 'Erro ao salvar usuário')
     } finally {
       setSaving(false)
     }
@@ -523,6 +573,60 @@ export default function UsuariosPage() {
                     }
                     placeholder="Mínimo 8 caracteres"
                   />
+                </div>
+              )}
+
+              {editingUser && canResetPassword && (
+                <div className="space-y-3 rounded-lg border border-border p-3">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Trocar senha</p>
+                    <p className="text-xs text-muted-foreground">
+                      Deixe em branco para manter a senha atual
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="nova-senha">Nova senha</Label>
+                    <div className="relative">
+                      <Input
+                        id="nova-senha"
+                        type={mostrarNovaSenha ? 'text' : 'password'}
+                        placeholder={`Mínimo ${SENHA_MINIMA} caracteres`}
+                        autoComplete="new-password"
+                        value={formData.novaSenha}
+                        onChange={(e) =>
+                          setFormData((prev) => ({ ...prev, novaSenha: e.target.value }))
+                        }
+                        className="pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setMostrarNovaSenha(!mostrarNovaSenha)}
+                        aria-label={mostrarNovaSenha ? 'Ocultar senha' : 'Mostrar senha'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        {mostrarNovaSenha ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="confirmar-nova-senha">Confirmar nova senha</Label>
+                    <Input
+                      id="confirmar-nova-senha"
+                      type={mostrarNovaSenha ? 'text' : 'password'}
+                      placeholder="Repita a nova senha"
+                      autoComplete="new-password"
+                      value={formData.confirmarNovaSenha}
+                      onChange={(e) =>
+                        setFormData((prev) => ({ ...prev, confirmarNovaSenha: e.target.value }))
+                      }
+                    />
+                    {formData.confirmarNovaSenha &&
+                      formData.novaSenha !== formData.confirmarNovaSenha && (
+                        <p className="text-xs text-destructive">As senhas não coincidem</p>
+                      )}
+                  </div>
                 </div>
               )}
 
