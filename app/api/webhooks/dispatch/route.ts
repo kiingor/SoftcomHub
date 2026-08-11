@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { isBotMessage, isClientMessage } from '@/lib/utils'
 import { resolverAtendenteBotDoWebhook } from '@/lib/webhook-atendente'
 
 // URL fixa do webhook de encerramento (Maestro / n8n). Sobrescrita apenas via
@@ -194,8 +195,13 @@ export async function POST(request: Request) {
     const tempoPrimeiraRespMs  = criadoEm && primeiraRespEm? primeiraRespEm - criadoEm    : null
 
     const msgLista = mensagens || []
-    const msgCliente     = msgLista.filter(m => m.remetente === 'cliente')
-    const msgColaborador = msgLista.filter(m => m.remetente === 'colaborador' || m.remetente === 'bot')
+    // Atendimento do Nexus grava 'cliente-nexus' e 'bot-nexus'. Com as
+    // comparações estritas de antes, NENHUM dos dois entrava em nenhuma das
+    // três contagens: um ticket inteiramente resolvido pelo bot era reportado
+    // à Maestro como mensagens_cliente=0 e mensagens_colaborador=0, e a soma
+    // das três não fechava com o tamanho da conversa.
+    const msgCliente     = msgLista.filter(m => isClientMessage(m.remetente))
+    const msgColaborador = msgLista.filter(m => m.remetente === 'colaborador' || isBotMessage(m.remetente))
     const msgSistema     = msgLista.filter(m => m.remetente === 'sistema')
 
     const atendenteBot = resolverAtendenteBotDoWebhook(msgLista)

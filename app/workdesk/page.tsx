@@ -816,11 +816,16 @@ export default function WorkdeskPage() {
     setNexusResponse(null)
     try {
       const msgs = mensagens.filter(m => m.remetente !== 'sistema' && m.conteudo && m.ticket_id === selectedTicket.id)
+      // isClientMessage e não `=== 'cliente'`: num ticket vindo do Nexus — que é
+      // justamente onde se aperta "Consultar Nexus" — a fala do cliente chega
+      // como 'cliente-nexus'. Com a comparação estrita ela era rotulada como
+      // `assistant`, ou seja, a IA recebia as palavras do cliente como se
+      // fossem saída dela mesma, e `lastClientMsg` não achava nada.
       const history = msgs.slice(-20).map(m => ({
-        role: m.remetente === 'cliente' ? 'user' as const : 'assistant' as const,
+        role: isClientMessage(m.remetente) ? 'user' as const : 'assistant' as const,
         content: m.conteudo
       }))
-      const lastClientMsg = [...msgs].reverse().find(m => m.remetente === 'cliente')
+      const lastClientMsg = [...msgs].reverse().find(m => isClientMessage(m.remetente))
       const message = lastClientMsg?.conteudo || msgs[msgs.length - 1]?.conteudo || ''
 
       const res = await fetch('/api/ia/nexus', {
@@ -3506,9 +3511,12 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
   const isDisparoLocked = (ticket: Ticket) => {
   if (!ticket.is_disparo || !ticket.disparo_em) return false
   const dispatchTime = new Date(ticket.disparo_em).getTime()
-  // Check if there's any client message AFTER the dispatch time
+  // Check if there's any client message AFTER the dispatch time.
+  // isClientMessage: resposta que o Nexus atendeu chega como 'cliente-nexus'.
+  // Com a comparação estrita o ticket ficava travado mesmo com o cliente já
+  // tendo respondido — e travado aqui significa compositor bloqueado.
   const hasClientReplyAfterDispatch = mensagens.some(
-    m => m.remetente === 'cliente' && new Date(m.enviado_em).getTime() > dispatchTime
+    m => isClientMessage(m.remetente) && new Date(m.enviado_em).getTime() > dispatchTime
   )
   return !hasClientReplyAfterDispatch
   }
@@ -3518,9 +3526,11 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
   const isDisparoEncerrarEnabled = (ticket: Ticket) => {
     if (!ticket.is_disparo || !ticket.disparo_em) return true
     const dispatchTime = new Date(ticket.disparo_em).getTime()
-    // If client already replied after dispatch, always allow encerrar
+    // If client already replied after dispatch, always allow encerrar.
+    // isClientMessage pelo mesmo motivo de `isDisparoLocked`: 'cliente-nexus'
+    // também é resposta do cliente.
     const hasClientReply = mensagens.some(
-      m => m.remetente === 'cliente' && new Date(m.enviado_em).getTime() > dispatchTime
+      m => isClientMessage(m.remetente) && new Date(m.enviado_em).getTime() > dispatchTime
     )
     if (hasClientReply) return true
     // Otherwise, wait for 12min timer
@@ -5782,7 +5792,7 @@ const insertEmoji = (emoji: string) => {
                     ID
                   </label>
                   {(() => {
-                    const lastClientMsg = mensagens.filter(m => m.remetente === 'cliente' && m.discord_user_id).pop()
+                    const lastClientMsg = mensagens.filter(m => isClientMessage(m.remetente) && m.discord_user_id).pop()
                     const discordId = lastClientMsg?.discord_user_id || null
                     return (
                       <>
