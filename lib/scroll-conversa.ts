@@ -39,55 +39,25 @@ export function estaNoFimDaConversa(
 }
 
 /**
- * Se a conversa deve abrir na transição do bot para o humano, em vez do fim.
- *
- * Ticket vindo do Nexus abre no "início do ticket" para o atendente ver o que o
- * bot já tratou. Isso vale na PRIMEIRA vez — depois vira estorvo: ele troca de
- * chat para ler a mensagem que acabou de chegar e cai lá em cima, num trecho
- * que já leu, com a mensagem nova fora da tela. Quanto mais movimentada a
- * conversa, mais longe do fim ele aterrissa.
- *
- * Por isso a decisão é por ticket e por sessão: mostra a transição uma vez,
- * e a partir daí a conversa abre onde qualquer chat abre — no fim.
- */
-export function devePosicionarNoInicioDoTicket(
-  ticketId: string | null | undefined,
-  ticketsJaVistos: ReadonlySet<string>,
-): boolean {
-  if (!ticketId) return false
-  return !ticketsJaVistos.has(ticketId)
-}
-
-/**
  * Marcador do DOM na transição do histórico do bot para o atendimento humano.
  *
- * Só é renderizado quando existe conversa do Nexus antes do ticket — é o que
- * torna a exceção legítima: há algo acima para ler.
+ * Continua sendo renderizado como separador visual — o atendente enxerga onde o
+ * bot parou ao rolar para cima. O que deixou de existir é rolar até ele na
+ * abertura.
  */
 export const SELETOR_INICIO_DO_TICKET = '[data-ticket-start]'
 
-export type AlvoDaAberturaDaConversa = 'inicio-do-ticket' | 'fim'
-
 /**
- * Onde a conversa deve aterrissar ao ser aberta.
+ * A conversa SEMPRE abre no fim, na mensagem mais recente. Sem exceção.
  *
- * Regra única das três telas (WorkDesk, monitoramento e a tela do setor), que
- * antes tinham cópias divergentes: quem chamava direto o `scrollIntoView` de um
- * marcador de topo abria TODA conversa no começo, que é o bug relatado.
+ * Já houve uma: ticket vindo do Nexus abria no "início do ticket" na primeira
+ * vez, para o atendente ver o que o bot tratou. Medido em produção, isso deixava
+ * quem abria o chat a 10.889px do fim numa conversa de 11.827px — 3% dela. A
+ * mensagem que ele foi ler estava fora da tela, e ele tinha que rolar a conversa
+ * inteira para baixo. Ver o histórico do bot é ocasional; ler a mensagem que
+ * acabou de chegar é o motivo de abrir o chat.
  *
- * O padrão é o fim. A única exceção é a primeira abertura de um ticket que tem
- * histórico anterior — sem esse histórico, "início do ticket" e "topo da lista"
- * são o mesmo lugar, e mandar para lá é justamente esconder a mensagem nova.
+ * Esta constante existe para o comportamento ficar declarado num lugar só, em
+ * vez de cada tela reinventar a regra — foi assim que a divergência começou.
  */
-export function decidirAberturaDaConversa({
-  ticketId,
-  ticketsJaVistos,
-  temInicioDoTicket,
-}: {
-  ticketId: string | null | undefined
-  ticketsJaVistos: ReadonlySet<string>
-  temInicioDoTicket: boolean
-}): AlvoDaAberturaDaConversa {
-  if (!temInicioDoTicket) return 'fim'
-  return devePosicionarNoInicioDoTicket(ticketId, ticketsJaVistos) ? 'inicio-do-ticket' : 'fim'
-}
+export const ABERTURA_DA_CONVERSA = 'fim' as const

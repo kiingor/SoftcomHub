@@ -13,7 +13,7 @@ import { AlertTriangle } from 'lucide-react'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
-import { decidirAberturaDaConversa, SELETOR_INICIO_DO_TICKET } from '@/lib/scroll-conversa'
+
 import {
   TRUSTED_INBOUND_CLIENT_SENDERS,
   selectOutboundChannelEvidence,
@@ -281,11 +281,6 @@ export default function MonitoramentoPage() {
   // Conversation panel state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
-  // Abertura de conversa ainda não posicionada — onde ela cai é decidido no
-  // efeito abaixo, quando a lista já existe no DOM.
-  const aberturaPendenteRef = useRef(false)
-  // Tickets cuja transição do bot para o humano o gestor já viu nesta sessão.
-  const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [ticketHistory, setTicketHistory] = useState<any[]>([])
   const [historyMessages, setHistoryMessages] = useState<Record<string, any[]>>({})
@@ -306,9 +301,9 @@ export default function MonitoramentoPage() {
   // raiz re-renderizava as tabelas inteiras a cada segundo à toa — os tempos
   // delas vêm de useMemo e só mudam quando os dados chegam.
 
-  // A conversa abre no fim, na mensagem mais recente. A única exceção é a
-  // primeira abertura de um ticket que tem conversa do Nexus antes dele: aí vale
-  // mostrar a transição para o atendimento humano, uma vez só.
+  // A conversa abre no fim, na mensagem mais recente — sempre. Ver
+  // `ABERTURA_DA_CONVERSA` em lib/scroll-conversa.ts para o porquê de não haver
+  // mais a exceção do "início do ticket".
   useEffect(() => {
     if (
       conversationTab !== 'atendimento' ||
@@ -319,22 +314,6 @@ export default function MonitoramentoPage() {
       return
     }
     const el = conversationScrollRef.current
-    if (aberturaPendenteRef.current) {
-      aberturaPendenteRef.current = false
-      const inicioDoTicket = el.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
-      const ticketId = selectedTicket?.id
-      const alvo = decidirAberturaDaConversa({
-        ticketId,
-        ticketsJaVistos: ticketsJaPosicionadosRef.current,
-        temInicioDoTicket: Boolean(inicioDoTicket),
-      })
-      if (alvo === 'inicio-do-ticket' && inicioDoTicket) {
-        ticketsJaPosicionadosRef.current.add(ticketId)
-        inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
-        el.scrollTop = Math.max(0, el.scrollTop - 16)
-        return
-      }
-    }
 
     const scrollToEnd = () => {
       el.scrollTop = el.scrollHeight
@@ -1136,7 +1115,6 @@ export default function MonitoramentoPage() {
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
-    aberturaPendenteRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)

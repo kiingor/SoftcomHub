@@ -179,7 +179,6 @@ import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
-import { decidirAberturaDaConversa, SELETOR_INICIO_DO_TICKET } from '@/lib/scroll-conversa'
 import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
 import {
   atendimentoStatusBadgeClass,
@@ -2092,11 +2091,6 @@ function SetorPageInner() {
   // Conversation slide-out state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
-  // Abertura de conversa ainda não posicionada — onde ela cai é decidido no
-  // efeito abaixo, quando a lista já existe no DOM.
-  const aberturaPendenteRef = useRef(false)
-  // Tickets cuja transição do bot para o humano o gestor já viu nesta sessão.
-  const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [conversationTab, setConversationTab] = useState<'atendimento' | 'transferir' | 'info'>('atendimento')
@@ -2121,22 +2115,6 @@ function SetorPageInner() {
       return
     }
     const el = conversationScrollRef.current
-    if (aberturaPendenteRef.current) {
-      aberturaPendenteRef.current = false
-      const inicioDoTicket = el.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
-      const ticketId = selectedTicket?.id
-      const alvo = decidirAberturaDaConversa({
-        ticketId,
-        ticketsJaVistos: ticketsJaPosicionadosRef.current,
-        temInicioDoTicket: Boolean(inicioDoTicket),
-      })
-      if (alvo === 'inicio-do-ticket' && inicioDoTicket) {
-        ticketsJaPosicionadosRef.current.add(ticketId)
-        inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
-        el.scrollTop = Math.max(0, el.scrollTop - 16)
-        return
-      }
-    }
 
     const scrollToEnd = () => {
       el.scrollTop = el.scrollHeight
@@ -5534,7 +5512,6 @@ const saveConfig = async () => {
   // Open conversation slide-out — inclui histórico pré-ticket (bot/orphans)
 
   const openConversation = async (ticket: any) => {
-    aberturaPendenteRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)

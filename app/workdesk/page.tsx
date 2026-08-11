@@ -126,8 +126,8 @@ import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
 import { telefoneSemDDI } from '@/lib/telefone'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
-import { decidirAberturaDaConversa, estaNoFimDaConversa, SELETOR_INICIO_DO_TICKET } from '@/lib/scroll-conversa'
-import type { AlvoDaAberturaDaConversa } from '@/lib/scroll-conversa'
+import { estaNoFimDaConversa } from '@/lib/scroll-conversa'
+import { STATUS_QUE_ACEITAM_ENVIO } from '@/lib/ticket-send-auth'
 import {
   calcularInicioJanelaHistoricoIso,
   ehMensagemNexus as isNexusMessage,
@@ -861,8 +861,7 @@ export default function WorkdeskPage() {
   const messageTextareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const mobileMessagesViewportRef = useRef<HTMLDivElement>(null)
-  /** Abertura do drawer mobile ainda não posicionada. Onde ela cai é decidido
-   *  junto com a do painel desktop, em `resolverAlvoDaAbertura`. */
+  /** Drawer mobile ainda não rolado até o fim nesta abertura. */
   const aberturaPendenteMobileRef = useRef(false)
 
   // Voice recording (PTT) state — uses opus-recorder to produce ogg/opus directly
@@ -1621,64 +1620,6 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
    * meio. O que decide é onde o atendente estava ANTES da atualização.
    */
   const acompanhandoOFimRef = useRef(true)
-  // Abertura do painel desktop ainda não posicionada. Só a abertura decide onde
-  // a conversa aterrissa; as atualizações seguintes seguem o fim como sempre.
-  const aberturaPendenteRef = useRef(false)
-  // Tickets cuja transição do bot para o humano o atendente já viu nesta
-  // sessão. A partir da segunda abertura a conversa volta a abrir no fim.
-  const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
-  // Decisão desta abertura, tomada uma vez só: o painel desktop e o drawer
-  // mobile renderizam a mesma lista e podem posicionar no mesmo commit — sem
-  // guardar a decisão, o primeiro a rodar marcaria o ticket como já visto e o
-  // segundo abriria no fim, perdendo a transição do bot.
-  const alvoDaAberturaRef = useRef<AlvoDaAberturaDaConversa | null>(null)
-
-  /**
-   * Onde esta abertura aterrissa. Devolve null enquanto não há DOM para
-   * consultar — decidir sem o container seria chutar que não há histórico.
-   */
-  const resolverAlvoDaAbertura = useCallback((container: HTMLElement | null) => {
-    if (alvoDaAberturaRef.current) return alvoDaAberturaRef.current
-    if (!container) return null
-
-    const ticketId = selectedTicketIdRef.current
-    const alvo = decidirAberturaDaConversa({
-      ticketId,
-      ticketsJaVistos: ticketsJaPosicionadosRef.current,
-      temInicioDoTicket: Boolean(container.querySelector(SELETOR_INICIO_DO_TICKET)),
-    })
-    alvoDaAberturaRef.current = alvo
-    // Marcado aqui, junto da decisão: só conta como "já vista" a abertura que de
-    // fato tinha a transição para mostrar.
-    if (alvo === 'inicio-do-ticket' && ticketId) ticketsJaPosicionadosRef.current.add(ticketId)
-    return alvo
-  }, [])
-
-  const posicionarNoInicioDoTicket = useCallback(() => {
-    const container = messagesContainerRef.current
-    const ticketStart = container?.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
-    if (!container || !ticketStart) return false
-
-    const ticketId = selectedTicketIdRef.current
-    const posicionar = () => {
-      if (selectedTicketIdRef.current !== ticketId) return
-
-      const currentContainer = messagesContainerRef.current
-      const currentTicketStart = currentContainer?.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
-      if (!currentContainer || !currentTicketStart) return
-
-      currentTicketStart.scrollIntoView({ block: 'start', inline: 'nearest' })
-      currentContainer.scrollTop = Math.max(0, currentContainer.scrollTop - 16)
-    }
-
-    // Imagens e as animações das bolhas podem alterar a altura logo depois da
-    // primeira pintura. Reaplica apenas para o mesmo ticket, sem deslocar quem
-    // já tiver aberto outra conversa nesse intervalo.
-    posicionar()
-    requestAnimationFrame(posicionar)
-    window.setTimeout(posicionar, 180)
-    return true
-  }, [])
 
   const handleMessagesScroll = useCallback(() => {
     acompanhandoOFimRef.current = estaNoFimDaConversa(messagesContainerRef.current)
@@ -1782,46 +1723,17 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (el) el.scrollTop = el.scrollHeight
   }, [historicoConversaMsgs, historicoConversaLoading])
 
-  // A referência só existe depois de o React montar as mensagens. Usar layout
-  // effect evita que a primeira pintura mostre o topo do histórico do Nexus e
-  // o efeito comum de rolagem a substitua antes do atendente vê-la.
-  useLayoutEffect(() => {
-    if (mensagens.length === 0 || loadingMensagens) return
-    if (!aberturaPendenteRef.current) return
-
-    const alvo = resolverAlvoDaAbertura(messagesContainerRef.current)
-    if (!alvo) return
-    aberturaPendenteRef.current = false
-    // No fim é onde qualquer conversa abre; quem cuida disso é o efeito de
-    // acompanhamento logo abaixo, com `acompanhandoOFimRef` ainda ligado.
-    if (alvo === 'fim') return
-    if (!posicionarNoInicioDoTicket()) return
-
-    acompanhandoOFimRef.current = false
-  }, [mensagens, loadingMensagens, posicionarNoInicioDoTicket, resolverAlvoDaAbertura])
-
+  // O `scrollToBottom` do efeito de acompanhamento só enxerga o painel desktop;
+  // sem esta linha o drawer mobile abria no topo da lista.
   useLayoutEffect(() => {
     if (!mobileDrawerOpen || mensagens.length === 0 || loadingMensagens) return
     if (!aberturaPendenteMobileRef.current) return
 
     const container = mobileMessagesViewportRef.current
-    const alvo = resolverAlvoDaAbertura(container)
-    if (!container || !alvo) return
+    if (!container) return
     aberturaPendenteMobileRef.current = false
-
-    const inicioDoTicket = alvo === 'inicio-do-ticket'
-      ? container.querySelector<HTMLElement>(SELETOR_INICIO_DO_TICKET)
-      : null
-    if (!inicioDoTicket) {
-      // O `scrollToBottom` só enxerga o painel desktop; sem esta linha o drawer
-      // abria no topo da lista, que é exatamente o defeito relatado.
-      container.scrollTop = container.scrollHeight
-      return
-    }
-
-    inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
-    container.scrollTop = Math.max(0, container.scrollTop - 16)
-  }, [mensagens, loadingMensagens, mobileDrawerOpen, resolverAlvoDaAbertura])
+    container.scrollTop = container.scrollHeight
+  }, [mensagens, loadingMensagens, mobileDrawerOpen])
 
   // Acompanha o fim da conversa — mas só de quem já estava no fim.
   //
@@ -1836,12 +1748,8 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   }, [mensagens, loadingMensagens, scrollToBottom])
 
   // Abrir outra conversa começa no fim, independente de onde a anterior parou.
-  // A exceção da transição do bot é decidida só quando a lista existe no DOM —
-  // decidir aqui daria "início do ticket" a conversa que não tem nada acima.
   useEffect(() => {
     acompanhandoOFimRef.current = true
-    alvoDaAberturaRef.current = null
-    aberturaPendenteRef.current = true
   }, [selectedTicketId])
 
 // Real-time subscription for tickets
