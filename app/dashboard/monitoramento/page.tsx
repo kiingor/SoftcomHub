@@ -405,14 +405,17 @@ export default function MonitoramentoPage() {
       }
 
       // Fetch active tickets (aberto + em_atendimento) across all accessible setores
-      let ticketsQuery = supabase
-        .from('tickets')
-        .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat), setores!tickets_setor_id_fkey(id, nome), subsetores(id, nome)')
-        .in('setor_id', targetSetorIds)
-        .in('status', ['aberto', 'em_atendimento'])
-      ticketsQuery = applySubsetorFilter(ticketsQuery)
-      const { data: ticketsAtivos, error: ticketsAtivosError } = await ticketsQuery
-      if (ticketsAtivosError) throw ticketsAtivosError
+      // Pagina: com muitos setores no escopo a fila ativa passa de 1.000 e o
+      // PostgREST cortava calado — tickets simplesmente sumiam do painel.
+      // `.order('id')` é o desempate que torna o range determinístico.
+      const ticketsAtivos = await loadRowsByPages<any>(() => {
+        const query = supabase
+          .from('tickets')
+          .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat), setores!tickets_setor_id_fkey(id, nome), subsetores(id, nome)')
+          .in('setor_id', targetSetorIds)
+          .in('status', ['aberto', 'em_atendimento'])
+        return applySubsetorFilter(query).order('id', { ascending: true })
+      })
 
       // Lookup global de setores — usado pra reescrever descrições antigas de
       // transbordo na hora da exibição. Carrega TODOS os setores (não só os
@@ -428,12 +431,22 @@ export default function MonitoramentoPage() {
       const logsMap = new Map<string, any[]>()
       const assignmentEventsMap = new Map<string, any[]>()
       if (ticketsAtivosIds.length > 0) {
-        const [logsResult, assignmentEventsData] = await Promise.all([
-          supabase
-            .from('ticket_logs')
-            .select('ticket_id, tipo, descricao, criado_em')
-            .in('ticket_id', ticketsAtivosIds)
-            .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+        // Fatiado igual aos eventos de atribuição: agora que a fila ativa passa
+        // de 1.000 tickets, mandar todos os ids numa `.in()` só estoura a URL, e
+        // o retorno vinha cortado em 1.000 logs sem avisar — origem e tempos
+        // derivados saíam incompletos justamente nos painéis mais cheios.
+        const [logsData, assignmentEventsData] = await Promise.all([
+          loadRowsByValues(
+            supabase,
+            'ticket_logs',
+            'ticket_id, tipo, descricao, criado_em',
+            'ticket_id',
+            ticketsAtivosIds,
+            (query) => query.in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+          ).catch((error) => {
+            console.warn('[Monitoramento] Falha ao carregar logs de ticket:', error.message)
+            return []
+          }),
           loadRowsByValues(
             supabase,
             'ticket_assignment_logs',
@@ -445,7 +458,6 @@ export default function MonitoramentoPage() {
             return []
           }),
         ])
-        const logsData = logsResult.data
         for (const l of (logsData || [])) {
           const arr = logsMap.get(l.ticket_id) || []
           arr.push(l)
@@ -466,14 +478,17 @@ export default function MonitoramentoPage() {
       // Fetch today's tickets (for stats)
       const now = new Date()
       const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
-      let ticketsHojeQuery = supabase
-        .from('tickets')
-        .select('id, status, criado_em, primeira_resposta_em, encerrado_em, subsetor_id')
-        .in('setor_id', targetSetorIds)
-        .gte('criado_em', startOfDay)
-      ticketsHojeQuery = applySubsetorFilter(ticketsHojeQuery)
-      const { data: ticketsHoje, error: ticketsHojeError } = await ticketsHojeQuery
-      if (ticketsHojeError) throw ticketsHojeError
+      // Mesma paginação: num dia cheio o volume passa de 1.000 e as médias de
+      // primeira resposta / tempo de resolução saíam calculadas em cima de um
+      // recorte arbitrário do dia.
+      const ticketsHoje = await loadRowsByPages<any>(() => {
+        const query = supabase
+          .from('tickets')
+          .select('id, status, criado_em, primeira_resposta_em, encerrado_em, subsetor_id')
+          .in('setor_id', targetSetorIds)
+          .gte('criado_em', startOfDay)
+        return applySubsetorFilter(query).order('id', { ascending: true })
+      })
 
       // Separate count queries to avoid Supabase 1000-row default limit
       let countRecebidosQuery = supabase
@@ -922,6 +937,9 @@ export default function MonitoramentoPage() {
     }
   }, [monitoredNexusChannelIds, mutate, supabase])
 
+  // Termo normalizado uma vez só; as listas abaixo reaproveitam o mesmo objeto.
+  const termoBusca = useMemo(() => normalizarTermoBusca(searchTerm), [searchTerm])
+
   const nexusConversas = useMemo(() => {
     if (!termoBusca) return nexusConversasRaw
 
@@ -935,9 +953,6 @@ export default function MonitoramentoPage() {
   const selectedNexusConversationKey = selectedNexusConversation
     ? `${selectedNexusConversation.setorId}-${selectedNexusConversation.clienteKey}`
     : null
-
-  // Termo normalizado uma vez só; as listas abaixo reaproveitam o mesmo objeto.
-  const termoBusca = useMemo(() => normalizarTermoBusca(searchTerm), [searchTerm])
 
   useEffect(() => {
     if (!selectedNexusConversationKey) return
@@ -997,6 +1012,22 @@ export default function MonitoramentoPage() {
   // esconderia a outra metade do par e o aviso sumiria justamente quando importa.
   const ticketsDuplicados = useMemo(() => idsComDuplicidade(tickets), [tickets])
 
+  /**
+   * Ordem de exibição das filas: o mais antigo em cima, que é o mais urgente.
+   *
+   * A consulta ordena por `id` porque a paginação exige ordem única e estável —
+   * critério técnico, não de tela. Sem esta ordenação explícita as tabelas
+   * herdavam aquela, e o painel saía em ordem lexicográfica de UUID, que não
+   * significa nada para quem está monitorando a fila.
+   */
+  const ordenarPorMaisAntigo = useCallback((a: any, b: any) => {
+    const tempoA = new Date(a.criado_em || 0).getTime()
+    const tempoB = new Date(b.criado_em || 0).getTime()
+    // `id` como desempate mantém a ordem estável entre re-renders quando dois
+    // tickets nascem no mesmo instante.
+    return tempoA - tempoB || String(a.id).localeCompare(String(b.id))
+  }, [])
+
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || (t.status === 'aberto' && t.colaborador_id))
@@ -1007,6 +1038,7 @@ export default function MonitoramentoPage() {
         if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || SEM_SUBSETOR_ID)) return false
         return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
+      .sort(ordenarPorMaisAntigo)
       .map((t: any) => {
         const tempos = resolverIniciosTempoTransferencia(
           t,
@@ -1039,7 +1071,7 @@ export default function MonitoramentoPage() {
         primeira_resposta_em: t.primeira_resposta_em,
         }
       })
-  }, [tickets, searchTerm, subsetorFilter, atendenteFilter])
+  }, [tickets, termoBusca, subsetorFilter, atendenteFilter, ordenarPorMaisAntigo])
 
   // Tickets aguardando
   const ticketsAguardando = useMemo(() => {
@@ -1052,6 +1084,7 @@ export default function MonitoramentoPage() {
         // procurar um ticket aguardando pelo número devolvia lista vazia.
         return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
+      .sort(ordenarPorMaisAntigo)
       // Aguardando não tem colaborador, então "Meus" mostra vazio (sem atribuição ainda)
       .map((t: any) => ({
         id: t.id,
@@ -1071,7 +1104,7 @@ export default function MonitoramentoPage() {
         tempoEspera: formatDuration(t.criado_em, null),
         criado_em: t.criado_em,
       }))
-  }, [tickets, searchTerm, subsetorFilter])
+  }, [tickets, termoBusca, subsetorFilter, ordenarPorMaisAntigo])
 
   // Atendentes list for the Atendentes tab
   const atendentesLista = useMemo(() => {
