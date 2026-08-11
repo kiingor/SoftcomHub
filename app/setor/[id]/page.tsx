@@ -178,6 +178,9 @@ import { StatusAtendimentoPanel } from '@/components/setor/status-atendimento-pa
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
+import { alvoDeBuscaDoTicket, correspondeAoTermo, normalizarTermoBusca } from '@/lib/busca-monitoramento'
+import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/cliente-softcom'
+import { resolverUltimaMensagem, rotuloDeQuemFalou } from '@/lib/ultima-mensagem'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
 import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
 import {
@@ -1596,6 +1599,9 @@ function SetorPageInner() {
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [subsetorFilter, setSubsetorFilter] = useState<string[]>([])
+  // Normalizado uma vez só (trim, minúsculas, `#` inicial, dígitos do telefone);
+  // as listas abaixo dependem dele, não do texto cru.
+  const termoBusca = useMemo(() => normalizarTermoBusca(searchTerm), [searchTerm])
   const [tagSetorFilter, setTagSetorFilter] = useState(() => (
     searchParams.get('tags')?.split(',').filter(Boolean) || []
   ))
@@ -3437,9 +3443,10 @@ function SetorPageInner() {
         if (!matchesTicketTagFilter(t)) return false
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        return contato.toLowerCase().includes(searchTerm.toLowerCase())
+        // Mesma regra da tela de monitoramento. Antes só o contato era
+        // comparado, e procurar pelo número — que é o que o campo promete —
+        // devolvia lista vazia sempre.
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
       .map((t: any) => {
         const tempos = resolverIniciosTempoTransferencia(
@@ -3493,12 +3500,6 @@ function SetorPageInner() {
         }
       })
   }, [
-    atendenteFilter,
-    idsAtendentesPermitidos,
-    matchesTicketTagFilter,
-    monitoringTick,
-    searchTerm,
-    setor,
   /**
    * Nome do subsetor para a coluna "Fila".
    *
@@ -3517,6 +3518,12 @@ function SetorPageInner() {
     return subsetorNomeById.get(subsetorId) || '—'
   }, [subsetorNomeById, subsetoresLoadedSetorId, setorId])
 
+    atendenteFilter,
+    idsAtendentesPermitidos,
+    matchesTicketTagFilter,
+    monitoringTick,
+    termoBusca,
+    setor,
     subsetorFilter,
     nomeDaFila,
     tagsPermitidasNosTickets,
@@ -3959,9 +3966,7 @@ function SetorPageInner() {
       .filter((t: any) => {
         if (!matchesTicketTagNoMonitoramento(t)) return false
         if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        return contato.toLowerCase().includes(searchTerm.toLowerCase())
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
       .map((t: any) => ({
         id: t.id,
@@ -3981,7 +3986,7 @@ function SetorPageInner() {
         subsetor_id: t.subsetor_id ?? null,
         setores: { nome: setor?.nome ?? null },
       }))
-  }, [matchesTicketTagNoMonitoramento, tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
+  }, [matchesTicketTagNoMonitoramento, tickets, termoBusca, setor, subsetorFilter, monitoringTick, nomeDaFila])
 
   // Sem filtro de subsetor, mostram o total do setor (matchesSubsetorFilter
   // com seleção vazia aceita qualquer subsetor_id) — com filtro, só contam os
@@ -6158,9 +6163,11 @@ const saveConfig = async () => {
                       searchable
                     />
                     <div className="relative">
-                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
                       <Input
-                        placeholder="Buscar pelo Nº do ticket"
+                        type="search"
+                        aria-label="Buscar tickets do setor"
+                        placeholder="Buscar por Nº do ticket, contato ou telefone"
                         value={searchTerm}
                         onChange={(e) => {
                           setSearchTerm(e.target.value)
