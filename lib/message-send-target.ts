@@ -6,9 +6,14 @@ export type OutboundMediaUrlResult =
   | { ok: true; url: string }
   | { ok: false; code: 'MEDIA_URL_NOT_ALLOWED'; error: string }
 
-export type ReplyQuoteResult =
-  | { ok: true; providerMessageId: string | null }
-  | { ok: false; code: 'REPLY_MESSAGE_INVALID'; error: string }
+/**
+ * A citação nunca reprova o envio: no pior caso a mensagem sai sem o quote.
+ * `motivoSemQuote` existe só para log — ninguém decide nada com ele.
+ */
+export type ReplyQuoteResult = {
+  providerMessageId: string | null
+  motivoSemQuote: 'mensagem-nao-encontrada' | 'consulta-falhou' | 'sem-id-do-provedor' | null
+}
 
 export const REPLYABLE_TICKET_SENDERS = [
   'cliente',
@@ -191,32 +196,44 @@ export function resolvePersistedRecipient(
 }
 
 /**
- * Decide se a mensagem citada pode virar quote no provedor.
+ * Monta o quote da mensagem citada — e nunca reprova o envio por causa dele.
  *
- * Não achar o pai é erro de verdade: quem consulta já restringe por `ticket_id`
- * e por `REPLYABLE_TICKET_SENDERS`, então a ausência significa que a citação não
- * é deste ticket ou aponta para um remetente não citável.
+ * A citação é enfeite; a mensagem é o que importa. Derrubar o envio inteiro
+ * porque o quote não pôde ser montado deixava o atendente sem conseguir
+ * responder o cliente, e pior: o retry reenvia a mesma citação, então a
+ * mensagem encalhava em "falhou" para sempre. Era a MAIOR fonte de falha de
+ * envio do sistema — 43 das 76 falhas medidas em 29/07/2026.
  *
- * Pai sem id do provedor é rotina, não erro: as mensagens do Nexus
- * (`cliente-nexus`/`bot-nexus`) são gravadas 100% sem ele e 12% das do cliente
- * também. Derrubar o envio nesse caso encalhava a mensagem em "falhou" para
- * sempre, porque o retry reenvia a mesma citação — 6 de 6 falhas em 29/07/2026.
- * Segue sem o quote: o WorkDesk continua exibindo o trecho citado, que ele monta
- * a partir de `reply_to_message_id`, e só o app do cliente deixa de mostrá-lo.
+ * Os três motivos de não ter quote, e por que nenhum justifica bloquear:
+ *
+ * - **sem id do provedor**: rotina. As mensagens do Nexus
+ *   (`cliente-nexus`/`bot-nexus`) são gravadas 100% sem ele, e 12% das do
+ *   cliente também.
+ * - **pai não encontrado**: a consulta já restringe por `ticket_id` e por
+ *   `REPLYABLE_TICKET_SENDERS`, então some quando a citação aponta para outro
+ *   ticket ou para remetente não citável. Nada disso é culpa de quem está
+ *   escrevendo agora.
+ * - **consulta falhou**: falha transitória de banco não pode custar a resposta
+ *   ao cliente.
+ *
+ * O WorkDesk continua exibindo o trecho citado de qualquer forma — ele monta a
+ * partir de `reply_to_message_id`, sem depender do provedor. Só o app do cliente
+ * deixa de mostrar a setinha de resposta.
+ *
+ * Segurança preservada: sem quote não vaza nada. O caminho que buscava o pai é
+ * o mesmo, com as mesmas restrições; o que mudou é só o que se faz quando ele
+ * volta vazio.
  */
 export function resolveReplyQuote(
   parent: { whatsapp_message_id?: string | null } | null | undefined,
   lookupFailed = false,
 ): ReplyQuoteResult {
-  if (lookupFailed || !parent) {
-    return {
-      ok: false,
-      code: 'REPLY_MESSAGE_INVALID',
-      error: 'A mensagem respondida não pertence a este ticket',
-    }
+  if (lookupFailed) return { providerMessageId: null, motivoSemQuote: 'consulta-falhou' }
+  if (!parent) return { providerMessageId: null, motivoSemQuote: 'mensagem-nao-encontrada' }
+  if (!parent.whatsapp_message_id) {
+    return { providerMessageId: null, motivoSemQuote: 'sem-id-do-provedor' }
   }
-
-  return { ok: true, providerMessageId: parent.whatsapp_message_id || null }
+  return { providerMessageId: parent.whatsapp_message_id, motivoSemQuote: null }
 }
 
 export function selectRequestedActiveChannel<T>(

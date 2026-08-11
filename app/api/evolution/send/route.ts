@@ -255,18 +255,14 @@ export async function POST(request: NextRequest) {
         .maybeSingle()
 
       const replyQuote = resolveReplyQuote(parent, Boolean(parentError))
-      if (!replyQuote.ok) {
-        const persistenceFailure = await persistFailure(serviceClient, sendAttempt, replyQuote.error)
-        if (persistenceFailure) return persistenceFailure
-        sendAttempt = null
-        return NextResponse.json(
-          {
-            error: replyQuote.error,
-            code: replyQuote.code,
-            status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined,
-          },
-          { status: 422 },
-        )
+      if (replyQuote.motivoSemQuote) {
+        // Segue sem o quote em vez de reprovar: a citação é enfeite, a resposta
+        // ao cliente é o que importa. Ver `resolveReplyQuote`.
+        console.warn('[Evolution Send] Envio sem citação:', {
+          ticketId,
+          replyToMessageId: effectiveReplyToMessageId,
+          motivo: replyQuote.motivoSemQuote,
+        })
       }
 
       if (replyQuote.providerMessageId) {
