@@ -7,17 +7,18 @@ import { useColaborador, useSetores } from '@/lib/hooks/use-data'
 import { AtendenteCard } from '@/components/monitoramento/atendente-card'
 import { logError } from '@/lib/error-logger'
 import { idsComDuplicidade } from '@/lib/tickets-duplicados'
+import { alvoDeBuscaDoTicket, correspondeAoTermo, normalizarTermoBusca } from '@/lib/busca-monitoramento'
 import { AlertTriangle } from 'lucide-react'
 
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
-
 import { decidirAberturaDaConversa, SELETOR_INICIO_DO_TICKET } from '@/lib/scroll-conversa'
 import {
   TRUSTED_INBOUND_CLIENT_SENDERS,
   selectOutboundChannelEvidence,
 } from '@/lib/message-send-target'
+
 /** Marca a linha cujo cliente tem outro atendimento aberto ao mesmo tempo. */
 function BadgeDuplicado() {
   return (
@@ -922,19 +923,21 @@ export default function MonitoramentoPage() {
   }, [monitoredNexusChannelIds, mutate, supabase])
 
   const nexusConversas = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase()
-    if (!query) return nexusConversasRaw
+    if (!termoBusca) return nexusConversasRaw
 
-    return nexusConversasRaw.filter((conversation) => (
-      conversation.contato.toLowerCase().includes(query) ||
-      formatPhone(conversation.telefone).toLowerCase().includes(query) ||
-      conversation.setorNome.toLowerCase().includes(query)
-    ))
-  }, [nexusConversasRaw, searchTerm])
+    return nexusConversasRaw.filter((conversation) => correspondeAoTermo({
+      contato: conversation.contato,
+      telefone: conversation.telefone,
+      setor: conversation.setorNome,
+    }, termoBusca))
+  }, [nexusConversasRaw, termoBusca])
 
   const selectedNexusConversationKey = selectedNexusConversation
     ? `${selectedNexusConversation.setorId}-${selectedNexusConversation.clienteKey}`
     : null
+
+  // Termo normalizado uma vez só; as listas abaixo reaproveitam o mesmo objeto.
+  const termoBusca = useMemo(() => normalizarTermoBusca(searchTerm), [searchTerm])
 
   useEffect(() => {
     if (!selectedNexusConversationKey) return
@@ -1002,10 +1005,7 @@ export default function MonitoramentoPage() {
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         // Filtro de subsetor
         if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || SEM_SUBSETOR_ID)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        const numero = String(t.numero ?? t.id?.slice(0, 8) ?? '')
-        return contato.toLowerCase().includes(searchTerm.toLowerCase()) || numero.includes(searchTerm)
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
       .map((t: any) => {
         const tempos = resolverIniciosTempoTransferencia(
@@ -1048,9 +1048,9 @@ export default function MonitoramentoPage() {
       .filter((t: any) => {
         // Filtro de subsetor
         if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || SEM_SUBSETOR_ID)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        return contato.toLowerCase().includes(searchTerm.toLowerCase())
+        // Mesma regra da aba "Em andamento": antes a fila só casava contato, e
+        // procurar um ticket aguardando pelo número devolvia lista vazia.
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
       // Aguardando não tem colaborador, então "Meus" mostra vazio (sem atribuição ainda)
       .map((t: any) => ({
@@ -1738,12 +1738,14 @@ export default function MonitoramentoPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-lg">Monitoramento detalhado</CardTitle>
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
               <Input
-                placeholder="Buscar pelo N do ticket ou contato"
+                type="search"
+                aria-label="Buscar nas abas de monitoramento"
+                placeholder="Buscar por Nº do ticket, contato ou telefone"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-64 pl-9 h-9 rounded-2xl glass-input"
+                className="w-72 pl-9 h-9 rounded-2xl glass-input"
               />
             </div>
           </div>
