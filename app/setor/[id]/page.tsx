@@ -3474,7 +3474,7 @@ function SetorPageInner() {
           : 0,
         tempoNoSetor: formatDuration(tempos.setorAtualEm, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
+        fila: nomeDaFila(t.subsetor_id),
         atendente: t.colaboradores?.nome || null,
         acompanhamento: t._acompanhamento || null,
         prioridade: t.prioridade,
@@ -3499,8 +3499,26 @@ function SetorPageInner() {
     monitoringTick,
     searchTerm,
     setor,
+  /**
+   * Nome do subsetor para a coluna "Fila".
+   *
+   * Distingue "ainda não sei" de "não tem". Os tickets chegam no `Promise.all`
+   * inicial, mas os subsetores só são buscados depois, num efeito que espera
+   * `setor.id` — então existe uma janela em que o mapa está vazio. Sem esta
+   * separação, TODO ticket aparecia como "Sem subsetor" nesse intervalo e depois
+   * se corrigia sozinho, o que faz o gestor ler o painel errado justamente nos
+   * primeiros segundos.
+   */
+  const nomeDaFila = useCallback((subsetorId: string | null | undefined) => {
+    if (subsetoresLoadedSetorId !== setorId) return '—'
+    if (!subsetorId) return 'Sem subsetor'
+    // Id preenchido que não está no mapa é subsetor de outro setor; dizer
+    // "Sem subsetor" aqui esconderia um dado que existe.
+    return subsetorNomeById.get(subsetorId) || '—'
+  }, [subsetorNomeById, subsetoresLoadedSetorId, setorId])
+
     subsetorFilter,
-    subsetorNomeById,
+    nomeDaFila,
     tagsPermitidasNosTickets,
     tickets,
   ])
@@ -3951,7 +3969,7 @@ function SetorPageInner() {
         tempoNaFila: formatDuration(t.criado_em, null),
         tempoNaFilaMs: getDurationMs(t.criado_em, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
+        fila: nomeDaFila(t.subsetor_id),
         prioridade: t.prioridade,
         status: t.status,
         criado_em: t.criado_em,
