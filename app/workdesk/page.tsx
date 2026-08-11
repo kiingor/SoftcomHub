@@ -954,6 +954,96 @@ export default function WorkdeskPage() {
         ? 'Escreva a mensagem de abertura para o atendimento via WhatsApp não oficial.'
         : ''
   const [setorCanalConfig, setSetorCanalConfig] = useState<'whatsapp' | 'discord' | 'evolution_api'>('whatsapp')
+
+  /**
+   * Canais ativos dos setores do atendente, com o estado de conexão que o cron
+   * `check-instances` grava a cada 2 minutos.
+   *
+   * Guarda a lista crua porque as duas perguntas do aviso precisam dela inteira:
+   * "esta instância caiu?" e "sobrou algum caminho no ar neste setor?".
+   *
+   * O atendente só descobria a queda tentando enviar e recebendo erro do
+   * provedor — 50 das 228 falhas de envio dos últimos 30 dias são instância
+   * offline. O alerta que já existia era web push para gestores; quem está com o
+   * cliente na tela não recebia nada.
+   */
+  const [canaisDosSetores, setCanaisDosSetores] = useState<any[]>([])
+
+  const aplicarEstadoDeConexao = useCallback((canais: any[]) => {
+    setCanaisDosSetores(canais || [])
+  }, [])
+
+  // Só 'close' e 'not_found' são queda confirmada. 'connecting' é transitório e
+  // 'unknown' significa que o próprio cron não conseguiu medir — alarmar nesses
+  // dois faria o aviso aparecer sozinho e perder credibilidade.
+  const canalEstaCaido = (canal: any) => (
+    canal?.last_connection_state === 'close' || canal?.last_connection_state === 'not_found'
+  )
+
+  const instanciasCaidas = useMemo(() => {
+    const caidas = new Set<string>()
+    for (const canal of canaisDosSetores) {
+      if (canal?.tipo === 'evolution_api' && canal.instancia && canalEstaCaido(canal)) {
+        caidas.add(canal.instancia)
+      }
+    }
+    return caidas
+  }, [canaisDosSetores])
+
+  /**
+   * Setores em que NENHUM canal ativo está no ar.
+   *
+   * Serve de rede para o ticket cujo canal não dá para identificar (conversa
+   * ainda sem fala do cliente). Um setor com WhatsApp oficial no ar e uma
+   * instância caída não entra aqui — era o caso de Comercial Matriz, com 9
+   * tickets que veriam alarme falso.
+   */
+  const setoresSemNenhumCanalNoAr = useMemo(() => {
+    const porSetor = new Map<string, any[]>()
+    for (const canal of canaisDosSetores) {
+      if (!canal?.setor_id) continue
+      const lista = porSetor.get(canal.setor_id) || []
+      lista.push(canal)
+      porSetor.set(canal.setor_id, lista)
+    }
+    const semSaida = new Set<string>()
+    for (const [setorId, canais] of porSetor) {
+      // Canal que não é Evolution não tem estado medido; tratamos como no ar,
+      // senão o WhatsApp oficial entraria como queda sem nunca ter caído.
+      const algumNoAr = canais.some((c) => c.tipo !== 'evolution_api' || !canalEstaCaido(c))
+      if (!algumNoAr) semSaida.add(setorId)
+    }
+    return semSaida
+  }, [canaisDosSetores])
+
+  /**
+   * Nome do setor quando o canal DESTE ticket está caído.
+   *
+   * Preso à instância do ticket, não ao setor: um setor pode ter mais de um
+   * canal, e alarmar por setor faria o ticket que sai por um canal saudável
+   * exibir alerta à toa.
+   *
+   * O canal do ticket é identificado pela última fala do CLIENTE — a mesma
+   * regra que o envio usa (`selectOutboundChannelEvidence`). Se a tela usasse
+   * um critério e o envio outro, o aviso apareceria fora de hora.
+   *
+   * Sem fala do cliente não há como identificar o canal; aí só alarma se o
+   * setor inteiro estiver sem saída.
+   */
+  const setorDesconectadoDoTicket = useMemo(() => {
+    if (!selectedTicket?.setor_id) return null
+    const nomeDoSetor = selectedTicket.setores?.nome || 'deste ticket'
+
+    const evidencia = selectOutboundChannelEvidence(
+      [...mensagens].reverse() as Array<{ remetente?: string | null }>,
+    ) as { phone_number_id?: string | null } | null
+    const canalDoTicket = evidencia?.phone_number_id || null
+
+    if (canalDoTicket) {
+      return instanciasCaidas.has(canalDoTicket) ? nomeDoSetor : null
+    }
+    return setoresSemNenhumCanalNoAr.has(selectedTicket.setor_id) ? nomeDoSetor : null
+  }, [selectedTicket, mensagens, instanciasCaidas, setoresSemNenhumCanalNoAr])
   const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
   const [travarOrdenacaoPorSetor, setTravarOrdenacaoPorSetor] = useState<Map<string, boolean>>(new Map())
   const travarOrdenacaoPorSetorRef = useRef<Map<string, boolean>>(new Map())
@@ -999,6 +1089,38 @@ export default function WorkdeskPage() {
   useEffect(() => {
     setTickets((current) => sortTicketsBySetorConfig(current, travarOrdenacaoPorSetor))
   }, [travarOrdenacaoPorSetor])
+
+  // O cron `check-instances` roda a cada 2 minutos e grava em `setor_canais`.
+  // Sem esta subscription o atendente só veria a queda ao recarregar a página —
+  // e o aviso também precisa SUMIR sozinho quando a instância voltar, senão vira
+  // ruído que ninguém acredita.
+  useEffect(() => {
+    if (!colaborador) return
+    const canal = supabase
+      .channel('setor-canais-conexao')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'setor_canais' },
+        (payload) => {
+          const canalAtualizado = payload.new as any
+          if (canalAtualizado?.tipo !== 'evolution_api' || !canalAtualizado.setor_id) return
+          // Só remenda a linha correspondente: recalcular o resto a partir de um
+          // único evento daria um retrato parcial dos canais do setor.
+          setCanaisDosSetores((anterior) => {
+            const indice = anterior.findIndex((c) => c.id === canalAtualizado.id)
+            if (indice < 0) return anterior
+            const proximo = [...anterior]
+            proximo[indice] = {
+              ...proximo[indice],
+              last_connection_state: canalAtualizado.last_connection_state,
+            }
+            return proximo
+          })
+        },
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(canal) }
+  }, [colaborador, supabase])
 
   useEffect(() => {
     const channel = supabase
@@ -1156,11 +1278,12 @@ export default function WorkdeskPage() {
   if (allSetorIds.length > 0) {
     const { data: canaisAtivos } = await supabase
       .from('setor_canais')
-      .select('tipo')
+      .select('id, tipo, setor_id, instancia, phone_number_id, last_connection_state')
       .in('setor_id', allSetorIds)
       .eq('ativo', true)
     if (canaisAtivos && canaisAtivos.length > 0) {
       setSetorCanaisAtivos(Array.from(new Set(canaisAtivos.map((c: any) => c.tipo))))
+      aplicarEstadoDeConexao(canaisAtivos)
     }
   }
   return colab
@@ -1833,6 +1956,22 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
               selectedTicketIdRef.current = null
               setMobileDrawerOpen(false)
               setMensagens([])
+            } else if (
+              selectedTicketIdRef.current === updatedTicket.id
+              && !STATUS_QUE_ACEITAM_ENVIO.includes(updatedTicket.status)
+            ) {
+              // Saiu de ativo sem ser encerrado — na prática, entrou em
+              // 'avaliar'. O `fetchTickets` logo abaixo só carrega
+              // aberto/em_atendimento, então o ticket some da lista e o status
+              // de `selectedTicket` CONGELA em 'em_atendimento': o compositor
+              // seguia habilitado e o servidor recusava o envio, com a mensagem
+              // já digitada perdida. Propagar o status aqui é o que faz a tela
+              // contar a verdade.
+              setSelectedTicket((prev) => (
+                prev && prev.id === updatedTicket.id
+                  ? { ...prev, status: updatedTicket.status }
+                  : prev
+              ))
             }
             // Ticket was just assigned/transferred TO this colaborador
             const isNew = !knownTicketIdsRef.current.has(updatedTicket.id)
@@ -1956,22 +2095,6 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
         const colab = colaboradorCurrentRef.current
         if (colab) fetchTickets(colab)
       }
-            } else if (
-              selectedTicketIdRef.current === updatedTicket.id
-              && !STATUS_QUE_ACEITAM_ENVIO.includes(updatedTicket.status)
-            ) {
-              // Saiu de ativo sem ser encerrado — na prática, entrou em
-              // 'avaliar'. O `fetchTickets` logo abaixo só carrega
-              // aberto/em_atendimento, então o ticket some da lista e o status
-              // de `selectedTicket` CONGELA em 'em_atendimento': o compositor
-              // seguia habilitado e o servidor recusava o envio, com a mensagem
-              // já digitada perdida. Propagar o status aqui é o que faz a tela
-              // contar a verdade.
-              setSelectedTicket((prev) => (
-                prev && prev.id === updatedTicket.id
-                  ? { ...prev, status: updatedTicket.status }
-                  : prev
-              ))
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
@@ -5271,6 +5394,25 @@ const insertEmoji = (emoji: string) => {
   {selectedTicket.disparo_em && (
   <DisparoTimer dispatchTime={selectedTicket.disparo_em} />
   )}
+  </div>
+  )}
+  {/*
+    WhatsApp do setor desconectado. Vermelho e não âmbar de propósito: aqui
+    NADA sai, diferente da janela de 24h, em que o atendente ainda pode
+    encerrar. Identifica pelo NOME DO SETOR, não pela instância: quem atende
+    vários setores não sabe qual instância pertence a qual.
+  */}
+  {setorDesconectadoDoTicket && (
+  <div className="mb-3 p-3 rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800">
+  <div className="flex items-center gap-2 text-red-700 dark:text-red-300">
+  <AlertTriangle className="h-4 w-4 shrink-0" />
+  <span className="text-sm font-medium">WhatsApp desconectado — {setorDesconectadoDoTicket}</span>
+  </div>
+  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+  O WhatsApp do setor <span className="font-semibold">{setorDesconectadoDoTicket}</span> perdeu a conexão.
+  Nenhuma mensagem entra ou sai até alguém reconectar o QR Code nas configurações do setor.
+  Avise a gestão antes de continuar respondendo.
+  </p>
   </div>
   )}
   {/* 24h Window Expired Warning */}
