@@ -67,6 +67,7 @@ import {
   FileIcon,
   Layers,
   ChevronDown,
+  Minus,
   FileArchive,
   FileCode,
   FileSpreadsheet,
@@ -118,7 +119,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Checkbox } from '@/components/ui/checkbox'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import { TextoMensagem } from '@/components/chat/texto-mensagem'
 import { getFileDownloadUrl, isViewableInBrowser } from '@/lib/anexo-url'
@@ -1251,10 +1251,10 @@ export default function WorkdeskPage() {
   const [editarClienteForm, setEditarClienteForm] = useState({ nome: '', telefone: '', CNPJ: '', Registro: '', PDV: '' })
   const [editarClienteLoading, setEditarClienteLoading] = useState(false)
 
-  // Meus subsetores ativos (seleção do próprio atendente)
+  // Meus subsetores — somente leitura. O vínculo é dado de roteamento
+  // (colaboradores_subsetores) e só o admin altera, pelo /setor/[id].
   const [meusSubsetorIds, setMeusSubsetorIds] = useState<string[]>([])
   const [subsetorPickerOpen, setSubsetorPickerOpen] = useState(false)
-  const [togglingSubsetor, setTogglingSubsetor] = useState(false)
 
   // Fetch colaborador atual
   const fetchColaborador = useCallback(async () => {
@@ -3152,28 +3152,6 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
     }
   }
 
-  // Toggle subsetor ativo do colaborador (escreve/remove em colaboradores_subsetores)
-  const toggleMeuSubsetor = async (subsetorId: string, setorId: string) => {
-    if (!colaborador || togglingSubsetor) return
-    setTogglingSubsetor(true)
-    const isActive = meusSubsetorIds.includes(subsetorId)
-    if (isActive) {
-      await supabase
-        .from('colaboradores_subsetores')
-        .delete()
-        .eq('colaborador_id', colaborador.id)
-        .eq('subsetor_id', subsetorId)
-      setMeusSubsetorIds((prev) => prev.filter((id) => id !== subsetorId))
-    } else {
-      await supabase
-        .from('colaboradores_subsetores')
-        .insert({ colaborador_id: colaborador.id, setor_id: setorId, subsetor_id: subsetorId })
-      setMeusSubsetorIds((prev) => [...prev, subsetorId])
-    }
-    setTogglingSubsetor(false)
-  }
-
-
   // Disparo - busca por CNPJ ou CPF (MEI)
   const handleDocumentoLookup = async () => {
     if (!isDocumentoValido(disparoDocumento)) {
@@ -4975,22 +4953,26 @@ const insertEmoji = (emoji: string) => {
                     {subsetoresDisponiveis.map((subsetor) => {
                       const isActive = meusSubsetorIds.includes(subsetor.id)
                       return (
-                        <label
+                        <div
                           key={subsetor.id}
-                          className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted cursor-pointer"
+                          className="flex items-center gap-2 rounded-md px-2 py-1.5"
                         >
-                          <Checkbox
-                            checked={isActive}
-                            disabled={togglingSubsetor}
-                            onCheckedChange={() =>
-                              toggleMeuSubsetor(subsetor.id, subsetor.setor_id || '')
-                            }
-                          />
-                          <span className="text-sm">{subsetor.nome}</span>
-                        </label>
+                          {isActive ? (
+                            <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                          ) : (
+                            <Minus className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+                          )}
+                          <span className={cn('text-sm', !isActive && 'text-muted-foreground')}>
+                            {subsetor.nome}
+                          </span>
+                        </div>
                       )
                     })}
                   </div>
+                  <p className="mt-2 border-t border-border pt-2 px-1 text-[11px] leading-snug text-muted-foreground">
+                    Esses vínculos definem quais tickets chegam até você. Para
+                    alterar, fale com o administrador do setor.
+                  </p>
                 </PopoverContent>
               </Popover>
             </div>
