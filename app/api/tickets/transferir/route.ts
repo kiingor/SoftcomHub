@@ -5,11 +5,15 @@ import { createClient as createServerClient } from '@/lib/supabase/server'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { processTicketQueue } from '@/lib/ticket-queue-processor'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
-import { canTransferTicket, isTransferTargetAvailable } from '@/lib/transfer-authorization'
 import {
-  atendenteJaRespondeu,
+  canTransferTicket,
+  hasSupervisorScope,
+  isTransferTargetAvailable,
+  type TransferActor,
+} from '@/lib/transfer-authorization'
+import {
+  bloquearDevolucao,
   carregarMarcaTransbordo,
-  isDevolucaoParaOrigem,
   isRecebidoPorTransbordo,
   limparMarcaTransbordo,
 } from '@/lib/transbordo-marca'
@@ -48,10 +52,10 @@ const TRANSFER_ERRORS = {
   },
   // Caso #97066. A fila de origem continua sem atendente, então devolver para
   // ela só reinicia o transbordo — o ticket vai e volta e o cliente envelhece.
-  // Responder ao cliente libera: aí a transferência é decisão de atendimento,
-  // não repique da distribuição.
+  // Só supervisor do setor (ou master) dispensa o bloqueio; para o atendente
+  // ele não vence com o tempo nem com o atendimento feito.
   DEVOLUCAO_TRANSBORDO: {
-    error: 'Este atendimento chegou até você por transbordo, porque a fila de origem estava sem atendente disponível. Responda ao cliente antes de devolvê-lo para essa fila — ou escolha outro destino.',
+    error: 'Este atendimento chegou até você por transbordo, porque a fila de origem estava sem atendente disponível. Devolvê-lo para essa fila depende de um supervisor — você pode entregá-lo a um atendente dela ou escolher outro destino.',
     status: 422,
   },
 }
@@ -125,10 +129,12 @@ export async function POST(request: Request) {
     if (!ticket) {
       return NextResponse.json({ error: 'Ticket não encontrado' }, { status: 404 })
     }
-    // Setores vinculados ao actor (além do legado colaboradores.setor_id) — só precisa
-    // buscar quando o actor não é dono do ticket nem master (evita uma query à toa).
+    // Setores vinculados ao actor (além do legado colaboradores.setor_id) — só
+    // precisa buscar para supervisor que não é master, e vale mesmo quando ele é
+    // o dono do ticket: ser dono autoriza a transferir, mas quem dispensa o
+    // bloqueio de devolução do caso #97066 é o vínculo com o setor.
     let actorLinkedSetorIds: string[] = actor.setor_id ? [actor.setor_id] : []
-    if (ticket.colaborador_id !== actor.id && actor.is_master !== true && actorCanSeeAllTickets) {
+    if (actor.is_master !== true && actorCanSeeAllTickets) {
       const { data: actorSetorLinks, error: actorSetorLinksError } = await supabase
         .from('colaboradores_setores')
         .select('setor_id')
@@ -148,8 +154,14 @@ export async function POST(request: Request) {
       ]))
     }
 
+    const transferActor: TransferActor = {
+      id: actor.id,
+      isMaster: actor.is_master === true,
+      canSeeAllTickets: actorCanSeeAllTickets,
+      linkedSetorIds: actorLinkedSetorIds,
+    }
     const transferAuth = canTransferTicket(
-      { id: actor.id, isMaster: actor.is_master === true, canSeeAllTickets: actorCanSeeAllTickets, linkedSetorIds: actorLinkedSetorIds },
+      transferActor,
       { colaboradorId: ticket.colaborador_id, setorId: ticket.setor_id },
     )
     if (!transferAuth.allowed) {
@@ -316,21 +328,22 @@ export async function POST(request: Request) {
     // é o ticket voltando para a fila que acabou de cedê-lo por transbordo.
     // A tela também barra, mas a decisão é aqui: transferência sai de três
     // telas diferentes e da API direta.
+    //
+    // O transbordo é entre subsetores do MESMO setor, então o setor de origem é
+    // o setor do ticket — é nele que o supervisor precisa estar vinculado.
     const marcaTransbordo = await carregarMarcaTransbordo(supabase, ticket.id)
-    const devolucaoParaOrigem = isDevolucaoParaOrigem(marcaTransbordo, {
-      subsetorId: targetSubsetorId,
-      colaboradorId: targetColaborador?.id ?? null,
-    })
-    if (
-      devolucaoParaOrigem
-      && !(await atendenteJaRespondeu(supabase, ticket.id, marcaTransbordo.recebidoEm!))
-    ) {
+    const podeAutorizarDevolucao = hasSupervisorScope(transferActor, ticket.setor_id)
+    if (bloquearDevolucao(
+      marcaTransbordo,
+      { subsetorId: targetSubsetorId, colaboradorId: targetColaborador?.id ?? null },
+      podeAutorizarDevolucao,
+    )) {
       // Fica no histórico do ticket: é o que permite medir com que frequência a
       // devolução é tentada, em vez de só bloquear em silêncio.
       const { error: bloqueioLogError } = await supabase.from('ticket_logs').insert({
         ticket_id: ticket.id,
         tipo: 'transferencia',
-        descricao: `Devolução bloqueada: ${actor.nome || 'Atendente'} tentou devolver para a fila de origem do transbordo antes de responder ao cliente.`,
+        descricao: `Devolução bloqueada: ${actor.nome || 'Atendente'} tentou devolver para a fila de origem do transbordo — só supervisor do setor pode.`,
       })
       if (bloqueioLogError) {
         console.warn('[Transferir] Falha ao gravar log de devolução bloqueada:', bloqueioLogError.message)

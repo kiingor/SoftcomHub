@@ -70,9 +70,13 @@ type TransferDestinationMode = 'queue' | 'attendant'
 
 /**
  * Fila indisponível como destino — hoje só o caso #97066: o ticket chegou por
- * transbordo e ainda não foi atendido, então voltar para a fila que o cedeu só
- * reinicia o ciclo. Vem de fora porque quem sabe se o atendente já respondeu é
- * a tela que carregou as mensagens; o servidor refaz a checagem por conta.
+ * transbordo, e voltar para a fila que o cedeu só reinicia o ciclo, então a
+ * devolução depende de supervisor do setor (ou master).
+ *
+ * Vem de fora, e não daqui, porque quem sabe quem está olhando é a tela que
+ * carregou o colaborador; ausente, a fila fica aberta — é assim que o supervisor
+ * a recebe habilitada. O servidor refaz a mesma checagem por conta, com
+ * `hasSupervisorScope`, e é ele quem decide de verdade.
  */
 export interface TransferFilaBloqueada {
   subsetorId: string
@@ -673,7 +677,7 @@ export function TransferirTicketForm({
                           </span>
                           <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
                             {filaDoSubsetorBloqueada
-                              ? 'Indisponível para este atendimento.'
+                              ? 'Bloqueada para este atendimento — veja abaixo.'
                               : 'Mantém a prioridade e distribui automaticamente.'}
                           </span>
                         </button>

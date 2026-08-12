@@ -11,6 +11,12 @@
 // console. Este módulo é o que estampa isso no ticket e o que decide se uma
 // transferência é a devolução reflexa ou um roteamento legítimo.
 //
+// A primeira versão da regra liberava a devolução assim que o atendente
+// respondesse ao cliente. Não bastou: o ticket voltava para a mesma fila vazia,
+// só que uma resposta depois. Hoje a devolução para a FILA de origem não tem
+// prazo — ela precisa de supervisor do setor ou de master. Todo o resto
+// (atendente nomeado daquele subsetor, outra fila, outro setor) segue livre.
+//
 // TOLERÂNCIA A COLUNA AUSENTE — requisito, não zelo: o banco é compartilhado
 // entre produção e desenvolvimento e a migration é aplicada à mão no Supabase
 // Studio, então existe uma janela em que o código roda sem as colunas. Toda
@@ -93,16 +99,22 @@ export function isDevolucaoParaOrigem(
 /**
  * Decisão final do bloqueio.
  *
- * `jaAtendeu` é o que separa "devolução reflexa" de "transferência legítima":
- * depois que o atendente falou com o cliente, devolver deixa de ser um repique
- * da distribuição e passa a ser uma decisão de atendimento.
+ * `podeAutorizarDevolucao` é a única saída: supervisor do setor ou master. A
+ * primeira versão desta regra liberava sozinha assim que o atendente respondesse
+ * ao cliente, e na prática isso só adiava o repique — o ticket voltava para a
+ * mesma fila vazia, uma resposta mais tarde. Quem decide que a devolução vale a
+ * pena é quem enxerga as duas filas.
+ *
+ * O parâmetro é booleano de propósito: quem sabe se o ator é supervisor é a
+ * rota (ou a tela), com o setor do ticket em mão. Ver `hasSupervisorScope` em
+ * `lib/transfer-authorization.ts`.
  */
 export function bloquearDevolucao(
   marca: MarcaTransbordo | null | undefined,
   destino: DestinoTransferencia,
-  jaAtendeu: boolean,
+  podeAutorizarDevolucao: boolean,
 ): boolean {
-  return isDevolucaoParaOrigem(marca, destino) && !jaAtendeu
+  return isDevolucaoParaOrigem(marca, destino) && !podeAutorizarDevolucao
 }
 
 /**
@@ -117,34 +129,6 @@ export function efeitoDaAtribuicao(
   subsetorDoTicket: string | null | undefined,
 ): 'marcar' | 'limpar' {
   return origem === 'transbordo' && subsetorDoTicket ? 'marcar' : 'limpar'
-}
-
-interface MensagemDoTicket {
-  remetente?: string | null
-  enviado_em?: string | null
-}
-
-/**
- * O atendente já falou com o cliente depois de receber o ticket?
- *
- * Versão pura, para a tela, que já tem as mensagens carregadas. Só conta
- * `colaborador`: nota interna de supervisor, mensagem de sistema (inclusive a
- * que a própria transferência grava) e resposta de bot não são atendimento.
- */
-export function respondeuDepoisDoTransbordo(
-  mensagens: readonly MensagemDoTicket[] | null | undefined,
-  recebidoEm: string | null | undefined,
-): boolean {
-  const marcoMs = Date.parse(recebidoEm || '')
-  if (!Number.isFinite(marcoMs)) return false
-
-  // Comparação por instante, não por texto: o banco devolve `+00:00` e a marca é
-  // gravada com `Z`, formatos que não ordenam igual como string.
-  return (mensagens || []).some((mensagem) => {
-    if (mensagem?.remetente !== 'colaborador') return false
-    const enviadaMs = Date.parse(mensagem.enviado_em || '')
-    return Number.isFinite(enviadaMs) && enviadaMs >= marcoMs
-  })
 }
 
 /** O que a tela precisa saber do ticket para montar o aviso de transbordo. */
@@ -162,14 +146,17 @@ export interface AvisoTransbordo {
   nomeOrigem: string | null
   /** Quantas vezes o ticket já foi socorrido. 1 na primeira. */
   vezes: number
-  jaRespondeu: boolean
 }
 
 /**
  * Monta o aviso "recebido por transbordo" a partir do que a tela já tem em mão:
- * o ticket, a lista de subsetores do setor e as mensagens carregadas. Devolve
- * `null` quando não há marca — inclusive antes da migration, quando as colunas
- * simplesmente não vêm no `select('*')`.
+ * o ticket e a lista de subsetores do setor. Devolve `null` quando não há marca
+ * — inclusive antes da migration, quando as colunas simplesmente não vêm no
+ * `select('*')`.
+ *
+ * O aviso descreve o transbordo e nada além disso: quem pode devolver para a
+ * fila de origem é decisão de permissão, e sai de `hasSupervisorScope` na tela
+ * que sabe quem está olhando.
  *
  * O nome da fila de origem é procurado na lista de subsetores; o embed do
  * próprio ticket é a segunda opção, e vale porque o transbordo não muda o
@@ -179,7 +166,6 @@ export interface AvisoTransbordo {
 export function descreverTransbordoRecebido(
   ticket: TicketComMarcaTransbordo | null | undefined,
   subsetores: readonly { id: string; nome: string }[] | null | undefined,
-  mensagens: readonly MensagemDoTicket[] | null | undefined,
 ): AvisoTransbordo | null {
   const recebidoEm = ticket?.transbordo_recebido_em
   const subsetorOrigemId = ticket?.transbordo_subsetor_origem_id
@@ -192,7 +178,6 @@ export function descreverTransbordoRecebido(
     subsetorOrigemId,
     nomeOrigem: nomeDaLista || nomeDoTicket || null,
     vezes: ticket?.transbordo_subsetor_hops || 1,
-    jaRespondeu: respondeuDepoisDoTransbordo(mensagens, recebidoEm),
   }
 }
 
@@ -293,31 +278,4 @@ export async function registrarOrigemDaAtribuicao(
   return efeitoDaAtribuicao(origem, subsetorDoTicket) === 'marcar'
     ? marcarTransbordoRecebido(supabase, ticketId, subsetorDoTicket)
     : limparMarcaTransbordo(supabase, ticketId)
-}
-
-/**
- * O atendente já falou com o cliente desde o transbordo? Consulta o banco, para
- * o servidor não depender do que a tela mandou.
- *
- * Erro aqui libera a transferência: barrar quem tem direito por causa de uma
- * consulta que falhou é pior do que deixar passar uma devolução.
- */
-export async function atendenteJaRespondeu(
-  supabase: any,
-  ticketId: string,
-  desdeISO: string,
-): Promise<boolean> {
-  const { data, error } = await supabase
-    .from('mensagens')
-    .select('id')
-    .eq('ticket_id', ticketId)
-    .eq('remetente', 'colaborador')
-    .gte('enviado_em', desdeISO)
-    .limit(1)
-
-  if (error) {
-    avisar('verificar se o atendente já respondeu', ticketId, error)
-    return true
-  }
-  return (data?.length ?? 0) > 0
 }
