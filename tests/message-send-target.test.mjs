@@ -367,9 +367,10 @@ test('o canal de saída sai da última fala do cliente, não da última mensagem
   assert.equal(selected?.phone_number_id, 'canal-de-entrada')
 })
 
-test('sem fala do cliente, cai na última mensagem não-sistema', () => {
+test('sem fala do cliente, cai na última mensagem do ATENDENTE', () => {
   // Ticket nascido de disparo: não existe prova de canal nenhuma, então manter o
-  // comportamento antigo é melhor do que travar o envio.
+  // comportamento antigo é melhor do que travar o envio. Mas só vale remetente
+  // que de fato saiu por um canal.
   const selected = selectOutboundChannelEvidence([
     { remetente: 'sistema', phone_number_id: 'ruido' },
     { remetente: 'colaborador', phone_number_id: 'canal-do-disparo' },
@@ -381,6 +382,40 @@ test('sem fala do cliente, cai na última mensagem não-sistema', () => {
     selectOutboundChannelEvidence([{ remetente: 'sistema', phone_number_id: 'ruido' }]),
     null,
   )
+})
+
+test('nota interna do supervisor NÃO decide o canal de saída', () => {
+  // Ticket #162396, 12/08/2026: o supervisor deixou uma nota interna e o
+  // WorkDesk passou a responder pelo pni dela. As 29 notas dos últimos 30 dias
+  // foram gravadas com o número do Financeiro Matriz por default da coluna, e
+  // nota interna nunca sai por canal nenhum — não pode servir de prova.
+  const selected = selectOutboundChannelEvidence([
+    { remetente: 'supervisor', phone_number_id: '958565544008403' },
+    { remetente: 'colaborador', phone_number_id: 'canal-de-verdade' },
+    { remetente: 'cliente', phone_number_id: 'canal-de-entrada' },
+  ])
+
+  assert.equal(selected?.phone_number_id, 'canal-de-entrada')
+})
+
+test('só a nota do supervisor não serve de prova nenhuma', () => {
+  assert.equal(
+    selectOutboundChannelEvidence([
+      { remetente: 'supervisor', phone_number_id: '958565544008403' },
+    ]),
+    null,
+  )
+})
+
+test('bot não decide o canal nem quando é a única mensagem além do sistema', () => {
+  // O n8n grava 100% das bot-nexus com identificador fixo.
+  for (const remetente of ['bot', 'bot-nexus']) {
+    assert.equal(
+      selectOutboundChannelEvidence([{ remetente, phone_number_id: '958565544008403' }]),
+      null,
+      `${remetente} não pode virar prova de canal`,
+    )
+  }
 })
 
 test('allows public HTTPS media and blocks local or private destinations', () => {

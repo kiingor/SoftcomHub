@@ -72,26 +72,42 @@ export function isTicketReplySenderAllowed(
 }
 
 /**
- * Escolhe a mensagem que define o canal de saída do ticket: a última fala do
- * CLIENTE manda, e só na falta dela vale a última mensagem qualquer.
+ * Remetentes cuja mensagem SAIU por um canal de verdade, e por isso servem de
+ * fallback quando o cliente ainda não falou — o caso do ticket de disparo.
  *
- * "Última mensagem, qualquer remetente" era a regra da tela e é a origem do
- * CHANNEL_MISMATCH ao responder: as mensagens `bot-nexus` são gravadas com um
- * `phone_number_id` fixo (Financeiro Matriz) e as do atendente só repetem o que
- * já tinha sido resolvido antes. Nenhum dos dois é prova de canal para o
- * servidor — `selectAuthorizedTicketChannel` só aceita fala do cliente —, então
- * a tela pedia um canal que a rota recusava.
+ * `supervisor` fica de fora de propósito: nota interna nunca é despachada por
+ * canal nenhum, e as 29 dos últimos 30 dias foram gravadas com o
+ * `phone_number_id` do Financeiro Matriz por default da coluna. Aceitá-la como
+ * prova fez o atendente tentar responder o cliente pelo número errado —
+ * ticket #162396, duas falhas seguidas em 12/08/2026.
  *
- * O fallback existe para o ticket nascido de disparo, em que o cliente ainda não
- * falou: sem prova nenhuma, mantém o comportamento antigo em vez de travar.
+ * `bot`/`bot-nexus` também ficam de fora: o n8n grava 100% delas com um
+ * identificador fixo, independente do canal de entrada.
+ */
+const OUTBOUND_CHANNEL_FALLBACK_SENDERS = ['colaborador'] as const
+
+/**
+ * Escolhe a mensagem que define o canal de saída do ticket.
+ *
+ * A regra é: só quem trafegou por um canal pode testemunhar sobre ele. A última
+ * fala do CLIENTE manda, porque prova por onde a conversa entrou; na falta dela,
+ * vale a última do ATENDENTE, que de fato saiu por algum canal.
+ *
+ * "Última mensagem, qualquer remetente" era a regra antiga e é a origem do
+ * CHANNEL_MISMATCH ao responder: `bot-nexus` e `supervisor` carregam um
+ * `phone_number_id` fixo que não tem relação com o canal da conversa, e o
+ * servidor recusa — `selectAuthorizedTicketChannel` só aceita fala do cliente.
  *
  * `messages` vem ordenado do mais recente para o mais antigo.
  */
 export function selectOutboundChannelEvidence<
   T extends { remetente?: string | null },
 >(messages: readonly T[]): T | null {
+  const normalizar = (remetente: string | null | undefined) => (remetente || '').toLowerCase().trim()
   return messages.find((message) => isTrustedInboundClient(message.remetente))
-    ?? messages.find((message) => message.remetente !== 'sistema')
+    ?? messages.find((message) => (
+      (OUTBOUND_CHANNEL_FALLBACK_SENDERS as readonly string[]).includes(normalizar(message.remetente))
+    ))
     ?? null
 }
 
