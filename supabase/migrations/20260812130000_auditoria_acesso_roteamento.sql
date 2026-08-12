@@ -410,4 +410,66 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $$;
 
+-- ─────────────────────────────────────────────────────────────────────────
+-- TRIGGERS — tabelas de VÍNCULO (quem atende o quê)
+--
+-- Volume baixo: são eventos de administração, não de operação.
+--   colaboradores_subsetores → roteamento por subsetor (o caso relatado)
+--   colaboradores_setores    → vínculo de atendimento (e a tag de operação)
+--   colaborador_setores      → acesso do dashboard (tabela diferente, no
+--                              singular; ver dashboard/colaboradores:658)
+--
+-- Um INSERT/DELETE em `colaboradores_setores` gera DOIS registros: o do
+-- vínculo e o do UPDATE que os triggers de 20260525 fazem em
+-- `colaboradores.setores_ativos_sessao`. É redundante de propósito — mostra
+-- a cascata do jeito que ela aconteceu.
+-- ─────────────────────────────────────────────────────────────────────────
+DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_subsetores ON public.colaboradores_subsetores;
+CREATE TRIGGER trg_auditoria_colaboradores_subsetores
+  AFTER INSERT OR UPDATE OR DELETE ON public.colaboradores_subsetores
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_setores ON public.colaboradores_setores;
+CREATE TRIGGER trg_auditoria_colaboradores_setores
+  AFTER INSERT OR UPDATE OR DELETE ON public.colaboradores_setores
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+DROP TRIGGER IF EXISTS trg_auditoria_colaborador_setores ON public.colaborador_setores;
+CREATE TRIGGER trg_auditoria_colaborador_setores
+  AFTER INSERT OR UPDATE OR DELETE ON public.colaborador_setores
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- TRIGGERS — `colaboradores`
+--
+-- Aqui o UPDATE é FILTRADO, e isso não é economia: a tabela é escrita no
+-- caminho quente (last_heartbeat a cada batida, is_online, foto_url,
+-- last_ticket_received_at). Auditar UPDATE cru geraria dezenas de milhares de
+-- linhas por dia de ruído e amplificaria escrita num banco compartilhado com
+-- produção. Só interessa o que muda o que a pessoa pode fazer e onde ela
+-- atende: ativo, permissao_id, setor_id (legado), is_master e
+-- setores_ativos_sessao — este último é o irmão do vínculo de subsetor,
+-- também decide se o ticket chega.
+--
+-- INSERT e DELETE não precisam de filtro: acontecem uma vez por conta.
+-- ─────────────────────────────────────────────────────────────────────────
+DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_ins_del ON public.colaboradores;
+CREATE TRIGGER trg_auditoria_colaboradores_ins_del
+  AFTER INSERT OR DELETE ON public.colaboradores
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_upd ON public.colaboradores;
+CREATE TRIGGER trg_auditoria_colaboradores_upd
+  AFTER UPDATE OF ativo, permissao_id, setor_id, is_master, setores_ativos_sessao
+  ON public.colaboradores
+  FOR EACH ROW
+  WHEN (
+    OLD.ativo IS DISTINCT FROM NEW.ativo
+    OR OLD.permissao_id IS DISTINCT FROM NEW.permissao_id
+    OR OLD.setor_id IS DISTINCT FROM NEW.setor_id
+    OR OLD.is_master IS DISTINCT FROM NEW.is_master
+    OR OLD.setores_ativos_sessao IS DISTINCT FROM NEW.setores_ativos_sessao
+  )
+  EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
 COMMIT;
