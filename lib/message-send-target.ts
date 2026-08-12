@@ -72,26 +72,52 @@ export function isTicketReplySenderAllowed(
 }
 
 /**
- * Escolhe a mensagem que define o canal de saída do ticket: a última fala do
- * CLIENTE manda, e só na falta dela vale a última mensagem qualquer.
+ * Remetentes cuja mensagem SAIU por um canal de verdade, e por isso servem de
+ * fallback quando o cliente ainda não falou — o caso do ticket de disparo.
  *
- * "Última mensagem, qualquer remetente" era a regra da tela e é a origem do
- * CHANNEL_MISMATCH ao responder: as mensagens `bot-nexus` são gravadas com um
- * `phone_number_id` fixo (Financeiro Matriz) e as do atendente só repetem o que
- * já tinha sido resolvido antes. Nenhum dos dois é prova de canal para o
- * servidor — `selectAuthorizedTicketChannel` só aceita fala do cliente —, então
- * a tela pedia um canal que a rota recusava.
+ * `supervisor` fica de fora de propósito: nota interna nunca é despachada por
+ * canal nenhum, e as 29 dos últimos 30 dias foram gravadas com o
+ * `phone_number_id` do Financeiro Matriz por default da coluna. Aceitá-la como
+ * prova fez o atendente tentar responder o cliente pelo número errado —
+ * ticket #162396, duas falhas seguidas em 12/08/2026.
  *
- * O fallback existe para o ticket nascido de disparo, em que o cliente ainda não
- * falou: sem prova nenhuma, mantém o comportamento antigo em vez de travar.
+ * `bot` entra porque é como o NOSSO código grava a mensagem inicial do disparo
+ * (`evolution/dispatch`, `disparo-processor`, `tickets/disparo-externo`), sempre
+ * com a instância de verdade que despachou. Num ticket de disparo antes de o
+ * cliente responder ela é a única evidência de canal que existe — sem ela o
+ * encerramento automático manda a mensagem de finalização pelo primeiro canal
+ * ativo do setor, que num setor com vários canais é o número errado.
+ *
+ * `bot-nexus` continua de fora: essas são do n8n, que grava 100% delas com um
+ * identificador fixo, independente do canal de entrada. Por isso a comparação
+ * abaixo é por igualdade exata, nunca por prefixo — `bot-nexus` não pode entrar
+ * de carona no `bot`.
+ */
+const OUTBOUND_CHANNEL_FALLBACK_SENDERS = ['colaborador', 'bot'] as const
+
+/**
+ * Escolhe a mensagem que define o canal de saída do ticket.
+ *
+ * A regra é: só quem trafegou por um canal pode testemunhar sobre ele. A última
+ * fala do CLIENTE manda, porque prova por onde a conversa entrou; na falta dela,
+ * vale a última do ATENDENTE ou o disparo que abriu o ticket, que de fato saíram
+ * por algum canal.
+ *
+ * "Última mensagem, qualquer remetente" era a regra antiga e é a origem do
+ * CHANNEL_MISMATCH ao responder: `bot-nexus` e `supervisor` carregam um
+ * `phone_number_id` fixo que não tem relação com o canal da conversa, e o
+ * servidor recusa — `selectAuthorizedTicketChannel` só aceita fala do cliente.
  *
  * `messages` vem ordenado do mais recente para o mais antigo.
  */
 export function selectOutboundChannelEvidence<
   T extends { remetente?: string | null },
 >(messages: readonly T[]): T | null {
+  const normalizar = (remetente: string | null | undefined) => (remetente || '').toLowerCase().trim()
   return messages.find((message) => isTrustedInboundClient(message.remetente))
-    ?? messages.find((message) => message.remetente !== 'sistema')
+    ?? messages.find((message) => (
+      (OUTBOUND_CHANNEL_FALLBACK_SENDERS as readonly string[]).includes(normalizar(message.remetente))
+    ))
     ?? null
 }
 

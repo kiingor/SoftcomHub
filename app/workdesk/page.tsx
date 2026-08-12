@@ -2760,7 +2760,7 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
             .from('mensagens')
             .select('remetente, canal_envio, phone_number_id, discord_user_id')
             .eq('ticket_id', ticketToClose.id)
-            .neq('remetente', 'sistema')
+            .in('remetente', ['colaborador', 'bot'])
             .order('enviado_em', { ascending: false })
             .limit(1),
         ])
@@ -4147,7 +4147,7 @@ const insertEmoji = (emoji: string) => {
           .from('mensagens')
           .select('remetente, canal_envio, phone_number_id, discord_user_id')
           .eq('ticket_id', capturedTicketId)
-          .neq('remetente', 'sistema')
+          .in('remetente', ['colaborador', 'bot'])
           .order('enviado_em', { ascending: false })
           .limit(1),
       ])
