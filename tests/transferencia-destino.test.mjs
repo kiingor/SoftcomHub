@@ -6,6 +6,7 @@ import {
   resolverDestinoTransferencia,
 } from '../lib/transferencia-destino.ts'
 import { bloquearDevolucao } from '../lib/transbordo-marca.ts'
+import { hasSupervisorScope } from '../lib/transfer-authorization.ts'
 
 const SETOR = 'setor-servicedesk'
 const OUTRO_SETOR = 'setor-financeiro'
@@ -74,11 +75,21 @@ test('devolução implícita — sem informar subsetor — também é barrada', 
   // bloqueio olharia para `null` e deixaria passar.
   const marca = { recebidoEm: '2026-08-12T13:00:00.000Z', subsetorOrigemId: PRIME, hops: 1 }
   const destino = resolverDestinoTransferencia(ticketNoPrime, pedido({}))
+  const devolucao = { subsetorId: destino.subsetorId, colaboradorId: null }
 
-  assert.equal(
-    bloquearDevolucao(marca, { subsetorId: destino.subsetorId, colaboradorId: null }, false),
-    true,
+  const atendenteComum = hasSupervisorScope(
+    { id: 'colab-1', isMaster: false, canSeeAllTickets: false, linkedSetorIds: [SETOR] },
+    SETOR,
   )
+  assert.equal(bloquearDevolucao(marca, devolucao, atendenteComum), true)
+
+  // O mesmo atalho na mão do supervisor do setor passa — o bloqueio é de
+  // permissão, não de forma da requisição.
+  const supervisor = hasSupervisorScope(
+    { id: 'sup-1', isMaster: false, canSeeAllTickets: true, linkedSetorIds: [SETOR] },
+    SETOR,
+  )
+  assert.equal(bloquearDevolucao(marca, devolucao, supervisor), false)
 })
 
 test('a fila bloqueada é só a do subsetor escolhido', () => {
@@ -112,6 +123,40 @@ test('fila bloqueada desliga o botão no modo fila', () => {
       subsetorComFilaBloqueada: PRIME,
     }),
     true,
+  )
+})
+
+test('para supervisor a fila de origem nem chega bloqueada na tela', () => {
+  // O WorkDesk só monta `filaBloqueada` quando quem está olhando não pode
+  // devolver; para supervisor e master o campo vem vazio, e a fila fica ligada.
+  // Este teste é o contrato entre aquela decisão e este componente.
+  const ator = (extra) => hasSupervisorScope(
+    { id: 'x', isMaster: false, canSeeAllTickets: false, linkedSetorIds: [SETOR], ...extra },
+    SETOR,
+  )
+  const filaBloqueadaNaTela = (podeDevolver) => (podeDevolver ? undefined : PRIME)
+
+  for (const podeDevolver of [ator({ canSeeAllTickets: true }), ator({ isMaster: true })]) {
+    assert.equal(podeDevolver, true)
+    assert.equal(
+      podeConfirmarDestino({
+        subsetorSelecionadoId: PRIME,
+        modo: 'queue',
+        subsetorComFilaBloqueada: filaBloqueadaNaTela(podeDevolver),
+      }),
+      true,
+    )
+  }
+
+  // E o atendente comum continua com a fila desligada.
+  assert.equal(ator({}), false)
+  assert.equal(
+    podeConfirmarDestino({
+      subsetorSelecionadoId: PRIME,
+      modo: 'queue',
+      subsetorComFilaBloqueada: filaBloqueadaNaTela(ator({})),
+    }),
+    false,
   )
 })
 
