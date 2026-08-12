@@ -28,17 +28,33 @@ export type TransferAuthorizationResult =
   | { allowed: true }
   | { allowed: false; reason: 'NOT_OWNER' | 'SUPERVISOR_OUT_OF_SCOPE' }
 
+/**
+ * O colaborador manda neste setor — é master, ou supervisor vinculado a ele?
+ *
+ * Esta é a ÚNICA definição de "supervisor" do sistema, e existe extraída porque
+ * dois lugares decidem com ela: {@link canTransferTicket}, para tickets de
+ * terceiros, e o bloqueio de devolução ao subsetor de origem (caso #97066), que
+ * só o supervisor do setor pode dispensar. Duas cópias divergiriam na primeira
+ * mudança de regra — e uma delas ficaria mais frouxa que a outra sem ninguém ver.
+ *
+ * Sem `is_master`, o alcance é o vínculo: `can_see_all_tickets` é permissão para
+ * ver tudo, não procuração sobre setor onde o supervisor não trabalha.
+ */
+export function hasSupervisorScope(actor: TransferActor, setorId: string): boolean {
+  if (actor.isMaster) return true
+  return actor.canSeeAllTickets && actor.linkedSetorIds.includes(setorId)
+}
+
 export function canTransferTicket(
   actor: TransferActor,
   ticket: TransferableTicket,
 ): TransferAuthorizationResult {
   if (ticket.colaboradorId === actor.id) return { allowed: true }
-  if (actor.isMaster) return { allowed: true }
-  if (!actor.canSeeAllTickets) return { allowed: false, reason: 'NOT_OWNER' }
-  if (!actor.linkedSetorIds.includes(ticket.setorId)) {
-    return { allowed: false, reason: 'SUPERVISOR_OUT_OF_SCOPE' }
+  if (hasSupervisorScope(actor, ticket.setorId)) return { allowed: true }
+  return {
+    allowed: false,
+    reason: actor.canSeeAllTickets ? 'SUPERVISOR_OUT_OF_SCOPE' : 'NOT_OWNER',
   }
-  return { allowed: true }
 }
 
 export function isTransferTargetAvailable(
