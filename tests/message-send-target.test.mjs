@@ -368,20 +368,35 @@ test('o canal de saída sai da última fala do cliente, não da última mensagem
 })
 
 test('sem fala do cliente, cai na última mensagem do ATENDENTE', () => {
-  // Ticket nascido de disparo: não existe prova de canal nenhuma, então manter o
-  // comportamento antigo é melhor do que travar o envio. Mas só vale remetente
-  // que de fato saiu por um canal.
+  // Sem prova de canal do cliente, manter o comportamento antigo é melhor do que
+  // travar o envio. Mas só vale remetente que de fato saiu por um canal —
+  // `sistema` não é um deles.
   const selected = selectOutboundChannelEvidence([
     { remetente: 'sistema', phone_number_id: 'ruido' },
-    { remetente: 'colaborador', phone_number_id: 'canal-do-disparo' },
+    { remetente: 'colaborador', phone_number_id: 'canal-do-atendente' },
   ])
 
-  assert.equal(selected?.phone_number_id, 'canal-do-disparo')
+  assert.equal(selected?.phone_number_id, 'canal-do-atendente')
   assert.equal(selectOutboundChannelEvidence([]), null)
   assert.equal(
     selectOutboundChannelEvidence([{ remetente: 'sistema', phone_number_id: 'ruido' }]),
     null,
   )
+})
+
+test('o disparo do bot prova o canal enquanto o cliente não respondeu', () => {
+  // A mensagem inicial do disparo é gravada pelo NOSSO código como remetente
+  // `bot`, com a instância que de fato despachou (evolution/dispatch,
+  // disparo-processor, tickets/disparo-externo). Antes de o cliente responder ela
+  // é a única evidência de canal que existe: sem ela, o encerramento automático
+  // por 12 min sem resposta manda a mensagem de finalização pelo primeiro canal
+  // ativo do setor — o número errado em setor com vários canais.
+  const selected = selectOutboundChannelEvidence([
+    { remetente: 'sistema', phone_number_id: 'ruido' },
+    { remetente: 'bot', phone_number_id: 'canal-do-disparo' },
+  ])
+
+  assert.equal(selected?.phone_number_id, 'canal-do-disparo')
 })
 
 test('nota interna do supervisor NÃO decide o canal de saída', () => {
@@ -407,15 +422,23 @@ test('só a nota do supervisor não serve de prova nenhuma', () => {
   )
 })
 
-test('bot não decide o canal nem quando é a única mensagem além do sistema', () => {
-  // O n8n grava 100% das bot-nexus com identificador fixo.
-  for (const remetente of ['bot', 'bot-nexus']) {
-    assert.equal(
-      selectOutboundChannelEvidence([{ remetente, phone_number_id: '958565544008403' }]),
-      null,
-      `${remetente} não pode virar prova de canal`,
-    )
-  }
+test('bot-nexus não decide o canal nem quando é a única mensagem além do sistema', () => {
+  // O n8n grava 100% das bot-nexus com identificador fixo, então elas não provam
+  // nada. A comparação do fallback é por igualdade exata justamente para
+  // `bot-nexus` não entrar de carona no `bot` do disparo.
+  assert.equal(
+    selectOutboundChannelEvidence([
+      { remetente: 'bot-nexus', phone_number_id: '958565544008403' },
+    ]),
+    null,
+  )
+  assert.equal(
+    selectOutboundChannelEvidence([
+      { remetente: 'bot-nexus', phone_number_id: '958565544008403' },
+      { remetente: 'bot', phone_number_id: 'canal-do-disparo' },
+    ])?.phone_number_id,
+    'canal-do-disparo',
+  )
 })
 
 test('allows public HTTPS media and blocks local or private destinations', () => {

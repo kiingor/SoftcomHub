@@ -1329,7 +1329,7 @@ export default function MonitoramentoPage() {
             .from('mensagens')
             .select('remetente, canal_envio, phone_number_id, discord_user_id')
             .eq('ticket_id', selectedTicket.id)
-            .eq('remetente', 'colaborador')
+            .in('remetente', ['colaborador', 'bot'])
             .order('enviado_em', { ascending: false })
             .limit(1),
         ])

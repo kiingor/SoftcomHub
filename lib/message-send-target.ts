@@ -81,17 +81,27 @@ export function isTicketReplySenderAllowed(
  * prova fez o atendente tentar responder o cliente pelo número errado —
  * ticket #162396, duas falhas seguidas em 12/08/2026.
  *
- * `bot`/`bot-nexus` também ficam de fora: o n8n grava 100% delas com um
- * identificador fixo, independente do canal de entrada.
+ * `bot` entra porque é como o NOSSO código grava a mensagem inicial do disparo
+ * (`evolution/dispatch`, `disparo-processor`, `tickets/disparo-externo`), sempre
+ * com a instância de verdade que despachou. Num ticket de disparo antes de o
+ * cliente responder ela é a única evidência de canal que existe — sem ela o
+ * encerramento automático manda a mensagem de finalização pelo primeiro canal
+ * ativo do setor, que num setor com vários canais é o número errado.
+ *
+ * `bot-nexus` continua de fora: essas são do n8n, que grava 100% delas com um
+ * identificador fixo, independente do canal de entrada. Por isso a comparação
+ * abaixo é por igualdade exata, nunca por prefixo — `bot-nexus` não pode entrar
+ * de carona no `bot`.
  */
-const OUTBOUND_CHANNEL_FALLBACK_SENDERS = ['colaborador'] as const
+const OUTBOUND_CHANNEL_FALLBACK_SENDERS = ['colaborador', 'bot'] as const
 
 /**
  * Escolhe a mensagem que define o canal de saída do ticket.
  *
  * A regra é: só quem trafegou por um canal pode testemunhar sobre ele. A última
  * fala do CLIENTE manda, porque prova por onde a conversa entrou; na falta dela,
- * vale a última do ATENDENTE, que de fato saiu por algum canal.
+ * vale a última do ATENDENTE ou o disparo que abriu o ticket, que de fato saíram
+ * por algum canal.
  *
  * "Última mensagem, qualquer remetente" era a regra antiga e é a origem do
  * CHANNEL_MISMATCH ao responder: `bot-nexus` e `supervisor` carregam um
