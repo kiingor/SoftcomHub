@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
+import { registrarOrigemDaAtribuicao } from '@/lib/transbordo-marca'
 
 /**
  * POST /api/tickets/pull-next
@@ -228,6 +229,15 @@ export async function POST(request: Request) {
 
       const r = result as { assigned?: boolean; reason?: string; current_count?: number }
       if (r?.assigned === true) {
+        // Caso #97066: puxar por fallback é o mesmo transbordo, só que iniciado
+        // à mão. O ticket carrega de onde veio pelo mesmo caminho — inclusive
+        // para apagar marca de um ciclo anterior quando o subsetor é o próprio.
+        await registrarOrigemDaAtribuicao(
+          supabase,
+          ticket.id,
+          isFallback ? 'transbordo' : 'proprio',
+          ticket.subsetor_id,
+        )
         // Log para auditoria
         await supabase.from('ticket_logs').insert({
           ticket_id: ticket.id,

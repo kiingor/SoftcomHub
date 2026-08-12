@@ -5,6 +5,7 @@ import { escolherDestino, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
+import { limparMarcaTransbordo, registrarOrigemDaAtribuicao } from '@/lib/transbordo-marca'
 
 interface DistribuicaoResult {
   ticketId: string
@@ -357,6 +358,10 @@ export async function criarEDistribuirTicket(
           if (assigned) {
             assignedColaboradorId = candidate.id
             await marcarSaidaDaFila(supabase, ticket.id)
+            // Caso #97066: mesma estampa do processador de fila — sem ela, o
+            // ticket criado e distribuído por aqui chegaria ao atendente de
+            // outro subsetor sem dizer de onde veio.
+            await registrarOrigemDaAtribuicao(supabase, ticket.id, escolha.origem, subsetorEfetivo)
 
             try {
               await supabase.from('ticket_assignment_logs').insert({
@@ -625,6 +630,10 @@ async function _tentarDistribuirNoSetor(
 
     if (assigned) {
       await marcarSaidaDaFila(supabase, ticketId)
+      // O ticket chegou aqui por transbordo de SETOR: a marca de subsetor que
+      // ele porventura carregasse aponta para uma fila do setor de origem, que
+      // não existe deste lado. Limpar evita aviso e bloqueio sem assunto.
+      await limparMarcaTransbordo(supabase, ticketId)
       try {
         await supabase.from('ticket_assignment_logs').insert({
           ticket_id: ticketId,
@@ -863,6 +872,14 @@ export async function redistribuirTicketsPendentes(setorId: string): Promise<num
 
         if (assigned) {
           await marcarSaidaDaFila(supabase, ticket.id)
+          // `fallback` aqui só recebe ticket que NÃO tem nenhum atendente do
+          // próprio subsetor — logo, toda atribuição deste passe é transbordo.
+          await registrarOrigemDaAtribuicao(
+            supabase,
+            ticket.id,
+            routingPass === 'fallback' ? 'transbordo' : 'proprio',
+            ticket.subsetor_id,
+          )
           // Atualiza os contadores em memória para a ordenação do PRÓXIMO ticket
           // deste mesmo lote. Sem incrementar `recebidosHojeMap` — que é o
           // critério de ordem — o lote inteiro iria para a mesma pessoa até ela
