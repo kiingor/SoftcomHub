@@ -472,4 +472,57 @@ CREATE TRIGGER trg_auditoria_colaboradores_upd
   )
   EXECUTE FUNCTION public.registrar_auditoria_mudanca();
 
+-- ─────────────────────────────────────────────────────────────────────────
+-- TRIGGERS — tabelas de CONFIGURAÇÃO (por onde o ticket entra e para onde vai)
+--
+-- Aqui a exclusão silenciosa é pior do que na de vínculo: tirar o subsetor de
+-- um atendente some com UMA pessoa da fila; apagar o SETOR leva junto, por
+-- ON DELETE CASCADE, os subsetores, os canais, os destinos de transferência e
+-- todos os vínculos de todo mundo. É a mudança mais destrutiva do sistema e
+-- hoje não deixa rastro nenhum.
+--
+--   setores                      → o setor em si; o DELETE cascateia em tudo
+--   subsetores                   → destino do roteamento por subsetor
+--   setor_canais                 → por onde a mensagem entra e sai (instância,
+--                                  credencial); mexer aqui derruba canal
+--   permissoes                   → o que cada papel pode fazer
+--   setor_destinos_transferencia → para onde o ticket pode ser transferido
+--
+-- INSERT, UPDATE e DELETE crus: são todas de volume administrativo, e num
+-- UPDATE de configuração o que interessa é justamente qual campo virou o quê.
+--
+-- Na CASCATA do DELETE de um setor, cada linha filha vira um registro próprio,
+-- todos com o mesmo `contexto_setor_id`. O `contexto_setor_nome` das filhas
+-- vem NULL — o setor já saiu da tabela quando o trigger delas roda; o nome
+-- está no registro de `tabela = 'setores'` do mesmo instante.
+--
+-- FICAM DE FORA, de propósito: error_logs, notificacoes, push_subscriptions.
+-- Alto volume e baixo valor forense — incluir afogaria a trilha e ninguém
+-- acharia mais o que procura.
+-- ─────────────────────────────────────────────────────────────────────────
+DROP TRIGGER IF EXISTS trg_auditoria_setores ON public.setores;
+CREATE TRIGGER trg_auditoria_setores
+  AFTER INSERT OR UPDATE OR DELETE ON public.setores
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+DROP TRIGGER IF EXISTS trg_auditoria_subsetores ON public.subsetores;
+CREATE TRIGGER trg_auditoria_subsetores
+  AFTER INSERT OR UPDATE OR DELETE ON public.subsetores
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+DROP TRIGGER IF EXISTS trg_auditoria_setor_canais ON public.setor_canais;
+CREATE TRIGGER trg_auditoria_setor_canais
+  AFTER INSERT OR UPDATE OR DELETE ON public.setor_canais
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+DROP TRIGGER IF EXISTS trg_auditoria_permissoes ON public.permissoes;
+CREATE TRIGGER trg_auditoria_permissoes
+  AFTER INSERT OR UPDATE OR DELETE ON public.permissoes
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
+DROP TRIGGER IF EXISTS trg_auditoria_setor_destinos_transferencia ON public.setor_destinos_transferencia;
+CREATE TRIGGER trg_auditoria_setor_destinos_transferencia
+  AFTER INSERT OR UPDATE OR DELETE ON public.setor_destinos_transferencia
+  FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
+
 COMMIT;
