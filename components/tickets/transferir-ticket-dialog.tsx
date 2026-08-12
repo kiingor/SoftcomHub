@@ -67,6 +67,18 @@ export interface TransferAtendente {
 
 type TransferDestinationMode = 'queue' | 'attendant'
 
+/**
+ * Fila indisponível como destino — hoje só o caso #97066: o ticket chegou por
+ * transbordo e ainda não foi atendido, então voltar para a fila que o cedeu só
+ * reinicia o ciclo. Vem de fora porque quem sabe se o atendente já respondeu é
+ * a tela que carregou as mensagens; o servidor refaz a checagem por conta.
+ */
+export interface TransferFilaBloqueada {
+  subsetorId: string
+  /** Texto curto exibido na opção desabilitada. */
+  motivo: string
+}
+
 interface TransferDestinoRow {
   setor_destino_id: string
   setores: TransferSetor | TransferSetor[] | null
@@ -90,6 +102,8 @@ export interface TransferirTicketFormProps {
   colaborador?: { id?: string | null; nome?: string | null } | null
   /** Identifica a origem nos logs de erro (ex.: 'WorkDesk', 'Monitoramento'). */
   tela: string
+  /** Fila que não pode receber este ticket agora. Ver {@link TransferFilaBloqueada}. */
+  filaBloqueada?: TransferFilaBloqueada | null
   /**
    * Chamado logo antes do POST, para a tela aplicar remoção otimista.
    * Se a transferência falhar, `onTransferError` é chamado para desfazer.
@@ -110,6 +124,7 @@ export function TransferirTicketForm({
   ticket,
   colaborador,
   tela,
+  filaBloqueada,
   onTransferStart,
   onTransferSuccess,
   onTransferError,
@@ -368,8 +383,15 @@ export function TransferirTicketForm({
   const hasSelectedSector = selectedSetor !== UNSELECTED_TRANSFER_VALUE
   const hasSelectedSubsetor = Boolean(selectedTransferSubsetor)
   const onlineCompatibleAttendants = compatibleAttendants.filter(isAtendenteOnline)
+  // Só a FILA deste subsetor está fechada. Entregar a um atendente nomeado dele
+  // continua valendo — é o que tira o ticket do ciclo em vez de reiniciá-lo.
+  const filaDoSubsetorBloqueada = Boolean(
+    filaBloqueada && selectedTransferSubsetor?.id === filaBloqueada.subsetorId,
+  )
   const isDestinationReady = hasSelectedSubsetor && (
-    destinationMode === 'queue' || Boolean(selectedTransferAttendant)
+    destinationMode === 'queue'
+      ? !filaDoSubsetorBloqueada
+      : Boolean(selectedTransferAttendant)
   )
 
   const handleSetorChange = (setorId: string) => {
@@ -614,6 +636,7 @@ export function TransferirTicketForm({
                         <button
                           type="button"
                           aria-pressed={destinationMode === 'queue'}
+                          disabled={filaDoSubsetorBloqueada}
                           onClick={() => {
                             setDestinationMode('queue')
                             setSelectedAtendente(UNSELECTED_TRANSFER_VALUE)
@@ -622,21 +645,33 @@ export function TransferirTicketForm({
                           }}
                           className={cn(
                             'min-h-24 touch-manipulation rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                            destinationMode === 'queue'
-                              ? 'border-primary bg-primary/5'
-                              : 'border-border bg-background hover:bg-muted/50',
+                            filaDoSubsetorBloqueada
+                              ? 'cursor-not-allowed border-dashed border-border bg-muted/40 opacity-70'
+                              : destinationMode === 'queue'
+                                ? 'border-primary bg-primary/5'
+                                : 'border-border bg-background hover:bg-muted/50',
                           )}
                         >
                           <span className="flex items-start">
-                            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-primary/10 text-primary">
+                            <span className={cn(
+                              'flex h-9 w-9 items-center justify-center rounded-md',
+                              filaDoSubsetorBloqueada
+                                ? 'bg-muted text-muted-foreground'
+                                : 'bg-primary/10 text-primary',
+                            )}>
                               <TicketIcon className="h-4 w-4" aria-hidden="true" />
                             </span>
                           </span>
-                          <span className="mt-3 block text-sm font-medium text-foreground">
+                          <span className={cn(
+                            'mt-3 block text-sm font-medium',
+                            filaDoSubsetorBloqueada ? 'text-muted-foreground' : 'text-foreground',
+                          )}>
                             Fila do subsetor
                           </span>
                           <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                            Mantém a prioridade e distribui automaticamente.
+                            {filaDoSubsetorBloqueada
+                              ? 'Indisponível para este atendimento.'
+                              : 'Mantém a prioridade e distribui automaticamente.'}
                           </span>
                         </button>
 
@@ -667,6 +702,12 @@ export function TransferirTicketForm({
                           </span>
                         </button>
                       </div>
+
+                      {filaDoSubsetorBloqueada && (
+                        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">
+                          {filaBloqueada?.motivo}
+                        </p>
+                      )}
 
                       {destinationMode === 'attendant' && (
                         <div className="space-y-2">

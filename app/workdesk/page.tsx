@@ -20,6 +20,7 @@ import { ptBR } from 'date-fns/locale'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { TransferirTicketDialog } from '@/components/tickets/transferir-ticket-dialog'
 import { rotuloDuplicidade, ticketsAbertos } from '@/lib/tickets-duplicados'
+import { respondeuDepoisDoTransbordo } from '@/lib/transbordo-marca'
 import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { upload } from '@vercel/blob/client'
 import { resolveMime } from '@/lib/whatsapp-media'
@@ -221,6 +222,12 @@ interface Ticket {
   is_disparo?: boolean
   disparo_em?: string | null
   user_name_discord?: string | null
+  // Caso #97066 — transbordo entre subsetores. Opcionais de propósito: vêm do
+  // `select('*')` e só existem depois da migration 20260812120000. Ausentes, a
+  // tela se comporta como antes.
+  transbordo_recebido_em?: string | null
+  transbordo_subsetor_origem_id?: string | null
+  transbordo_subsetor_hops?: number | null
 }
 
 interface Mensagem {
@@ -1175,6 +1182,26 @@ export default function WorkdeskPage() {
       .join(', '),
     [outrosAtendimentosAbertos],
   )
+  // Caso #97066: o ticket caiu aqui porque o subsetor dele estava sem atendente.
+  // Sem dizer isso na tela, o atendente devolve para a fila de origem — que
+  // continua vazia — e o ticket volta. `jaRespondeu` sai das mensagens que a
+  // tela já carregou; o servidor refaz a mesma checagem antes de transferir.
+  const transbordoRecebido = useMemo(() => {
+    const recebidoEm = selectedTicket?.transbordo_recebido_em
+    const subsetorOrigemId = selectedTicket?.transbordo_subsetor_origem_id
+    if (!recebidoEm || !subsetorOrigemId) return null
+
+    const nomeOrigem = subsetoresDisponiveis.find((s) => s.id === subsetorOrigemId)?.nome
+      ?? (selectedTicket?.subsetor_id === subsetorOrigemId ? selectedTicket?.subsetores?.nome : null)
+
+    return {
+      subsetorOrigemId,
+      nomeOrigem: nomeOrigem || null,
+      vezes: selectedTicket?.transbordo_subsetor_hops ?? 1,
+      jaRespondeu: respondeuDepoisDoTransbordo(mensagens, recebidoEm),
+    }
+  }, [selectedTicket, subsetoresDisponiveis, mensagens])
+
   const [loadingHistory, setLoadingHistory] = useState(false)
   // Conversa de um atendimento anterior aberta em modal (somente leitura).
   const [historicoConversa, setHistoricoConversa] = useState<TicketHistoryEntry | null>(null)
@@ -5107,6 +5134,28 @@ const insertEmoji = (emoji: string) => {
                 </div>
               )}
 
+              {/* Aviso de transbordo — este atendimento é de outro subsetor e
+                  caiu aqui por falta de atendente lá. Sem isso, o atendente
+                  devolve para a fila de origem e o ticket volta em seguida. */}
+              {transbordoRecebido && (
+                <div
+                  role="status"
+                  className="flex items-start gap-2 border-b border-sky-300 bg-sky-50 px-4 py-2 text-xs text-sky-900 dark:border-sky-700 dark:bg-sky-950/30 dark:text-sky-200"
+                >
+                  <ArrowRightLeft className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <p>
+                    <span className="font-semibold">
+                      Recebido por transbordo — sem técnico disponível
+                      {transbordoRecebido.nomeOrigem ? ` no ${transbordoRecebido.nomeOrigem}` : ' no subsetor de origem'}
+                      {transbordoRecebido.vezes > 1 && ` (${transbordoRecebido.vezes}ª vez)`}.
+                    </span>{' '}
+                    {transbordoRecebido.jaRespondeu
+                      ? 'Você já respondeu ao cliente — transferir agora está liberado.'
+                      : 'Responda ao cliente antes de devolver para essa fila: ela continua sem atendente e o ticket voltaria para cá.'}
+                  </p>
+                </div>
+              )}
+
               {/* Messages */}
               <div className="flex-1 overflow-hidden">
                 <div ref={messagesContainerRef} onScroll={handleMessagesScroll} className="h-full overflow-y-auto">
@@ -6810,6 +6859,10 @@ onClick={() => {
         ticket={selectedTicket}
         colaborador={colaborador}
         tela="WorkDesk"
+        filaBloqueada={transbordoRecebido && !transbordoRecebido.jaRespondeu ? {
+          subsetorId: transbordoRecebido.subsetorOrigemId,
+          motivo: `Este atendimento veio${transbordoRecebido.nomeOrigem ? ` do ${transbordoRecebido.nomeOrigem}` : ''} por transbordo e ainda não foi respondido. Devolver para essa fila só reinicia o ciclo — responda ao cliente, escolha um atendente ou outro destino.`,
+        } : null}
         onTransferStart={(ticketId) => {
           // Marca ANTES do POST para o realtime não trazer o ticket de volta,
           // e some com ele da lista na hora para dar retorno imediato.
