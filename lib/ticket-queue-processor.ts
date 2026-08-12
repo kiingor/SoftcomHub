@@ -9,6 +9,7 @@ import {
 } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
+import { registrarOrigemDaAtribuicao, type OrigemAtribuicao } from '@/lib/transbordo-marca'
 import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
 
 // Configuration defaults
@@ -402,6 +403,9 @@ async function tryAssignTicket(
   // Havia gente com vaga, e ainda assim ninguém ficou elegível: a exclusão foi
   // por subsetor, não por lotação.
   let bloqueadoPorSubsetor = false
+  // O passe compatível só oferece atendentes do próprio subsetor; transbordo,
+  // quando acontece, é decidido no passe de fallback.
+  let origemAtribuicao: OrigemAtribuicao = 'proprio'
 
   if (routingPass === 'compatible' && eligibleColaboradores.length === 0) {
     const reason = colaboradores.length === 0
@@ -452,6 +456,7 @@ async function tryAssignTicket(
       subsetoresComTransbordo,
       maxTicketsAbertos: maxTicketsPerAgent,
     })
+    origemAtribuicao = destino.origem
     const colaboradoresPorId = new Map(colaboradores.map((colaborador) => [colaborador.id, colaborador]))
     eligibleColaboradores = destino.fila
       .map((colaborador) => colaboradoresPorId.get(colaborador.id))
@@ -493,6 +498,11 @@ async function tryAssignTicket(
 
     if (assigned) {
       await marcarSaidaDaFila(supabase, ticketId)
+      // Caso #97066: quem recebe por transbordo precisa saber disso na tela, e a
+      // devolução imediata para a fila de origem precisa ser barrada. A RPC acima
+      // é que garante a atomicidade da atribuição — estampar depois do sucesso
+      // dela não afrouxa nada, e a marca nunca derruba o atendimento.
+      await registrarOrigemDaAtribuicao(supabase, ticketId, origemAtribuicao, ticketSubsetorId)
       logAssignment(
         ticketId,
         candidate.id,

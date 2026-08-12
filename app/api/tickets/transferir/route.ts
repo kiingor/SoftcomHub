@@ -6,6 +6,14 @@ import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { processTicketQueue } from '@/lib/ticket-queue-processor'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
 import { canTransferTicket, isTransferTargetAvailable } from '@/lib/transfer-authorization'
+import {
+  atendenteJaRespondeu,
+  carregarMarcaTransbordo,
+  isDevolucaoParaOrigem,
+  isRecebidoPorTransbordo,
+  limparMarcaTransbordo,
+} from '@/lib/transbordo-marca'
+import { resolverDestinoTransferencia } from '@/lib/transferencia-destino'
 
 const transferRequestSchema = z.object({
   ticket_id: z.string().uuid('ticket_id inválido'),
@@ -36,6 +44,14 @@ const TRANSFER_ERRORS = {
   },
   COLLABORATOR_SUBSETOR_MISMATCH: {
     error: 'O atendente selecionado não é compatível com este subsetor.',
+    status: 422,
+  },
+  // Caso #97066. A fila de origem continua sem atendente, então devolver para
+  // ela só reinicia o transbordo — o ticket vai e volta e o cliente envelhece.
+  // Responder ao cliente libera: aí a transferência é decisão de atendimento,
+  // não repique da distribuição.
+  DEVOLUCAO_TRANSBORDO: {
+    error: 'Este atendimento chegou até você por transbordo, porque a fila de origem estava sem atendente disponível. Responda ao cliente antes de devolvê-lo para essa fila — ou escolha outro destino.',
     status: 422,
   },
 }
@@ -149,11 +165,18 @@ export async function POST(request: Request) {
       )
     }
 
-    const targetSetorId = hasExplicitSetor ? body.setor_id! : ticket.setor_id
-    const isChangingSetor = targetSetorId !== ticket.setor_id
-    const targetSubsetorId = !isChangingSetor && !hasExplicitSubsetor
-      ? ticket.subsetor_id
-      : body.subsetor_id ?? null
+    // Omitir `subsetor_id` mantém o subsetor do ticket — que é justamente a fila
+    // de origem do transbordo. Resolver o destino antes é o que faz o bloqueio
+    // do caso #97066 enxergar a devolução implícita, e não só a explícita.
+    const { setorId: targetSetorId, subsetorId: targetSubsetorId } = resolverDestinoTransferencia(
+      { setorId: ticket.setor_id, subsetorId: ticket.subsetor_id },
+      {
+        setorId: body.setor_id,
+        subsetorId: body.subsetor_id,
+        temSetorExplicito: hasExplicitSetor,
+        temSubsetorExplicito: hasExplicitSubsetor,
+      },
+    )
 
     const { data: targetSetor, error: targetSetorError } = await supabase
       .from('setores')
@@ -288,6 +311,36 @@ export async function POST(request: Request) {
       targetColaborador = { id: colaborador.id, nome: colaborador.nome }
     }
 
+    // Caso #97066 — devolução reflexa. Última checagem antes de efetivar: o
+    // destino já está validado, então o que resta é saber se esta transferência
+    // é o ticket voltando para a fila que acabou de cedê-lo por transbordo.
+    // A tela também barra, mas a decisão é aqui: transferência sai de três
+    // telas diferentes e da API direta.
+    const marcaTransbordo = await carregarMarcaTransbordo(supabase, ticket.id)
+    const devolucaoParaOrigem = isDevolucaoParaOrigem(marcaTransbordo, {
+      subsetorId: targetSubsetorId,
+      colaboradorId: targetColaborador?.id ?? null,
+    })
+    if (
+      devolucaoParaOrigem
+      && !(await atendenteJaRespondeu(supabase, ticket.id, marcaTransbordo.recebidoEm!))
+    ) {
+      // Fica no histórico do ticket: é o que permite medir com que frequência a
+      // devolução é tentada, em vez de só bloquear em silêncio.
+      const { error: bloqueioLogError } = await supabase.from('ticket_logs').insert({
+        ticket_id: ticket.id,
+        tipo: 'transferencia',
+        descricao: `Devolução bloqueada: ${actor.nome || 'Atendente'} tentou devolver para a fila de origem do transbordo antes de responder ao cliente.`,
+      })
+      if (bloqueioLogError) {
+        console.warn('[Transferir] Falha ao gravar log de devolução bloqueada:', bloqueioLogError.message)
+      }
+      return NextResponse.json(
+        { error: TRANSFER_ERRORS.DEVOLUCAO_TRANSBORDO.error, code: 'DEVOLUCAO_TRANSBORDO' },
+        { status: TRANSFER_ERRORS.DEVOLUCAO_TRANSBORDO.status },
+      )
+    }
+
     let updateQuery = supabase
       .from('tickets')
       .update({
@@ -320,6 +373,13 @@ export async function POST(request: Request) {
         { error: 'O ticket foi alterado por outro processo' },
         { status: 409 },
       )
+    }
+
+    // O ticket saiu das mãos de quem recebeu por transbordo: o aviso na tela e o
+    // bloqueio perderam o assunto. Uma nova atribuição por transbordo estampa a
+    // marca de novo, com a origem certa.
+    if (isRecebidoPorTransbordo(marcaTransbordo)) {
+      await limparMarcaTransbordo(supabase, ticket.id)
     }
 
     if (targetColaborador) {
