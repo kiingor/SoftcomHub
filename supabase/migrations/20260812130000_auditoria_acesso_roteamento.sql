@@ -525,4 +525,50 @@ CREATE TRIGGER trg_auditoria_setor_destinos_transferencia
   AFTER INSERT OR UPDATE OR DELETE ON public.setor_destinos_transferencia
   FOR EACH ROW EXECUTE FUNCTION public.registrar_auditoria_mudanca();
 
+-- ─────────────────────────────────────────────────────────────────────────
+-- LEITURA — view com os nomes já resolvidos
+--
+-- Escolhemos view + consulta no Studio em vez de tela: a pergunta é de
+-- investigação pontual ("quem tirou o subsetor da fulana na terça?", "quem
+-- apagou o setor X?"), quem pergunta é operação/admin, e uma tela obrigaria a
+-- expor a trilha ao navegador — superfície nova, sem ganho.
+--
+-- `setor` sai da coluna denormalizada, não de join: é o que mantém a resposta
+-- de pé depois que o setor for apagado. `subsetor` ainda vem de join porque
+-- só interessa enquanto ele existe — quando o subsetor é apagado, o nome dele
+-- está no registro de `tabela = 'subsetores'` do mesmo instante.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE VIEW public.vw_auditoria_acesso_roteamento AS
+SELECT
+  log.criado_em,
+  log.tabela,
+  log.operacao,
+  log.sujeito_tipo,
+  COALESCE(log.sujeito_rotulo, log.sujeito_email, log.sujeito_id::text) AS sujeito,
+  log.contexto_setor_nome AS setor,
+  subsetor.nome AS subsetor,
+  COALESCE(log.ator_nome, log.ator_email, log.ator_origem) AS ator,
+  log.ator_origem,
+  log.ator_email,
+  log.dados_antes,
+  log.dados_depois,
+  log.sujeito_id,
+  log.sujeito_email,
+  log.contexto_setor_id,
+  log.ator_colaborador_id,
+  log.ator_uid,
+  log.linha_id,
+  log.id
+FROM public.auditoria_acesso_roteamento AS log
+LEFT JOIN public.subsetores AS subsetor
+  ON subsetor.id = public.auditoria_uuid(
+       COALESCE(log.dados_depois ->> 'subsetor_id', log.dados_antes ->> 'subsetor_id')
+     );
+
+COMMENT ON VIEW public.vw_auditoria_acesso_roteamento IS
+  'Leitura da trilha de acesso e roteamento, com sujeito, ator, setor e subsetor já resolvidos. Uso: Studio.';
+
+REVOKE ALL ON public.vw_auditoria_acesso_roteamento FROM anon, authenticated;
+GRANT SELECT ON public.vw_auditoria_acesso_roteamento TO service_role;
+
 COMMIT;
