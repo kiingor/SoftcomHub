@@ -90,7 +90,18 @@ export function MessageMediaPreview({
   if (isAudio) {
     return (
       <div className={cn('mb-1.5', className)}>
-        <audio controls src={url} className="w-full h-9" />
+        {/*
+          `min-w` é o que impede o player de colapsar. O balão da mensagem é um
+          flex item sem largura própria (só `max-w-[80%]`), então ele se
+          dimensiona pelo conteúdo; um `w-full` sozinho pede 100% de um pai que
+          por sua vez espera o conteúdo definir a largura. A referência é
+          circular e o player virava uma tira de ~26px, sem barra de progresso
+          nem tempo — inutilizável.
+
+          O piso de 200px cabe na tela mais estreita que atendemos: em 360px,
+          80% são 288px, menos o padding do balão sobram 264px.
+        */}
+        <audio controls src={url} className="h-9 w-full min-w-[200px] max-w-full" />
       </div>
     )
   }

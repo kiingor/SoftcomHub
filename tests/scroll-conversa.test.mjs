@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  devePosicionarNoInicioDoTicket,
+  ABERTURA_DA_CONVERSA,
   estaNoFimDaConversa,
   LIMIAR_FIM_CONVERSA_PX,
+  SELETOR_INICIO_DO_TICKET,
 } from '../lib/scroll-conversa.ts'
 
 // Conversa de 2000px numa janela de 500px: o fim é scrollTop 1500.
@@ -54,34 +55,23 @@ test('rolagem elástica além do fim continua sendo fim', () => {
   assert.equal(estaNoFimDaConversa(conversa(1560)), true)
 })
 
-// --- abrir na transição do bot: só na primeira vez ---
+// --- a conversa abre sempre no fim ---
+//
+// Existiu uma exceção: ticket vindo do Nexus abria no "início do ticket" na
+// primeira vez. Medido em produção, deixava quem abria o chat a 10.889px do fim
+// numa conversa de 11.827px. Estes testes travam a remoção dela.
 
-test('a primeira abertura do ticket mostra a transição do bot', () => {
-  assert.equal(devePosicionarNoInicioDoTicket('t1', new Set()), true)
+test('a regra declarada é abrir no fim, sem exceção', () => {
+  assert.equal(ABERTURA_DA_CONVERSA, 'fim')
 })
 
-test('trocar de chat e voltar abre no fim, não lá em cima', () => {
-  // O caso reportado: o atendente troca para ler a mensagem que chegou e
-  // aterrissava no início do ticket, com a mensagem nova fora da tela.
-  const jaVistos = new Set(['t1'])
-
-  assert.equal(devePosicionarNoInicioDoTicket('t1', jaVistos), false)
-  assert.equal(devePosicionarNoInicioDoTicket('t2', jaVistos), true)
+test('o seletor do marcador continua existindo — ele ainda é separador visual', () => {
+  assert.equal(SELETOR_INICIO_DO_TICKET, '[data-ticket-start]')
 })
 
-test('cada ticket tem a sua primeira vez', () => {
-  const jaVistos = new Set()
-  for (const id of ['t1', 't2', 't3']) {
-    assert.equal(devePosicionarNoInicioDoTicket(id, jaVistos), true, `${id} deveria abrir na transição`)
-    jaVistos.add(id)
+test('nenhuma decisão de abertura sobrou na lib', async () => {
+  const lib = await import('../lib/scroll-conversa.ts')
+  for (const removida of ['decidirAberturaDaConversa', 'devePosicionarNoInicioDoTicket']) {
+    assert.equal(lib[removida], undefined, `${removida} deveria ter sido removida`)
   }
-  for (const id of ['t1', 't2', 't3']) {
-    assert.equal(devePosicionarNoInicioDoTicket(id, jaVistos), false, `${id} não deveria repetir`)
-  }
-})
-
-test('sem ticket selecionado não posiciona nada', () => {
-  assert.equal(devePosicionarNoInicioDoTicket(null, new Set()), false)
-  assert.equal(devePosicionarNoInicioDoTicket(undefined, new Set()), false)
-  assert.equal(devePosicionarNoInicioDoTicket('', new Set()), false)
 })

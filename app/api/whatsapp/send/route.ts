@@ -11,6 +11,7 @@ import {
 } from '@/lib/message-send-claim'
 import {
   REPLYABLE_TICKET_SENDERS,
+  TRUSTED_INBOUND_CLIENT_SENDERS,
   canUseLegacyChannelFallback,
   isConfiguredLegacyWhatsappChannel,
   resolvePersistedRecipient,
@@ -271,14 +272,14 @@ export async function POST(request: NextRequest) {
         .maybeSingle()
 
       const replyQuote = resolveReplyQuote(parent, Boolean(parentError))
-      if (!replyQuote.ok) {
-        const persistenceFailure = await persistFailure(serviceClient, sendAttempt, replyQuote.error)
-        if (persistenceFailure) return persistenceFailure
-        sendAttempt = null
-        return NextResponse.json(
-          { error: replyQuote.error, code: replyQuote.code, status_envio: messageId && !legacyPersistedMessage ? 'falhou' : undefined },
-          { status: 422 },
-        )
+      if (replyQuote.motivoSemQuote) {
+        // Segue sem o quote em vez de reprovar: a citação é enfeite, a resposta
+        // ao cliente é o que importa. Ver `resolveReplyQuote`.
+        console.warn('[WhatsApp Send] Envio sem citação:', {
+          ticketId,
+          replyToMessageId: effectiveReplyToMessageId,
+          motivo: replyQuote.motivoSemQuote,
+        })
       }
       replyContextWamid = replyQuote.providerMessageId
     }
@@ -326,7 +327,7 @@ export async function POST(request: NextRequest) {
           .from('mensagens')
           .select('phone_number_id, remetente, whatsapp_message_id')
           .eq('ticket_id', ticketId)
-          .in('remetente', ['cliente', 'cliente-nexus'])
+          .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
           .eq('phone_number_id', requestedPhoneNumberId)
           .limit(1)
 
@@ -339,6 +340,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Número compartilhado entre setores: o setor do ticket é o dono preferido.
+    // A autorização de uso do canal já aconteceu antes; aqui só se decide de qual
+    // linha de `setor_canais` vêm as credenciais.
+    const resolveOwnerId = (ownerIds: Iterable<string>) =>
+      resolveSharedChannelOwnerId(ownerIds, ticketContext.setor_id)
+
     const modernChannel = selectAuthorizedTicketChannel({
       currentActiveChannels: activeChannels,
       matchingActiveChannels,
@@ -346,7 +353,7 @@ export async function POST(request: NextRequest) {
       requestedIdentifier: requestedPhoneNumberId,
       getIdentifier: (channel) => channel.phone_number_id,
       getOwnerId: (channel) => channel.setor_id,
-      resolveOwnerId: resolveSharedChannelOwnerId,
+      resolveOwnerId,
     })
     let legacyChannel: {
       id: string
@@ -399,7 +406,7 @@ export async function POST(request: NextRequest) {
         requestedIdentifier: requestedPhoneNumberId,
         getIdentifier: (channel) => channel.phone_number_id,
         getOwnerId: (channel) => channel.setor_id,
-        resolveOwnerId: resolveSharedChannelOwnerId,
+        resolveOwnerId,
       })
     }
 

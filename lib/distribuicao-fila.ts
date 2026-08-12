@@ -92,6 +92,21 @@ export interface OpcoesDestino {
    * continua bloqueado para os demais subsetores que ainda tenham fila.
    */
   subsetoresQuePodemReceberMesmoComFila?: readonly string[]
+  /**
+   * Subsetores autorizados a participar do transbordo — na prática, Prime e
+   * Suporte. Só há transbordo quando o subsetor do ticket E o do atendente
+   * estão nesta lista.
+   *
+   * Existe porque o transbordo irrestrito engolia o transbordo de SETOR: numa
+   * filial, o atendente do Financeiro puxava o ticket do Suporte, o ticket
+   * nunca envelhecia na fila e nunca chegava à Matriz. Segurar o ticket é o
+   * que deixa o transbordo de setor acontecer.
+   *
+   * `undefined` mantém o transbordo irrestrito. Lista vazia desliga o
+   * transbordo entre subsetores — é o caso do setor que não tem Prime nem
+   * Suporte, onde nenhum par é autorizado.
+   */
+  subsetoresComTransbordo?: readonly string[]
   maxTicketsAbertos: number
 }
 
@@ -106,17 +121,30 @@ export interface OpcoesDestino {
  * O passo 2 só entra quando o passo 1 se esgota, então a fila do próprio
  * subsetor sempre tem precedência. A única exceção configurada é Prime usar
  * Suporte, sem retirar a proteção das demais filas do atendente.
+ *
+ * O passo 2 ainda respeita `subsetoresComTransbordo`: fora desse grupo o
+ * ticket segura na fila do próprio subsetor, que é o que permite o transbordo
+ * de SETOR (filial → Matriz) acontecer.
  */
 export function escolherDestino({
   subsetorDoTicket,
   candidatos,
   subsetoresComFila = [],
   subsetoresQuePodemReceberMesmoComFila = [],
+  subsetoresComTransbordo,
   maxTicketsAbertos,
 }: OpcoesDestino): EscolhaDestino {
   const proprios = candidatos.filter((c) => atendeSubsetor(subsetorDoTicket, c.subsetorIds))
   const filaPropria = ordenarPorEquilibrio(proprios, maxTicketsAbertos)
   if (filaPropria.length > 0) return { fila: filaPropria, origem: 'proprio' }
+
+  // Sem lista, o transbordo segue irrestrito (comportamento antigo). Com lista,
+  // o ticket precisa ser de um subsetor autorizado — ticket sem subsetor nunca
+  // é, porque `null` não pertence a grupo nenhum.
+  const grupoTransbordo = subsetoresComTransbordo ? new Set(subsetoresComTransbordo) : null
+  if (grupoTransbordo && !(subsetorDoTicket && grupoTransbordo.has(subsetorDoTicket))) {
+    return { fila: [], origem: 'ninguem' }
+  }
 
   // Transbordo: quem é de outro subsetor, tem vaga, e não tem fila esperando
   // por ele. Atendente sem subsetor entra pela chave `null`.
@@ -130,8 +158,16 @@ export function escolherDestino({
       ))
   }
 
+  // O atendente também precisa estar no grupo: o ticket do Suporte só é
+  // socorrido por quem atende Suporte ou Prime. Atende os dois? Basta um.
+  const estaNoGrupo = (c: CandidatoDistribuicao) => (
+    !grupoTransbordo || (c.subsetorIds || []).some((id) => grupoTransbordo.has(id))
+  )
+
   const outros = candidatos.filter((c) => (
-    !atendeSubsetor(subsetorDoTicket, c.subsetorIds) && !temFilaPropria(c)
+    !atendeSubsetor(subsetorDoTicket, c.subsetorIds)
+    && !temFilaPropria(c)
+    && estaNoGrupo(c)
   ))
   const filaTransbordo = ordenarPorEquilibrio(outros, maxTicketsAbertos)
   if (filaTransbordo.length > 0) return { fila: filaTransbordo, origem: 'transbordo' }

@@ -7,11 +7,17 @@ import { useColaborador, useSetores } from '@/lib/hooks/use-data'
 import { AtendenteCard } from '@/components/monitoramento/atendente-card'
 import { logError } from '@/lib/error-logger'
 import { idsComDuplicidade } from '@/lib/tickets-duplicados'
+import { alvoDeBuscaDoTicket, correspondeAoTermo, normalizarTermoBusca } from '@/lib/busca-monitoramento'
 import { AlertTriangle } from 'lucide-react'
 
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
+
+import {
+  TRUSTED_INBOUND_CLIENT_SENDERS,
+  selectOutboundChannelEvidence,
+} from '@/lib/message-send-target'
 
 /** Marca a linha cujo cliente tem outro atendimento aberto ao mesmo tempo. */
 function BadgeDuplicado() {
@@ -275,7 +281,6 @@ export default function MonitoramentoPage() {
   // Conversation panel state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
-  const devePosicionarNoInicioDoTicketRef = useRef(false)
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [ticketHistory, setTicketHistory] = useState<any[]>([])
   const [historyMessages, setHistoryMessages] = useState<Record<string, any[]>>({})
@@ -296,8 +301,9 @@ export default function MonitoramentoPage() {
   // raiz re-renderizava as tabelas inteiras a cada segundo à toa — os tempos
   // delas vêm de useMemo e só mudam quando os dados chegam.
 
-  // Ao abrir uma conversa com contexto Nexus, a primeira leitura útil é onde o
-  // atendimento humano começa. Sem contexto, mantém o comportamento de abrir no fim.
+  // A conversa abre no fim, na mensagem mais recente — sempre. Ver
+  // `ABERTURA_DA_CONVERSA` em lib/scroll-conversa.ts para o porquê de não haver
+  // mais a exceção do "início do ticket".
   useEffect(() => {
     if (
       conversationTab !== 'atendimento' ||
@@ -308,16 +314,6 @@ export default function MonitoramentoPage() {
       return
     }
     const el = conversationScrollRef.current
-    if (devePosicionarNoInicioDoTicketRef.current) {
-      const inicioDoTicket = el.querySelector<HTMLElement>('[data-ticket-start]')
-        || el.querySelector<HTMLElement>('[data-nexus-history-start]')
-      devePosicionarNoInicioDoTicketRef.current = false
-      if (inicioDoTicket) {
-        inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
-        el.scrollTop = Math.max(0, el.scrollTop - 16)
-        return
-      }
-    }
 
     const scrollToEnd = () => {
       el.scrollTop = el.scrollHeight
@@ -332,7 +328,7 @@ export default function MonitoramentoPage() {
       observer.disconnect()
       clearTimeout(stop)
     }
-  }, [conversationTab, loadingMessages, conversationMessages])
+  }, [conversationTab, loadingMessages, conversationMessages, selectedTicket?.id])
 
   useEffect(() => {
     if (!selectedNexusConversation || !nexusConversationScrollRef.current) return
@@ -388,14 +384,17 @@ export default function MonitoramentoPage() {
       }
 
       // Fetch active tickets (aberto + em_atendimento) across all accessible setores
-      let ticketsQuery = supabase
-        .from('tickets')
-        .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat), setores!tickets_setor_id_fkey(id, nome), subsetores(id, nome)')
-        .in('setor_id', targetSetorIds)
-        .in('status', ['aberto', 'em_atendimento'])
-      ticketsQuery = applySubsetorFilter(ticketsQuery)
-      const { data: ticketsAtivos, error: ticketsAtivosError } = await ticketsQuery
-      if (ticketsAtivosError) throw ticketsAtivosError
+      // Pagina: com muitos setores no escopo a fila ativa passa de 1.000 e o
+      // PostgREST cortava calado — tickets simplesmente sumiam do painel.
+      // `.order('id')` é o desempate que torna o range determinístico.
+      const ticketsAtivos = await loadRowsByPages<any>(() => {
+        const query = supabase
+          .from('tickets')
+          .select('*, clientes(nome, telefone), colaboradores(id, nome, is_online, ativo, pausa_atual_id, last_heartbeat), setores!tickets_setor_id_fkey(id, nome), subsetores(id, nome)')
+          .in('setor_id', targetSetorIds)
+          .in('status', ['aberto', 'em_atendimento'])
+        return applySubsetorFilter(query).order('id', { ascending: true })
+      })
 
       // Lookup global de setores — usado pra reescrever descrições antigas de
       // transbordo na hora da exibição. Carrega TODOS os setores (não só os
@@ -411,12 +410,22 @@ export default function MonitoramentoPage() {
       const logsMap = new Map<string, any[]>()
       const assignmentEventsMap = new Map<string, any[]>()
       if (ticketsAtivosIds.length > 0) {
-        const [logsResult, assignmentEventsData] = await Promise.all([
-          supabase
-            .from('ticket_logs')
-            .select('ticket_id, tipo, descricao, criado_em')
-            .in('ticket_id', ticketsAtivosIds)
-            .in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+        // Fatiado igual aos eventos de atribuição: agora que a fila ativa passa
+        // de 1.000 tickets, mandar todos os ids numa `.in()` só estoura a URL, e
+        // o retorno vinha cortado em 1.000 logs sem avisar — origem e tempos
+        // derivados saíam incompletos justamente nos painéis mais cheios.
+        const [logsData, assignmentEventsData] = await Promise.all([
+          loadRowsByValues(
+            supabase,
+            'ticket_logs',
+            'ticket_id, tipo, descricao, criado_em',
+            'ticket_id',
+            ticketsAtivosIds,
+            (query) => query.in('tipo', ['criacao', 'transferencia', 'transferencia_automatica', 'transbordo_limite_atingido', 'pull_manual']),
+          ).catch((error) => {
+            console.warn('[Monitoramento] Falha ao carregar logs de ticket:', error.message)
+            return []
+          }),
           loadRowsByValues(
             supabase,
             'ticket_assignment_logs',
@@ -428,7 +437,6 @@ export default function MonitoramentoPage() {
             return []
           }),
         ])
-        const logsData = logsResult.data
         for (const l of (logsData || [])) {
           const arr = logsMap.get(l.ticket_id) || []
           arr.push(l)
@@ -449,14 +457,17 @@ export default function MonitoramentoPage() {
       // Fetch today's tickets (for stats)
       const now = new Date()
       const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
-      let ticketsHojeQuery = supabase
-        .from('tickets')
-        .select('id, status, criado_em, primeira_resposta_em, encerrado_em, subsetor_id')
-        .in('setor_id', targetSetorIds)
-        .gte('criado_em', startOfDay)
-      ticketsHojeQuery = applySubsetorFilter(ticketsHojeQuery)
-      const { data: ticketsHoje, error: ticketsHojeError } = await ticketsHojeQuery
-      if (ticketsHojeError) throw ticketsHojeError
+      // Mesma paginação: num dia cheio o volume passa de 1.000 e as médias de
+      // primeira resposta / tempo de resolução saíam calculadas em cima de um
+      // recorte arbitrário do dia.
+      const ticketsHoje = await loadRowsByPages<any>(() => {
+        const query = supabase
+          .from('tickets')
+          .select('id, status, criado_em, primeira_resposta_em, encerrado_em, subsetor_id')
+          .in('setor_id', targetSetorIds)
+          .gte('criado_em', startOfDay)
+        return applySubsetorFilter(query).order('id', { ascending: true })
+      })
 
       // Separate count queries to avoid Supabase 1000-row default limit
       let countRecebidosQuery = supabase
@@ -905,16 +916,18 @@ export default function MonitoramentoPage() {
     }
   }, [monitoredNexusChannelIds, mutate, supabase])
 
-  const nexusConversas = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase()
-    if (!query) return nexusConversasRaw
+  // Termo normalizado uma vez só; as listas abaixo reaproveitam o mesmo objeto.
+  const termoBusca = useMemo(() => normalizarTermoBusca(searchTerm), [searchTerm])
 
-    return nexusConversasRaw.filter((conversation) => (
-      conversation.contato.toLowerCase().includes(query) ||
-      formatPhone(conversation.telefone).toLowerCase().includes(query) ||
-      conversation.setorNome.toLowerCase().includes(query)
-    ))
-  }, [nexusConversasRaw, searchTerm])
+  const nexusConversas = useMemo(() => {
+    if (!termoBusca) return nexusConversasRaw
+
+    return nexusConversasRaw.filter((conversation) => correspondeAoTermo({
+      contato: conversation.contato,
+      telefone: conversation.telefone,
+      setor: conversation.setorNome,
+    }, termoBusca))
+  }, [nexusConversasRaw, termoBusca])
 
   const selectedNexusConversationKey = selectedNexusConversation
     ? `${selectedNexusConversation.setorId}-${selectedNexusConversation.clienteKey}`
@@ -978,6 +991,22 @@ export default function MonitoramentoPage() {
   // esconderia a outra metade do par e o aviso sumiria justamente quando importa.
   const ticketsDuplicados = useMemo(() => idsComDuplicidade(tickets), [tickets])
 
+  /**
+   * Ordem de exibição das filas: o mais antigo em cima, que é o mais urgente.
+   *
+   * A consulta ordena por `id` porque a paginação exige ordem única e estável —
+   * critério técnico, não de tela. Sem esta ordenação explícita as tabelas
+   * herdavam aquela, e o painel saía em ordem lexicográfica de UUID, que não
+   * significa nada para quem está monitorando a fila.
+   */
+  const ordenarPorMaisAntigo = useCallback((a: any, b: any) => {
+    const tempoA = new Date(a.criado_em || 0).getTime()
+    const tempoB = new Date(b.criado_em || 0).getTime()
+    // `id` como desempate mantém a ordem estável entre re-renders quando dois
+    // tickets nascem no mesmo instante.
+    return tempoA - tempoB || String(a.id).localeCompare(String(b.id))
+  }, [])
+
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || (t.status === 'aberto' && t.colaborador_id))
@@ -986,11 +1015,9 @@ export default function MonitoramentoPage() {
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         // Filtro de subsetor
         if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || SEM_SUBSETOR_ID)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        const numero = String(t.numero ?? t.id?.slice(0, 8) ?? '')
-        return contato.toLowerCase().includes(searchTerm.toLowerCase()) || numero.includes(searchTerm)
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
+      .sort(ordenarPorMaisAntigo)
       .map((t: any) => {
         const tempos = resolverIniciosTempoTransferencia(
           t,
@@ -1023,7 +1050,7 @@ export default function MonitoramentoPage() {
         primeira_resposta_em: t.primeira_resposta_em,
         }
       })
-  }, [tickets, searchTerm, subsetorFilter, atendenteFilter])
+  }, [tickets, termoBusca, subsetorFilter, atendenteFilter, ordenarPorMaisAntigo])
 
   // Tickets aguardando
   const ticketsAguardando = useMemo(() => {
@@ -1032,10 +1059,11 @@ export default function MonitoramentoPage() {
       .filter((t: any) => {
         // Filtro de subsetor
         if (subsetorFilter.length > 0 && !subsetorFilter.includes(t.subsetor_id || SEM_SUBSETOR_ID)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        return contato.toLowerCase().includes(searchTerm.toLowerCase())
+        // Mesma regra da aba "Em andamento": antes a fila só casava contato, e
+        // procurar um ticket aguardando pelo número devolvia lista vazia.
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
+      .sort(ordenarPorMaisAntigo)
       // Aguardando não tem colaborador, então "Meus" mostra vazio (sem atribuição ainda)
       .map((t: any) => ({
         id: t.id,
@@ -1055,7 +1083,7 @@ export default function MonitoramentoPage() {
         tempoEspera: formatDuration(t.criado_em, null),
         criado_em: t.criado_em,
       }))
-  }, [tickets, searchTerm, subsetorFilter])
+  }, [tickets, termoBusca, subsetorFilter, ordenarPorMaisAntigo])
 
   // Atendentes list for the Atendentes tab
   const atendentesLista = useMemo(() => {
@@ -1087,7 +1115,6 @@ export default function MonitoramentoPage() {
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
-    devePosicionarNoInicioDoTicketRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)
@@ -1288,18 +1315,32 @@ export default function MonitoramentoPage() {
           .replace(/\{\{data_atual\}\}/g, now.toLocaleDateString('pt-BR'))
           .replace(/\{\{hora_atual\}\}/g, now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
 
-        // Detect channel from last message
-        const { data: lastMsgData } = await supabase
-          .from('mensagens')
-          .select('canal_envio, phone_number_id, discord_user_id')
-          .eq('ticket_id', selectedTicket.id)
-          .neq('remetente', 'sistema')
-          .order('enviado_em', { ascending: false })
-          .limit(1)
+        // Detect the channel from the last CLIENT message — the only evidence
+        // the send routes accept. The last message of any sender is a fallback.
+        const [{ data: lastClientMsgData }, { data: lastMsgData }] = await Promise.all([
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', selectedTicket.id)
+            .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', selectedTicket.id)
+            .neq('remetente', 'sistema')
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+        ])
 
-        const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
-        const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
-        const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+        const canalEvidencia = selectOutboundChannelEvidence([
+          ...(lastClientMsgData || []),
+          ...(lastMsgData || []),
+        ])
+        const lastCanalEnvio = canalEvidencia?.canal_envio || null
+        const lastPhoneNumberId = canalEvidencia?.phone_number_id || null
+        const lastDiscordUserId = canalEvidencia?.discord_user_id || null
 
         let setorCanal = 'whatsapp'
         let phoneNumberId: string | null = lastPhoneNumberId
@@ -1708,12 +1749,14 @@ export default function MonitoramentoPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-lg">Monitoramento detalhado</CardTitle>
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
               <Input
-                placeholder="Buscar pelo N do ticket ou contato"
+                type="search"
+                aria-label="Buscar nas abas de monitoramento"
+                placeholder="Buscar por Nº do ticket, contato ou telefone"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-64 pl-9 h-9 rounded-2xl glass-input"
+                className="w-72 pl-9 h-9 rounded-2xl glass-input"
               />
             </div>
           </div>

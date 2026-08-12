@@ -1,3 +1,13 @@
+/**
+ * Status de ticket que aceitam envio de mensagem.
+ *
+ * Exportado para a tela poder travar o compositor com a MESMA regra do
+ * servidor. Enquanto a tela não conhecia esta lista, o atendente digitava a
+ * resposta num ticket que já tinha saído de ativo (tipicamente para 'avaliar'),
+ * clicava em enviar e só então recebia a recusa — com o texto perdido.
+ */
+export const STATUS_QUE_ACEITAM_ENVIO = ['aberto', 'em_atendimento'] as const
+
 export interface TicketSendAuthOk {
   ok: true
   actor: { id: string; isMaster: boolean }
@@ -54,7 +64,7 @@ export async function authorizeTicketSend(
       error: 'Ticket não encontrado',
     }
   }
-  if (!['aberto', 'em_atendimento'].includes(ticket.status)) {
+  if (!(STATUS_QUE_ACEITAM_ENVIO as readonly string[]).includes(ticket.status)) {
     return {
       ok: false,
       status: 409,

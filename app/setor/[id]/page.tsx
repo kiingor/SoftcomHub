@@ -178,6 +178,9 @@ import { StatusAtendimentoPanel } from '@/components/setor/status-atendimento-pa
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
+import { alvoDeBuscaDoTicket, correspondeAoTermo, normalizarTermoBusca } from '@/lib/busca-monitoramento'
+import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/cliente-softcom'
+import { resolverUltimaMensagem, rotuloDeQuemFalou } from '@/lib/ultima-mensagem'
 import { ehMensagemNexus, selecionarInicioHumanoDoTicket } from '@/lib/nexus-historico-ticket'
 import { formatTicketStatus, formatTicketStatusCurto, ticketStatusBadgeClass } from '@/lib/ticket-status'
 import {
@@ -459,7 +462,11 @@ async function fetchSetorData(setorId: string) {
 const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes, permissoesRes, pausasRes, colabSubsetoresRes, todosSetoresRes] = await Promise.all([
     supabase.from('setores').select('*').eq('id', setorId).single(),
     // Tickets ativos (aberto ou em_atendimento)
-    supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
+    // Mesmo conjunto de campos de /api/clientes/lookup: é desta consulta que sai
+    // o ticket aberto no painel de informações, e o CNPJ ainda é a chave da
+    // consulta de MDM. Com só `nome, telefone` o painel mostrava "Não
+    // informado" em tudo o mais.
+    supabase.from('tickets').select('*, numero, colaboradores(nome), clientes(nome, telefone, email, CNPJ, Registro, PDV, software, prime)').eq('setor_id', setorId).in('status', ['aberto', 'em_atendimento']),
     // Tickets de hoje (para estatisticas)
     supabase.from('tickets').select('*, clientes(nome)').eq('setor_id', setorId).gte('criado_em', startOfDay),
     // Relatório de 90 dias removido daqui — agora é carregado separadamente
@@ -1592,6 +1599,9 @@ function SetorPageInner() {
     direction: 'asc',
   })
   const [searchTerm, setSearchTerm] = useState('')
+  // Normalizado uma vez só (trim, minúsculas, `#` inicial, dígitos do telefone);
+  // as listas abaixo dependem dele, não do texto cru.
+  const termoBusca = useMemo(() => normalizarTermoBusca(searchTerm), [searchTerm])
   const [searchAtendente, setSearchAtendente] = useState('')
   const [atendenteFilter, setAtendenteFilter] = useState<string[]>([])
   const [filtrosOpen, setFiltrosOpen] = useState(false)
@@ -2091,7 +2101,6 @@ function SetorPageInner() {
   // Conversation slide-out state
   const [selectedTicket, setSelectedTicket] = useState<any>(null)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
-  const devePosicionarNoInicioDoTicketRef = useRef(false)
   const [conversationMessages, setConversationMessages] = useState<any[]>([])
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [conversationTab, setConversationTab] = useState<'atendimento' | 'transferir' | 'info'>('atendimento')
@@ -2103,8 +2112,72 @@ function SetorPageInner() {
   // Acompanhamento do gestor no ticket aberto na conversa
   const [salvandoAcompanhamento, setSalvandoAcompanhamento] = useState(false)
 
-  // Ao abrir uma conversa com contexto Nexus, mostra primeiro a transição para
-  // o atendimento humano. Sem esse contexto, a conversa continua abrindo no fim.
+  // Última fala da conversa: o painel já mostrava "com atendente" e "no setor",
+  // mas nenhum dos dois distingue conversa andando de conversa parada.
+  // `monitoringTick` entra na dependência para o tempo correr sozinho, junto do
+  // relógio que a tela já mantém.
+  const ultimaMensagem = useMemo(
+    () => resolverUltimaMensagem(conversationMessages),
+    [conversationMessages],
+  )
+  const tempoDesdeUltimaMensagem = useMemo(
+    () => (ultimaMensagem ? formatDuration(ultimaMensagem.enviadoEm, null) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ultimaMensagem, monitoringTick],
+  )
+
+  // Consulta de MDM do cliente — mesma rota que o WorkDesk usa. A chave é o
+  // CNPJ; cliente sem CNPJ não tem como ser consultado.
+  const cnpjDoCliente = selectedTicket?.clientes?.CNPJ ?? null
+  const [mdmLoading, setMdmLoading] = useState(false)
+  const [mdmErro, setMdmErro] = useState<string | null>(null)
+  const [mdmResultado, setMdmResultado] = useState<{
+    hasMdm: boolean
+    installedCount: number
+    totalMachines: number
+  } | null>(null)
+
+  // Consulta sob demanda, não ao abrir o ticket: é uma chamada a um serviço
+  // externo por CNPJ, e o gestor abre muito ticket sem precisar do MDM. O
+  // ticket que abre é sempre um; os que ele passa os olhos, dezenas.
+  const requisicaoMdmRef = useRef(0)
+
+  const consultarMdm = useCallback(() => {
+    const cnpj = (cnpjDoCliente || '').replace(/\D/g, '')
+    if (!cnpj) return
+
+    const requisicao = ++requisicaoMdmRef.current
+    setMdmLoading(true)
+    setMdmErro(null)
+    fetch(`/api/mdm?cnpj=${cnpj}`)
+      .then(async (res) => {
+        const dados = await res.json()
+        if (!res.ok) throw new Error(dados?.error || 'Falha ao consultar o MDM')
+        // Descarta resposta de consulta antiga: trocar de ticket no meio da
+        // requisição mostraria o MDM de um cliente no painel de outro.
+        if (requisicao === requisicaoMdmRef.current) setMdmResultado(dados)
+      })
+      .catch((erro: Error) => {
+        // Falha de MDM não pode derrubar o painel: o resto das informações do
+        // ticket continua servindo mesmo sem essa consulta.
+        if (requisicao === requisicaoMdmRef.current) setMdmErro(erro.message || 'Falha ao consultar o MDM')
+      })
+      .finally(() => {
+        if (requisicao === requisicaoMdmRef.current) setMdmLoading(false)
+      })
+  }, [cnpjDoCliente])
+
+  // Trocou de ticket: limpa o resultado anterior e invalida requisição em voo.
+  useEffect(() => {
+    requisicaoMdmRef.current += 1
+    setMdmResultado(null)
+    setMdmErro(null)
+    setMdmLoading(false)
+  }, [cnpjDoCliente])
+
+  // A conversa abre no fim, na mensagem mais recente — sempre. Ver
+  // `ABERTURA_DA_CONVERSA` em lib/scroll-conversa.ts para o porquê de não haver
+  // mais a exceção do "início do ticket".
   useEffect(() => {
     if (
       conversationTab !== 'atendimento' ||
@@ -2115,16 +2188,6 @@ function SetorPageInner() {
       return
     }
     const el = conversationScrollRef.current
-    if (devePosicionarNoInicioDoTicketRef.current) {
-      const inicioDoTicket = el.querySelector<HTMLElement>('[data-ticket-start]')
-        || el.querySelector<HTMLElement>('[data-nexus-history-start]')
-      devePosicionarNoInicioDoTicketRef.current = false
-      if (inicioDoTicket) {
-        inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
-        el.scrollTop = Math.max(0, el.scrollTop - 16)
-        return
-      }
-    }
 
     const scrollToEnd = () => {
       el.scrollTop = el.scrollHeight
@@ -2137,7 +2200,7 @@ function SetorPageInner() {
       observer.disconnect()
       clearTimeout(stop)
     }
-  }, [conversationTab, loadingMessages, conversationMessages])
+  }, [conversationTab, loadingMessages, conversationMessages, selectedTicket?.id])
 
   const { data, isLoading, mutate } = useSWR(
     setorId ? ['setor-detail', setorId] : null,
@@ -3436,6 +3499,24 @@ function SetorPageInner() {
     return m
   }, [subsetores])
 
+  /**
+   * Nome do subsetor para a coluna "Fila".
+   *
+   * Distingue "ainda não sei" de "não tem". Os tickets chegam no `Promise.all`
+   * inicial, mas os subsetores só são buscados depois, num efeito que espera
+   * `setor.id` — então existe uma janela em que o mapa está vazio. Sem esta
+   * separação, TODO ticket aparecia como "Sem subsetor" nesse intervalo e depois
+   * se corrigia sozinho, o que faz o gestor ler o painel errado justamente nos
+   * primeiros segundos.
+   */
+  const nomeDaFila = useCallback((subsetorId: string | null | undefined) => {
+    if (subsetoresLoadedSetorId !== setorId) return '—'
+    if (!subsetorId) return 'Sem subsetor'
+    // Id preenchido que não está no mapa é subsetor de outro setor; dizer
+    // "Sem subsetor" aqui esconderia um dado que existe.
+    return subsetorNomeById.get(subsetorId) || '—'
+  }, [subsetorNomeById, subsetoresLoadedSetorId, setorId])
+
   const ticketsEmAndamento = useMemo(() => {
     return tickets
       .filter((t: any) => t.status === 'em_atendimento' || t.status === 'aberto')
@@ -3447,9 +3528,10 @@ function SetorPageInner() {
         if (!matchesTicketTagFilter(t)) return false
         if (atendenteFilter.length > 0 && !atendenteFilter.includes(t.colaborador_id)) return false
         if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        return contato.toLowerCase().includes(searchTerm.toLowerCase())
+        // Mesma regra da tela de monitoramento. Antes só o contato era
+        // comparado, e procurar pelo número — que é o que o campo promete —
+        // devolvia lista vazia sempre.
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
       .map((t: any) => {
         const tempos = resolverIniciosTempoTransferencia(
@@ -3484,7 +3566,7 @@ function SetorPageInner() {
           : 0,
         tempoNoSetor: formatDuration(tempos.setorAtualEm, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
+        fila: nomeDaFila(t.subsetor_id),
         atendente: t.colaboradores?.nome || null,
         acompanhamento: t._acompanhamento || null,
         prioridade: t.prioridade,
@@ -3507,10 +3589,10 @@ function SetorPageInner() {
     idsAtendentesPermitidos,
     matchesTicketTagFilter,
     monitoringTick,
-    searchTerm,
+    termoBusca,
     setor,
     subsetorFilter,
-    subsetorNomeById,
+    nomeDaFila,
     tagsPermitidasNosTickets,
     tickets,
   ])
@@ -3951,9 +4033,7 @@ function SetorPageInner() {
       .filter((t: any) => {
         if (!matchesTicketTagNoMonitoramento(t)) return false
         if (!matchesSubsetorFilter(subsetorFilter, t.subsetor_id)) return false
-        if (!searchTerm) return true
-        const contato = t.clientes?.nome || t.clientes?.telefone || ''
-        return contato.toLowerCase().includes(searchTerm.toLowerCase())
+        return correspondeAoTermo(alvoDeBuscaDoTicket(t), termoBusca)
       })
       .map((t: any) => ({
         id: t.id,
@@ -3961,7 +4041,7 @@ function SetorPageInner() {
         tempoNaFila: formatDuration(t.criado_em, null),
         tempoNaFilaMs: getDurationMs(t.criado_em, null),
         contato: t.clientes?.nome || t.clientes?.telefone || 'Desconhecido',
-        fila: subsetorNomeById.get(t.subsetor_id) || 'Sem subsetor',
+        fila: nomeDaFila(t.subsetor_id),
         prioridade: t.prioridade,
         status: t.status,
         criado_em: t.criado_em,
@@ -3973,7 +4053,7 @@ function SetorPageInner() {
         subsetor_id: t.subsetor_id ?? null,
         setores: { nome: setor?.nome ?? null },
       }))
-  }, [matchesTicketTagNoMonitoramento, tickets, searchTerm, setor, subsetorFilter, monitoringTick, subsetorNomeById])
+  }, [matchesTicketTagNoMonitoramento, tickets, termoBusca, setor, subsetorFilter, monitoringTick, nomeDaFila])
 
   // Sem filtro de subsetor, mostram o total do setor (matchesSubsetorFilter
   // com seleção vazia aceita qualquer subsetor_id) — com filtro, só contam os
@@ -5522,7 +5602,6 @@ const saveConfig = async () => {
   // Open conversation slide-out — inclui histórico pré-ticket (bot/orphans)
 
   const openConversation = async (ticket: any) => {
-    devePosicionarNoInicioDoTicketRef.current = true
     setSelectedTicket(ticket)
     setConversationTab('atendimento')
     setLoadingMessages(true)
@@ -6151,9 +6230,11 @@ const saveConfig = async () => {
                       searchable
                     />
                     <div className="relative">
-                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
                       <Input
-                        placeholder="Buscar pelo Nº do ticket"
+                        type="search"
+                        aria-label="Buscar tickets do setor"
+                        placeholder="Buscar por Nº do ticket, contato ou telefone"
                         value={searchTerm}
                         onChange={(e) => {
                           setSearchTerm(e.target.value)
@@ -11270,16 +11351,82 @@ const saveConfig = async () => {
                       <p className="text-xs text-muted-foreground">No setor atual</p>
                       <p className="font-semibold tabular-nums">{selectedTicket.tempoNoSetor}</p>
                     </div>
+                    {/*
+                      Ocupa a linha inteira porque é o número que responde "esta
+                      conversa está parada?" — os dois acima contam desde a
+                      atribuição e nunca param. O remetente vem junto: "há 40min"
+                      sozinho não distingue cliente esperando resposta de
+                      atendente esperando o cliente.
+                    */}
+                    <div className="col-span-2 border-t pt-2">
+                      <p className="text-xs text-muted-foreground">Última mensagem</p>
+                      {loadingMessages && !ultimaMensagem ? (
+                        <Skeleton className="mt-1 h-5 w-32" />
+                      ) : ultimaMensagem ? (
+                        <p className="font-semibold tabular-nums">
+                          há {tempoDesdeUltimaMensagem}
+                          <span className="ml-1.5 font-normal text-xs text-muted-foreground tabular-nums-none">
+                            {rotuloDeQuemFalou(ultimaMensagem.quem)}
+                          </span>
+                        </p>
+                      ) : (
+                        <p className="font-medium text-muted-foreground">Sem mensagens</p>
+                      )}
+                    </div>
                   </div>
-                  <div className="space-y-3">
+                  {/*
+                    Grade de duas colunas do começo ao fim. Antes só o bloco
+                    CNPJ/Registro/PDV/Sistema era pareado e o resto ocupava a
+                    linha inteira, deixando metade do painel vazia e empurrando
+                    Status e Atendente para fora da primeira tela.
+                  */}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3">
                     <div>
                       <Label className="text-muted-foreground">Cliente</Label>
                       <p className="font-medium">{selectedTicket.clientes?.nome || 'Não informado'}</p>
                     </div>
                     <div>
                       <Label className="text-muted-foreground">Telefone</Label>
-                      <p className="font-medium">{selectedTicket.clientes?.telefone || 'Não informado'}</p>
+                      <p className="font-medium tabular-nums">{selectedTicket.clientes?.telefone || 'Não informado'}</p>
                     </div>
+                    <div>
+                      <Label className="text-muted-foreground">CNPJ</Label>
+                      <p className="font-medium tabular-nums">{selectedTicket.clientes?.CNPJ || 'Não informado'}</p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Registro</Label>
+                      <p className="font-medium tabular-nums">{selectedTicket.clientes?.Registro || 'Não informado'}</p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">PDV</Label>
+                      <p className="font-medium">{selectedTicket.clientes?.PDV || 'Não informado'}</p>
+                    </div>
+                    <div>
+                      {/* `software` e `prime` vêm de sincronização externa e
+                          chegam com caixa inconsistente / texto "true";
+                          os helpers normalizam. */}
+                      <Label className="text-muted-foreground">Sistema</Label>
+                      <p className="font-medium">
+                        {formatSistemaCliente(selectedTicket.clientes?.software) || 'Não informado'}
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">E-mail</Label>
+                      <p className="font-medium break-all">{selectedTicket.clientes?.email || 'Não informado'}</p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Prime</Label>
+                      <p>
+                        {/* `—` quando o cadastro não informa: ausência de dado
+                            não é o mesmo que "não é Prime". */}
+                        <Badge variant={isClientePrime(selectedTicket.clientes?.prime) ? 'default' : 'secondary'}>
+                          {formatPrimeCliente(selectedTicket.clientes?.prime)}
+                        </Badge>
+                      </p>
+                    </div>
+
+                    <div className="col-span-2 border-t pt-3" />
+
                     <div>
                       <Label className="text-muted-foreground">Status</Label>
                       <p>
@@ -11309,9 +11456,58 @@ const saveConfig = async () => {
                     </div>
                     <div>
                       <Label className="text-muted-foreground">Criado em</Label>
-                      <p className="font-medium">
+                      <p className="font-medium tabular-nums">
                         {selectedTicket.criado_em ? new Date(selectedTicket.criado_em).toLocaleString('pt-BR') : '—'}
                       </p>
+                    </div>
+
+                    {/*
+                      MDM ocupa a linha inteira: é o único campo que sai para um
+                      serviço externo, e precisa de espaço para o botão, o
+                      resultado e o erro.
+                    */}
+                    <div className="col-span-2 rounded-lg border bg-muted/20 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <Label className="text-muted-foreground">MDM</Label>
+                        {cnpjDoCliente && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 gap-1.5 text-xs"
+                            onClick={consultarMdm}
+                            disabled={mdmLoading}
+                          >
+                            <RefreshCw className={cn('h-3 w-3', mdmLoading && 'animate-spin')} />
+                            {mdmResultado || mdmErro ? 'Consultar de novo' : 'Verificar MDM'}
+                          </Button>
+                        )}
+                      </div>
+                      <div className="mt-1.5">
+                        {!cnpjDoCliente ? (
+                          // Sem CNPJ não há o que consultar — dizer isso é melhor
+                          // que mostrar "sem MDM" e o gestor concluir que o
+                          // cliente não tem o agente.
+                          <p className="text-sm text-muted-foreground">Cliente sem CNPJ cadastrado</p>
+                        ) : mdmLoading ? (
+                          <Skeleton className="h-5 w-40" />
+                        ) : mdmErro ? (
+                          <p className="text-sm text-destructive">{mdmErro}</p>
+                        ) : mdmResultado ? (
+                          <p className="flex flex-wrap items-center gap-2">
+                            <Badge variant={mdmResultado.hasMdm ? 'default' : 'destructive'}>
+                              {mdmResultado.hasMdm ? 'MDM instalado' : 'Sem MDM'}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground tabular-nums">
+                              {mdmResultado.installedCount}/{mdmResultado.totalMachines}
+                              {mdmResultado.totalMachines === 1 ? ' máquina' : ' máquinas'}
+                            </span>
+                          </p>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">
+                            Não consultado — a busca sai para um serviço externo.
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>

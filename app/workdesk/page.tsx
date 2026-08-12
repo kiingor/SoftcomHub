@@ -7,6 +7,10 @@ import { createClient } from '@/lib/supabase/client'
 import { logError } from '@/lib/error-logger'
 import { stripBrazilCountryCode } from '@/lib/phone'
 import { computeSendOutcome } from '@/lib/message-send-status'
+import {
+  TRUSTED_INBOUND_CLIENT_SENDERS,
+  selectOutboundChannelEvidence,
+} from '@/lib/message-send-target'
 import { areSetorSortConfigsEqual, sortTicketsBySetorConfig } from '@/lib/ticket-sort'
 import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
@@ -122,7 +126,8 @@ import { formatPrimeCliente, formatSistemaCliente, isClientePrime } from '@/lib/
 import { formatDocumento, formatDocumentoInput, isDocumentoValido, rotuloDocumento } from '@/lib/documento-cliente'
 import { telefoneSemDDI } from '@/lib/telefone'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
-import { devePosicionarNoInicioDoTicket, estaNoFimDaConversa } from '@/lib/scroll-conversa'
+import { estaNoFimDaConversa } from '@/lib/scroll-conversa'
+import { STATUS_QUE_ACEITAM_ENVIO } from '@/lib/ticket-send-auth'
 import {
   calcularInicioJanelaHistoricoIso,
   ehMensagemNexus as isNexusMessage,
@@ -196,7 +201,10 @@ interface Ticket {
   colaborador_id: string | null
   setor_id: string
   subsetor_id: string | null
-  status: 'aberto' | 'em_atendimento' | 'encerrado'
+  // 'avaliar' é o estado entre finalizar o atendimento e o cliente responder a
+  // pesquisa. Faltava aqui, e por isso a tela tratava esse ticket como se ainda
+  // aceitasse envio — o compositor ficava habilitado e o servidor recusava.
+  status: 'aberto' | 'em_atendimento' | 'avaliar' | 'encerrado'
   prioridade: 'normal' | 'urgente'
   canal: string
   primeira_resposta_em: string | null
@@ -808,11 +816,16 @@ export default function WorkdeskPage() {
     setNexusResponse(null)
     try {
       const msgs = mensagens.filter(m => m.remetente !== 'sistema' && m.conteudo && m.ticket_id === selectedTicket.id)
+      // isClientMessage e não `=== 'cliente'`: num ticket vindo do Nexus — que é
+      // justamente onde se aperta "Consultar Nexus" — a fala do cliente chega
+      // como 'cliente-nexus'. Com a comparação estrita ela era rotulada como
+      // `assistant`, ou seja, a IA recebia as palavras do cliente como se
+      // fossem saída dela mesma, e `lastClientMsg` não achava nada.
       const history = msgs.slice(-20).map(m => ({
-        role: m.remetente === 'cliente' ? 'user' as const : 'assistant' as const,
+        role: isClientMessage(m.remetente) ? 'user' as const : 'assistant' as const,
         content: m.conteudo
       }))
-      const lastClientMsg = [...msgs].reverse().find(m => m.remetente === 'cliente')
+      const lastClientMsg = [...msgs].reverse().find(m => isClientMessage(m.remetente))
       const message = lastClientMsg?.conteudo || msgs[msgs.length - 1]?.conteudo || ''
 
       const res = await fetch('/api/ia/nexus', {
@@ -856,7 +869,8 @@ export default function WorkdeskPage() {
   const messageTextareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const mobileMessagesViewportRef = useRef<HTMLDivElement>(null)
-  const devePosicionarNoInicioDoTicketMobileRef = useRef(false)
+  /** Drawer mobile ainda não rolado até o fim nesta abertura. */
+  const aberturaPendenteMobileRef = useRef(false)
 
   // Voice recording (PTT) state — uses opus-recorder to produce ogg/opus directly
   // (Chrome's native MediaRecorder only emits webm/opus, which Meta Cloud API silently rejects).
@@ -900,6 +914,22 @@ export default function WorkdeskPage() {
   // 24h window check
   const [isWindowExpired, setIsWindowExpired] = useState(false)
   const [lastMessageTime, setLastMessageTime] = useState<Date | null>(null)
+
+  /**
+   * Ticket fora destes status é recusado no envio por `authorizeTicketSend`
+   * (lib/ticket-send-auth.ts). Espelhar a regra aqui é o que permite travar o
+   * compositor ANTES de o atendente digitar, em vez de aceitar o texto e
+   * devolver "Este ticket não está mais ativo" com a mensagem já perdida.
+   */
+  const envioBloqueadoPorStatus = Boolean(
+    selectedTicket
+    && !(STATUS_QUE_ACEITAM_ENVIO as readonly string[]).includes(selectedTicket.status),
+  )
+  // 'avaliar' é o estado em que o cliente está sendo convidado a avaliar o
+  // atendimento; qualquer outro fora da lista é encerramento em andamento.
+  const avisoEnvioBloqueado = selectedTicket?.status === 'avaliar'
+    ? 'Aguardando avaliação do cliente — não é possível enviar'
+    : 'Este ticket não está mais ativo'
   
   // Disparo state
   const [disparoDialogOpen, setDisparoDialogOpen] = useState(false)
@@ -929,6 +959,96 @@ export default function WorkdeskPage() {
         ? 'Escreva a mensagem de abertura para o atendimento via WhatsApp não oficial.'
         : ''
   const [setorCanalConfig, setSetorCanalConfig] = useState<'whatsapp' | 'discord' | 'evolution_api'>('whatsapp')
+
+  /**
+   * Canais ativos dos setores do atendente, com o estado de conexão que o cron
+   * `check-instances` grava a cada 2 minutos.
+   *
+   * Guarda a lista crua porque as duas perguntas do aviso precisam dela inteira:
+   * "esta instância caiu?" e "sobrou algum caminho no ar neste setor?".
+   *
+   * O atendente só descobria a queda tentando enviar e recebendo erro do
+   * provedor — 50 das 228 falhas de envio dos últimos 30 dias são instância
+   * offline. O alerta que já existia era web push para gestores; quem está com o
+   * cliente na tela não recebia nada.
+   */
+  const [canaisDosSetores, setCanaisDosSetores] = useState<any[]>([])
+
+  const aplicarEstadoDeConexao = useCallback((canais: any[]) => {
+    setCanaisDosSetores(canais || [])
+  }, [])
+
+  // Só 'close' e 'not_found' são queda confirmada. 'connecting' é transitório e
+  // 'unknown' significa que o próprio cron não conseguiu medir — alarmar nesses
+  // dois faria o aviso aparecer sozinho e perder credibilidade.
+  const canalEstaCaido = (canal: any) => (
+    canal?.last_connection_state === 'close' || canal?.last_connection_state === 'not_found'
+  )
+
+  const instanciasCaidas = useMemo(() => {
+    const caidas = new Set<string>()
+    for (const canal of canaisDosSetores) {
+      if (canal?.tipo === 'evolution_api' && canal.instancia && canalEstaCaido(canal)) {
+        caidas.add(canal.instancia)
+      }
+    }
+    return caidas
+  }, [canaisDosSetores])
+
+  /**
+   * Setores em que NENHUM canal ativo está no ar.
+   *
+   * Serve de rede para o ticket cujo canal não dá para identificar (conversa
+   * ainda sem fala do cliente). Um setor com WhatsApp oficial no ar e uma
+   * instância caída não entra aqui — era o caso de Comercial Matriz, com 9
+   * tickets que veriam alarme falso.
+   */
+  const setoresSemNenhumCanalNoAr = useMemo(() => {
+    const porSetor = new Map<string, any[]>()
+    for (const canal of canaisDosSetores) {
+      if (!canal?.setor_id) continue
+      const lista = porSetor.get(canal.setor_id) || []
+      lista.push(canal)
+      porSetor.set(canal.setor_id, lista)
+    }
+    const semSaida = new Set<string>()
+    for (const [setorId, canais] of porSetor) {
+      // Canal que não é Evolution não tem estado medido; tratamos como no ar,
+      // senão o WhatsApp oficial entraria como queda sem nunca ter caído.
+      const algumNoAr = canais.some((c) => c.tipo !== 'evolution_api' || !canalEstaCaido(c))
+      if (!algumNoAr) semSaida.add(setorId)
+    }
+    return semSaida
+  }, [canaisDosSetores])
+
+  /**
+   * Nome do setor quando o canal DESTE ticket está caído.
+   *
+   * Preso à instância do ticket, não ao setor: um setor pode ter mais de um
+   * canal, e alarmar por setor faria o ticket que sai por um canal saudável
+   * exibir alerta à toa.
+   *
+   * O canal do ticket é identificado pela última fala do CLIENTE — a mesma
+   * regra que o envio usa (`selectOutboundChannelEvidence`). Se a tela usasse
+   * um critério e o envio outro, o aviso apareceria fora de hora.
+   *
+   * Sem fala do cliente não há como identificar o canal; aí só alarma se o
+   * setor inteiro estiver sem saída.
+   */
+  const setorDesconectadoDoTicket = useMemo(() => {
+    if (!selectedTicket?.setor_id) return null
+    const nomeDoSetor = selectedTicket.setores?.nome || 'deste ticket'
+
+    const evidencia = selectOutboundChannelEvidence(
+      [...mensagens].reverse() as Array<{ remetente?: string | null }>,
+    ) as { phone_number_id?: string | null } | null
+    const canalDoTicket = evidencia?.phone_number_id || null
+
+    if (canalDoTicket) {
+      return instanciasCaidas.has(canalDoTicket) ? nomeDoSetor : null
+    }
+    return setoresSemNenhumCanalNoAr.has(selectedTicket.setor_id) ? nomeDoSetor : null
+  }, [selectedTicket, mensagens, instanciasCaidas, setoresSemNenhumCanalNoAr])
   const [setorCanaisAtivos, setSetorCanaisAtivos] = useState<string[]>([])
   const [travarOrdenacaoPorSetor, setTravarOrdenacaoPorSetor] = useState<Map<string, boolean>>(new Map())
   const travarOrdenacaoPorSetorRef = useRef<Map<string, boolean>>(new Map())
@@ -974,6 +1094,38 @@ export default function WorkdeskPage() {
   useEffect(() => {
     setTickets((current) => sortTicketsBySetorConfig(current, travarOrdenacaoPorSetor))
   }, [travarOrdenacaoPorSetor])
+
+  // O cron `check-instances` roda a cada 2 minutos e grava em `setor_canais`.
+  // Sem esta subscription o atendente só veria a queda ao recarregar a página —
+  // e o aviso também precisa SUMIR sozinho quando a instância voltar, senão vira
+  // ruído que ninguém acredita.
+  useEffect(() => {
+    if (!colaborador) return
+    const canal = supabase
+      .channel('setor-canais-conexao')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'setor_canais' },
+        (payload) => {
+          const canalAtualizado = payload.new as any
+          if (canalAtualizado?.tipo !== 'evolution_api' || !canalAtualizado.setor_id) return
+          // Só remenda a linha correspondente: recalcular o resto a partir de um
+          // único evento daria um retrato parcial dos canais do setor.
+          setCanaisDosSetores((anterior) => {
+            const indice = anterior.findIndex((c) => c.id === canalAtualizado.id)
+            if (indice < 0) return anterior
+            const proximo = [...anterior]
+            proximo[indice] = {
+              ...proximo[indice],
+              last_connection_state: canalAtualizado.last_connection_state,
+            }
+            return proximo
+          })
+        },
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(canal) }
+  }, [colaborador, supabase])
 
   useEffect(() => {
     const channel = supabase
@@ -1131,11 +1283,12 @@ export default function WorkdeskPage() {
   if (allSetorIds.length > 0) {
     const { data: canaisAtivos } = await supabase
       .from('setor_canais')
-      .select('tipo')
+      .select('id, tipo, setor_id, instancia, phone_number_id, last_connection_state')
       .in('setor_id', allSetorIds)
       .eq('ativo', true)
     if (canaisAtivos && canaisAtivos.length > 0) {
       setSetorCanaisAtivos(Array.from(new Set(canaisAtivos.map((c: any) => c.tipo))))
+      aplicarEstadoDeConexao(canaisAtivos)
     }
   }
   return colab
@@ -1218,10 +1371,14 @@ export default function WorkdeskPage() {
           // Walk DESC. A rajada termina quando bate em msg do colaborador/bot/sistema.
           // O âncora final fica na MAIS ANTIGA msg do cliente da rajada — i.e.
           // a primeira msg sem resposta.
+          // isClientMessage: msg vinda do Nexus ('cliente-nexus') encerrava a rajada
+          // como se fosse do suporte. Sem semente aqui, a sincronia logo abaixo
+          // APAGAVA o âncora que o realtime tinha acabado de gravar e o cronômetro
+          // do ticket sumia a cada refetch da lista.
           const burstEnded = new Set<string>()
           for (const msg of allLastMsgs) {
             if (burstEnded.has(msg.ticket_id)) continue
-            if (msg.remetente === 'cliente') {
+            if (isClientMessage(msg.remetente)) {
               firstUnreadSeed.set(msg.ticket_id, msg.enviado_em)
             } else {
               burstEnded.add(msg.ticket_id)
@@ -1497,8 +1654,12 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   setLastMessageTime(null)
   } else {
         // WhatsApp 24h window starts from the last message the CLIENT sent, not bot/colaborador
+        // isClientMessage e não `=== 'cliente'`: quem falou pelo Nexus chega como
+        // 'cliente-nexus'. Com a comparação estrita a janela era calculada como se
+        // o cliente nunca tivesse respondido e o campo de digitação travava em
+        // "Janela expirada" mesmo com resposta recente.
         const currentTicketClientMessages = data.filter(
-          (m) => m.ticket_id === ticketId && m.remetente === 'cliente'
+          (m) => m.ticket_id === ticketId && isClientMessage(m.remetente)
         )
         if (currentTicketClientMessages.length > 0) {
           const lastClientMsg = currentTicketClientMessages[currentTicketClientMessages.length - 1]
@@ -1606,39 +1767,6 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
    * meio. O que decide é onde o atendente estava ANTES da atualização.
    */
   const acompanhandoOFimRef = useRef(true)
-  // Ao abrir uma conversa que traz o histórico do Nexus, a referência útil
-  // para o atendente é a abertura do ticket — não a primeira mensagem do bot.
-  // Esta guarda é consumida uma única vez após o carregamento inicial.
-  const devePosicionarNoInicioDoTicketRef = useRef(false)
-  // Tickets cuja transição do bot para o humano o atendente já viu nesta
-  // sessão. A partir da segunda abertura a conversa volta a abrir no fim.
-  const ticketsJaPosicionadosRef = useRef<Set<string>>(new Set())
-
-  const posicionarNoInicioDoTicket = useCallback(() => {
-    const container = messagesContainerRef.current
-    const ticketStart = container?.querySelector<HTMLElement>('[data-ticket-start]')
-    if (!container || !ticketStart) return false
-
-    const ticketId = selectedTicketIdRef.current
-    const posicionar = () => {
-      if (selectedTicketIdRef.current !== ticketId) return
-
-      const currentContainer = messagesContainerRef.current
-      const currentTicketStart = currentContainer?.querySelector<HTMLElement>('[data-ticket-start]')
-      if (!currentContainer || !currentTicketStart) return
-
-      currentTicketStart.scrollIntoView({ block: 'start', inline: 'nearest' })
-      currentContainer.scrollTop = Math.max(0, currentContainer.scrollTop - 16)
-    }
-
-    // Imagens e as animações das bolhas podem alterar a altura logo depois da
-    // primeira pintura. Reaplica apenas para o mesmo ticket, sem deslocar quem
-    // já tiver aberto outra conversa nesse intervalo.
-    posicionar()
-    requestAnimationFrame(posicionar)
-    window.setTimeout(posicionar, 180)
-    return true
-  }, [])
 
   const handleMessagesScroll = useCallback(() => {
     acompanhandoOFimRef.current = estaNoFimDaConversa(messagesContainerRef.current)
@@ -1742,37 +1870,16 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     if (el) el.scrollTop = el.scrollHeight
   }, [historicoConversaMsgs, historicoConversaLoading])
 
-  // A referência só existe depois de o React montar as mensagens. Usar layout
-  // effect evita que a primeira pintura mostre o topo do histórico do Nexus e
-  // o efeito comum de rolagem a substitua antes do atendente vê-la.
-  useLayoutEffect(() => {
-    if (mensagens.length === 0 || loadingMensagens) return
-    if (!devePosicionarNoInicioDoTicketRef.current) return
-    if (!posicionarNoInicioDoTicket()) return
-
-    devePosicionarNoInicioDoTicketRef.current = false
-    // Marca só depois de posicionar de fato: se o marcador ainda não estava no
-    // DOM, `posicionarNoInicioDoTicket` devolve false e a conversa não chegou a
-    // ser mostrada na transição — dar como vista aqui a mandaria para o fim.
-    const ticketPosicionado = selectedTicketIdRef.current
-    if (ticketPosicionado) ticketsJaPosicionadosRef.current.add(ticketPosicionado)
-    acompanhandoOFimRef.current = false
-  }, [mensagens, loadingMensagens, posicionarNoInicioDoTicket])
-
+  // O `scrollToBottom` do efeito de acompanhamento só enxerga o painel desktop;
+  // sem esta linha o drawer mobile abria no topo da lista.
   useLayoutEffect(() => {
     if (!mobileDrawerOpen || mensagens.length === 0 || loadingMensagens) return
-    if (!devePosicionarNoInicioDoTicketMobileRef.current) return
+    if (!aberturaPendenteMobileRef.current) return
 
     const container = mobileMessagesViewportRef.current
-    const inicioDoTicket = container?.querySelector<HTMLElement>('[data-ticket-start]')
-      || container?.querySelector<HTMLElement>('[data-nexus-history-start]')
-    devePosicionarNoInicioDoTicketMobileRef.current = false
-    if (!container || !inicioDoTicket) return
-
-    inicioDoTicket.scrollIntoView({ block: 'start', inline: 'nearest' })
-    container.scrollTop = Math.max(0, container.scrollTop - 16)
-    const ticketPosicionado = selectedTicketIdRef.current
-    if (ticketPosicionado) ticketsJaPosicionadosRef.current.add(ticketPosicionado)
+    if (!container) return
+    aberturaPendenteMobileRef.current = false
+    container.scrollTop = container.scrollHeight
   }, [mensagens, loadingMensagens, mobileDrawerOpen])
 
   // Acompanha o fim da conversa — mas só de quem já estava no fim.
@@ -1790,10 +1897,6 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   // Abrir outra conversa começa no fim, independente de onde a anterior parou.
   useEffect(() => {
     acompanhandoOFimRef.current = true
-    devePosicionarNoInicioDoTicketRef.current = devePosicionarNoInicioDoTicket(
-      selectedTicketId,
-      ticketsJaPosicionadosRef.current,
-    )
   }, [selectedTicketId])
 
 // Real-time subscription for tickets
@@ -1858,6 +1961,22 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
               selectedTicketIdRef.current = null
               setMobileDrawerOpen(false)
               setMensagens([])
+            } else if (
+              selectedTicketIdRef.current === updatedTicket.id
+              && !STATUS_QUE_ACEITAM_ENVIO.includes(updatedTicket.status)
+            ) {
+              // Saiu de ativo sem ser encerrado — na prática, entrou em
+              // 'avaliar'. O `fetchTickets` logo abaixo só carrega
+              // aberto/em_atendimento, então o ticket some da lista e o status
+              // de `selectedTicket` CONGELA em 'em_atendimento': o compositor
+              // seguia habilitado e o servidor recusava o envio, com a mensagem
+              // já digitada perdida. Propagar o status aqui é o que faz a tela
+              // contar a verdade.
+              setSelectedTicket((prev) => (
+                prev && prev.id === updatedTicket.id
+                  ? { ...prev, status: updatedTicket.status }
+                  : prev
+              ))
             }
             // Ticket was just assigned/transferred TO this colaborador
             const isNew = !knownTicketIdsRef.current.has(updatedTicket.id)
@@ -2405,8 +2524,10 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
           // Only alert for messages in this colaborador's tickets
           if (!currentTickets.some((t) => t.id === newMessage.ticket_id)) return
 
-          // Only alert for client messages (remetente = 'cliente')
-          if (newMessage.remetente !== 'cliente') return
+          // Só alerta mensagem de cliente — incluindo 'cliente-nexus'. A comparação
+          // estrita descartava tudo que vinha do Nexus e matava som, badge de
+          // não-lida, toast e a reordenação do ticket no topo da lista.
+          if (!isClientMessage(newMessage.remetente)) return
 
           const isViewingThisTicket = selectedTicketIdRef.current === newMessage.ticket_id
 
@@ -2496,10 +2617,7 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     setSelectedTicket(ticket)
 
     if (!isSameTicket) {
-      devePosicionarNoInicioDoTicketMobileRef.current = devePosicionarNoInicioDoTicket(
-        ticket.id,
-        ticketsJaPosicionadosRef.current,
-      )
+      aberturaPendenteMobileRef.current = true
       // Clear messages only when switching to a DIFFERENT ticket — prevents flash of old
       // conversation while new messages load. Re-clicking the same ticket must NOT clear
       // messages because the useEffect won't re-fire (selectedTicketId didn't change).
@@ -2628,18 +2746,32 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
 
       // Se há mensagem de finalização, detectar o canal correto e enviar
       if (setor?.mensagem_finalizacao && !isWindowExpired) {
-        // Detectar canal pela última mensagem (mesma lógica do handleSendMessage)
-        const { data: lastMsgData } = await supabase
-          .from('mensagens')
-          .select('canal_envio, phone_number_id, discord_user_id')
-          .eq('ticket_id', ticketToClose.id)
-          .neq('remetente', 'sistema')
-          .order('enviado_em', { ascending: false })
-          .limit(1)
+        // Detectar canal pela última fala do cliente (mesma lógica do
+        // handleSendMessage) — a última mensagem qualquer é só o fallback.
+        const [{ data: lastClientMsgData }, { data: lastMsgData }] = await Promise.all([
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', ticketToClose.id)
+            .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+          supabase
+            .from('mensagens')
+            .select('remetente, canal_envio, phone_number_id, discord_user_id')
+            .eq('ticket_id', ticketToClose.id)
+            .neq('remetente', 'sistema')
+            .order('enviado_em', { ascending: false })
+            .limit(1),
+        ])
 
-        const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
-        const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
-        const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+        const canalEvidencia = selectOutboundChannelEvidence([
+          ...(lastClientMsgData || []),
+          ...(lastMsgData || []),
+        ])
+        const lastCanalEnvio = canalEvidencia?.canal_envio || null
+        const lastPhoneNumberId = canalEvidencia?.phone_number_id || null
+        const lastDiscordUserId = canalEvidencia?.discord_user_id || null
         const hasDiscordMsg = lastDiscordUserId || mensagens.some(m => m.discord_user_id)
 
         let setorCanal = 'whatsapp'
@@ -3379,9 +3511,12 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
   const isDisparoLocked = (ticket: Ticket) => {
   if (!ticket.is_disparo || !ticket.disparo_em) return false
   const dispatchTime = new Date(ticket.disparo_em).getTime()
-  // Check if there's any client message AFTER the dispatch time
+  // Check if there's any client message AFTER the dispatch time.
+  // isClientMessage: resposta que o Nexus atendeu chega como 'cliente-nexus'.
+  // Com a comparação estrita o ticket ficava travado mesmo com o cliente já
+  // tendo respondido — e travado aqui significa compositor bloqueado.
   const hasClientReplyAfterDispatch = mensagens.some(
-    m => m.remetente === 'cliente' && new Date(m.enviado_em).getTime() > dispatchTime
+    m => isClientMessage(m.remetente) && new Date(m.enviado_em).getTime() > dispatchTime
   )
   return !hasClientReplyAfterDispatch
   }
@@ -3391,9 +3526,11 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
   const isDisparoEncerrarEnabled = (ticket: Ticket) => {
     if (!ticket.is_disparo || !ticket.disparo_em) return true
     const dispatchTime = new Date(ticket.disparo_em).getTime()
-    // If client already replied after dispatch, always allow encerrar
+    // If client already replied after dispatch, always allow encerrar.
+    // isClientMessage pelo mesmo motivo de `isDisparoLocked`: 'cliente-nexus'
+    // também é resposta do cliente.
     const hasClientReply = mensagens.some(
-      m => m.remetente === 'cliente' && new Date(m.enviado_em).getTime() > dispatchTime
+      m => isClientMessage(m.remetente) && new Date(m.enviado_em).getTime() > dispatchTime
     )
     if (hasClientReply) return true
     // Otherwise, wait for 12min timer
@@ -3993,19 +4130,35 @@ const insertEmoji = (emoji: string) => {
       let setorCanal = 'whatsapp'
       let phoneNumberId: string | null = null
 
-      // 1. Busca a última mensagem do ticket (exceto sistema)
-      //    Inclui discord_user_id — indicador definitivo de ticket Discord
-      const { data: lastMsgData } = await supabase
-        .from('mensagens')
-        .select('canal_envio, phone_number_id, discord_user_id')
-        .eq('ticket_id', capturedTicketId)
-        .neq('remetente', 'sistema')
-        .order('enviado_em', { ascending: false })
-        .limit(1)
+      // 1. Busca a última fala do cliente e a última mensagem do ticket.
+      //    Só a fala do cliente prova o canal — é a única evidência que as rotas
+      //    de envio aceitam. A última mensagem qualquer entra apenas como
+      //    fallback, para o ticket em que o cliente ainda não falou (disparo).
+      //    Inclui discord_user_id — indicador definitivo de ticket Discord.
+      const [{ data: lastClientMsgData }, { data: lastMsgData }] = await Promise.all([
+        supabase
+          .from('mensagens')
+          .select('remetente, canal_envio, phone_number_id, discord_user_id')
+          .eq('ticket_id', capturedTicketId)
+          .in('remetente', [...TRUSTED_INBOUND_CLIENT_SENDERS])
+          .order('enviado_em', { ascending: false })
+          .limit(1),
+        supabase
+          .from('mensagens')
+          .select('remetente, canal_envio, phone_number_id, discord_user_id')
+          .eq('ticket_id', capturedTicketId)
+          .neq('remetente', 'sistema')
+          .order('enviado_em', { ascending: false })
+          .limit(1),
+      ])
 
-      const lastCanalEnvio = lastMsgData?.[0]?.canal_envio || null
-      const lastPhoneNumberId = lastMsgData?.[0]?.phone_number_id || null
-      const lastDiscordUserId = lastMsgData?.[0]?.discord_user_id || null
+      const canalEvidencia = selectOutboundChannelEvidence([
+        ...(lastClientMsgData || []),
+        ...(lastMsgData || []),
+      ])
+      const lastCanalEnvio = canalEvidencia?.canal_envio || null
+      const lastPhoneNumberId = canalEvidencia?.phone_number_id || null
+      const lastDiscordUserId = canalEvidencia?.discord_user_id || null
 
       // Também verificar se alguma mensagem do cliente tem discord_user_id (mais abrangente)
       const hasDiscordMsg = lastDiscordUserId || mensagens.some(m => m.discord_user_id)
@@ -5037,9 +5190,7 @@ const insertEmoji = (emoji: string) => {
                                   <SeparadorConversaNexus quantidade={nexusConversationMessages.length} />
                                 )}
                                 {msg.id === inicioHumanoDoTicketId && (
-                                  <div data-ticket-start className="scroll-mt-4">
-                                    <SeparadorInicioTicket numero={selectedTicket?.numero} />
-                                  </div>
+                                  <SeparadorInicioTicket numero={selectedTicket?.numero} />
                                 )}
                                 {/* Ticket separator for history */}
                                 {isPreviousTicket && (
@@ -5255,6 +5406,25 @@ const insertEmoji = (emoji: string) => {
   )}
   </div>
   )}
+  {/*
+    WhatsApp do setor desconectado. Vermelho e não âmbar de propósito: aqui
+    NADA sai, diferente da janela de 24h, em que o atendente ainda pode
+    encerrar. Identifica pelo NOME DO SETOR, não pela instância: quem atende
+    vários setores não sabe qual instância pertence a qual.
+  */}
+  {setorDesconectadoDoTicket && (
+  <div className="mb-3 p-3 rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800">
+  <div className="flex items-center gap-2 text-red-700 dark:text-red-300">
+  <AlertTriangle className="h-4 w-4 shrink-0" />
+  <span className="text-sm font-medium">WhatsApp desconectado — {setorDesconectadoDoTicket}</span>
+  </div>
+  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+  O WhatsApp do setor <span className="font-semibold">{setorDesconectadoDoTicket}</span> perdeu a conexão.
+  Nenhuma mensagem entra ou sai até alguém reconectar o QR Code nas configurações do setor.
+  Avise a gestão antes de continuar respondendo.
+  </p>
+  </div>
+  )}
   {/* 24h Window Expired Warning */}
   {isWindowExpired && !(selectedTicket?.is_disparo && isDisparoLocked(selectedTicket)) && (
   <div className="mb-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
@@ -5420,7 +5590,7 @@ const insertEmoji = (emoji: string) => {
                         size="icon"
   onClick={() => fileInputRef.current?.click()}
   className="shrink-0"
-  disabled={isWindowExpired || isRecording || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+  disabled={envioBloqueadoPorStatus || isWindowExpired || isRecording || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                       >
                         <ImageIcon className="h-5 w-5 text-muted-foreground" />
                       </Button>
@@ -5455,7 +5625,7 @@ const insertEmoji = (emoji: string) => {
                           size="icon"
                           onClick={startRecording}
                           className="shrink-0"
-                          disabled={isWindowExpired || attachments.length > 0 || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                          disabled={envioBloqueadoPorStatus || isWindowExpired || attachments.length > 0 || !!recordedAudio || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                           title="Gravar áudio"
                         >
                           <Mic className="h-5 w-5 text-muted-foreground" />
@@ -5466,7 +5636,7 @@ const insertEmoji = (emoji: string) => {
                           variant="ghost"
                           size="icon"
                           onClick={handleMelhorarIA}
-                          disabled={!messageInput.trim() || melhorandoIA || isWindowExpired}
+                          disabled={!messageInput.trim() || melhorandoIA || isWindowExpired || envioBloqueadoPorStatus}
                           className="shrink-0"
                           title="Melhorar com IA"
                         >
@@ -5484,9 +5654,9 @@ const insertEmoji = (emoji: string) => {
                   onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
                   onPaste={handlePaste}
-                  placeholder={(selectedTicket?.is_disparo && isDisparoLocked(selectedTicket)) ? 'Aguardando resposta do cliente...' : isWindowExpired ? 'Janela expirada - Encerre o ticket' : 'Digite / para atalhos...'}
+                  placeholder={envioBloqueadoPorStatus ? avisoEnvioBloqueado : (selectedTicket?.is_disparo && isDisparoLocked(selectedTicket)) ? 'Aguardando resposta do cliente...' : isWindowExpired ? 'Janela expirada - Encerre o ticket' : 'Digite / para atalhos...'}
                   className="w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                  disabled={envioBloqueadoPorStatus || isWindowExpired || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="off"
@@ -5502,7 +5672,7 @@ const insertEmoji = (emoji: string) => {
                       <Button
                         size="icon"
                         onClick={() => handleSendMessage()}
-                        disabled={(!messageInput.trim() && attachments.length === 0) || isWindowExpired || uploadingFile || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
+                        disabled={(!messageInput.trim() && attachments.length === 0) || envioBloqueadoPorStatus || isWindowExpired || uploadingFile || (selectedTicket?.is_disparo === true && isDisparoLocked(selectedTicket))}
                         className="shrink-0"
                       >
                       {uploadingFile ? (
@@ -5622,7 +5792,7 @@ const insertEmoji = (emoji: string) => {
                     ID
                   </label>
                   {(() => {
-                    const lastClientMsg = mensagens.filter(m => m.remetente === 'cliente' && m.discord_user_id).pop()
+                    const lastClientMsg = mensagens.filter(m => isClientMessage(m.remetente) && m.discord_user_id).pop()
                     const discordId = lastClientMsg?.discord_user_id || null
                     return (
                       <>
@@ -6308,9 +6478,7 @@ onClick={() => {
                                   <SeparadorConversaNexus quantidade={nexusConversationMessages.length} />
                                 )}
                                 {msg.id === inicioHumanoDoTicketId && (
-                                  <div data-ticket-start className="scroll-mt-4">
-                                    <SeparadorInicioTicket numero={selectedTicket?.numero} />
-                                  </div>
+                                  <SeparadorInicioTicket numero={selectedTicket?.numero} />
                                 )}
                                 {/* Ticket separator for history */}
                                 {isPreviousTicket && (
@@ -7470,7 +7638,7 @@ function TicketList({
                             <span className="signal-dot signal-dot--pulse" aria-hidden="true" />
                             Sem resposta
                           </span>
-                        ) : ticket.ultima_mensagem_remetente === 'cliente' ? (
+                        ) : isClientMessage(ticket.ultima_mensagem_remetente) ? (
                           <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-foreground">
                             <span className="signal-dot signal-dot--pulse" aria-hidden="true" />
                             Cliente respondeu
@@ -7521,7 +7689,8 @@ function TicketList({
                       </span>
                       {(() => {
                         const firstUnread = firstUnreadAt.get(ticket.id)
-                        const isClientWaiting = ticket.ultima_mensagem_remetente === 'cliente'
+                        // isClientMessage: 'cliente-nexus' também é o cliente esperando.
+                        const isClientWaiting = isClientMessage(ticket.ultima_mensagem_remetente)
                         // Timer emerald (urgência): cliente foi o último a falar
                         // E temos o âncora da primeira msg sem resposta. Conta o
                         // tempo TOTAL aguardando — não zera quando o atendente

@@ -269,59 +269,88 @@ export default function TicketsPage() {
 
     setLoading(true)
 
-    let query = supabase
-      .from('tickets')
-      .select(`
-        *,
-        cliente:clientes(id, nome, telefone, email),
-        colaborador:colaboradores(id, nome),
-        setor:setores!tickets_setor_id_fkey(id, nome),
-        subsetor:subsetores(id, nome)
-      `)
-      .order('criado_em', { ascending: false })
+    // Pagina: a busca por nome/telefone/assunto é feita AQUI, em memória, sobre
+    // o que veio do banco. Sem paginar, o PostgREST devolvia só os 1.000 tickets
+    // mais recentes e o filtro nunca enxergava nada mais antigo que isso.
+    // `.order('id')` entra como desempate — `criado_em` repetido entre páginas
+    // faria linha duplicar e sumir.
+    let data: any[] = []
+    try {
+      data = await loadRowsByPages<any>(() => {
+        let query = supabase
+          .from('tickets')
+          .select(`
+            *,
+            cliente:clientes(id, nome, telefone, email),
+            colaborador:colaboradores(id, nome),
+            setor:setores!tickets_setor_id_fkey(id, nome),
+            subsetor:subsetores(id, nome)
+          `)
 
-    // Filter by accessible setores (unless master)
-    if (!colaborador?.is_master && setorIdsAcessiveis.length > 0) {
-      query = query.in('setor_id', setorIdsAcessiveis)
+        // Filter by accessible setores (unless master)
+        if (!colaborador?.is_master && setorIdsAcessiveis.length > 0) {
+          query = query.in('setor_id', setorIdsAcessiveis)
+        }
+
+        if (statusFilter !== 'all') {
+          query = query.eq('status', statusFilter)
+        }
+        if (prioridadeFilter !== 'all') {
+          query = query.eq('prioridade', prioridadeFilter)
+        }
+        if (setorFilter !== 'all') {
+          query = query.eq('setor_id', setorFilter)
+        }
+
+        return query
+          .order('criado_em', { ascending: false })
+          .order('id', { ascending: true })
+      })
+    } catch (error) {
+      console.warn('[dashboard/tickets] erro carregando tickets:', error)
+      setLoading(false)
+      return
     }
 
-    if (statusFilter !== 'all') {
-      query = query.eq('status', statusFilter)
+    let filtered = data
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase()
+      filtered = data.filter(
+        (t) =>
+          t.cliente?.nome?.toLowerCase().includes(term) ||
+          t.cliente?.telefone?.includes(term) ||
+          t.assunto?.toLowerCase().includes(term)
+      )
     }
-    if (prioridadeFilter !== 'all') {
-      query = query.eq('prioridade', prioridadeFilter)
-    }
-    if (setorFilter !== 'all') {
-      query = query.eq('setor_id', setorFilter)
-    }
-
-    const { data, error } = await query
-
-    if (!error && data) {
-      let filtered = data
-      if (searchTerm) {
-        const term = searchTerm.toLowerCase()
-        filtered = data.filter(
-          (t) =>
-            t.cliente?.nome?.toLowerCase().includes(term) ||
-            t.cliente?.telefone?.includes(term) ||
-            t.assunto?.toLowerCase().includes(term)
-        )
-      }
-      setTickets(filtered)
-    }
+    setTickets(filtered)
 
     setLoading(false)
   }
 
   async function fetchDropdownData() {
-    const [clientesRes, colaboradoresRes] = await Promise.all([
-      supabase.from('clientes').select('id, nome, telefone, email').order('nome'),
-      supabase.from('colaboradores').select('id, nome, is_online').eq('ativo', true).order('nome'),
-    ])
+    // A base de clientes passa de 1.000 há tempos: sem paginar, o dropdown de
+    // "novo ticket" só listava o começo do alfabeto e o cliente certo era
+    // impossível de achar. `.order('id')` desempata nomes repetidos.
+    try {
+      const [clientesData, colaboradoresData] = await Promise.all([
+        loadRowsByPages<any>(() => supabase
+          .from('clientes')
+          .select('id, nome, telefone, email')
+          .order('nome')
+          .order('id', { ascending: true })),
+        loadRowsByPages<any>(() => supabase
+          .from('colaboradores')
+          .select('id, nome, is_online')
+          .eq('ativo', true)
+          .order('nome')
+          .order('id', { ascending: true })),
+      ])
 
-    if (clientesRes.data) setClientes(clientesRes.data)
-    if (colaboradoresRes.data) setColaboradores(colaboradoresRes.data)
+      setClientes(clientesData)
+      setColaboradores(colaboradoresData)
+    } catch (error) {
+      console.warn('[dashboard/tickets] erro carregando dados dos dropdowns:', error)
+    }
   }
 
   // Sync setores from useSetores hook

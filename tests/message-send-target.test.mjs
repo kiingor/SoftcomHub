@@ -9,6 +9,7 @@ import {
   resolvePersistedRecipient,
   resolveReplyQuote,
   selectAuthorizedTicketChannel,
+  selectOutboundChannelEvidence,
   selectRequestedActiveChannel,
   validateOutboundMediaUrl,
 } from '../lib/message-send-target.ts'
@@ -307,6 +308,81 @@ test('fails closed when an active identifier has an unknown ownership collision'
   assert.equal(selected, null)
 })
 
+const kenobiChannel = {
+  id: 'kenobi-channel',
+  sectorId: 'kenobi',
+  identifier: 'shared-phone-id',
+}
+const kenobiFilialChannel = {
+  id: 'kenobi-filial-channel',
+  sectorId: 'kenobi-filial',
+  identifier: 'shared-phone-id',
+}
+
+test('canal compartilhado responde pelo setor do próprio ticket', () => {
+  // Caso #97049 no Kenobi: o número está cadastrado em dois setores e nenhum é o
+  // par ServiceDesk/Ouvidoria, então o dono saía null e o envio morria em
+  // CHANNEL_MISMATCH mesmo com o canal ativo no setor do ticket.
+  const selected = selectAuthorizedTicketChannel({
+    currentActiveChannels: [kenobiChannel],
+    matchingActiveChannels: [kenobiChannel, kenobiFilialChannel],
+    historicalEvidence: [],
+    requestedIdentifier: 'shared-phone-id',
+    getIdentifier: (channel) => channel.identifier,
+    getOwnerId: (channel) => channel.sectorId,
+    resolveOwnerId: (ownerIds) => resolveSharedChannelOwnerId(ownerIds, 'kenobi'),
+  })
+
+  assert.equal(selected, kenobiChannel)
+})
+
+test('o setor preferido não substitui a prova de que o canal é da conversa', () => {
+  const selected = selectAuthorizedTicketChannel({
+    currentActiveChannels: [],
+    matchingActiveChannels: [kenobiChannel, kenobiFilialChannel],
+    historicalEvidence: [{
+      sender: 'colaborador',
+      channelIdentifier: 'shared-phone-id',
+      providerMessageId: null,
+    }],
+    requestedIdentifier: 'shared-phone-id',
+    getIdentifier: (channel) => channel.identifier,
+    getOwnerId: (channel) => channel.sectorId,
+    resolveOwnerId: (ownerIds) => resolveSharedChannelOwnerId(ownerIds, 'kenobi'),
+  })
+
+  assert.equal(selected, null)
+})
+
+test('o canal de saída sai da última fala do cliente, não da última mensagem', () => {
+  // Caso #97049: o n8n grava toda mensagem bot-nexus com o phone_number_id fixo
+  // do Financeiro Matriz. Usando "última mensagem, qualquer remetente", a tela
+  // pedia esse número e a rota recusava com CHANNEL_MISMATCH.
+  const selected = selectOutboundChannelEvidence([
+    { remetente: 'bot-nexus', phone_number_id: '958565544008403' },
+    { remetente: 'colaborador', phone_number_id: '958565544008403' },
+    { remetente: 'cliente-nexus', phone_number_id: 'canal-de-entrada' },
+  ])
+
+  assert.equal(selected?.phone_number_id, 'canal-de-entrada')
+})
+
+test('sem fala do cliente, cai na última mensagem não-sistema', () => {
+  // Ticket nascido de disparo: não existe prova de canal nenhuma, então manter o
+  // comportamento antigo é melhor do que travar o envio.
+  const selected = selectOutboundChannelEvidence([
+    { remetente: 'sistema', phone_number_id: 'ruido' },
+    { remetente: 'colaborador', phone_number_id: 'canal-do-disparo' },
+  ])
+
+  assert.equal(selected?.phone_number_id, 'canal-do-disparo')
+  assert.equal(selectOutboundChannelEvidence([]), null)
+  assert.equal(
+    selectOutboundChannelEvidence([{ remetente: 'sistema', phone_number_id: 'ruido' }]),
+    null,
+  )
+})
+
 test('allows public HTTPS media and blocks local or private destinations', () => {
   assert.equal(
     validateOutboundMediaUrl(
@@ -358,30 +434,46 @@ test('rejects media immediately when content-length exceeds the limit', async ()
 test('quotes the parent message when it carries a provider id', () => {
   const result = resolveReplyQuote({ whatsapp_message_id: 'wamid.ABC' })
 
-  assert.deepEqual(result, { ok: true, providerMessageId: 'wamid.ABC' })
+  assert.deepEqual(result, { providerMessageId: 'wamid.ABC', motivoSemQuote: null })
 })
 
-test('sends without a quote when the parent has no provider id', () => {
+// A citação é enfeite; a mensagem é o que importa. Reprovar o envio por causa
+// dela deixava o atendente sem responder o cliente — e como o retry reenvia a
+// mesma citação, a mensagem encalhava em "falhou" para sempre. Era a maior fonte
+// de falha de envio do sistema: 43 das 76 medidas em 29/07/2026.
+//
+// Os três casos abaixo cobrem os três motivos. Nenhum pode devolver erro.
+
+test('envia sem quote quando o pai não tem id do provedor', () => {
   // Mensagens do Nexus (cliente-nexus/bot-nexus) nunca têm whatsapp_message_id.
-  // Antes isso devolvia 422 e a mensagem encalhava em "falhou", porque o retry
-  // reenviava a mesma citação.
   const result = resolveReplyQuote({ whatsapp_message_id: null })
 
-  assert.deepEqual(result, { ok: true, providerMessageId: null })
+  assert.deepEqual(result, { providerMessageId: null, motivoSemQuote: 'sem-id-do-provedor' })
 })
 
-test('rejects a reply whose parent is not in the ticket', () => {
-  // A consulta já filtra por ticket_id e REPLYABLE_TICKET_SENDERS, então não
-  // achar o pai significa citação de outro ticket ou remetente não citável.
+test('envia sem quote quando o pai não está no ticket', () => {
   const result = resolveReplyQuote(null)
 
-  assert.equal(result.ok, false)
-  assert.equal(result.code, 'REPLY_MESSAGE_INVALID')
+  assert.deepEqual(result, { providerMessageId: null, motivoSemQuote: 'mensagem-nao-encontrada' })
 })
 
-test('rejects a reply when the parent lookup itself failed', () => {
+test('envia sem quote quando a própria consulta do pai falhou', () => {
+  // Falha transitória de banco não pode custar a resposta ao cliente.
   const result = resolveReplyQuote({ whatsapp_message_id: 'wamid.ABC' }, true)
 
-  assert.equal(result.ok, false)
-  assert.equal(result.code, 'REPLY_MESSAGE_INVALID')
+  assert.deepEqual(result, { providerMessageId: null, motivoSemQuote: 'consulta-falhou' })
+})
+
+test('nenhum caminho de citação reprova o envio', () => {
+  const casos = [
+    resolveReplyQuote({ whatsapp_message_id: 'wamid.ABC' }),
+    resolveReplyQuote({ whatsapp_message_id: null }),
+    resolveReplyQuote(null),
+    resolveReplyQuote(undefined),
+    resolveReplyQuote({ whatsapp_message_id: 'wamid.ABC' }, true),
+  ]
+  for (const caso of casos) {
+    assert.equal('ok' in caso, false, 'resolveReplyQuote não devolve mais reprovação')
+    assert.equal('code' in caso, false, 'não há mais código de erro de citação')
+  }
 })
