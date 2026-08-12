@@ -20,7 +20,7 @@ import { ptBR } from 'date-fns/locale'
 import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { TransferirTicketDialog } from '@/components/tickets/transferir-ticket-dialog'
 import { rotuloDuplicidade, ticketsAbertos } from '@/lib/tickets-duplicados'
-import { respondeuDepoisDoTransbordo } from '@/lib/transbordo-marca'
+import { descreverTransbordoRecebido } from '@/lib/transbordo-marca'
 import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { upload } from '@vercel/blob/client'
 import { resolveMime } from '@/lib/whatsapp-media'
@@ -1186,21 +1186,10 @@ export default function WorkdeskPage() {
   // Sem dizer isso na tela, o atendente devolve para a fila de origem — que
   // continua vazia — e o ticket volta. `jaRespondeu` sai das mensagens que a
   // tela já carregou; o servidor refaz a mesma checagem antes de transferir.
-  const transbordoRecebido = useMemo(() => {
-    const recebidoEm = selectedTicket?.transbordo_recebido_em
-    const subsetorOrigemId = selectedTicket?.transbordo_subsetor_origem_id
-    if (!recebidoEm || !subsetorOrigemId) return null
-
-    const nomeOrigem = subsetoresDisponiveis.find((s) => s.id === subsetorOrigemId)?.nome
-      ?? (selectedTicket?.subsetor_id === subsetorOrigemId ? selectedTicket?.subsetores?.nome : null)
-
-    return {
-      subsetorOrigemId,
-      nomeOrigem: nomeOrigem || null,
-      vezes: selectedTicket?.transbordo_subsetor_hops ?? 1,
-      jaRespondeu: respondeuDepoisDoTransbordo(mensagens, recebidoEm),
-    }
-  }, [selectedTicket, subsetoresDisponiveis, mensagens])
+  const transbordoRecebido = useMemo(
+    () => descreverTransbordoRecebido(selectedTicket, subsetoresDisponiveis, mensagens),
+    [selectedTicket, subsetoresDisponiveis, mensagens],
+  )
 
   const [loadingHistory, setLoadingHistory] = useState(false)
   // Conversa de um atendimento anterior aberta em modal (somente leitura).

@@ -147,6 +147,55 @@ export function respondeuDepoisDoTransbordo(
   })
 }
 
+/** O que a tela precisa saber do ticket para montar o aviso de transbordo. */
+export interface TicketComMarcaTransbordo {
+  subsetor_id?: string | null
+  transbordo_recebido_em?: string | null
+  transbordo_subsetor_origem_id?: string | null
+  transbordo_subsetor_hops?: number | null
+  subsetores?: { nome?: string | null } | null
+}
+
+export interface AvisoTransbordo {
+  subsetorOrigemId: string
+  /** `null` quando o subsetor não está na lista carregada — o aviso continua, sem o nome. */
+  nomeOrigem: string | null
+  /** Quantas vezes o ticket já foi socorrido. 1 na primeira. */
+  vezes: number
+  jaRespondeu: boolean
+}
+
+/**
+ * Monta o aviso "recebido por transbordo" a partir do que a tela já tem em mão:
+ * o ticket, a lista de subsetores do setor e as mensagens carregadas. Devolve
+ * `null` quando não há marca — inclusive antes da migration, quando as colunas
+ * simplesmente não vêm no `select('*')`.
+ *
+ * O nome da fila de origem é procurado na lista de subsetores; o embed do
+ * próprio ticket é a segunda opção, e vale porque o transbordo não muda o
+ * subsetor do ticket — ele continua sendo o do Prime, só que atendido por
+ * alguém do Suporte.
+ */
+export function descreverTransbordoRecebido(
+  ticket: TicketComMarcaTransbordo | null | undefined,
+  subsetores: readonly { id: string; nome: string }[] | null | undefined,
+  mensagens: readonly MensagemDoTicket[] | null | undefined,
+): AvisoTransbordo | null {
+  const recebidoEm = ticket?.transbordo_recebido_em
+  const subsetorOrigemId = ticket?.transbordo_subsetor_origem_id
+  if (!recebidoEm || !subsetorOrigemId) return null
+
+  const nomeDaLista = (subsetores || []).find((s) => s.id === subsetorOrigemId)?.nome
+  const nomeDoTicket = ticket?.subsetor_id === subsetorOrigemId ? ticket?.subsetores?.nome : null
+
+  return {
+    subsetorOrigemId,
+    nomeOrigem: nomeDaLista || nomeDoTicket || null,
+    vezes: ticket?.transbordo_subsetor_hops || 1,
+    jaRespondeu: respondeuDepoisDoTransbordo(mensagens, recebidoEm),
+  }
+}
+
 function avisar(acao: string, ticketId: string, erro: { message?: string } | null): void {
   console.warn(`[transbordo] não foi possível ${acao}`, {
     ticketId,

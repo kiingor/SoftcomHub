@@ -13,6 +13,7 @@ import {
   isRecebidoPorTransbordo,
   limparMarcaTransbordo,
 } from '@/lib/transbordo-marca'
+import { resolverDestinoTransferencia } from '@/lib/transferencia-destino'
 
 const transferRequestSchema = z.object({
   ticket_id: z.string().uuid('ticket_id inválido'),
@@ -164,11 +165,18 @@ export async function POST(request: Request) {
       )
     }
 
-    const targetSetorId = hasExplicitSetor ? body.setor_id! : ticket.setor_id
-    const isChangingSetor = targetSetorId !== ticket.setor_id
-    const targetSubsetorId = !isChangingSetor && !hasExplicitSubsetor
-      ? ticket.subsetor_id
-      : body.subsetor_id ?? null
+    // Omitir `subsetor_id` mantém o subsetor do ticket — que é justamente a fila
+    // de origem do transbordo. Resolver o destino antes é o que faz o bloqueio
+    // do caso #97066 enxergar a devolução implícita, e não só a explícita.
+    const { setorId: targetSetorId, subsetorId: targetSubsetorId } = resolverDestinoTransferencia(
+      { setorId: ticket.setor_id, subsetorId: ticket.subsetor_id },
+      {
+        setorId: body.setor_id,
+        subsetorId: body.subsetor_id,
+        temSetorExplicito: hasExplicitSetor,
+        temSubsetorExplicito: hasExplicitSubsetor,
+      },
+    )
 
     const { data: targetSetor, error: targetSetorError } = await supabase
       .from('setores')

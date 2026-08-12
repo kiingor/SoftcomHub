@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/select'
 import { logError } from '@/lib/error-logger'
 import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
+import { isFilaBloqueada, podeConfirmarDestino } from '@/lib/transferencia-destino'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
@@ -385,14 +386,16 @@ export function TransferirTicketForm({
   const onlineCompatibleAttendants = compatibleAttendants.filter(isAtendenteOnline)
   // Só a FILA deste subsetor está fechada. Entregar a um atendente nomeado dele
   // continua valendo — é o que tira o ticket do ciclo em vez de reiniciá-lo.
-  const filaDoSubsetorBloqueada = Boolean(
-    filaBloqueada && selectedTransferSubsetor?.id === filaBloqueada.subsetorId,
+  const filaDoSubsetorBloqueada = isFilaBloqueada(
+    selectedTransferSubsetor?.id,
+    filaBloqueada?.subsetorId,
   )
-  const isDestinationReady = hasSelectedSubsetor && (
-    destinationMode === 'queue'
-      ? !filaDoSubsetorBloqueada
-      : Boolean(selectedTransferAttendant)
-  )
+  const isDestinationReady = podeConfirmarDestino({
+    subsetorSelecionadoId: selectedTransferSubsetor?.id,
+    modo: destinationMode,
+    atendenteSelecionadoId: selectedTransferAttendant?.id,
+    subsetorComFilaBloqueada: filaBloqueada?.subsetorId,
+  })
 
   const handleSetorChange = (setorId: string) => {
     const currentSubsetor = subsetoresTransferencia.find(
