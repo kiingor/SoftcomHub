@@ -1,10 +1,15 @@
-// Marca de transbordo entre SUBSETORES — caso #97066.
+// Marca de transbordo entre SUBSETORES — caso #97066, direção revista no #97238.
 //
-// O ticket do Prime sem técnico disponível é entregue a um atendente do Suporte.
-// Até aqui, tudo certo: é melhor alguém atender do que ninguém. O problema é o
-// que vinha depois — o atendente do Suporte abria, via que era cliente Prime e
-// devolvia para a fila do Prime, que continuava vazia e transbordava de novo. O
-// ticket ia e voltava, e só o cliente pagava a conta.
+// Um ticket socorrido por outro subsetor chega na tela de alguém que não é o dono
+// natural dele. Sem registro no ticket, quem recebia não sabia por que aquele
+// atendimento caiu ali e devolvia para a fila de origem — que continuava sem
+// atendente e transbordava de novo. O ticket ia e voltava, e só o cliente pagava
+// a conta. Esta marca é o que quebra esse ciclo.
+//
+// A direção mudou no #97238: hoje o caso comum é o ticket do SUPORTE atendido por
+// alguém do Prime. O sentido inverso virou exceção — só quando o Prime fica sem
+// nenhum atendente presente. Nada aqui depende disso: a marca guarda o subsetor
+// de origem, seja ele qual for.
 //
 // A informação de que houve transbordo existia apenas em tempo de execução:
 // `escolherDestino` devolve `origem: 'transbordo'` e o resultado ia para o
@@ -160,8 +165,8 @@ export interface AvisoTransbordo {
  *
  * O nome da fila de origem é procurado na lista de subsetores; o embed do
  * próprio ticket é a segunda opção, e vale porque o transbordo não muda o
- * subsetor do ticket — ele continua sendo o do Prime, só que atendido por
- * alguém do Suporte.
+ * subsetor do ticket — ele continua sendo o de origem, só que atendido por
+ * alguém de outro subsetor.
  */
 export function descreverTransbordoRecebido(
   ticket: TicketComMarcaTransbordo | null | undefined,

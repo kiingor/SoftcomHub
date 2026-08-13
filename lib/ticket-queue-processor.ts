@@ -4,9 +4,13 @@ import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
 import { loadRowsByPages } from '@/lib/supabase/paginate'
 import {
   escolherDestino,
-  obterExcecaoFilaPrimeParaSuporte,
   ordenarPorEquilibrio,
 } from '@/lib/distribuicao-fila'
+import {
+  getSubsetoresPrimeESuporte,
+  montarParesDeTransbordo,
+  subsetorTemAtendentePresente,
+} from '@/lib/transbordo-subsetor'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 import { registrarOrigemDaAtribuicao, type OrigemAtribuicao } from '@/lib/transbordo-marca'
@@ -41,11 +45,6 @@ interface AvailableColaborador {
   subsetorIds: string[]
 }
 
-interface SubsetoresPrimeESuporte {
-  primeId: string | null
-  suporteId: string | null
-}
-
 interface ProcessorStats {
   processedAt: string
   ticketsInQueue: number
@@ -54,12 +53,6 @@ interface ProcessorStats {
   errors: string[]
   assignments: AssignmentResult[]
 }
-
-const CACHE_SUBSETORES_TRANSBORDO_MS = 30_000
-const subsetoresTransbordoCache = new Map<string, {
-  valor: SubsetoresPrimeESuporte
-  expiraEm: number
-}>()
 
 /** Ninguém online no setor. O ticket vira candidato ao transbordo de setor. */
 const SEM_ATENDENTE_NO_SETOR = 'No online colaboradores in setor'
@@ -74,48 +67,6 @@ const SEM_ATENDENTE_NO_SETOR = 'No online colaboradores in setor'
  * distinção o ticket ficava preso na fila da filial para sempre.
  */
 const SEM_ATENDENTE_ELEGIVEL = 'No colaboradores allowed to take this ticket in setor'
-
-function normalizarNomeSubsetor(nome: string | null | undefined): string {
-  return (nome || '')
-    .trim()
-    .toLocaleLowerCase('pt-BR')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-}
-
-async function getSubsetoresPrimeESuporte(
-  supabase: any,
-  setorId: string,
-): Promise<SubsetoresPrimeESuporte> {
-  const cache = subsetoresTransbordoCache.get(setorId)
-  if (cache && cache.expiraEm > Date.now()) return cache.valor
-
-  try {
-    const data = await loadRowsByPages<{ id: string; nome: string; ativo: boolean | null }>(() => supabase
-      .from('subsetores')
-      .select('id, nome, ativo')
-      .eq('setor_id', setorId)
-      .order('id', { ascending: true }))
-
-    const ativos = data.filter((subsetor) => subsetor.ativo !== false)
-    const valor = {
-      primeId: ativos.find((subsetor) => normalizarNomeSubsetor(subsetor.nome) === 'prime')?.id || null,
-      suporteId: ativos.find((subsetor) => normalizarNomeSubsetor(subsetor.nome) === 'suporte')?.id || null,
-    }
-
-    subsetoresTransbordoCache.set(setorId, {
-      valor,
-      expiraEm: Date.now() + CACHE_SUBSETORES_TRANSBORDO_MS,
-    })
-    return valor
-  } catch (error) {
-    console.warn('[TicketQueue] Não foi possível identificar Prime e Suporte para o transbordo:', {
-      setorId,
-      error: error instanceof Error ? error.message : String(error),
-    })
-    return { primeId: null, suporteId: null }
-  }
-}
 
 async function getSubsetoresComFila(supabase: any, setorId: string): Promise<Array<string | null>> {
   const tickets = await loadRowsByPages<{ subsetor_id: string | null }>(() => supabase
@@ -422,24 +373,18 @@ async function tryAssignTicket(
   }
 
   if (routingPass === 'fallback') {
-    const [subsetoresComFila, { primeId, suporteId }] = await Promise.all([
+    const [subsetoresComFila, { primeId, suporteId }, temAtendentePresente] = await Promise.all([
       getSubsetoresComFila(supabase, setorId),
       getSubsetoresPrimeESuporte(supabase, setorId),
+      subsetorTemAtendentePresente(supabase, setorId, ticketSubsetorId),
     ])
-    const subsetoresQuePodemReceberMesmoComFila = obterExcecaoFilaPrimeParaSuporte(
-      ticketSubsetorId,
-      primeId,
-      suporteId,
-    )
 
-    // Só Prime e Suporte se socorrem entre si. Fora desse par, o ticket segura
-    // na fila do próprio subsetor — antes, o atendente do Financeiro da filial
-    // absorvia o ticket do Suporte e o transbordo de SETOR para a Matriz nunca
-    // chegava a acontecer. Setor sem Prime nem Suporte fica com lista vazia, ou
-    // seja, sem transbordo entre subsetores.
-    const subsetoresComTransbordo = [primeId, suporteId].filter(
-      (id): id is string => Boolean(id),
-    )
+    // Caso #97238: o transbordo entre subsetores tem DIREÇÃO. Suporte transborda
+    // para o Prime; o Prime só cai para o Suporte quando não sobrou ninguém
+    // presente no Prime. Setor sem Prime nem Suporte fica sem par nenhum, ou
+    // seja, sem transbordo entre subsetores — e é assim que o ticket segura na
+    // fila da filial tempo suficiente para o transbordo de SETOR acontecer.
+    const paresDeTransbordo = montarParesDeTransbordo(primeId, suporteId)
 
     const destino = escolherDestino({
       subsetorDoTicket: ticketSubsetorId,
@@ -452,8 +397,8 @@ async function tryAssignTicket(
         subsetorIds: colaborador.subsetorIds,
       })),
       subsetoresComFila,
-      subsetoresQuePodemReceberMesmoComFila,
-      subsetoresComTransbordo,
+      paresDeTransbordo,
+      subsetorDoTicketTemAtendentePresente: temAtendentePresente,
       maxTicketsAbertos: maxTicketsPerAgent,
     })
     origemAtribuicao = destino.origem
@@ -462,10 +407,19 @@ async function tryAssignTicket(
       .map((colaborador) => colaboradoresPorId.get(colaborador.id))
       .filter((colaborador): colaborador is AvailableColaborador => Boolean(colaborador))
 
+    // "Ninguém aqui poderá atender" não é a mesma coisa que "está segurado de
+    // propósito", e só o primeiro justifica exportar o ticket para outro SETOR.
+    //
+    // Com a direção do #97238 o segundo caso virou rotina: ticket do Prime com
+    // atendente do Prime presente porém no teto fica sem candidato — é a regra
+    // funcionando, e esperar resolve, porque ele fecha um ticket e a vaga é dele.
+    // Sem a guarda de presença aqui, esse ticket seria mandado para a Matriz,
+    // que é o oposto de manter o cliente Prime com o atendente do Prime.
     bloqueadoPorSubsetor = eligibleColaboradores.length === 0
+      && !temAtendentePresente
       && colaboradores.some((c) => maxTicketsPerAgent <= 0 || c.ticketCount < maxTicketsPerAgent)
 
-    console.log(`[TicketQueue] Transbordo=${destino.origem}; candidatos=${eligibleColaboradores.length}; setor=${setorId}; subsetor=${ticketSubsetorId || 'null'}; excecaoFila=${subsetoresQuePodemReceberMesmoComFila.join(',') || 'nenhuma'}; grupo=${subsetoresComTransbordo.join(',') || 'nenhum'}${bloqueadoPorSubsetor ? '; sem atendente elegivel → candidato a transbordo de setor' : ''}`)
+    console.log(`[TicketQueue] Transbordo=${destino.origem}; candidatos=${eligibleColaboradores.length}; setor=${setorId}; subsetor=${ticketSubsetorId || 'null'}; presenteNoSubsetor=${temAtendentePresente}; pares=${paresDeTransbordo.map((par) => `${par.de}->${par.para}${par.somenteSemAtendentePresente ? '(so sem presenca)' : ''}`).join(' ') || 'nenhum'}${bloqueadoPorSubsetor ? '; sem atendente elegivel → candidato a transbordo de setor' : ''}`)
   }
 
   console.log(`[TicketQueue] Found ${colaboradores.length} available, ${eligibleColaboradores.length} below limit (max=${maxTicketsPerAgent})`)
