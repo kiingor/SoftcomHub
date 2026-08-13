@@ -3,15 +3,80 @@
 Responde "quem mudou o quê, quando, e do que para o quê" nas tabelas que
 decidem **quem atende** e **por onde o ticket entra e vai**.
 
-Migrations:
+## Sequência de aplicação
 
-| Arquivo | Como aplicar |
-|---|---|
-| `supabase/migrations/20260812130000_auditoria_acesso_roteamento.sql` | uma submissão só (tem `BEGIN`/`COMMIT` próprios) |
-| `supabase/migrations/20260812130100_auditoria_indice_colaboradores_email.sql` | **sozinho**, sem nenhum outro comando junto — é `CREATE INDEX CONCURRENTLY` |
+**Aplicação é manual, no SQL Editor do Supabase Studio** — o TLS corporativo
+bloqueia conexão direta no Postgres, então nada disso sobe por linha de comando.
+O banco é **compartilhado com produção**: aplicar já vale em prod no instante do
+Run.
 
-**Precisam ser aplicadas à mão no Supabase Studio** — o TLS corporativo bloqueia
-conexão direta no Postgres, então elas não sobem por linha de comando.
+| | Passo | Onde |
+|---|---|---|
+| 1 | Pré-flight (abaixo) | Studio |
+| 2 | `20260812130100_auditoria_indice_colaboradores_email.sql` — **sozinho**, sem nenhum outro comando junto | Studio |
+| 3 | `20260812130000_auditoria_acesso_roteamento.sql` — **uma submissão só** (tem `BEGIN`/`COMMIT` próprios) | Studio |
+| 4 | Validação — [os testes com `ROLLBACK`](#como-validar-depois-de-aplicar) | Studio |
+| 5 | Merge do PR | GitHub |
+
+O índice tem o número **maior** do par mas roda **primeiro**: o número só
+reflete a ordem em que os dois nasceram. Vir antes não é obrigatório — é só
+melhor, porque assim os triggers nunca chegam a fazer seq scan em
+`colaboradores` na janela entre um arquivo e outro. Ele é
+`CREATE INDEX CONCURRENTLY`: não roda dentro de bloco transacional, por isso não
+pode dividir submissão com nada.
+
+### Antes ou depois do merge? Antes.
+
+Nenhum arquivo de app depende disto — nada no repositório lê a tabela nova.
+
+- **Aplicado e não mergeado** é invisível para a aplicação: os triggers já
+  começam a coletar, e se algo se comportar mal basta derrubar os triggers, sem
+  reverter commit mergeado.
+- **Mergeado e não aplicado** é o estado ruim: a `main` passa a dizer que a
+  trilha existe enquanto ela não existe.
+
+### Janela
+
+`CREATE TRIGGER` pega `SHARE ROW EXCLUSIVE`, que conflita com o
+`ROW EXCLUSIVE` de todo INSERT/UPDATE/DELETE — e, como o passo 3 é uma
+transação só, o lock em `colaboradores` fica segurado até o `COMMIT`. Rode fora
+do horário de pico. O `SET LOCAL lock_timeout = '5s'` faz abortar rápido em vez
+de empilhar fila, e **abortar é seguro**: ou os 10 triggers entram, ou nenhum
+entra. O arquivo é re-executável.
+
+### Pré-flight
+
+A lista de tabelas saiu de `scripts/migration-completa.sql`, que é um retrato do
+schema e não necessariamente a verdade atual do banco. Se qualquer nome não
+bater, o `CREATE TRIGGER` falha e derruba a transação inteira.
+
+```sql
+-- As 9 tabelas existem com esse nome exato? Nenhuma pode vir NULL.
+SELECT nome, to_regclass('public.' || nome) AS existe
+FROM unnest(ARRAY[
+  'colaboradores', 'colaboradores_setores', 'colaborador_setores',
+  'colaboradores_subsetores', 'setores', 'subsetores', 'setor_canais',
+  'permissoes', 'setor_destinos_transferencia'
+]) AS nome;
+
+-- As 5 colunas do trigger filtrado de colaboradores. Tem que voltar 5 linhas.
+SELECT column_name FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'colaboradores'
+  AND column_name IN ('ativo', 'permissao_id', 'setor_id', 'is_master',
+                      'setores_ativos_sessao');
+
+-- Nada colide? Os três vêm NULL numa aplicação limpa.
+SELECT to_regclass('public.auditoria_acesso_roteamento')    AS tabela,
+       to_regproc('public.registrar_auditoria_mudanca')     AS funcao,
+       to_regclass('public.vw_auditoria_acesso_roteamento') AS visao;
+```
+
+### Desfazer
+
+O bloco `DESFAZER`, comentado no fim de
+`20260812130000_auditoria_acesso_roteamento.sql`, traz os `DROP` prontos. A
+reação mais barata é derrubar **só os triggers**: a coleta para na hora e o
+histórico já gravado continua consultável pela view.
 
 ## O que é gravado
 

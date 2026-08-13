@@ -37,6 +37,67 @@
 -- auditoria é observação, não guarda.
 -- ════════════════════════════════════════════════════════════════════════
 
+
+-- ════════════════════════════════════════════════════════════════════════
+-- COMO APLICAR — leia antes de rodar
+-- ════════════════════════════════════════════════════════════════════════
+--
+-- Aplicação é MANUAL, no SQL Editor do Supabase Studio: o TLS corporativo
+-- bloqueia conexão direta no Postgres, então nada disso sobe por linha de
+-- comando. O banco é COMPARTILHADO com produção — aplicar já vale em prod no
+-- instante do Run.
+--
+-- ORDEM:
+--
+--   1. Pré-flight (bloco abaixo). Se qualquer tabela ou coluna faltar, o
+--      CREATE TRIGGER falha e derruba a transação inteira.
+--   2. 20260812130100_auditoria_indice_colaboradores_email.sql, SOZINHO.
+--      Sim, número maior, mas vem ANTES: é CONCURRENTLY, não bloqueia nada, e
+--      rodando primeiro evita que os triggers façam seq scan em
+--      `colaboradores` na janela entre um arquivo e outro.
+--   3. ESTE arquivo, em UMA submissão só — o BEGIN/COMMIT é dele.
+--   4. Validação: roteiro completo em docs/auditoria-acesso-roteamento.md,
+--      tudo dentro de transação com ROLLBACK.
+--   5. Só então mergear o PR. Aplicado-e-não-mergeado é invisível para a
+--      aplicação (nada no repositório lê esta tabela) e se desfaz derrubando
+--      os triggers; mergeado-e-não-aplicado faz a `main` dizer que a trilha
+--      existe enquanto ela não existe.
+--
+-- JANELA: CREATE TRIGGER pega SHARE ROW EXCLUSIVE, que conflita com o
+-- ROW EXCLUSIVE de todo INSERT/UPDATE/DELETE — e, como é tudo uma transação
+-- só, o lock em `colaboradores` fica segurado até o COMMIT. Rode fora do
+-- horário de pico. O `lock_timeout` abaixo faz abortar rápido em vez de
+-- empilhar fila, e abortar é seguro: ou os 10 triggers entram, ou nenhum
+-- entra. O arquivo é re-executável (IF NOT EXISTS / CREATE OR REPLACE /
+-- DROP TRIGGER IF EXISTS).
+--
+-- Para desfazer, veja o bloco DESFAZER no fim deste arquivo.
+--
+-- ─── PRÉ-FLIGHT ──────────────────────────────────────────────────────────
+--
+-- As 9 tabelas existem com esse nome exato? Nenhuma pode vir NULL.
+--
+--   SELECT nome, to_regclass('public.' || nome) AS existe
+--   FROM unnest(ARRAY[
+--     'colaboradores', 'colaboradores_setores', 'colaborador_setores',
+--     'colaboradores_subsetores', 'setores', 'subsetores', 'setor_canais',
+--     'permissoes', 'setor_destinos_transferencia'
+--   ]) AS nome;
+--
+-- As 5 colunas do trigger filtrado de `colaboradores`? Tem que voltar 5.
+--
+--   SELECT column_name FROM information_schema.columns
+--   WHERE table_schema = 'public' AND table_name = 'colaboradores'
+--     AND column_name IN ('ativo', 'permissao_id', 'setor_id', 'is_master',
+--                         'setores_ativos_sessao');
+--
+-- Nada colide? Os três vêm NULL numa aplicação limpa.
+--
+--   SELECT to_regclass('public.auditoria_acesso_roteamento')    AS tabela,
+--          to_regproc('public.registrar_auditoria_mudanca')     AS funcao,
+--          to_regclass('public.vw_auditoria_acesso_roteamento') AS visao;
+-- ════════════════════════════════════════════════════════════════════════
+
 BEGIN;
 
 SET LOCAL lock_timeout = '5s';
@@ -572,3 +633,43 @@ REVOKE ALL ON public.vw_auditoria_acesso_roteamento FROM anon, authenticated;
 GRANT SELECT ON public.vw_auditoria_acesso_roteamento TO service_role;
 
 COMMIT;
+
+
+-- ════════════════════════════════════════════════════════════════════════
+-- DESFAZER — não roda nada; está comentado de propósito
+-- ════════════════════════════════════════════════════════════════════════
+--
+-- A reação mais barata é derrubar SÓ OS TRIGGERS: a coleta para na hora e o
+-- histórico já gravado continua consultável pela view. Use isso primeiro se
+-- quiser observar antes de decidir.
+--
+--   BEGIN;
+--   SET LOCAL lock_timeout = '5s';
+--   DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_subsetores ON public.colaboradores_subsetores;
+--   DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_setores ON public.colaboradores_setores;
+--   DROP TRIGGER IF EXISTS trg_auditoria_colaborador_setores ON public.colaborador_setores;
+--   DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_ins_del ON public.colaboradores;
+--   DROP TRIGGER IF EXISTS trg_auditoria_colaboradores_upd ON public.colaboradores;
+--   DROP TRIGGER IF EXISTS trg_auditoria_setores ON public.setores;
+--   DROP TRIGGER IF EXISTS trg_auditoria_subsetores ON public.subsetores;
+--   DROP TRIGGER IF EXISTS trg_auditoria_setor_canais ON public.setor_canais;
+--   DROP TRIGGER IF EXISTS trg_auditoria_permissoes ON public.permissoes;
+--   DROP TRIGGER IF EXISTS trg_auditoria_setor_destinos_transferencia ON public.setor_destinos_transferencia;
+--   COMMIT;
+--
+-- Remoção completa, DEPOIS dos triggers. A ordem importa: a view usa
+-- auditoria_uuid, então a função só sai depois dela.
+--
+--   BEGIN;
+--   DROP VIEW IF EXISTS public.vw_auditoria_acesso_roteamento;
+--   DROP FUNCTION IF EXISTS public.registrar_auditoria_mudanca();
+--   DROP FUNCTION IF EXISTS public.auditoria_redigir(jsonb);
+--   DROP TABLE IF EXISTS public.auditoria_acesso_roteamento;
+--   DROP FUNCTION IF EXISTS public.auditoria_uuid(text);
+--   COMMIT;
+--
+-- O índice de 20260812130100 é inerte e não custa manter. Se quiser tirar,
+-- rode SOZINHO, fora de transação:
+--
+--   DROP INDEX CONCURRENTLY IF EXISTS public.idx_colaboradores_email_lower;
+-- ════════════════════════════════════════════════════════════════════════
