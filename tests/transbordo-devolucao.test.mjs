@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  atendenteJaRespondeu,
   bloquearDevolucao,
   carregarMarcaTransbordo,
   descreverTransbordoRecebido,
@@ -12,16 +11,27 @@ import {
   limparMarcaTransbordo,
   marcarTransbordoRecebido,
   registrarOrigemDaAtribuicao,
-  respondeuDepoisDoTransbordo,
   SEM_MARCA_TRANSBORDO,
 } from '../lib/transbordo-marca.ts'
+import { hasSupervisorScope } from '../lib/transfer-authorization.ts'
 import { escolherDestino } from '../lib/distribuicao-fila.ts'
 
+const SETOR = 'setor-servicedesk'
 const PRIME = 'subsetor-prime'
 const SUPORTE = 'subsetor-suporte'
 const TRANSBORDO_EM = '2026-08-12T13:00:00.000Z'
 
 const marcaViva = { recebidoEm: TRANSBORDO_EM, subsetorOrigemId: PRIME, hops: 1 }
+
+// Quem pode dispensar o bloqueio sai de `hasSupervisorScope` — a mesma função
+// que a rota usa. Os testes compõem as duas peças em vez de assumir o booleano,
+// porque é a composição que a produção executa.
+const ATENDENTE_COMUM = { id: 'colab-1', isMaster: false, canSeeAllTickets: false, linkedSetorIds: [SETOR] }
+const SUPERVISOR_DO_SETOR = { id: 'sup-1', isMaster: false, canSeeAllTickets: true, linkedSetorIds: [SETOR] }
+const SUPERVISOR_DE_OUTRO_SETOR = { id: 'sup-2', isMaster: false, canSeeAllTickets: true, linkedSetorIds: ['setor-financeiro'] }
+const MASTER = { id: 'master-1', isMaster: true, canSeeAllTickets: false, linkedSetorIds: [] }
+
+const podeAutorizar = (ator) => hasSupervisorScope(ator, SETOR)
 
 /**
  * Supabase falso: registra as consultas montadas e devolve o que for pedido.
@@ -34,14 +44,9 @@ function fakeSupabase({ linhas = [{ id: 't1' }], erro = null } = {}) {
 
   const encadeia = {
     eq(coluna, valor) { atual.filtros.push(['eq', coluna, valor]); return encadeia },
-    gte(coluna, valor) { atual.filtros.push(['gte', coluna, valor]); return encadeia },
     is(coluna, valor) { atual.filtros.push(['is', coluna, valor]); return encadeia },
     not(coluna, operador, valor) { atual.filtros.push(['not', coluna, operador, valor]); return encadeia },
     select(colunas) { atual.select = colunas; return encadeia },
-    limit(n) {
-      atual.limit = n
-      return Promise.resolve({ data: erro ? null : linhas, error: erro })
-    },
     maybeSingle() {
       return Promise.resolve({ data: erro ? null : (linhas[0] ?? null), error: erro })
     },
@@ -173,79 +178,88 @@ test('limpar devolve true quando havia marca e false quando não havia', async (
   assert.equal(await limparMarcaTransbordo(fakeSupabase({ linhas: [] }), 't1'), false)
 })
 
-test('devolução imediata para a fila de origem é recusada', () => {
+test('atendente comum não devolve para a fila de origem', () => {
   const devolucao = { subsetorId: PRIME, colaboradorId: null }
   assert.equal(isDevolucaoParaOrigem(marcaViva, devolucao), true)
-  assert.equal(bloquearDevolucao(marcaViva, devolucao, false), true)
+  assert.equal(bloquearDevolucao(marcaViva, devolucao, podeAutorizar(ATENDENTE_COMUM)), true)
+})
+
+test('responder ao cliente NÃO libera mais a devolução', () => {
+  // O coração da mudança. A primeira versão da regra destravava assim que o
+  // atendente falasse com o cliente — e o ticket voltava para a mesma fila
+  // vazia, uma resposta depois. Hoje o bloqueio não tem prazo: nada que o
+  // atendente faça no ticket muda a resposta, só quem ele é.
+  const devolucao = { subsetorId: PRIME, colaboradorId: null }
+  const horasDepois = { recebidoEm: '2026-08-12T06:00:00.000Z', subsetorOrigemId: PRIME, hops: 1 }
+
+  assert.equal(bloquearDevolucao(marcaViva, devolucao, podeAutorizar(ATENDENTE_COMUM)), true)
+  assert.equal(bloquearDevolucao(horasDepois, devolucao, podeAutorizar(ATENDENTE_COMUM)), true)
+})
+
+test('supervisor do setor de origem devolve para a fila', () => {
+  const devolucao = { subsetorId: PRIME, colaboradorId: null }
+  assert.equal(bloquearDevolucao(marcaViva, devolucao, podeAutorizar(SUPERVISOR_DO_SETOR)), false)
+})
+
+test('master devolve para a fila, mesmo sem vínculo com o setor', () => {
+  const devolucao = { subsetorId: PRIME, colaboradorId: null }
+  assert.equal(bloquearDevolucao(marcaViva, devolucao, podeAutorizar(MASTER)), false)
+})
+
+test('supervisor de outro setor não passa por cima — permissão é por vínculo', () => {
+  // `can_see_all_tickets` é permissão de enxergar, não procuração sobre a fila
+  // de um setor onde ele não trabalha.
+  const devolucao = { subsetorId: PRIME, colaboradorId: null }
+  assert.equal(bloquearDevolucao(marcaViva, devolucao, podeAutorizar(SUPERVISOR_DE_OUTRO_SETOR)), true)
 })
 
 test('transferir para outro destino continua permitido', () => {
+  const comum = podeAutorizar(ATENDENTE_COMUM)
   // Outro subsetor do mesmo setor…
-  assert.equal(bloquearDevolucao(marcaViva, { subsetorId: SUPORTE, colaboradorId: null }, false), false)
+  assert.equal(bloquearDevolucao(marcaViva, { subsetorId: SUPORTE, colaboradorId: null }, comum), false)
   // …e outro setor, que sempre chega com outro subsetor.
-  assert.equal(bloquearDevolucao(marcaViva, { subsetorId: 'subsetor-de-outro-setor', colaboradorId: null }, false), false)
+  assert.equal(bloquearDevolucao(marcaViva, { subsetorId: 'subsetor-de-outro-setor', colaboradorId: null }, comum), false)
 })
 
 test('entregar a um atendente nomeado do subsetor de origem continua permitido', () => {
   // É o oposto do problema: o ticket ganha dono em vez de voltar para a fila
-  // vazia. Bloquear isso puniria a saída legítima.
+  // vazia. Bloquear isso puniria a saída legítima — e é a saída que sobra para
+  // o atendente comum, já que a fila agora depende de supervisor.
   assert.equal(
-    bloquearDevolucao(marcaViva, { subsetorId: PRIME, colaboradorId: 'atendente-do-prime' }, false),
+    bloquearDevolucao(
+      marcaViva,
+      { subsetorId: PRIME, colaboradorId: 'atendente-do-prime' },
+      podeAutorizar(ATENDENTE_COMUM),
+    ),
     false,
   )
 })
 
-test('depois de responder ao cliente, a devolução passa', () => {
-  assert.equal(bloquearDevolucao(marcaViva, { subsetorId: PRIME, colaboradorId: null }, true), false)
-})
-
 test('ticket sem marca — os antigos e os do período antes da migration — transferem como hoje', () => {
   for (const marca of [null, undefined, SEM_MARCA_TRANSBORDO]) {
-    assert.equal(bloquearDevolucao(marca, { subsetorId: PRIME, colaboradorId: null }, false), false)
+    assert.equal(
+      bloquearDevolucao(marca, { subsetorId: PRIME, colaboradorId: null }, podeAutorizar(ATENDENTE_COMUM)),
+      false,
+    )
   }
 })
 
 test('destino sem subsetor nunca é devolução, mesmo com marca viva', () => {
   // "Fila do setor" (sem subsetor) é outro destino. Casar `null` com `null`
   // travaria a transferência de ticket que nem tem subsetor de origem.
-  assert.equal(bloquearDevolucao(marcaViva, { subsetorId: null, colaboradorId: null }, false), false)
+  const comum = podeAutorizar(ATENDENTE_COMUM)
+  assert.equal(bloquearDevolucao(marcaViva, { subsetorId: null, colaboradorId: null }, comum), false)
   assert.equal(
     bloquearDevolucao(
       { recebidoEm: TRANSBORDO_EM, subsetorOrigemId: null, hops: 1 },
       { subsetorId: null, colaboradorId: null },
-      false,
+      comum,
     ),
     false,
   )
 })
 
-test('só mensagem de atendente depois do transbordo conta como atendimento', () => {
-  const antes = { remetente: 'colaborador', enviado_em: '2026-08-12T12:59:00.000Z' }
-  const notaInterna = { remetente: 'supervisor', enviado_em: '2026-08-12T13:05:00.000Z' }
-  // A própria transferência grava uma mensagem 'sistema' — ela não pode
-  // liberar a devolução seguinte.
-  const doSistema = { remetente: 'sistema', enviado_em: '2026-08-12T13:05:00.000Z' }
-  const doCliente = { remetente: 'cliente', enviado_em: '2026-08-12T13:06:00.000Z' }
-  const resposta = { remetente: 'colaborador', enviado_em: '2026-08-12T13:07:00.000Z' }
-
-  assert.equal(respondeuDepoisDoTransbordo([antes, notaInterna, doSistema, doCliente], TRANSBORDO_EM), false)
-  assert.equal(respondeuDepoisDoTransbordo([antes, resposta], TRANSBORDO_EM), true)
-  assert.equal(respondeuDepoisDoTransbordo([resposta], null), false)
-  assert.equal(respondeuDepoisDoTransbordo(null, TRANSBORDO_EM), false)
-})
-
-test('a resposta conta pelo instante, não pelo texto da data', () => {
-  // O banco devolve `+00:00` e a marca é gravada com `Z`. Comparadas como
-  // string, `...13:00:30+00:00` fica ANTES de `...13:00:00.000Z` e a resposta
-  // do atendente seria ignorada.
-  const respostaComOffset = { remetente: 'colaborador', enviado_em: '2026-08-12T13:00:30+00:00' }
-  assert.equal(respondeuDepoisDoTransbordo([respostaComOffset], TRANSBORDO_EM), true)
-
-  const anteriorComOffset = { remetente: 'colaborador', enviado_em: '2026-08-12T12:59:30+00:00' }
-  assert.equal(respondeuDepoisDoTransbordo([anteriorComOffset], TRANSBORDO_EM), false)
-})
-
-test('o aviso da tela nomeia a fila de origem e diz se já pode transferir', () => {
+test('o aviso da tela nomeia a fila de origem', () => {
   const ticket = {
     subsetor_id: PRIME,
     transbordo_recebido_em: TRANSBORDO_EM,
@@ -254,19 +268,13 @@ test('o aviso da tela nomeia a fila de origem e diz se já pode transferir', () 
   }
   const subsetores = [{ id: PRIME, nome: 'Prime' }, { id: SUPORTE, nome: 'Suporte' }]
 
-  assert.deepEqual(descreverTransbordoRecebido(ticket, subsetores, []), {
+  // O aviso descreve o transbordo e para por aí: quem pode devolver é decisão
+  // de permissão, e a tela a resolve com `hasSupervisorScope`.
+  assert.deepEqual(descreverTransbordoRecebido(ticket, subsetores), {
     subsetorOrigemId: PRIME,
     nomeOrigem: 'Prime',
     vezes: 1,
-    jaRespondeu: false,
   })
-
-  const depoisDeResponder = descreverTransbordoRecebido(
-    ticket,
-    subsetores,
-    [{ remetente: 'colaborador', enviado_em: '2026-08-12T13:10:00.000Z' }],
-  )
-  assert.equal(depoisDeResponder.jaRespondeu, true)
 })
 
 test('sem a fila de origem na lista, o aviso cai no embed do próprio ticket', () => {
@@ -279,7 +287,6 @@ test('sem a fila de origem na lista, o aviso cai no embed do próprio ticket', (
       transbordo_recebido_em: TRANSBORDO_EM,
       transbordo_subsetor_origem_id: PRIME,
     },
-    [],
     [],
   )
   assert.equal(aviso.nomeOrigem, 'Prime')
@@ -294,7 +301,6 @@ test('sem nome em lugar nenhum o aviso continua, só que sem o nome', () => {
       transbordo_subsetor_origem_id: PRIME,
     },
     [],
-    [],
   )
   assert.equal(aviso.nomeOrigem, null)
   assert.equal(aviso.subsetorOrigemId, PRIME)
@@ -308,48 +314,23 @@ test('o aviso conta as vezes, para o atendente ver que já é reincidência', ()
       transbordo_subsetor_hops: 3,
     },
     [],
-    [],
   )
   assert.equal(aviso.vezes, 3)
 })
 
 test('sem marca não há aviso — ticket comum, ticket antigo e período antes da migration', () => {
   const semColunas = { subsetor_id: PRIME, subsetores: { nome: 'Prime' } }
-  assert.equal(descreverTransbordoRecebido(semColunas, [], []), null)
-  assert.equal(descreverTransbordoRecebido(null, [], []), null)
+  assert.equal(descreverTransbordoRecebido(semColunas, []), null)
+  assert.equal(descreverTransbordoRecebido(null, []), null)
   // Marca pela metade também não vira aviso.
   assert.equal(
-    descreverTransbordoRecebido({ transbordo_recebido_em: TRANSBORDO_EM }, [], []),
+    descreverTransbordoRecebido({ transbordo_recebido_em: TRANSBORDO_EM }, []),
     null,
   )
   assert.equal(
-    descreverTransbordoRecebido({ transbordo_subsetor_origem_id: PRIME }, [], []),
+    descreverTransbordoRecebido({ transbordo_subsetor_origem_id: PRIME }, []),
     null,
   )
-})
-
-test('a checagem no servidor procura resposta de atendente a partir do transbordo', async () => {
-  const sb = fakeSupabase({ linhas: [] })
-  assert.equal(await atendenteJaRespondeu(sb, 'ticket-1', TRANSBORDO_EM), false)
-
-  const [consulta] = sb.chamadas
-  assert.equal(consulta.tabela, 'mensagens')
-  assert.deepEqual(consulta.filtros, [
-    ['eq', 'ticket_id', 'ticket-1'],
-    ['eq', 'remetente', 'colaborador'],
-    ['gte', 'enviado_em', TRANSBORDO_EM],
-  ])
-  assert.equal(consulta.limit, 1)
-})
-
-test('achando uma resposta do atendente, a checagem no servidor libera', async () => {
-  const sb = fakeSupabase({ linhas: [{ id: 'mensagem-1' }] })
-  assert.equal(await atendenteJaRespondeu(sb, 'ticket-1', TRANSBORDO_EM), true)
-})
-
-test('consulta recusada libera a transferência em vez de barrar quem tem direito', async () => {
-  const sb = fakeSupabase({ erro: { message: 'timeout' } })
-  assert.equal(await atendenteJaRespondeu(sb, 'ticket-1', TRANSBORDO_EM), true)
 })
 
 test('coluna ausente não derruba nada: leitura vira sem marca, escrita vira falso', async () => {
@@ -383,7 +364,7 @@ const tecnico = (id, subsetorIds) => ({
   id, subsetorIds, recebidosHoje: 0, ticketsAbertos: 0,
 })
 
-test('cenário do caso: Prime vazio → Suporte recebe → devolução travada até responder', () => {
+test('cenário do caso: Prime vazio → Suporte recebe → só supervisor devolve', () => {
   // 1. Ninguém no Prime; o Suporte tem vaga e a própria fila vazia.
   const destino = escolherDestino({
     subsetorDoTicket: PRIME,
@@ -402,15 +383,19 @@ test('cenário do caso: Prime vazio → Suporte recebe → devolução travada a
   // 3. O atendente do Suporte tenta devolver para a fila do Prime — que
   //    continua vazia. É aqui que o ticket voltava.
   const devolucao = { subsetorId: PRIME, colaboradorId: null }
-  assert.equal(bloquearDevolucao(marca, devolucao, false), true)
+  assert.equal(bloquearDevolucao(marca, devolucao, podeAutorizar(ATENDENTE_COMUM)), true)
 
-  // 4. Ele responde ao cliente. A devolução deixa de ser reflexa.
-  const jaAtendeu = respondeuDepoisDoTransbordo(
-    [{ remetente: 'colaborador', enviado_em: '2026-08-12T13:04:00.000Z' }],
-    marca.recebidoEm,
+  // 4. Ele atende o cliente e tenta de novo. Continua barrado: a fila do Prime
+  //    não ganhou atendente por causa disso, e era só isso que o bloqueio
+  //    protegia. O que sobra para ele são as saídas que não reiniciam o ciclo.
+  assert.equal(bloquearDevolucao(marca, devolucao, podeAutorizar(ATENDENTE_COMUM)), true)
+  assert.equal(
+    bloquearDevolucao(marca, { subsetorId: PRIME, colaboradorId: 'tecnico-do-prime' }, podeAutorizar(ATENDENTE_COMUM)),
+    false,
   )
-  assert.equal(jaAtendeu, true)
-  assert.equal(bloquearDevolucao(marca, devolucao, jaAtendeu), false)
+
+  // 5. O supervisor do setor olha as duas filas e decide devolver mesmo assim.
+  assert.equal(bloquearDevolucao(marca, devolucao, podeAutorizar(SUPERVISOR_DO_SETOR)), false)
 })
 
 test('cenário de controle: com técnico no Prime nada disso acontece', () => {
@@ -425,9 +410,14 @@ test('cenário de controle: com técnico no Prime nada disso acontece', () => {
   assert.equal(destino.origem, 'proprio')
   assert.equal(efeitoDaAtribuicao(destino.origem, PRIME), 'limpar')
 
-  // Sem marca, transferir para a fila do Prime é uma transferência qualquer.
+  // Sem marca, transferir para a fila do Prime é uma transferência qualquer —
+  // atendente comum inclusive.
   assert.equal(
-    bloquearDevolucao(SEM_MARCA_TRANSBORDO, { subsetorId: PRIME, colaboradorId: null }, false),
+    bloquearDevolucao(
+      SEM_MARCA_TRANSBORDO,
+      { subsetorId: PRIME, colaboradorId: null },
+      podeAutorizar(ATENDENTE_COMUM),
+    ),
     false,
   )
 })

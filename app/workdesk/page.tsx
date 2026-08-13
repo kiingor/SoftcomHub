@@ -12,7 +12,7 @@ import {
   selectOutboundChannelEvidence,
 } from '@/lib/message-send-target'
 import { areSetorSortConfigsEqual, sortTicketsBySetorConfig } from '@/lib/ticket-sort'
-import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
+import { hasSupervisorScope, isTransferTargetAvailable } from '@/lib/transfer-authorization'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow, format } from 'date-fns'
@@ -372,6 +372,7 @@ interface Colaborador {
   setor_id: string | null
   permissao_id: string | null
   is_online: boolean
+  is_master?: boolean | null
   setores_ativos_sessao?: string[] | null
   permissoes?: {
     can_see_all_tickets: boolean
@@ -1184,12 +1185,32 @@ export default function WorkdeskPage() {
   )
   // Caso #97066: o ticket caiu aqui porque o subsetor dele estava sem atendente.
   // Sem dizer isso na tela, o atendente devolve para a fila de origem — que
-  // continua vazia — e o ticket volta. `jaRespondeu` sai das mensagens que a
-  // tela já carregou; o servidor refaz a mesma checagem antes de transferir.
+  // continua vazia — e o ticket volta.
   const transbordoRecebido = useMemo(
-    () => descreverTransbordoRecebido(selectedTicket, subsetoresDisponiveis, mensagens),
-    [selectedTicket, subsetoresDisponiveis, mensagens],
+    () => descreverTransbordoRecebido(selectedTicket, subsetoresDisponiveis),
+    [selectedTicket, subsetoresDisponiveis],
   )
+  // Devolver para a fila de origem é decisão de supervisor do setor (ou de
+  // master), sem prazo: responder ao cliente não libera. A mesma função decide
+  // no servidor, em /api/tickets/transferir — aqui ela só evita oferecer um
+  // botão que a rota vai recusar.
+  const podeDevolverParaFilaDeOrigem = useMemo(() => {
+    const setorDoTicket = selectedTicket?.setor_id
+    if (!colaborador || !setorDoTicket) return false
+
+    return hasSupervisorScope(
+      {
+        id: colaborador.id,
+        isMaster: colaborador.is_master === true,
+        canSeeAllTickets: colaborador.permissoes?.can_see_all_tickets === true,
+        linkedSetorIds: [
+          ...(colaborador.setor_id ? [colaborador.setor_id] : []),
+          ...(colaborador.setores_vinculados || []).map((vinculo) => vinculo.setor_id),
+        ],
+      },
+      setorDoTicket,
+    )
+  }, [colaborador, selectedTicket?.setor_id])
 
   const [loadingHistory, setLoadingHistory] = useState(false)
   // Conversa de um atendimento anterior aberta em modal (somente leitura).
@@ -5120,9 +5141,9 @@ const insertEmoji = (emoji: string) => {
                       {transbordoRecebido.nomeOrigem ? ` no ${transbordoRecebido.nomeOrigem}` : ' no subsetor de origem'}
                       {transbordoRecebido.vezes > 1 && ` (${transbordoRecebido.vezes}ª vez)`}.
                     </span>{' '}
-                    {transbordoRecebido.jaRespondeu
-                      ? 'Você já respondeu ao cliente — transferir agora está liberado.'
-                      : 'Responda ao cliente antes de devolver para essa fila: ela continua sem atendente e o ticket voltaria para cá.'}
+                    {podeDevolverParaFilaDeOrigem
+                      ? 'Essa fila continua sem atendente: devolver o ticket para lá é decisão sua, como supervisor.'
+                      : 'Devolver para essa fila depende de um supervisor — ela continua sem atendente e o ticket voltaria para cá. Você pode entregá-lo a um atendente de lá ou escolher outro destino.'}
                   </p>
                 </div>
               )}
@@ -6830,9 +6851,9 @@ onClick={() => {
         ticket={selectedTicket}
         colaborador={colaborador}
         tela="WorkDesk"
-        filaBloqueada={transbordoRecebido && !transbordoRecebido.jaRespondeu ? {
+        filaBloqueada={transbordoRecebido && !podeDevolverParaFilaDeOrigem ? {
           subsetorId: transbordoRecebido.subsetorOrigemId,
-          motivo: `Este atendimento veio${transbordoRecebido.nomeOrigem ? ` do ${transbordoRecebido.nomeOrigem}` : ''} por transbordo e ainda não foi respondido. Devolver para essa fila só reinicia o ciclo — responda ao cliente, escolha um atendente ou outro destino.`,
+          motivo: `Este atendimento veio${transbordoRecebido.nomeOrigem ? ` do ${transbordoRecebido.nomeOrigem}` : ''} por transbordo, porque não havia atendente lá. Devolver para essa fila só reinicia o ciclo, então depende de um supervisor — escolha um atendente dela ou outro destino.`,
         } : null}
         onTransferStart={(ticketId) => {
           // Marca ANTES do POST para o realtime não trazer o ticket de volta,
