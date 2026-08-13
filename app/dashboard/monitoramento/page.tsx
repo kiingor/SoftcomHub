@@ -107,7 +107,8 @@ import { normalizeBrazilianPhone } from '@/lib/phone'
 import { loadRowsByPages, loadRowsByValues } from '@/lib/supabase/paginate'
 import { loadSafeNexusChannelConfiguration } from '@/lib/nexus-channel-client'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
-import { isTransferTargetAvailable } from '@/lib/transfer-authorization'
+import { canSeeAllTickets } from '@/lib/permissions'
+import { hasSupervisorScope, isTransferTargetAvailable } from '@/lib/transfer-authorization'
 import { resolverIniciosTempoTransferencia } from '@/lib/ticket-transfer-timing'
 
 const NEXUS_MESSAGE_LOOKBACK_MINUTES = Number(process.env.NEXT_PUBLIC_NEXUS_MESSAGE_LOOKBACK_MINUTES || 60)
@@ -567,9 +568,12 @@ export default function MonitoramentoPage() {
         .filter((atendente: any) => atendente.pausa_atual_id)
         .map((atendente: any) => atendente.pausa_atual_id)
       if (pausaIds.length > 0) {
+        // `pausa_id` e `setor_id` da INSTÂNCIA entram aqui por causa do caso
+        // #97218: são eles que dizem qual tipo está valendo (para tirá-lo da
+        // lista de troca) e a que setor a pausa pertence.
         const { data: pausasAtivas, error: pausasAtivasError } = await supabase
           .from('pausas_colaboradores')
-          .select('id, inicio, pausas(nome, tempo_maximo_minutos)')
+          .select('id, inicio, pausa_id, setor_id, pausas(nome, tempo_maximo_minutos)')
           .in('id', pausaIds)
         if (pausasAtivasError) throw pausasAtivasError
         const pausaInfoById = new Map(
@@ -585,9 +589,73 @@ export default function MonitoramentoPage() {
             ]
           }),
         )
+        const instanciaById = new Map(
+          (pausasAtivas || []).map((pausa: any) => [
+            pausa.id,
+            { pausaTipoId: pausa.pausa_id as string, pausaSetorId: pausa.setor_id as string },
+          ]),
+        )
         for (const atendente of atendentes as any[]) {
           if (atendente.pausa_atual_id) {
             atendente.pausaInfo = pausaInfoById.get(atendente.pausa_atual_id) || null
+            const instancia = instanciaById.get(atendente.pausa_atual_id)
+            atendente.pausaTipoId = instancia?.pausaTipoId ?? null
+            atendente.pausaSetorId = instancia?.pausaSetorId ?? null
+          }
+        }
+
+        // ── Caso #97218: opções de troca do TIPO da pausa ───────────────────
+        // O critério de supervisor é `hasSupervisorScope`, o mesmo que a rota
+        // aplica no servidor — aqui ele só evita oferecer um controle que o
+        // POST recusaria. O alcance é o setor DA PAUSA, não um setor qualquer
+        // do atendente: o relatório de pausa é agrupado por setor, então quem
+        // reetiqueta uma pausa que conta no setor X tem que ser supervisor de X.
+        // Meus vínculos saem de `colaboradores_setores` (já carregado acima) —
+        // `colaboradores.setor_id` é legado e nulo em quase todo mundo.
+        const atorSupervisao = {
+          id: colaborador?.id || '',
+          isMaster: colaborador?.is_master === true,
+          canSeeAllTickets: canSeeAllTickets(colaborador?.permissoes),
+          linkedSetorIds: Array.from(new Set([
+            ...(colaborador?.setor_id ? [colaborador.setor_id] : []),
+            ...(atendentesData || [])
+              .filter((a: any) => a.colaborador_id === colaborador?.id)
+              .map((a: any) => a.setor_id as string),
+          ])),
+        }
+        const setoresDePausaSupervisionados = Array.from(new Set(
+          (atendentes as any[])
+            .map((atendente) => atendente.pausaSetorId as string | null)
+            .filter((setorId): setorId is string => !!setorId && hasSupervisorScope(atorSupervisao, setorId)),
+        ))
+
+        if (setoresDePausaSupervisionados.length > 0) {
+          // O teto de 500 não corta dado real — o catálogo de tipos é um punhado
+          // por setor. Ele só evita a leitura sem limite, que o PostgREST corta
+          // em 1.000 sem avisar.
+          const { data: tiposDePausa, error: tiposDePausaError } = await supabase
+            .from('pausas')
+            .select('id, nome, setor_id')
+            .in('setor_id', setoresDePausaSupervisionados)
+            .eq('ativo', true)
+            .order('nome')
+            .limit(500)
+          if (tiposDePausaError) throw tiposDePausaError
+
+          const tiposPorSetor = new Map<string, { id: string; nome: string }[]>()
+          for (const tipo of tiposDePausa || []) {
+            const lista = tiposPorSetor.get((tipo as any).setor_id) || []
+            lista.push({ id: (tipo as any).id, nome: (tipo as any).nome })
+            tiposPorSetor.set((tipo as any).setor_id, lista)
+          }
+
+          for (const atendente of atendentes as any[]) {
+            if (!atendente.pausaSetorId) continue
+            if (!setoresDePausaSupervisionados.includes(atendente.pausaSetorId)) continue
+            // O tipo que já está valendo sai da lista: reescolhê-lo não é troca,
+            // e a rota recusa com MESMO_TIPO.
+            atendente.tiposDePausa = (tiposPorSetor.get(atendente.pausaSetorId) || [])
+              .filter((tipo) => tipo.id !== atendente.pausaTipoId)
           }
         }
       }
@@ -1112,6 +1180,41 @@ export default function MonitoramentoPage() {
         return order(a) - order(b) || a.nome?.localeCompare(b.nome)
       })
   }, [atendentesRaw, isAtendenteOnline, tickets, searchAtendente])
+
+  // Caso #97218: a supervisão corrige o TIPO da pausa que o atendente escolheu.
+  // A rota faz UPDATE do tipo na instância aberta, preservando `inicio` — o
+  // cronômetro NÃO zera, e o tempo já decorrido passa a ser julgado pelo
+  // `tempo_maximo_minutos` do tipo novo. O `mutate()` traz o rótulo e o limite
+  // atualizados; a autorização real está no servidor, esconder o controle aqui
+  // só evita oferecer o que o POST recusaria.
+  const trocarTipoDePausa = useCallback(async (colaboradorId: string, tipoDePausaId: string) => {
+    try {
+      const res = await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId, trocarTipoPausaId: tipoDePausaId }),
+      })
+      const resultado = await res.json().catch(() => null)
+      if (!res.ok) {
+        toast.error(resultado?.error || 'Não foi possível trocar o tipo da pausa')
+        return
+      }
+      toast.success(
+        resultado?.pausa?.nome
+          ? `Pausa alterada para ${resultado.pausa.nome}`
+          : 'Tipo da pausa alterado',
+      )
+      await mutate()
+    } catch (err) {
+      logError({
+        tela: 'Monitoramento',
+        error: err,
+        componente: 'trocarTipoDePausa',
+        metadata: { type: 'pausa_tipo_troca_error', colaboradorId, tipoDePausaId },
+      })
+      toast.error('Não foi possível trocar o tipo da pausa')
+    }
+  }, [mutate])
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
@@ -1992,6 +2095,8 @@ export default function MonitoramentoPage() {
                         emPausa={!!atendente.pausa_atual_id}
                         pausaInfo={atendente.pausaInfo}
                         ticketsAtivos={atendente.ticketsAtivos}
+                        tiposDePausa={atendente.tiposDePausa}
+                        onTrocarTipoDePausa={(tipoId) => trocarTipoDePausa(atendente.id, tipoId)}
                       />
                     ))}
                   </div>
