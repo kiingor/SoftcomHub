@@ -21,6 +21,7 @@ import { cn, isClientMessage, isBotMessage } from '@/lib/utils'
 import { TransferirTicketDialog } from '@/components/tickets/transferir-ticket-dialog'
 import { rotuloDuplicidade, ticketsAbertos } from '@/lib/tickets-duplicados'
 import { descreverTransbordoRecebido } from '@/lib/transbordo-marca'
+import { descreverOcExistente, MENSAGEM_SEM_OC, type SituacaoOc } from '@/lib/oc-ticket'
 import { MensagemBubble, MensagemBubbleBox, ContactCard, isContactMessage, isOutgoingMessage, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { upload } from '@vercel/blob/client'
 import { resolveMime } from '@/lib/whatsapp-media'
@@ -262,6 +263,16 @@ interface Mensagem {
 
 const SEND_CLAIM_STALE_MS = 10 * 60 * 1000
 const MAX_STALE_RECONCILE_ATTEMPTS = 5
+
+// Veredito de OC devolvido por `/api/oc` — caso #97240. `podeEncerrar` já vem
+// decidido lá (flag + fail-open), a tela só obedece.
+interface StatusOcTicket {
+  flagLigada: boolean
+  situacao: SituacaoOc
+  identificacao: string | null
+  podeEncerrar: boolean
+  bloqueio: string | null
+}
 
 // Monta a URL da "Ocorrência rápida" (Service Desk) pro ticket selecionado — usada
 // como href de um <a target="_blank"> nativo (não window.open), pra abrir a guia
@@ -2768,10 +2779,85 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     }
   }
 
+  // OC (ocorrência do Service Desk) — caso #97240.
+  //
+  // A OC vinha sendo aberta no fim do atendimento, ou depois, e isso arruinava a
+  // rastreabilidade. Aqui a tela faz três coisas: empurra a abertura para o
+  // começo (aviso no topo da conversa), avisa quando a OC JÁ existe (antes de o
+  // atendente abrir outra) e trava o encerramento enquanto não houver OC.
+  //
+  // A trava só age com resposta clara de "não tem OC". Erro de rede, 401, 5xx ou
+  // qualquer coisa que a rota não conseguiu concluir LIBERA o encerramento — o
+  // veredito vem pronto de `/api/oc`, que é quem conhece a flag e a chave.
+  const [ocStatus, setOcStatus] = useState<StatusOcTicket | null>(null)
+  const [ocBloqueioDialogOpen, setOcBloqueioDialogOpen] = useState(false)
+  const [ocVerificando, setOcVerificando] = useState(false)
+  const ocTicketBloqueadoRef = useRef<Ticket | null>(null)
+  // Com a flag desligada (o padrão) a primeira resposta já diz isso, e daí em
+  // diante nem a consulta local acontece: o comportamento é exatamente o de hoje.
+  const ocFlagDesligadaRef = useRef(false)
+
+  const verificarOcDoTicket = useCallback(async (
+    numero: number | null | undefined,
+  ): Promise<StatusOcTicket | null> => {
+    if (!numero || ocFlagDesligadaRef.current) return null
+
+    try {
+      const res = await fetch(`/api/oc?numero=${encodeURIComponent(String(numero))}`, {
+        cache: 'no-store',
+      })
+      if (!res.ok) {
+        console.warn(`[oc] /api/oc respondeu ${res.status} — encerramento liberado sem verificar a OC`)
+        return null
+      }
+
+      const data = await res.json()
+      if (!data || typeof data.podeEncerrar !== 'boolean') {
+        console.warn('[oc] resposta inesperada de /api/oc — encerramento liberado sem verificar a OC')
+        return null
+      }
+
+      if (!data.flagLigada) ocFlagDesligadaRef.current = true
+      return data as StatusOcTicket
+    } catch (err) {
+      console.warn('[oc] não deu para consultar a OC — encerramento liberado sem verificar:', err)
+      return null
+    }
+  }, [])
+
+  // Consulta ao abrir o ticket, para o aviso aparecer no COMEÇO do atendimento.
+  useEffect(() => {
+    setOcStatus(null)
+    if (!selectedTicket?.numero) return
+
+    let cancelado = false
+    verificarOcDoTicket(selectedTicket.numero).then((status) => {
+      if (!cancelado) setOcStatus(status)
+    })
+    return () => { cancelado = true }
+  }, [selectedTicket?.id, selectedTicket?.numero, verificarOcDoTicket])
+
+  const avisoOcExistente = descreverOcExistente(ocStatus)
+  const ocPendente = ocStatus?.flagLigada === true && ocStatus.situacao === 'sem-oc'
+
   // Encerrar ticket
 const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> => {
     const ticketToClose = ticketOverride ?? selectedTicket
     if (!ticketToClose || !colaborador) return false
+
+    // Trava de rastreabilidade — o único ponto do WorkDesk por onde o
+    // encerramento passa, então cobre os três lugares que chamam esta função.
+    setOcVerificando(true)
+    const statusOc = await verificarOcDoTicket(ticketToClose.numero).finally(() => {
+      setOcVerificando(false)
+    })
+    if (statusOc) setOcStatus(statusOc)
+    if (statusOc && !statusOc.podeEncerrar) {
+      ocTicketBloqueadoRef.current = ticketToClose
+      setEncerrarDialogOpen(false)
+      setOcBloqueioDialogOpen(true)
+      return false
+    }
 
     try {
       // Fetch the setor to get finalization message
@@ -3010,6 +3096,14 @@ const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> =
       setEncerrarAposVinculoCliente(false)
       handleEncerrarTicket()
     }
+  }
+
+  // "Já abri a OC" — reconsulta e, se a OC apareceu, segue com o encerramento.
+  // Se ainda não apareceu, `handleEncerrarTicket` reabre o diálogo sozinho.
+  const handleReverificarOc = async () => {
+    const ticketBloqueado = ocTicketBloqueadoRef.current
+    setOcBloqueioDialogOpen(false)
+    await handleEncerrarTicket(ticketBloqueado ?? undefined)
   }
 
   // Buscar cliente por CNPJ ou CPF de MEI (painel de seleção)
@@ -5148,6 +5242,44 @@ const insertEmoji = (emoji: string) => {
                 </div>
               )}
 
+              {/* OC do Service Desk — caso #97240. Fica no topo da conversa de
+                  propósito: a OC tem que ser aberta no COMEÇO do atendimento, e
+                  deixar a ação escondida no painel lateral é o que fazia o
+                  atendente lembrar dela só na hora de encerrar. */}
+              {ocPendente && (
+                <div
+                  role="status"
+                  className="flex items-start gap-2 border-b border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200"
+                >
+                  <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <p>
+                    <span className="font-semibold">Este atendimento ainda não tem OC.</span>{' '}
+                    Abra a ocorrência agora — o encerramento fica travado enquanto não houver uma.{' '}
+                    <a
+                      href={buildOcorrenciaRapidaUrl(selectedTicket)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-semibold underline underline-offset-2"
+                    >
+                      Abrir ocorrência rápida
+                    </a>
+                  </p>
+                </div>
+              )}
+
+              {avisoOcExistente && (
+                <div
+                  role="status"
+                  className="flex items-start gap-2 border-b border-emerald-300 bg-emerald-50 px-4 py-2 text-xs text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200"
+                >
+                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <p>
+                    <span className="font-semibold">{avisoOcExistente}</span>{' '}
+                    Confira antes de abrir outra.
+                  </p>
+                </div>
+              )}
+
               {/* Messages */}
               <div className="flex-1 overflow-hidden">
                 <div ref={messagesContainerRef} onScroll={handleMessagesScroll} className="h-full overflow-y-auto">
@@ -6232,6 +6364,16 @@ const insertEmoji = (emoji: string) => {
                 </div>
                 )}
 
+                {/* Aviso de OC já aberta — vem ANTES do botão de propósito: o
+                    atendente precisa ver que a OC existe antes de abrir outra.
+                    Informa, não impede; pode haver motivo legítimo. */}
+                {avisoOcExistente && (
+                  <p className="mt-3 flex items-start gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200">
+                    <ShieldCheck className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>{avisoOcExistente}</span>
+                  </p>
+                )}
+
                 {/* Botão: Abrir ticket no sistema Softcom — sempre visível,
                     mesmo quando a seção "Info do Ticket" está colapsada. */}
                 <Button
@@ -6815,6 +6957,39 @@ onClick={() => {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               ✅ Confirmar Encerramento
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Dialog: encerramento travado por falta de OC — caso #97240.
+          Só aparece com a flag ligada E com resposta clara de que não existe OC;
+          falha de infraestrutura nunca chega aqui, ela libera o encerramento. */}
+      <AlertDialog open={ocBloqueioDialogOpen} onOpenChange={setOcBloqueioDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-amber-500" />
+              Abra a OC antes de encerrar
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {ocStatus?.bloqueio || MENSAGEM_SEM_OC}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Voltar</AlertDialogCancel>
+            <Button asChild variant="outline" className="gap-1.5">
+              <a
+                href={buildOcorrenciaRapidaUrl(ocTicketBloqueadoRef.current ?? selectedTicket)}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Abrir ocorrência rápida
+              </a>
+            </Button>
+            <AlertDialogAction onClick={handleReverificarOc} disabled={ocVerificando}>
+              {ocVerificando ? 'Verificando...' : 'Já abri — encerrar'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
