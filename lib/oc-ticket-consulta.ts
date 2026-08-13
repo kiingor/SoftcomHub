@@ -6,6 +6,35 @@
 //
 // Mesmo padrão de `softcom-client.ts`: base em `SOFTCOM_API_URL`, autenticação
 // pelo header `x-api-key` a partir de `SOFTCOM_API_KEY`. Nenhum cliente novo.
+//
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ ATENÇÃO — A CONSULTA ABAIXO ESTÁ PROVISÓRIA E COMPROVADAMENTE ERRADA.    │
+// │ NÃO LIGUE `OC_OBRIGATORIA_PARA_ENCERRAR` ANTES DE CORRIGI-LA.            │
+// └──────────────────────────────────────────────────────────────────────────┘
+//
+// `GET /v1/tickets/numero/{numero}` NÃO filtra pelo número do ticket do Hub.
+// Medido em 13/08/2026, com a chave de produção:
+//
+//   162469  (Hub: SOFTCOM BACKUP)      -> array[0]  (vazio)
+//   164347  (Hub: DEUS NO COMANDO)     -> array[1]  MBCA DISTRIBUIDORA  ← outro cliente
+//   164371  (Hub: criado 1h antes)     -> array[0]  (vazio)
+//   999999999 (número inventado)       -> array[2]  ASTGRAFICA TERESINA ← não existe no Hub
+//
+// Um número inventado devolve OCs reais, e um ticket real devolve a OC de outro
+// cliente. Ou seja: o parâmetro é interpretado de outra forma, ou ignorado.
+//
+// Com a flag LIGADA e esta consulta, `array[0]` vira "o atendente não abriu a
+// OC" e o ticket fica IMPOSSÍVEL de encerrar — três dos quatro casos acima
+// travariam sem que nenhuma OC pudesse liberá-los.
+//
+// O que falta descobrir: por qual campo a OC guarda o número do ticket do Hub.
+// O WorkDesk já manda `?ticket={numero}` ao abrir a ocorrência rápida
+// (`buildOcorrenciaRapidaUrl`), então o número CHEGA na agenda — falta o
+// caminho de volta.
+//
+// Quando souber: só a URL/parâmetro deste arquivo mudam (e o formato em
+// `interpretarRespostaOc`, se for diferente). Decisão, flag, fail-open, trava de
+// tela e testes aproveitam inteiros.
 
 import { interpretarRespostaOc, ocIndeterminada, type ConsultaOc } from '@/lib/oc-ticket'
 
