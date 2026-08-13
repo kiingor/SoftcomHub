@@ -603,60 +603,95 @@ export default function MonitoramentoPage() {
             atendente.pausaSetorId = instancia?.pausaSetorId ?? null
           }
         }
+      }
 
-        // ── Caso #97218: opções de troca do TIPO da pausa ───────────────────
-        // O critério de supervisor é `hasSupervisorScope`, o mesmo que a rota
-        // aplica no servidor — aqui ele só evita oferecer um controle que o
-        // POST recusaria. O alcance é o setor DA PAUSA, não um setor qualquer
-        // do atendente: o relatório de pausa é agrupado por setor, então quem
-        // reetiqueta uma pausa que conta no setor X tem que ser supervisor de X.
-        // Meus vínculos saem de `colaboradores_setores` (já carregado acima) —
-        // `colaboradores.setor_id` é legado e nulo em quase todo mundo.
-        const atorSupervisao = {
-          id: colaborador?.id || '',
-          isMaster: colaborador?.is_master === true,
-          canSeeAllTickets: canSeeAllTickets(colaborador?.permissoes),
-          linkedSetorIds: Array.from(new Set([
-            ...(colaborador?.setor_id ? [colaborador.setor_id] : []),
-            ...(atendentesData || [])
-              .filter((a: any) => a.colaborador_id === colaborador?.id)
-              .map((a: any) => a.setor_id as string),
-          ])),
-        }
-        const setoresDePausaSupervisionados = Array.from(new Set(
-          (atendentes as any[])
-            .map((atendente) => atendente.pausaSetorId as string | null)
-            .filter((setorId): setorId is string => !!setorId && hasSupervisorScope(atorSupervisao, setorId)),
+      // ── Caso #97218: controles de disponibilidade no card ─────────────────
+      // O critério de supervisor é `hasSupervisorScope`, o mesmo que a rota
+      // aplica no servidor — aqui ele só evita oferecer um controle que o POST
+      // recusaria. Meus vínculos saem de `colaboradores_setores` (já carregado
+      // acima); `colaboradores.setor_id` é legado e nulo em quase todo mundo.
+      const atorSupervisao = {
+        id: colaborador?.id || '',
+        isMaster: colaborador?.is_master === true,
+        canSeeAllTickets: canSeeAllTickets(colaborador?.permissoes),
+        linkedSetorIds: Array.from(new Set([
+          ...(colaborador?.setor_id ? [colaborador.setor_id] : []),
+          ...(atendentesData || [])
+            .filter((a: any) => a.colaborador_id === colaborador?.id)
+            .map((a: any) => a.setor_id as string),
+        ])),
+      }
+
+      const setoresPorAtendente = new Map<string, string[]>()
+      for (const vinculo of atendentesData || []) {
+        const lista = setoresPorAtendente.get((vinculo as any).colaborador_id) || []
+        lista.push((vinculo as any).setor_id)
+        setoresPorAtendente.set((vinculo as any).colaborador_id, lista)
+      }
+
+      for (const atendente of atendentes as any[]) {
+        // Setores DELE que eu supervisiono. Vazio esconde os controles todos:
+        // é o mesmo alcance que `podeAlterarStatusDe` aplica no servidor.
+        atendente.setoresSupervisionados = Array.from(new Set(
+          (setoresPorAtendente.get(atendente.id) || [])
+            .filter((setorId) => hasSupervisorScope(atorSupervisao, setorId)),
         ))
+        atendente.podeSupervisionar = atendente.setoresSupervisionados.length > 0
+        // Trocar o tipo e tirar da pausa exigem escopo sobre o setor DA PAUSA,
+        // e não sobre um setor qualquer do atendente: o relatório de pausa é
+        // agrupado por setor, então quem mexe numa ausência que conta no setor
+        // X tem que ser supervisor de X. É a segunda conferência que a rota faz.
+        atendente.podeMexerNaPausa = !!atendente.pausaSetorId
+          && hasSupervisorScope(atorSupervisao, atendente.pausaSetorId)
+      }
 
-        if (setoresDePausaSupervisionados.length > 0) {
-          // O teto de 500 não corta dado real — o catálogo de tipos é um punhado
-          // por setor. Ele só evita a leitura sem limite, que o PostgREST corta
-          // em 1.000 sem avisar.
-          const { data: tiposDePausa, error: tiposDePausaError } = await supabase
-            .from('pausas')
-            .select('id, nome, setor_id')
-            .in('setor_id', setoresDePausaSupervisionados)
-            .eq('ativo', true)
-            .order('nome')
-            .limit(500)
-          if (tiposDePausaError) throw tiposDePausaError
+      const setoresComCatalogo = Array.from(new Set(
+        (atendentes as any[]).flatMap((atendente) => [
+          ...(atendente.setoresSupervisionados as string[]),
+          ...(atendente.podeMexerNaPausa ? [atendente.pausaSetorId as string] : []),
+        ]),
+      ))
 
-          const tiposPorSetor = new Map<string, { id: string; nome: string }[]>()
-          for (const tipo of tiposDePausa || []) {
-            const lista = tiposPorSetor.get((tipo as any).setor_id) || []
-            lista.push({ id: (tipo as any).id, nome: (tipo as any).nome })
-            tiposPorSetor.set((tipo as any).setor_id, lista)
-          }
+      if (setoresComCatalogo.length > 0) {
+        // O teto de 500 não corta dado real — o catálogo de tipos é um punhado
+        // por setor. Ele só evita a leitura sem limite, que o PostgREST corta
+        // em 1.000 sem avisar.
+        const { data: tiposDePausa, error: tiposDePausaError } = await supabase
+          .from('pausas')
+          .select('id, nome, setor_id')
+          .in('setor_id', setoresComCatalogo)
+          .eq('ativo', true)
+          .order('nome')
+          .limit(500)
+        if (tiposDePausaError) throw tiposDePausaError
 
-          for (const atendente of atendentes as any[]) {
-            if (!atendente.pausaSetorId) continue
-            if (!setoresDePausaSupervisionados.includes(atendente.pausaSetorId)) continue
+        const tiposPorSetor = new Map<string, { id: string; nome: string }[]>()
+        for (const tipo of tiposDePausa || []) {
+          const lista = tiposPorSetor.get((tipo as any).setor_id) || []
+          lista.push({ id: (tipo as any).id, nome: (tipo as any).nome })
+          tiposPorSetor.set((tipo as any).setor_id, lista)
+        }
+
+        for (const atendente of atendentes as any[]) {
+          if (atendente.podeMexerNaPausa) {
             // O tipo que já está valendo sai da lista: reescolhê-lo não é troca,
             // e a rota recusa com MESMO_TIPO.
             atendente.tiposDePausa = (tiposPorSetor.get(atendente.pausaSetorId) || [])
               .filter((tipo) => tipo.id !== atendente.pausaTipoId)
           }
+          if (!atendente.podeSupervisionar) continue
+          // Colocar em pausa parte dos setores DELE que eu supervisiono — o
+          // servidor exige que o tipo seja de setor a que ele esteja vinculado.
+          // A deduplicação por nome é a mesma do painel do atendente: quem
+          // trabalha em dois setores com "Almoço" veria a opção repetida.
+          const vistos = new Set<string>()
+          atendente.tiposParaIniciarPausa = (atendente.setoresSupervisionados as string[])
+            .flatMap((setorId) => tiposPorSetor.get(setorId) || [])
+            .filter((tipo) => {
+              if (vistos.has(tipo.nome)) return false
+              vistos.add(tipo.nome)
+              return true
+            })
         }
       }
 
@@ -1181,40 +1216,81 @@ export default function MonitoramentoPage() {
       })
   }, [atendentesRaw, isAtendenteOnline, tickets, searchAtendente])
 
-  // Caso #97218: a supervisão corrige o TIPO da pausa que o atendente escolheu.
-  // A rota faz UPDATE do tipo na instância aberta, preservando `inicio` — o
-  // cronômetro NÃO zera, e o tempo já decorrido passa a ser julgado pelo
-  // `tempo_maximo_minutos` do tipo novo. O `mutate()` traz o rótulo e o limite
-  // atualizados; a autorização real está no servidor, esconder o controle aqui
-  // só evita oferecer o que o POST recusaria.
-  const trocarTipoDePausa = useCallback(async (colaboradorId: string, tipoDePausaId: string) => {
+  // Caso #97218: a supervisão manda na disponibilidade do atendente pela tela de
+  // monitoramento — coloca em pausa, tira da pausa, corrige o TIPO da pausa e
+  // define online/offline. As quatro ações são o mesmo POST; o corpo diz qual é.
+  //
+  // A autorização real está no servidor — esconder o controle aqui só evita
+  // oferecer o que o POST recusaria. O `mutate()` no fim traz o estado gravado,
+  // e não um otimista: a rota pode recusar por corrida (o atendente mexeu no
+  // próprio status no mesmo instante) e a tela tem que mostrar o que valeu.
+  const comandarDisponibilidade = useCallback(async (
+    colaboradorId: string,
+    corpo: Record<string, unknown>,
+    { sucesso, falha, componente }: { sucesso: string; falha: string; componente: string },
+  ) => {
     try {
       const res = await fetch('/api/colaborador/toggle-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ colaboradorId, trocarTipoPausaId: tipoDePausaId }),
+        body: JSON.stringify({ colaboradorId, ...corpo }),
       })
       const resultado = await res.json().catch(() => null)
       if (!res.ok) {
-        toast.error(resultado?.error || 'Não foi possível trocar o tipo da pausa')
+        toast.error(resultado?.error || falha)
         return
       }
-      toast.success(
-        resultado?.pausa?.nome
-          ? `Pausa alterada para ${resultado.pausa.nome}`
-          : 'Tipo da pausa alterado',
-      )
+      toast.success(sucesso)
       await mutate()
     } catch (err) {
       logError({
         tela: 'Monitoramento',
         error: err,
-        componente: 'trocarTipoDePausa',
-        metadata: { type: 'pausa_tipo_troca_error', colaboradorId, tipoDePausaId },
+        componente,
+        metadata: { type: 'pausa_supervisao_error', colaboradorId, ...corpo },
       })
-      toast.error('Não foi possível trocar o tipo da pausa')
+      toast.error(falha)
     }
   }, [mutate])
+
+  // A rota faz UPDATE do tipo na instância aberta, preservando `inicio` — o
+  // cronômetro NÃO zera, e o tempo já decorrido passa a ser julgado pelo
+  // `tempo_maximo_minutos` do tipo novo.
+  const trocarTipoDePausa = useCallback(async (colaboradorId: string, tipoDePausaId: string) => {
+    await comandarDisponibilidade(colaboradorId, { trocarTipoPausaId: tipoDePausaId }, {
+      sucesso: 'Tipo da pausa alterado',
+      falha: 'Não foi possível trocar o tipo da pausa',
+      componente: 'trocarTipoDePausa',
+    })
+  }, [comandarDisponibilidade])
+
+  // Abre instância nova em `pausas_colaboradores` e deixa o atendente offline,
+  // exatamente como o painel do WorkDesk faz quando ele mesmo entra em pausa.
+  const iniciarPausa = useCallback(async (colaboradorId: string, tipoDePausaId: string) => {
+    await comandarDisponibilidade(colaboradorId, { iniciarPausaId: tipoDePausaId }, {
+      sucesso: 'Atendente colocado em pausa',
+      falha: 'Não foi possível colocar o atendente em pausa',
+      componente: 'iniciarPausa',
+    })
+  }, [comandarDisponibilidade])
+
+  // Fecha a instância (`fim`) e devolve ao atendimento. Fechar é o ponto: limpar
+  // só o ponteiro deixaria a ausência aberta para sempre no relatório.
+  const encerrarPausa = useCallback(async (colaboradorId: string) => {
+    await comandarDisponibilidade(colaboradorId, { encerrarPausa: true }, {
+      sucesso: 'Atendente retirado da pausa',
+      falha: 'Não foi possível tirar o atendente da pausa',
+      componente: 'encerrarPausa',
+    })
+  }, [comandarDisponibilidade])
+
+  const definirDisponibilidade = useCallback(async (colaboradorId: string, isOnline: boolean) => {
+    await comandarDisponibilidade(colaboradorId, { isOnline, pausaAtualId: null }, {
+      sucesso: isOnline ? 'Atendente marcado como online' : 'Atendente marcado como offline',
+      falha: 'Não foi possível alterar o status do atendente',
+      componente: 'definirDisponibilidade',
+    })
+  }, [comandarDisponibilidade])
 
   // Open conversation panel
   const openConversation = async (ticket: any) => {
@@ -2087,6 +2163,10 @@ export default function MonitoramentoPage() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {/* `onEncerrarPausa` só é passado quando eu supervisiono o
+                        setor DA PAUSA — sem ele o botão nem aparece, porque o
+                        POST recusaria. As outras ações se contentam com escopo
+                        sobre um setor do atendente, que é o que a rota exige. */}
                     {atendentesLista.map((atendente: any) => (
                       <AtendenteCard
                         key={atendente.id}
@@ -2095,8 +2175,15 @@ export default function MonitoramentoPage() {
                         emPausa={!!atendente.pausa_atual_id}
                         pausaInfo={atendente.pausaInfo}
                         ticketsAtivos={atendente.ticketsAtivos}
+                        podeSupervisionar={atendente.podeSupervisionar}
                         tiposDePausa={atendente.tiposDePausa}
+                        tiposParaIniciarPausa={atendente.tiposParaIniciarPausa}
                         onTrocarTipoDePausa={(tipoId) => trocarTipoDePausa(atendente.id, tipoId)}
+                        onIniciarPausa={(tipoId) => iniciarPausa(atendente.id, tipoId)}
+                        onEncerrarPausa={
+                          atendente.podeMexerNaPausa ? () => encerrarPausa(atendente.id) : undefined
+                        }
+                        onDefinirDisponibilidade={(isOnline) => definirDisponibilidade(atendente.id, isOnline)}
                       />
                     ))}
                   </div>
