@@ -226,15 +226,43 @@ $$;
 -- ─────────────────────────────────────────────────────────────────────────
 -- REDAÇÃO DE SEGREDO
 --
--- `setores` e `setor_canais` guardam credencial em coluna comum:
--- whatsapp_token, evolution_api_key, discord_bot_token e webhook_url (o do
--- Discord já vem com o token embutido na própria URL). Copiar a linha inteira
--- para a auditoria criaria uma SEGUNDA cópia de cada credencial — e, no
--- DELETE, uma cópia que sobrevive à original para sempre.
+-- `setores` e `setor_canais` guardam credencial em COLUNA COMUM, e o trigger
+-- dessas duas não tem filtro de coluna: qualquer INSERT/UPDATE/DELETE copia a
+-- linha INTEIRA via to_jsonb. Renomear um setor já gravaria toda credencial
+-- dele junto — e, no DELETE, essa cópia SOBREVIVE À ORIGINAL para sempre.
+--
+-- O QUE É REDIGIDO, e por que cada uma é credencial:
+--
+--   whatsapp_token     token da WhatsApp Cloud API    setores, setor_canais
+--   evolution_api_key  chave da Evolution API         setores, setor_canais
+--   discord_bot_token  token do bot do Discord        setores, setor_canais
+--   openai_api_key     chave do provedor de IA; vai   setores
+--                      como `Bearer` em app/api/ia/melhorar-mensagem,
+--                      ia/status-atendimento e ia/transcrever-audio
+--   webhook_url        URL de entrega do webhook;     setores
+--                      no padrão do Discord o token vem embutido na URL
+--
+-- O QUE NÃO É REDIGIDO, DE PROPÓSITO. São ENDEREÇO, não credencial, e desviar
+-- o tráfego em silêncio é justamente o que a auditoria precisa mostrar —
+-- redigir aqui cegaria a trilha exatamente no caso que ela existe para pegar:
+--
+--   openai_base_url, openai_url_personalizada  apontar a IA para outro gateway
+--                                              não troca chave nenhuma
+--   evolution_base_url                         mesma coisa, no WhatsApp
+--   webhook_eventos                            text[] com os eventos ligados
+--                                              ('ticket_encerrado',
+--                                              'avaliacao'): é configuração,
+--                                              não segredo
+--
+-- Não "conserte" isto depois achando que faltou: essas quatro ficam de fora
+-- por decisão, não por esquecimento.
 --
 -- Guardamos uma impressão digital em vez do valor. Não dá para ler o segredo,
 -- mas antes e depois continuam DIFERENTES quando ele muda: trocar uma chave
 -- em silêncio continua aparecendo na trilha, que é o ponto.
+--
+-- Só entra chave cujo valor é string. Coluna de array ou de objeto passa
+-- reta — mais um motivo para `webhook_eventos` não pertencer a esta lista.
 -- ─────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION public.auditoria_redigir(dados jsonb)
 RETURNS jsonb
@@ -249,7 +277,8 @@ BEGIN
   END IF;
 
   FOREACH v_chave IN ARRAY ARRAY[
-    'whatsapp_token', 'evolution_api_key', 'discord_bot_token', 'webhook_url'
+    'whatsapp_token', 'evolution_api_key', 'discord_bot_token',
+    'openai_api_key', 'webhook_url'
   ] LOOP
     -- jsonb_exists() e não o operador `?`: esta migration é colada à mão no
     -- SQL Editor, e cliente que trata `?` como placeholder de parâmetro

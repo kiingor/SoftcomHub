@@ -164,16 +164,32 @@ ORDER BY criado_em DESC;
 
 ## Credencial não é copiada
 
-`setores` e `setor_canais` guardam credencial em coluna comum:
-`whatsapp_token`, `evolution_api_key`, `discord_bot_token` e `webhook_url` (o do
-Discord já traz o token na própria URL). Copiar a linha inteira para a auditoria
-criaria uma **segunda cópia** de cada credencial — e, no `DELETE`, uma cópia que
-sobrevive à original para sempre.
+`setores` e `setor_canais` guardam credencial em coluna comum, e o trigger
+dessas duas **não filtra coluna**: qualquer escrita copia a linha inteira. Só
+renomear um setor já gravaria toda credencial dele junto — e, no `DELETE`, essa
+cópia sobrevive à original para sempre.
 
-`auditoria_redigir()` troca esses quatro campos por
-`[redigido:<8 hex do md5>]`. Não dá para ler o segredo, mas antes e depois
-continuam **diferentes quando ele muda** — trocar uma chave em silêncio
-continua aparecendo na trilha, que é o ponto.
+`auditoria_redigir()` troca estes cinco campos por `[redigido:<8 hex do md5>]`:
+
+| Campo | O que é | Onde |
+|---|---|---|
+| `whatsapp_token` | token da WhatsApp Cloud API | `setores`, `setor_canais` |
+| `evolution_api_key` | chave da Evolution API | `setores`, `setor_canais` |
+| `discord_bot_token` | token do bot do Discord | `setores`, `setor_canais` |
+| `openai_api_key` | chave do provedor de IA, usada como `Bearer` em `app/api/ia/*` | `setores` |
+| `webhook_url` | URL de entrega; no padrão do Discord o token vem embutido nela | `setores` |
+
+Não dá para ler o segredo, mas antes e depois continuam **diferentes quando ele
+muda** — trocar uma chave em silêncio continua aparecendo na trilha, que é o
+ponto.
+
+**Ficam de fora de propósito** `openai_base_url`, `openai_url_personalizada`,
+`evolution_base_url` e `webhook_eventos`. Os três primeiros são **endereço**,
+não credencial: desviar a IA ou o WhatsApp para outro gateway não troca chave
+nenhuma, e é exatamente o tipo de mudança silenciosa que a auditoria existe para
+mostrar — redigir cegaria a trilha no caso que mais importa. `webhook_eventos` é
+um `text[]` com os eventos ligados (`ticket_encerrado`, `avaliacao`): é
+configuração, não segredo. Não é esquecimento; não "conserte" incluindo.
 
 ## Quem fez — como o ator é resolvido
 
@@ -333,16 +349,51 @@ Se algum `INSERT` falhar por coluna `NOT NULL` inesperada, a transação aborta
 sozinha e o erro diz qual coluna falta.
 
 ```sql
--- 4. Credencial não vaza.
+-- 4. Credencial não vaza — e o endereço continua visível.
+--    `auditoria_redigir()` é função PURA: recebe jsonb, devolve jsonb, não lê
+--    tabela nenhuma. Dá para conferir a lista inteira com um SELECT de
+--    literal, sem tocar em canal, setor nem chave de verdade. O
+--    BEGIN/ROLLBACK abaixo é só para manter o roteiro uniforme — aqui não há
+--    o que desfazer.
 BEGIN;
-UPDATE public.setor_canais SET nome = nome WHERE id = '<uuid de um canal>';
-
-SELECT dados_depois ->> 'evolution_api_key' AS chave,
-       dados_depois ->> 'whatsapp_token'    AS token
-FROM public.vw_auditoria_acesso_roteamento
-ORDER BY criado_em DESC LIMIT 1;   -- tem que vir '[redigido:xxxxxxxx]'
+SELECT jsonb_pretty(public.auditoria_redigir($json$
+  {
+    "nome":                     "ZZZ setor de teste",
+    "whatsapp_token":           "EAAG-token-de-mentira",
+    "evolution_api_key":        "evo-key-de-mentira",
+    "discord_bot_token":        "discord-token-de-mentira",
+    "openai_api_key":           "sk-de-mentira",
+    "webhook_url":              "https://discord.com/api/webhooks/1/de-mentira",
+    "openai_base_url":          "https://gateway-trocado.exemplo/v1",
+    "openai_url_personalizada": true,
+    "evolution_base_url":       "https://evo.exemplo",
+    "webhook_eventos":          ["ticket_encerrado", "avaliacao"]
+  }
+$json$::jsonb));
 ROLLBACK;
 ```
+
+O que tem que aparecer:
+
+- `whatsapp_token`, `evolution_api_key`, `discord_bot_token`, `openai_api_key`
+  e `webhook_url` como `[redigido:xxxxxxxx]` — os **cinco**, nenhum a menos;
+- `openai_base_url`, `openai_url_personalizada`, `evolution_base_url` e
+  `webhook_eventos` **intactos** — se algum deles vier redigido, alguém
+  ampliou a lista e cegou a trilha justamente na troca silenciosa de gateway;
+- `nome` intacto, provando que a função só mexe no que está na lista.
+
+E a propriedade que faz a redação valer alguma coisa — a impressão digital
+acompanha o valor, então "mudou / não mudou" continua legível sem expor o
+segredo:
+
+```sql
+-- Mesma chave → mesma digital. Chave trocada → digital diferente.
+SELECT public.auditoria_redigir('{"openai_api_key":"sk-antiga"}'::jsonb) AS antes,
+       public.auditoria_redigir('{"openai_api_key":"sk-antiga"}'::jsonb) AS igual,
+       public.auditoria_redigir('{"openai_api_key":"sk-nova"}'::jsonb)   AS trocada;
+```
+
+`antes` e `igual` têm que sair idênticos, e `trocada` diferente dos dois.
 
 ```sql
 -- 5. O UPDATE quente NÃO polui: as duas contagens têm que dar igual.
