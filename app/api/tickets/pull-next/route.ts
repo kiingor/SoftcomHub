@@ -2,6 +2,12 @@ import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient as createServerClient } from '@/lib/supabase/server'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
+import { filtrarParesAtivos } from '@/lib/distribuicao-fila'
+import {
+  estaPresenteNoSetor,
+  getSubsetoresPrimeESuporte,
+  montarParesDeTransbordo,
+} from '@/lib/transbordo-subsetor'
 import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
 import { registrarOrigemDaAtribuicao } from '@/lib/transbordo-marca'
 
@@ -190,6 +196,24 @@ export async function POST(request: Request) {
       ),
     )
     const compatibleTicketIds = new Set(compatibleTickets.map((ticket) => ticket.id))
+
+    // Caso #97238: puxar manualmente era a porta lateral da regra de direção —
+    // bastava o atendente de Suporte clicar em "puxar" para absorver o ticket
+    // Prime que a distribuição automática tinha acabado de segurar na fila.
+    const paresPorSetor = new Map(await Promise.all(setorIds.map(async (setorId) => {
+      const { primeId, suporteId } = await getSubsetoresPrimeESuporte(supabase, setorId)
+      return [setorId, montarParesDeTransbordo(primeId, suporteId)] as const
+    })))
+
+    // Presença ignora pausa de propósito: quem foi almoçar ainda é dono da fila
+    // dele. Sai das mesmas linhas já carregadas, sem consulta nova.
+    const subsetoresComPresenca = new Set<string>()
+    for (const row of subsetorLinksResult.data || []) {
+      if (estaPresenteNoSetor((row as any).colaboradores, row.setor_id)) {
+        subsetoresComPresenca.add(`${row.setor_id}:${row.subsetor_id}`)
+      }
+    }
+
     const fallbackTickets = queuedTickets.filter((ticket) => {
       if (compatibleTicketIds.has(ticket.id)) return false
 
@@ -199,7 +223,22 @@ export async function POST(request: Request) {
           subsetoresBySetorColaborador.get(`${ticket.setor_id}:${id}`) || [],
         ),
       )
-      return !hasCompatibleOnline
+      if (hasCompatibleOnline) return false
+
+      // Fora do par Prime/Suporte nada muda: o fallback manual continua sendo a
+      // válvula de escape de sempre. Restringir subsetor não regulado seria
+      // prender ticket que hoje alguém consegue puxar.
+      const pares = paresPorSetor.get(ticket.setor_id) || []
+      const reguladoPelaDirecao = pares.some((par) => (
+        par.de === ticket.subsetor_id || par.para === ticket.subsetor_id
+      ))
+      if (!reguladoPelaDirecao) return true
+
+      const temPresente = subsetoresComPresenca.has(`${ticket.setor_id}:${ticket.subsetor_id}`)
+      const socorristas = new Set(
+        (filtrarParesAtivos(pares, ticket.subsetor_id, temPresente) || []).map((par) => par.para),
+      )
+      return (callerSubsetoresBySetor.get(ticket.setor_id) || []).some((id) => socorristas.has(id))
     })
     const prioritizedTickets = [...compatibleTickets, ...fallbackTickets]
 

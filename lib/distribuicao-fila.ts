@@ -58,17 +58,67 @@ export function atendeSubsetor(
 }
 
 /**
- * Prime pode usar a capacidade do Suporte mesmo quando o Suporte possui fila.
- * A exceção só existe quando os três IDs são conhecidos: `null` nunca é Prime.
+ * Uma direção autorizada de transbordo — caso #97238.
+ *
+ * O transbordo era um CONJUNTO simétrico: bastava os dois subsetores estarem na
+ * mesma lista e o socorro valia nos dois sentidos. Isso é o que deixava o ticket
+ * de cliente Prime cair para o Suporte, e é justamente o que não pode acontecer:
+ * cliente Prime fica com os atendentes escolhidos para o Prime.
+ *
+ * Par é direcionado de propósito. `{ de: Suporte, para: Prime }` NÃO autoriza
+ * `{ de: Prime, para: Suporte }` — o sentido proibido deixa de ser proibido por
+ * ausência e passa a estar escrito, junto da condição que o libera.
  */
-export function obterExcecaoFilaPrimeParaSuporte(
+export interface ParTransbordo {
+  /** Subsetor cujo ticket pode ser socorrido. */
+  de: string
+  /** Subsetor que socorre. */
+  para: string
+  /**
+   * O par só vale quando `de` não tem NENHUM atendente presente.
+   *
+   * É o resgate de última hora: sem ninguém para atender, é melhor o Suporte do
+   * que ninguém. Note que "presente" não é "disponível" — quem está em pausa
+   * conta como presente, porque ele volta. Ver
+   * `subsetorDoTicketTemAtendentePresente`.
+   */
+  somenteSemAtendentePresente?: boolean
+  /**
+   * O socorrista entra mesmo tendo fila própria esperando.
+   *
+   * Só faz sentido junto de `somenteSemAtendentePresente`: quando o subsetor de
+   * origem está literalmente vazio, segurar o ticket atrás da fila do socorrista
+   * seria adiar o resgate que acabou de ser autorizado.
+   */
+  ignoraFilaDoSocorrista?: boolean
+}
+
+/**
+ * Pares que valem para ESTE ticket agora: saem do subsetor dele e, quando são
+ * condicionais, só depois que o subsetor ficou sem ninguém presente. Ticket sem
+ * subsetor nunca casa — `null` não é origem de par nenhum.
+ *
+ * `undefined` devolve `null`, que significa transbordo irrestrito (comportamento
+ * legado). Lista vazia significa o contrário: nenhum socorro autorizado, o
+ * ticket segura na fila — e é isso que permite o transbordo de SETOR acontecer
+ * depois.
+ *
+ * Exportada porque o transbordo de setor aplica a mesma regra sem passar por
+ * `escolherDestino`; duplicar o predicado seria deixar os dois caminhos
+ * divergirem com o tempo.
+ */
+export function filtrarParesAtivos(
+  paresDeTransbordo: readonly ParTransbordo[] | undefined,
   subsetorDoTicket: string | null | undefined,
-  primeId: string | null | undefined,
-  suporteId: string | null | undefined,
-): string[] {
-  return subsetorDoTicket && primeId && suporteId && subsetorDoTicket === primeId
-    ? [suporteId]
-    : []
+  temAtendentePresente: boolean,
+): ParTransbordo[] | null {
+  if (!paresDeTransbordo) return null
+
+  return paresDeTransbordo.filter((par) => (
+    Boolean(subsetorDoTicket)
+    && par.de === subsetorDoTicket
+    && (!par.somenteSemAtendentePresente || !temAtendentePresente)
+  ))
 }
 
 export interface EscolhaDestino {
@@ -88,25 +138,35 @@ export interface OpcoesDestino {
    */
   subsetoresComFila?: readonly (string | null)[]
   /**
-   * Exceções pontuais à proteção da fila própria do candidato. O transbordo
-   * continua bloqueado para os demais subsetores que ainda tenham fila.
+   * Direções autorizadas de transbordo — na prática, Suporte → Prime sempre, e
+   * Prime → Suporte só quando o Prime está sem ninguém.
+   *
+   * Restringir importa por dois motivos. O primeiro é o caso #97238: sem isso,
+   * ticket de cliente Prime cai para atendente de Suporte. O segundo é que o
+   * transbordo irrestrito engolia o transbordo de SETOR — numa filial, o
+   * atendente do Financeiro puxava o ticket do Suporte, o ticket nunca
+   * envelhecia na fila e nunca chegava à Matriz. Segurar o ticket é o que deixa
+   * o transbordo de setor acontecer.
+   *
+   * `undefined` mantém o transbordo irrestrito (comportamento legado). Lista
+   * vazia desliga o transbordo entre subsetores — é o caso do setor que não tem
+   * Prime nem Suporte, onde nenhum par é autorizado.
    */
-  subsetoresQuePodemReceberMesmoComFila?: readonly string[]
+  paresDeTransbordo?: readonly ParTransbordo[]
   /**
-   * Subsetores autorizados a participar do transbordo — na prática, Prime e
-   * Suporte. Só há transbordo quando o subsetor do ticket E o do atendente
-   * estão nesta lista.
+   * O subsetor do ticket tem algum atendente PRESENTE — logado, ativo, com
+   * heartbeat vivo e com o setor na sessão?
    *
-   * Existe porque o transbordo irrestrito engolia o transbordo de SETOR: numa
-   * filial, o atendente do Financeiro puxava o ticket do Suporte, o ticket
-   * nunca envelhecia na fila e nunca chegava à Matriz. Segurar o ticket é o
-   * que deixa o transbordo de setor acontecer.
+   * Presente não é disponível. Quem está em pausa, ou no teto de tickets, conta
+   * como presente: ele volta em minutos, e segurar o ticket para ele é o que
+   * mantém o cliente Prime com o atendente do Prime. Só a ausência real —
+   * deslogado, heartbeat morto — libera os pares marcados com
+   * `somenteSemAtendentePresente`.
    *
-   * `undefined` mantém o transbordo irrestrito. Lista vazia desliga o
-   * transbordo entre subsetores — é o caso do setor que não tem Prime nem
-   * Suporte, onde nenhum par é autorizado.
+   * O default é `true` de propósito: na dúvida o ticket fica na fila. Um chamador
+   * que esqueça de informar falha protegendo o Prime, não vazando para o Suporte.
    */
-  subsetoresComTransbordo?: readonly string[]
+  subsetorDoTicketTemAtendentePresente?: boolean
   maxTicketsAbertos: number
 }
 
@@ -115,59 +175,64 @@ export interface OpcoesDestino {
  *
  * 1. Atendentes do próprio subsetor que ainda têm vaga.
  * 2. Se nenhum tem vaga, atendentes de outro subsetor que tenham vaga E cuja
- *    própria fila esteja vazia, exceto por subsetores explicitamente liberados
- *    pelo chamador (transbordo — ex.: Prime usa Suporte).
+ *    própria fila esteja vazia — desde que o par (subsetor do ticket → subsetor
+ *    do atendente) esteja autorizado em `paresDeTransbordo`.
  *
  * O passo 2 só entra quando o passo 1 se esgota, então a fila do próprio
- * subsetor sempre tem precedência. A única exceção configurada é Prime usar
- * Suporte, sem retirar a proteção das demais filas do atendente.
+ * subsetor sempre tem precedência.
  *
- * O passo 2 ainda respeita `subsetoresComTransbordo`: fora desse grupo o
- * ticket segura na fila do próprio subsetor, que é o que permite o transbordo
- * de SETOR (filial → Matriz) acontecer.
+ * A direção é o que mudou no caso #97238. Suporte → Prime é livre; Prime →
+ * Suporte só acontece quando o Prime não tem NENHUM atendente presente, e nesse
+ * caso o resgate ignora a fila do Suporte para não ficar preso atrás dela.
  */
 export function escolherDestino({
   subsetorDoTicket,
   candidatos,
   subsetoresComFila = [],
-  subsetoresQuePodemReceberMesmoComFila = [],
-  subsetoresComTransbordo,
+  paresDeTransbordo,
+  subsetorDoTicketTemAtendentePresente = true,
   maxTicketsAbertos,
 }: OpcoesDestino): EscolhaDestino {
   const proprios = candidatos.filter((c) => atendeSubsetor(subsetorDoTicket, c.subsetorIds))
   const filaPropria = ordenarPorEquilibrio(proprios, maxTicketsAbertos)
   if (filaPropria.length > 0) return { fila: filaPropria, origem: 'proprio' }
 
-  // Sem lista, o transbordo segue irrestrito (comportamento antigo). Com lista,
-  // o ticket precisa ser de um subsetor autorizado — ticket sem subsetor nunca
-  // é, porque `null` não pertence a grupo nenhum.
-  const grupoTransbordo = subsetoresComTransbordo ? new Set(subsetoresComTransbordo) : null
-  if (grupoTransbordo && !(subsetorDoTicket && grupoTransbordo.has(subsetorDoTicket))) {
-    return { fila: [], origem: 'ninguem' }
-  }
+  const paresAtivos = filtrarParesAtivos(
+    paresDeTransbordo,
+    subsetorDoTicket,
+    subsetorDoTicketTemAtendentePresente,
+  )
+  if (paresAtivos && paresAtivos.length === 0) return { fila: [], origem: 'ninguem' }
+
+  const socorristas = paresAtivos ? new Set(paresAtivos.map((par) => par.para)) : null
+  const filasIgnoradas = new Set(
+    (paresAtivos || []).filter((par) => par.ignoraFilaDoSocorrista).map((par) => par.para),
+  )
 
   // Transbordo: quem é de outro subsetor, tem vaga, e não tem fila esperando
   // por ele. Atendente sem subsetor entra pela chave `null`.
-  const excecoesFilaPropria = new Set(subsetoresQuePodemReceberMesmoComFila)
+  //
+  // A liberação é por subsetor, não por atendente: quem atende Suporte E
+  // Financeiro continua barrado enquanto o Financeiro tiver fila.
   const temFilaPropria = (c: CandidatoDistribuicao) => {
     const ids = c.subsetorIds || []
     return ids.length === 0
       ? subsetoresComFila.includes(null)
       : ids.some((id) => (
-        subsetoresComFila.includes(id) && !excecoesFilaPropria.has(id)
+        subsetoresComFila.includes(id) && !filasIgnoradas.has(id)
       ))
   }
 
-  // O atendente também precisa estar no grupo: o ticket do Suporte só é
-  // socorrido por quem atende Suporte ou Prime. Atende os dois? Basta um.
-  const estaNoGrupo = (c: CandidatoDistribuicao) => (
-    !grupoTransbordo || (c.subsetorIds || []).some((id) => grupoTransbordo.has(id))
+  // O atendente precisa ser destino de um par ativo. Atende mais de um subsetor?
+  // Basta que um deles socorra.
+  const podeSocorrer = (c: CandidatoDistribuicao) => (
+    !socorristas || (c.subsetorIds || []).some((id) => socorristas.has(id))
   )
 
   const outros = candidatos.filter((c) => (
     !atendeSubsetor(subsetorDoTicket, c.subsetorIds)
     && !temFilaPropria(c)
-    && estaNoGrupo(c)
+    && podeSocorrer(c)
   ))
   const filaTransbordo = ordenarPorEquilibrio(outros, maxTicketsAbertos)
   if (filaTransbordo.length > 0) return { fila: filaTransbordo, origem: 'transbordo' }

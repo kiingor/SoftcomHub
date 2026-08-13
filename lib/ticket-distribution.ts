@@ -1,11 +1,16 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { marcarSaidaDaFila } from '@/lib/ticket-assignment-stamp'
 import { resolverSubsetorPadrao } from '@/lib/server/subsetor-padrao-resolver'
-import { escolherDestino, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
+import { escolherDestino, filtrarParesAtivos, ordenarPorEquilibrio } from '@/lib/distribuicao-fila'
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
 import { limparMarcaTransbordo, registrarOrigemDaAtribuicao } from '@/lib/transbordo-marca'
+import {
+  getSubsetoresPrimeESuporte,
+  montarParesDeTransbordo,
+  subsetorTemAtendentePresente,
+} from '@/lib/transbordo-subsetor'
 
 interface DistribuicaoResult {
   ticketId: string
@@ -316,6 +321,16 @@ export async function criarEDistribuirTicket(
       const abertosPorColaborador = contar(abertosResult.data)
       const recebidosHojePorColaborador = contar(recebidosHojeResult.data)
 
+      // Caso #97238: o transbordo entre subsetores é DIRECIONADO. O Suporte
+      // socorre o Prime; o Prime só cai para o Suporte quando fica sem nenhum
+      // atendente presente. Sem passar os pares aqui, este caminho ficava com o
+      // transbordo irrestrito e o ticket Prime caía para qualquer subsetor.
+      const [{ primeId, suporteId }, temAtendentePresente] = await Promise.all([
+        getSubsetoresPrimeESuporte(supabase, setorId),
+        subsetorTemAtendentePresente(supabase, setorId, subsetorEfetivo),
+      ])
+      const paresDeTransbordo = montarParesDeTransbordo(primeId, suporteId)
+
       const escolha = routingLookupFailed
         ? { fila: [], origem: 'ninguem' as const }
         : escolherDestino({
@@ -329,6 +344,8 @@ export async function criarEDistribuirTicket(
               subsetorIds: subsetoresByColaborador.get(c.id) || [],
             })),
             subsetoresComFila,
+            paresDeTransbordo,
+            subsetorDoTicketTemAtendentePresente: temAtendentePresente,
             maxTicketsAbertos: maxTicketsPerAgent,
           })
 
@@ -580,9 +597,30 @@ async function _tentarDistribuirNoSetor(
   const compatibleColaboradores = colaboradores.filter((c) =>
     isExactSubsetorMatch(ticketSubsetorId, subsetoresByColaborador.get(c.id) || []),
   )
-  const routingColaboradores = compatibleColaboradores.length > 0
-    ? compatibleColaboradores
-    : colaboradores
+  // Caso #97238: sem atendente do subsetor do ticket aqui, o fallback caía para
+  // QUALQUER atendente do setor — era assim que o ticket Prime vindo de filial
+  // por transbordo de SETOR acabava num atendente de Suporte da Matriz. Este
+  // caminho não emitia log de transbordo de subsetor, então o vazamento era
+  // invisível. Agora só socorre quem um par direcionado autoriza.
+  let routingColaboradores = compatibleColaboradores
+  if (compatibleColaboradores.length === 0) {
+    const [{ primeId, suporteId }, temAtendentePresente] = await Promise.all([
+      getSubsetoresPrimeESuporte(supabase, setorId),
+      subsetorTemAtendentePresente(supabase, setorId, ticketSubsetorId),
+    ])
+    const paresAtivos = filtrarParesAtivos(
+      montarParesDeTransbordo(primeId, suporteId),
+      ticketSubsetorId,
+      temAtendentePresente,
+    ) || []
+    const socorristas = new Set(paresAtivos.map((par) => par.para))
+    routingColaboradores = socorristas.size === 0
+      ? []
+      : colaboradores.filter((c) => (
+        (subsetoresByColaborador.get(c.id) || []).some((id) => socorristas.has(id))
+      ))
+    console.log(`[_tentarDistribuirNoSetor] setor=${setorId} subsetor=${ticketSubsetorId || 'null'}: sem compativel; presente=${temAtendentePresente}; socorristas=${[...socorristas].join(',') || 'nenhum'} → ${routingColaboradores.length} candidato(s)`)
+  }
 
   const { data: ticketCounts } = await supabase
     .from('tickets')
