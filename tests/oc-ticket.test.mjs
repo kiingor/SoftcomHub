@@ -11,8 +11,25 @@ import {
 } from '../lib/oc-ticket.ts'
 
 /** Atalho: da resposta HTTP crua até "pode encerrar?", com a flag ligada. */
-const encerrarComFlagLigada = (status, corpo) =>
-  decidirEncerramento(true, interpretarRespostaOc(status, corpo))
+const encerrarComFlagLigada = (status, corpo, numero) =>
+  decidirEncerramento(true, interpretarRespostaOc(status, corpo, numero))
+
+/**
+ * Resposta real de `GET /v1/tickets/numero/164494`, encurtada: o vínculo mora
+ * no campo `ticket`, e `id` é a OC. Colhida em 13/08/2026 contra produção.
+ */
+const OC_REAL = JSON.stringify([{
+  id: 10790936,
+  clienteId: 54562,
+  clienteNome: 'NEM BIKE CG - CAMPINA GRANDE',
+  motivo: 'Cliente relatou erro na impressão',
+  data: '2026-08-13T00:00:00.000Z',
+  telefone: '8391995920',
+  tipoAtendimento: 'CHAT',
+  ticket: 164494,
+  finalizado: false,
+  status: 'aberto',
+}])
 
 test('a flag só liga com valor afirmativo explícito', () => {
   assert.equal(OC_FLAG_ENV, 'OC_OBRIGATORIA_PARA_ENCERRAR')
@@ -76,6 +93,53 @@ test('OC existente permite encerrar, em qualquer um dos formatos plausíveis', (
     assert.equal(consulta.situacao, 'com-oc', `${rotulo} deveria indicar OC existente`)
     assert.equal(decidirEncerramento(true, consulta).permite, true, rotulo)
   }
+})
+
+test('a resposta real do Service Desk é reconhecida como OC existente', () => {
+  const consulta = interpretarRespostaOc(200, OC_REAL, 164494)
+
+  assert.equal(consulta.situacao, 'com-oc')
+  // `id` é a OC; 164494 é o ticket do Hub. Quem o atendente precisa ver é a OC.
+  assert.equal(consulta.identificacao, '10790936')
+  assert.equal(decidirEncerramento(true, consulta).permite, true)
+  assert.equal(
+    descreverOcExistente(consulta),
+    'A OC 10790936 já está aberta para este ticket.',
+  )
+})
+
+test('lista vazia para um ticket real é a evidência de que falta a OC', () => {
+  // 164371 e 164372, encerrados em 13/08/2026 sem OC nenhuma.
+  const decisao = encerrarComFlagLigada(200, '[]', 164371)
+
+  assert.equal(decisao.permite, false)
+  assert.equal(decisao.bloqueio, MENSAGEM_SEM_OC)
+})
+
+test('OC de outro ticket libera e avisa — nunca vira "sem OC"', () => {
+  const consulta = interpretarRespostaOc(200, OC_REAL, 164495)
+  const decisao = decidirEncerramento(true, consulta)
+
+  assert.equal(consulta.situacao, 'indeterminado')
+  assert.equal(decisao.permite, true)
+  assert.equal(decisao.bloqueio, null)
+  assert.match(decisao.aviso, /outro ticket/)
+})
+
+test('o número consultado é comparado como texto, sem depender do tipo', () => {
+  for (const numero of [164494, '164494', ' 164494 ']) {
+    assert.equal(interpretarRespostaOc(200, OC_REAL, numero).situacao, 'com-oc', `número: ${numero}`)
+  }
+
+  // Sem número esperado a conferência não roda: o registro vale por si.
+  assert.equal(interpretarRespostaOc(200, OC_REAL).situacao, 'com-oc')
+})
+
+test('registro sem o campo ticket é aceito — não dá para desmentir', () => {
+  const consulta = interpretarRespostaOc(200, '[{"id":10790936,"status":"aberto"}]', 164494)
+
+  assert.equal(consulta.situacao, 'com-oc')
+  assert.equal(consulta.identificacao, '10790936')
 })
 
 test('a identificação da OC sai da resposta quando ela traz', () => {
