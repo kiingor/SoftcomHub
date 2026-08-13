@@ -559,7 +559,12 @@ async function colocarEmPausa({
   // Compare-and-set no ponteiro: entre a leitura e a escrita o atendente pode
   // ter entrado em pausa sozinho pelo WorkDesk. Sem a condição, a instância
   // dele ficaria aberta e sem ponteiro — a órfã que este caso veio corrigir.
-  const ponteiroAnterior = instancia.pausaAberta ? alvo.pausa_atual_id : null
+  //
+  // A comparação é com o ponteiro COMO ELE FOI LIDO, e não com null: chegar
+  // aqui já garante que não há pausa aberta, mas o ponteiro pode estar
+  // desatualizado (apontando para instância encerrada). Exigir null recusaria
+  // toda pausa de quem tem ponteiro velho, que é justamente quem mais precisa.
+  const ponteiroAnterior = alvo.pausa_atual_id
   let atualizacao = supabase
     .from('colaboradores')
     .update({
@@ -721,12 +726,18 @@ async function tirarDaPausa({
 
   // O ponteiro é limpo DEPOIS de `fim` estar gravado: na ordem inversa, uma
   // falha no meio deixaria a instância aberta e invisível — a órfã de novo.
+  //
+  // `.eq('pausa_atual_id', ...)` é o compare-and-set do outro lado da corrida:
+  // se o atendente já entrou em OUTRA pausa no meio do caminho, limpar o
+  // ponteiro deixaria a instância nova aberta e sem dono. Não achar a linha não
+  // é erro — a pausa que o gestor mandou encerrar está encerrada.
   const { data: colaborador, error: updateError } = await supabase
     .from('colaboradores')
     .update({ is_online: true, pausa_atual_id: null, last_heartbeat: fim })
     .eq('id', colaboradorId)
+    .eq('pausa_atual_id', avaliacao.instanciaId)
     .select('id, is_online, pausa_atual_id')
-    .single()
+    .maybeSingle()
 
   if (updateError) {
     console.error('[toggle-status] Erro ao limpar a pausa atual:', updateError)
@@ -734,6 +745,7 @@ async function tirarDaPausa({
   }
 
   registrarRastro('pausa_encerrada', {
+    ponteiroMovido: !colaborador,
     instanciaId: avaliacao.instanciaId,
     setorId: avaliacao.setorId,
     inicioDaPausa: encerrada.inicio,
@@ -746,19 +758,24 @@ async function tirarDaPausa({
     ator,
   })
 
-  if (ator.id !== colaboradorId) {
-    await registrarDisponibilidade(supabase, colaboradorId, 'online')
-  }
+  // Os dois registros abaixo valem só quando a pessoa realmente voltou: com o
+  // ponteiro movido ela está em OUTRA pausa, e anotar "online" ou empurrar
+  // ticket para ela seria mentira nas duas contas.
+  if (colaborador) {
+    if (ator.id !== colaboradorId) {
+      await registrarDisponibilidade(supabase, colaboradorId, 'online')
+    }
 
-  // Espelha o painel do atendente, que chama /api/tickets/process-queue ao
-  // voltar da pausa: quem volta ao atendimento entra na distribuição na hora.
-  import('@/lib/ticket-queue-processor')
-    .then(({ onColaboradorOnline }) => {
-      onColaboradorOnline(colaboradorId).catch((err) =>
-        console.error('[toggle-status] Erro ao processar fila do retorno:', err)
-      )
-    })
-    .catch((err) => console.error('[toggle-status] Erro ao carregar onColaboradorOnline:', err))
+    // Espelha o painel do atendente, que chama /api/tickets/process-queue ao
+    // voltar da pausa: quem volta ao atendimento entra na distribuição na hora.
+    import('@/lib/ticket-queue-processor')
+      .then(({ onColaboradorOnline }) => {
+        onColaboradorOnline(colaboradorId).catch((err) =>
+          console.error('[toggle-status] Erro ao processar fila do retorno:', err)
+        )
+      })
+      .catch((err) => console.error('[toggle-status] Erro ao carregar onColaboradorOnline:', err))
+  }
 
   return NextResponse.json({
     success: true,
