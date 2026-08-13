@@ -295,19 +295,42 @@ ROLLBACK;   -- desfaz o DELETE E o registro de auditoria
 
 ```sql
 -- 3. Configuração: o sujeito de `setores` é o SETOR, não um colaborador.
---    Use um setor de teste; o ROLLBACK desfaz o DELETE e a cascata inteira.
+--    O setor descartável é criado DENTRO da transação: nenhuma linha de
+--    produção é tocada nem travada enquanto você lê o resultado.
 BEGIN;
-DELETE FROM public.setores WHERE id = '<uuid de um setor de teste>';
 
-SELECT tabela, operacao, sujeito_tipo, sujeito, contexto_setor_id, ator
+INSERT INTO public.setores (id, nome)
+VALUES ('00000000-0000-4000-8000-0000000000aa', 'ZZZ teste auditoria');
+
+INSERT INTO public.subsetores (id, setor_id, nome)
+VALUES ('00000000-0000-4000-8000-0000000000bb',
+        '00000000-0000-4000-8000-0000000000aa', 'ZZZ sub teste');
+
+DELETE FROM public.setores WHERE id = '00000000-0000-4000-8000-0000000000aa';
+
+SELECT tabela, operacao, sujeito_tipo, sujeito,
+       contexto_setor_id, contexto_setor_nome, ator, ator_origem
 FROM public.vw_auditoria_acesso_roteamento
-ORDER BY criado_em DESC LIMIT 30;
+ORDER BY criado_em DESC LIMIT 10;
+
 ROLLBACK;
 ```
 
-A linha de `tabela = 'setores'` tem que vir com `sujeito_tipo = 'setor'` e
-`sujeito` com o **nome** do setor. As linhas de subsetor, canal e vínculo vêm
-logo abaixo, todas com o mesmo `contexto_setor_id`.
+Nunca use um setor de produção aqui: o `DELETE` cascateia em subsetores,
+canais, destinos e nos vínculos de todo mundo daquele setor, e enquanto a
+transação estiver aberta **todas essas linhas ficam travadas**.
+
+O que tem que aparecer:
+
+- `tabela = 'setores'` com `sujeito_tipo = 'setor'` e `sujeito` com o **nome**
+  do setor, não um uuid — prova que o rótulo veio da própria linha e sobreviveu
+  ao `DELETE`;
+- `tabela = 'subsetores'` com o mesmo `contexto_setor_id` e
+  `contexto_setor_nome` **`NULL`** — o comportamento documentado da cascata: o
+  setor pai já saiu da tabela quando o trigger da filha roda.
+
+Se algum `INSERT` falhar por coluna `NOT NULL` inesperada, a transação aborta
+sozinha e o erro diz qual coluna falta.
 
 ```sql
 -- 4. Credencial não vaza.
@@ -322,22 +345,36 @@ ROLLBACK;
 ```
 
 ```sql
--- 5. O UPDATE quente NÃO polui: nenhuma linha nova deve aparecer.
-SELECT count(*) FROM public.auditoria_acesso_roteamento;  -- antes
+-- 5. O UPDATE quente NÃO polui: as duas contagens têm que dar igual.
+BEGIN;
+SELECT count(*) FROM public.auditoria_acesso_roteamento;
 UPDATE public.colaboradores SET last_heartbeat = now() WHERE id = '<uuid>';
-SELECT count(*) FROM public.auditoria_acesso_roteamento;  -- igual ao anterior
+SELECT count(*) FROM public.auditoria_acesso_roteamento;
+ROLLBACK;
 ```
 
 ```sql
--- 6. Auditoria não derruba a operação. Quebre a tabela de propósito e
---    confirme que o vínculo ainda grava (a falha só vira WARNING no log).
+-- 6. Auditoria não derruba a operação.
+--    Quebra a tabela de propósito e confirma que o vínculo ainda grava: o
+--    trigger cai no EXCEPTION WHEN OTHERS, sai um WARNING no log do Postgres
+--    e a operação de negócio passa.
+BEGIN;
 ALTER TABLE public.auditoria_acesso_roteamento RENAME TO auditoria_teste_quebrado;
--- faça um INSERT de vínculo pela UI — tem que funcionar normalmente
-ALTER TABLE public.auditoria_teste_quebrado RENAME TO auditoria_acesso_roteamento;
+
+INSERT INTO public.colaboradores_subsetores (colaborador_id, setor_id, subsetor_id)
+VALUES ('<uuid>', '<uuid>', '<uuid>');
+
+-- Chegou aqui sem erro? É exatamente o contrato: auditoria é observação,
+-- não guarda.
+SELECT 'operacao sobreviveu' AS resultado;
+ROLLBACK;
 ```
 
-O passo 6 é o único que mexe em objeto de produção fora de transação; rode fora
-do horário de pico e devolva o nome na mesma sessão.
+Tudo numa sessão só, e tudo desfeito pelo `ROLLBACK`. **Não** faça isso
+renomeando a tabela e indo mexer na UI em outra aba: o `ALTER` segura
+`ACCESS EXCLUSIVE`, a sessão da UI ficaria travada esperando em vez de
+exercitar o `EXCEPTION`, e no meio tempo toda escrita auditada perderia o
+registro em silêncio.
 
 ## Pelo navegador (o teste que importa)
 
