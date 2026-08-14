@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { format, formatDistanceToNow } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 import { Circle, Power, History, ChevronDown, ChevronUp, Coffee, Play } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -251,14 +252,88 @@ export function DisponibilidadePanel({
     }
 
     // Update colaborador via API (bypassa RLS) - set offline and pausa_atual_id
+    //
+    // A resposta é conferida: a rota passou a RECUSAR ponteiro que não seja de
+    // instância própria e aberta. Engolir a recusa deixava o pior dos estados —
+    // instância inserida, ponteiro não gravado (a órfã), e a tela dizendo
+    // "em pausa" para alguém que o resto do sistema vê disponível.
+    //
+    // Os dois modos de falha NÃO são o mesmo. Um HTTP não-2xx é falha
+    // CONFIRMADA: o servidor decidiu e não gravou o ponteiro, então compensar é
+    // seguro. Já uma exceção do fetch é resultado DESCONHECIDO — quer dizer que
+    // o cliente não recebeu resposta, não que o servidor não processou. Se o
+    // POST chegou e só a resposta se perdeu, compensar às cegas encerraria
+    // justamente a instância que o servidor acabou de apontar.
+    const abortarPausa = async (motivo: string) => {
+      const { error: rollbackError } = await supabase
+        .from('pausas_colaboradores')
+        .update({ fim: new Date().toISOString() })
+        .eq('id', pausaColaboradorData.id)
+        .is('fim', null)
+
+      // A compensação pode falhar também (rede, RLS, banco fora). O id vai para
+      // o log porque é ele que alguém precisa para fechar a linha na mão — mas
+      // sem afirmar que ficou órfã: daqui não dá para saber se a linha seguiu
+      // aberta nem se o ponteiro existe.
+      if (rollbackError) {
+        console.error(
+          `[pausa] não deu para encerrar a instância ${pausaColaboradorData.id} após falha; pode ter ficado aberta:`,
+          rollbackError,
+        )
+      }
+      toast.error(rollbackError ? `${motivo} (verifique seu status)` : motivo)
+      fetchPausaAtual()
+      setSelectedPausa('')
+      setLoading(false)
+    }
+
     try {
-      await fetch('/api/colaborador/toggle-status', {
+      const res = await fetch('/api/colaborador/toggle-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ colaboradorId, isOnline: false, pausaAtualId: pausaColaboradorData.id }),
       })
+
+      if (!res.ok) {
+        const erro = await res.json().catch(() => null)
+        console.error('Error updating colaborador:', erro)
+        await abortarPausa(erro?.error || 'Não foi possível entrar em pausa')
+        return
+      }
     } catch (err) {
       console.error('Error updating colaborador:', err)
+
+      // Reconcilia antes de compensar: se o ponteiro já é o desta instância, o
+      // POST foi aplicado e só a resposta se perdeu — encerrar aqui criaria o
+      // ponteiro-para-pausa-encerrada de graça.
+      const { data: reconciliado, error: reconciliacaoError } = await supabase
+        .from('colaboradores')
+        .select('pausa_atual_id')
+        .eq('id', colaboradorId)
+        .maybeSingle()
+
+      // Releitura falhada NÃO é "ponteiro diferente": é continuar sem saber. A
+      // política segue sendo compensar, mas o log tem que separar as duas —
+      // senão ninguém consegue distinguir depois, no pior cenário, se a
+      // instância foi encerrada porque não vingou ou porque não deu para
+      // conferir que ela tinha vingado.
+      if (reconciliacaoError) {
+        console.error(
+          `[pausa] não deu para reconciliar a instância ${pausaColaboradorData.id}; resultado do POST ficou desconhecido:`,
+          reconciliacaoError,
+        )
+      }
+
+      if (reconciliado?.pausa_atual_id !== pausaColaboradorData.id) {
+        // Ponteiro é outro, é nulo, ou a releitura falhou. Compensar é o lado
+        // menos ruim na ambiguidade: garante que esta instância não fica aberta
+        // para sempre somando no relatório de produtividade. NÃO garante o
+        // status da pessoa — a compensação só mexe em `pausas_colaboradores`;
+        // `is_online` fica como o servidor tiver deixado.
+        await abortarPausa('Não foi possível entrar em pausa — verifique a conexão')
+        return
+      }
+      // Chegou ao servidor. Segue pelo caminho de sucesso.
     }
 
     // Create log entry

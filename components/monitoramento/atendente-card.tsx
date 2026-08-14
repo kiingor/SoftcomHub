@@ -104,7 +104,12 @@ export function AtendenteCard({
   const pausaElapsedMs = emPausa ? computePausaElapsedMs(pausaInfo, agora) : 0
   const pausaEstourada = emPausa && isPausaEstourada(pausaInfo, pausaElapsedMs)
   const podeTrocarPausa = podeSupervisionar && emPausa && !!onTrocarTipoDePausa && tiposDePausa.length > 0
-  const podeIniciarPausa = podeSupervisionar && !emPausa && !!onIniciarPausa && tiposParaIniciarPausa.length > 0
+  const podeIniciarPausa = podeSupervisionar && !emPausa && !!onIniciarPausa
+  // Nenhum tipo cadastrado no setor não é o mesmo que "não pode": esconder o
+  // controle fazia a supervisão ler a falta de cadastro como função quebrada.
+  // Ele aparece desabilitado, dizendo o que falta — o cadastro é em
+  // Configurações → Pausas, na tela do setor.
+  const semTipoParaIniciar = podeIniciarPausa && tiposParaIniciarPausa.length === 0
   const podeEncerrarPausa = podeSupervisionar && emPausa && !!onEncerrarPausa
   const podeDefinirDisponibilidade = podeSupervisionar && !!onDefinirDisponibilidade
   const temControles = podeTrocarPausa || podeIniciarPausa || podeEncerrarPausa || podeDefinirDisponibilidade
@@ -187,7 +192,7 @@ export function AtendenteCard({
               <Coffee className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
               <Select
                 value=""
-                disabled={executando}
+                disabled={executando || semTipoParaIniciar}
                 onValueChange={(tipoId) => {
                   if (!tipoId) return
                   pedir(
@@ -207,9 +212,11 @@ export function AtendenteCard({
                     placeholder={
                       executando
                         ? 'Alterando...'
-                        : emPausa
-                          ? 'Trocar tipo de pausa'
-                          : 'Colocar em pausa'
+                        : semTipoParaIniciar
+                          ? 'Nenhum tipo de pausa no setor'
+                          : emPausa
+                            ? 'Trocar tipo de pausa'
+                            : 'Colocar em pausa'
                     }
                   />
                 </SelectTrigger>

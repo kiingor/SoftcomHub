@@ -5,11 +5,15 @@ import { hasSupervisorScope, type TransferActor } from '@/lib/transfer-authoriza
 import {
   avaliarFimDePausa,
   avaliarInicioDePausa,
+  avaliarPonteiroDePausa,
   avaliarTrocaDePausa,
+  normalizarPonteiro,
   podeAlterarStatusDe,
   RECUSA_DA_SUPERVISAO,
+  RECUSA_DO_PONTEIRO,
   type AlvoDaSupervisao,
   type AtorDaSupervisao,
+  type InstanciaApontada,
 } from '@/lib/pausa-supervisao'
 
 /**
@@ -241,9 +245,44 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // O ponteiro não entra de graça: ver {@link avaliarPonteiroDePausa}. A
+    // instância só é lida quando há ponteiro para conferir — o caminho quente
+    // (WorkDesk mandando null o dia inteiro) não ganha consulta nenhuma.
+    const normalizado = normalizarPonteiro(pausaAtualId)
+    if (!normalizado.valido) {
+      return NextResponse.json({ error: 'A pausa informada não é um id válido' }, { status: 422 })
+    }
+    const ponteiroPedido = normalizado.ponteiro
+
+    let instanciaApontada: InstanciaApontada | null = null
+    if (ponteiroPedido !== null && !isOnline) {
+      const { data: apontada, error: apontadaError } = await supabase
+        .from('pausas_colaboradores')
+        .select('colaborador_id, fim')
+        .eq('id', ponteiroPedido)
+        .maybeSingle()
+
+      if (apontadaError) {
+        console.error('[toggle-status] Erro ao validar a pausa apontada:', apontadaError)
+        return NextResponse.json({ error: 'Erro ao validar a pausa informada' }, { status: 500 })
+      }
+      instanciaApontada = apontada
+        ? { colaboradorId: apontada.colaborador_id, fim: apontada.fim }
+        : null
+    }
+
+    const veredito = avaliarPonteiroDePausa(ponteiroPedido, isOnline, instanciaApontada, colaboradorId)
+    if (!veredito.permitido) {
+      const recusa = RECUSA_DO_PONTEIRO[veredito.motivo]
+      console.warn(
+        `[toggle-status] ponteiro recusado (${veredito.motivo}) por ${ator.email} sobre ${colaboradorId}`,
+      )
+      return NextResponse.json({ error: recusa.erro }, { status: recusa.status })
+    }
+
     // Limpar o ponteiro sem fechar a instância é o jeito de acumular ausência
     // eterna no relatório — ver {@link encerrarInstanciaAberta}.
-    const instanciaEncerrada = (pausaAtualId ?? null) === null
+    const instanciaEncerrada = ponteiroPedido === null
       ? await encerrarInstanciaAberta(supabase, colaboradorId)
       : null
 
@@ -252,7 +291,9 @@ export async function POST(request: NextRequest) {
     // só muda is_online + pausa.
     const updateData: Record<string, unknown> = {
       is_online: isOnline,
-      pausa_atual_id: pausaAtualId ?? null,
+      // `ponteiroPedido`, e não o valor cru: gravar o cru aqui reabriria o
+      // buraco que a validação acabou de fechar, silenciosamente.
+      pausa_atual_id: ponteiroPedido,
       last_heartbeat: new Date().toISOString(),
     }
 

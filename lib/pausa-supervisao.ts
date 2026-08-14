@@ -216,6 +216,93 @@ export function avaliarFimDePausa(ator: AtorDaSupervisao, alvo: AlvoDaSupervisao
   return { permitido: true, instanciaId: pausa.id, deTipoId: pausa.pausaId, setorId: pausa.setorId }
 }
 
+const FORMATO_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * O `pausaAtualId` do corpo vira ponteiro utilizável, ou nada.
+ *
+ * O corpo da requisição é tipado por ASSERÇÃO: em runtime cabe número, objeto,
+ * array ou string solta. Sem esta peneira o valor ia direto para o
+ * `.eq('id', ...)`, o Postgres recusava pelo tipo da coluna e a rota devolvia
+ * 500 — entrada inválida do cliente contada como falha do servidor, e ainda
+ * enchendo o log de erro.
+ *
+ * `undefined` e `null` são a MESMA coisa aqui: ausência de pausa. É o que as
+ * telas mandam para limpar o ponteiro, e o que o WorkDesk manda o dia inteiro.
+ */
+export function normalizarPonteiro(
+  valor: unknown,
+): { valido: true; ponteiro: string | null } | { valido: false } {
+  if (valor === null || valor === undefined) return { valido: true, ponteiro: null }
+  if (typeof valor !== 'string') return { valido: false }
+
+  const limpo = valor.trim()
+  if (!limpo) return { valido: true, ponteiro: null }
+  return FORMATO_UUID.test(limpo) ? { valido: true, ponteiro: limpo } : { valido: false }
+}
+
+/** Instância que o corpo da requisição pediu para apontar, como o banco a devolveu. */
+export interface InstanciaApontada {
+  colaboradorId: string
+  /** `pausas_colaboradores.fim` — não-nulo significa pausa já encerrada. */
+  fim: string | null
+}
+
+export type MotivoRecusaDoPonteiro =
+  | 'PONTEIRO_INEXISTENTE'
+  | 'PONTEIRO_DE_OUTRO'
+  | 'PONTEIRO_ENCERRADO'
+  | 'ONLINE_COM_PAUSA'
+
+/**
+ * O ponteiro `pausa_atual_id` que veio no corpo pode ser gravado?
+ *
+ * O caminho de online/offline gravava o valor EXATAMENTE como chegou. Como a
+ * escrita usa service role, dava para apontar o ponteiro — o próprio ou o de um
+ * alvo supervisionado — para a instância de outra pessoa, para uma já encerrada,
+ * ou combinar `is_online: true` com pausa aberta. São estados que nenhuma tela
+ * sabe desfazer: o relatório passa a somar a ausência na conta de quem não
+ * parou, e a distribuição de tickets lê alguém como disponível e em pausa.
+ *
+ * Quem manda ponteiro não-nulo é só o painel do WorkDesk, logo depois de INSERIR
+ * a própria instância (components/workdesk/disponibilidade-panel.tsx →
+ * `startPausa`). Exigir que ela seja DELE e ainda esteja aberta não fecha
+ * nenhum caminho real de uso.
+ *
+ * Ponteiro nulo é sempre aceito: é como as telas limpam a pausa, e a rota ainda
+ * encerra a instância aberta antes de limpar.
+ */
+export function avaliarPonteiroDePausa(
+  ponteiro: string | null,
+  isOnline: boolean,
+  instancia: InstanciaApontada | null | undefined,
+  alvoId: string,
+): { permitido: true } | { permitido: false; motivo: MotivoRecusaDoPonteiro } {
+  if (ponteiro === null) return { permitido: true }
+
+  // Apontar uma pausa é declarar que a pessoa parou; `is_online` tem que
+  // acompanhar. É o que o painel do atendente e o colocarEmPausa já fazem.
+  if (isOnline) return { permitido: false, motivo: 'ONLINE_COM_PAUSA' }
+
+  if (!instancia) return { permitido: false, motivo: 'PONTEIRO_INEXISTENTE' }
+  if (instancia.colaboradorId !== alvoId) return { permitido: false, motivo: 'PONTEIRO_DE_OUTRO' }
+  if (instancia.fim !== null) return { permitido: false, motivo: 'PONTEIRO_ENCERRADO' }
+
+  return { permitido: true }
+}
+
+/**
+ * Recusas do ponteiro. Mapa à parte do da supervisão de propósito: aqui não se
+ * está negando permissão a ninguém — o corpo da requisição é que é incoerente,
+ * e 422 diz isso melhor que 403.
+ */
+export const RECUSA_DO_PONTEIRO: Record<MotivoRecusaDoPonteiro, { erro: string; status: number }> = {
+  PONTEIRO_INEXISTENTE: { erro: 'A pausa informada não existe', status: 422 },
+  PONTEIRO_DE_OUTRO: { erro: 'A pausa informada é de outro atendente', status: 422 },
+  PONTEIRO_ENCERRADO: { erro: 'A pausa informada já foi encerrada', status: 422 },
+  ONLINE_COM_PAUSA: { erro: 'Um atendente em pausa não pode ficar online ao mesmo tempo', status: 422 },
+}
+
 /**
  * Mensagem e status HTTP de cada recusa. A tela mostra o texto como veio.
  *

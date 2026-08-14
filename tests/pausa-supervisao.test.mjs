@@ -3,9 +3,12 @@ import test from 'node:test'
 import {
   avaliarFimDePausa,
   avaliarInicioDePausa,
+  avaliarPonteiroDePausa,
+  normalizarPonteiro,
   avaliarTrocaDePausa,
   podeAlterarStatusDe,
   RECUSA_DA_SUPERVISAO,
+  RECUSA_DO_PONTEIRO,
 } from '../lib/pausa-supervisao.ts'
 import { hasSupervisorScope } from '../lib/transfer-authorization.ts'
 
@@ -310,4 +313,84 @@ test('nas quatro ações o próprio colaborador continua passando', () => {
   assert.equal(avaliarInicioDePausa(ator(ALVO), foraDePausa(), CAFE).permitido, true)
   assert.equal(avaliarFimDePausa(ator(ALVO), emPausa()).permitido, true)
   assert.equal(avaliarTrocaDePausa(ator(ALVO), emPausa(), CAFE).permitido, true)
+})
+
+// ── Ponteiro pausa_atual_id vindo do corpo ──────────────────────────────────
+// O caminho de online/offline gravava o valor como chegou. Estes testes fixam
+// que só passa instância DO PRÓPRIO alvo e ainda ABERTA, e que apontar pausa
+// junto com is_online é recusado.
+const ABERTA_DO_ALVO = { colaboradorId: ALVO.id, fim: null }
+
+test('ponteiro nulo passa sempre — é como as telas limpam a pausa', () => {
+  assert.equal(avaliarPonteiroDePausa(null, true, null, ALVO.id).permitido, true)
+  assert.equal(avaliarPonteiroDePausa(null, false, null, ALVO.id).permitido, true)
+})
+
+test('ponteiro para a própria pausa aberta passa', () => {
+  assert.equal(
+    avaliarPonteiroDePausa('instancia-1', false, ABERTA_DO_ALVO, ALVO.id).permitido,
+    true,
+  )
+})
+
+test('ponteiro para a pausa de outro atendente é recusado', () => {
+  const deOutro = { colaboradorId: 'colab-2', fim: null }
+  assert.equal(
+    avaliarPonteiroDePausa('instancia-1', false, deOutro, ALVO.id).motivo,
+    'PONTEIRO_DE_OUTRO',
+  )
+})
+
+test('ponteiro para instância já encerrada é recusado', () => {
+  const encerrada = { colaboradorId: ALVO.id, fim: '2026-08-14T12:00:00Z' }
+  assert.equal(
+    avaliarPonteiroDePausa('instancia-1', false, encerrada, ALVO.id).motivo,
+    'PONTEIRO_ENCERRADO',
+  )
+})
+
+test('ponteiro que não achou instância nenhuma é recusado', () => {
+  assert.equal(
+    avaliarPonteiroDePausa('instancia-fantasma', false, null, ALVO.id).motivo,
+    'PONTEIRO_INEXISTENTE',
+  )
+})
+
+test('apontar pausa e ficar online ao mesmo tempo é recusado antes de olhar a instância', () => {
+  // Recusa sem depender da instância: is_online=true com pausa aberta é o
+  // estado que faz a distribuição de tickets ler alguém como disponível E
+  // parado. Passar a própria instância aberta não salva a combinação.
+  assert.equal(
+    avaliarPonteiroDePausa('instancia-1', true, ABERTA_DO_ALVO, ALVO.id).motivo,
+    'ONLINE_COM_PAUSA',
+  )
+})
+
+test('toda recusa do ponteiro tem texto e status 422', () => {
+  for (const motivo of ['PONTEIRO_INEXISTENTE', 'PONTEIRO_DE_OUTRO', 'PONTEIRO_ENCERRADO', 'ONLINE_COM_PAUSA']) {
+    assert.ok(RECUSA_DO_PONTEIRO[motivo].erro.length > 0, motivo)
+    assert.equal(RECUSA_DO_PONTEIRO[motivo].status, 422, motivo)
+  }
+})
+
+test('normalizarPonteiro trata ausência: null, undefined e string vazia viram null', () => {
+  // As telas mandam null para limpar a pausa; o campo pode simplesmente não vir.
+  assert.deepEqual(normalizarPonteiro(null), { valido: true, ponteiro: null })
+  assert.deepEqual(normalizarPonteiro(undefined), { valido: true, ponteiro: null })
+  assert.deepEqual(normalizarPonteiro('   '), { valido: true, ponteiro: null })
+})
+
+test('normalizarPonteiro aceita uuid e devolve sem espaços', () => {
+  const uuid = '3f2504e0-4f89-11d3-9a0c-0305e82c3301'
+  assert.deepEqual(normalizarPonteiro(uuid), { valido: true, ponteiro: uuid })
+  assert.deepEqual(normalizarPonteiro(`  ${uuid}  `), { valido: true, ponteiro: uuid })
+  assert.deepEqual(normalizarPonteiro(uuid.toUpperCase()), { valido: true, ponteiro: uuid.toUpperCase() })
+})
+
+test('normalizarPonteiro recusa o que o Postgres recusaria — sem virar 500', () => {
+  // Sem esta peneira o valor ia direto ao .eq('id', ...) e o erro de tipo do
+  // banco virava 500: entrada inválida do cliente contada como falha nossa.
+  for (const lixo of ['não-é-uuid', '123', 42, true, {}, [], ['3f2504e0-4f89-11d3-9a0c-0305e82c3301']]) {
+    assert.deepEqual(normalizarPonteiro(lixo), { valido: false }, JSON.stringify(lixo))
+  }
 })

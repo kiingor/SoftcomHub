@@ -6882,12 +6882,20 @@ const saveConfig = async () => {
                                       Trocar o tipo e tirar da pausa exigem ainda que a pausa
                                       aberta seja DESTE setor: quem trabalha em dois setores
                                       pode ter pausado no outro, e a ausência conta lá. */}
-                                  {souSupervisorDoSetor && tiposDePausaAtivos.length > 0 && (
+                                  {/* A condição da pausa DESTE setor entra junto com o separador:
+                                      em pausa aberta em outro setor não há item nenhum para
+                                      mostrar, e o separador sozinho vira um risco solto no fim
+                                      do menu. Por estar aqui, o ramo de baixo não a repete. */}
+                                  {souSupervisorDoSetor && (!isOnPause || pausaEhDesteSetor(atendente)) && (
                                     <>
                                       <DropdownMenuSeparator />
                                       {isOnPause ? (
-                                        pausaEhDesteSetor(atendente) && (
-                                          <>
+                                        <>
+                                            {/* Tirar da pausa NÃO depende do catálogo — a rota
+                                                só fecha a instância aberta. Ficava junto com a
+                                                troca sob a mesma condição, e num setor que
+                                                apagou seus tipos o supervisor perdia também a
+                                                saída da pausa, que é o controle mais crítico. */}
                                             <DropdownMenuItem
                                               onClick={() => pedirDisponibilidade(
                                                 atendente,
@@ -6900,34 +6908,45 @@ const saveConfig = async () => {
                                               <Play className="h-3.5 w-3.5 text-green-500" />
                                               Tirar da pausa
                                             </DropdownMenuItem>
-                                            <DropdownMenuSub>
-                                              <DropdownMenuSubTrigger className="gap-2">
-                                                <Coffee className="h-3.5 w-3.5 text-amber-500" />
-                                                Trocar tipo de pausa
-                                              </DropdownMenuSubTrigger>
-                                              <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
-                                                {/* O tipo que já está valendo sai da lista:
-                                                    reescolhê-lo não é troca, e a rota recusa
-                                                    com MESMO_TIPO. */}
-                                                {tiposDePausaAtivos
-                                                  .filter((tipo) => tipo.id !== atendente.pausaTipoId)
-                                                  .map((tipo) => (
-                                                    <DropdownMenuItem
-                                                      key={tipo.id}
-                                                      onClick={() => pedirDisponibilidade(
-                                                        atendente,
-                                                        ticketsDoAtendente,
-                                                        `trocar a pausa para ${tipo.nome}`,
-                                                        () => handleTrocarTipoDePausa(atendente.id, tipo.id),
-                                                      )}
-                                                    >
-                                                      {tipo.nome}
-                                                    </DropdownMenuItem>
-                                                  ))}
-                                              </DropdownMenuSubContent>
-                                            </DropdownMenuSub>
+                                            {/* O tipo que já está valendo sai da lista:
+                                                reescolhê-lo não é troca, e a rota recusa com
+                                                MESMO_TIPO. Sem nenhum OUTRO tipo não há troca
+                                                possível, e o submenu abriria vazio. */}
+                                            {tiposDePausaAtivos.some((tipo) => tipo.id !== atendente.pausaTipoId) && (
+                                              <DropdownMenuSub>
+                                                <DropdownMenuSubTrigger className="gap-2">
+                                                  <Coffee className="h-3.5 w-3.5 text-amber-500" />
+                                                  Trocar tipo de pausa
+                                                </DropdownMenuSubTrigger>
+                                                <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                                                  {tiposDePausaAtivos
+                                                    .filter((tipo) => tipo.id !== atendente.pausaTipoId)
+                                                    .map((tipo) => (
+                                                      <DropdownMenuItem
+                                                        key={tipo.id}
+                                                        onClick={() => pedirDisponibilidade(
+                                                          atendente,
+                                                          ticketsDoAtendente,
+                                                          `trocar a pausa para ${tipo.nome}`,
+                                                          () => handleTrocarTipoDePausa(atendente.id, tipo.id),
+                                                        )}
+                                                      >
+                                                        {tipo.nome}
+                                                      </DropdownMenuItem>
+                                                    ))}
+                                                </DropdownMenuSubContent>
+                                              </DropdownMenuSub>
+                                            )}
                                           </>
-                                        )
+                                      ) : tiposDePausaAtivos.length === 0 ? (
+                                        /* Setor sem tipo de pausa cadastrado — 18 dos 35 estão
+                                           assim. Some o item e a supervisão lê como "a função
+                                           não funciona"; o que falta é cadastro, e é em
+                                           Configurações → Pausas, nesta mesma tela. */
+                                        <DropdownMenuItem disabled className="gap-2">
+                                          <Coffee className="h-3.5 w-3.5 text-muted-foreground" />
+                                          Nenhum tipo de pausa neste setor
+                                        </DropdownMenuItem>
                                       ) : (
                                         <DropdownMenuSub>
                                           <DropdownMenuSubTrigger className="gap-2">
