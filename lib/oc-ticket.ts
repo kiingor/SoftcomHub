@@ -171,6 +171,59 @@ export function ocObrigatoriaLigada(valor: string | null | undefined): boolean {
 }
 
 /**
+ * Tudo que decide se a OC é exigida NESTE ticket. Três perguntas, nesta ordem,
+ * e qualquer uma delas isenta:
+ *
+ *   1. a flag global está ligada?      (botão de pânico — desliga o recurso inteiro)
+ *   2. o setor do ticket optou?        (rollout gradual, setor a setor)
+ *   3. o ticket NÃO é de disparo?      (quem dispara não abre OC)
+ *
+ * A ordem importa para o custo: se a exigência não vale, `/api/oc` nem chega a
+ * bater na API externa.
+ */
+export interface ContextoExigenciaOc {
+  /** `OC_OBRIGATORIA_PARA_ENCERRAR`. Desligada = nada muda em lugar nenhum. */
+  flagGlobal: boolean
+  /**
+   * `setores.oc_obrigatoria_para_encerrar` do setor do ticket. `null`/`undefined`
+   * cobre dois casos que dão no mesmo: a coluna ainda não existe no ambiente, ou
+   * o ticket não tem setor. Os dois isentam.
+   */
+  setorExige: boolean | null | undefined
+  /** Ticket nascido de disparo — isento por decisão do caso. */
+  ehDisparo: boolean
+}
+
+export function exigirOcNoTicket({
+  flagGlobal,
+  setorExige,
+  ehDisparo,
+}: ContextoExigenciaOc): boolean {
+  if (!flagGlobal) return false
+  // `!== true` de propósito: só o `true` explícito exige. Ausência não exige.
+  if (setorExige !== true) return false
+  return !ehDisparo
+}
+
+/**
+ * O ticket nasceu de um disparo?
+ *
+ * `is_disparo` e `disparo_em` andam juntos hoje (13.696 encerrados em cada,
+ * medido em 13/08/2026), mas conferir os dois custa nada e cobre o dia em que
+ * um caminho novo gravar só um deles.
+ *
+ * ATENÇÃO: o disparo pela Evolution (`app/api/evolution/dispatch/route.ts`) NÃO
+ * grava marcador nenhum — de propósito, porque `is_disparo` também tranca o
+ * envio até o cliente responder. Esses tickets, portanto, NÃO são isentos aqui.
+ */
+export function ticketEhDisparo(
+  ticket: { is_disparo?: boolean | null; disparo_em?: string | null } | null | undefined,
+): boolean {
+  if (!ticket) return false
+  return ticket.is_disparo === true || Boolean(ticket.disparo_em)
+}
+
+/**
  * Traduz a resposta HTTP crua em veredito.
  *
  * Recebe o corpo como texto (e não como objeto já parseado) de propósito: assim
@@ -220,14 +273,17 @@ export function interpretarRespostaOc(
 }
 
 /**
- * A decisão final. Duas linhas do caso inteiro moram aqui: sem a flag nada muda,
- * e só `sem-oc` bloqueia.
+ * A decisão final. Duas linhas do caso inteiro moram aqui: sem exigência nada
+ * muda, e só `sem-oc` bloqueia.
+ *
+ * `exigencia` é o resultado de `exigirOcNoTicket` — já considera flag global,
+ * opt-in do setor e isenção de disparo.
  */
 export function decidirEncerramento(
-  flagLigada: boolean,
+  exigencia: boolean,
   consulta: ConsultaOc | null,
 ): DecisaoEncerramento {
-  if (!flagLigada) return { permite: true, bloqueio: null, aviso: null }
+  if (!exigencia) return { permite: true, bloqueio: null, aviso: null }
 
   if (!consulta) {
     return { permite: true, bloqueio: null, aviso: 'a consulta de OC não chegou a rodar' }

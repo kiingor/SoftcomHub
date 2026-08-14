@@ -3,9 +3,11 @@ import test from 'node:test'
 import {
   decidirEncerramento,
   descreverOcExistente,
+  exigirOcNoTicket,
   interpretarRespostaOc,
   ocIndeterminada,
   ocObrigatoriaLigada,
+  ticketEhDisparo,
   MENSAGEM_SEM_OC,
   OC_FLAG_ENV,
 } from '../lib/oc-ticket.ts'
@@ -41,6 +43,56 @@ test('a flag só liga com valor afirmativo explícito', () => {
   for (const desligado of [undefined, null, '', '0', 'false', 'nao', 'talvez']) {
     assert.equal(ocObrigatoriaLigada(desligado), false, `esperava desligado: ${desligado}`)
   }
+})
+
+test('a exigência precisa dos três: flag global, opt-in do setor e não ser disparo', () => {
+  const exige = { flagGlobal: true, setorExige: true, ehDisparo: false }
+
+  assert.equal(exigirOcNoTicket(exige), true)
+  assert.equal(exigirOcNoTicket({ ...exige, flagGlobal: false }), false, 'flag global desligada isenta')
+  assert.equal(exigirOcNoTicket({ ...exige, setorExige: false }), false, 'setor que não optou isenta')
+  assert.equal(exigirOcNoTicket({ ...exige, ehDisparo: true }), false, 'disparo isenta')
+})
+
+test('setor sem opt-in explícito não exige — inclusive quando a coluna nem existe', () => {
+  // `null`/`undefined` cobrem "coluna ainda não migrada" e "ticket sem setor".
+  for (const setorExige of [null, undefined, false]) {
+    assert.equal(
+      exigirOcNoTicket({ flagGlobal: true, setorExige, ehDisparo: false }),
+      false,
+      `setorExige: ${setorExige}`,
+    )
+  }
+})
+
+test('a global sozinha não trava nada — o setor precisa optar', () => {
+  // Sem isso, ligar a env travaria os 35 setores de uma vez.
+  const decisao = decidirEncerramento(
+    exigirOcNoTicket({ flagGlobal: true, setorExige: null, ehDisparo: false }),
+    interpretarRespostaOc(200, '[]', 164371),
+  )
+
+  assert.equal(decisao.permite, true)
+  assert.equal(decisao.bloqueio, null)
+})
+
+test('disparo isenta mesmo com setor exigindo e sem OC nenhuma', () => {
+  const decisao = decidirEncerramento(
+    exigirOcNoTicket({ flagGlobal: true, setorExige: true, ehDisparo: true }),
+    interpretarRespostaOc(200, '[]', 164371),
+  )
+
+  assert.equal(decisao.permite, true)
+  assert.equal(decisao.bloqueio, null)
+})
+
+test('o ticket é de disparo por qualquer um dos dois marcadores', () => {
+  assert.equal(ticketEhDisparo({ is_disparo: true, disparo_em: null }), true)
+  assert.equal(ticketEhDisparo({ is_disparo: null, disparo_em: '2026-08-13T12:00:00Z' }), true)
+  assert.equal(ticketEhDisparo({ is_disparo: false, disparo_em: null }), false)
+  assert.equal(ticketEhDisparo({}), false)
+  assert.equal(ticketEhDisparo(null), false)
+  assert.equal(ticketEhDisparo(undefined), false)
 })
 
 test('flag desligada permite encerrar sem nem consultar', () => {
