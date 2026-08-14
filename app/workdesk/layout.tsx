@@ -165,13 +165,19 @@ export default function WorkdeskLayout({
         (payload) => {
           const newData = payload.new as any
           if (!newData) return
-          // Update local state with the new status from database
+          // Update local state with the new status from database.
+          //
+          // A checagem é de PRESENÇA da coluna, e não `??`: o valor novo de
+          // `pausa_atual_id` é `null` justamente quando a pausa TERMINA, e
+          // `null ?? prev` devolvia o id antigo — o fim da pausa nunca limpava
+          // o ponteiro, e o estado seguia dizendo que a pessoa estava em pausa.
+          // Com `in`, o `null` que veio do banco é respeitado como resposta.
           setColaborador((prev) =>
             prev
               ? {
                   ...prev,
-                  is_online: newData.is_online ?? prev.is_online,
-                  pausa_atual_id: newData.pausa_atual_id ?? prev.pausa_atual_id,
+                  is_online: 'is_online' in newData ? newData.is_online : prev.is_online,
+                  pausa_atual_id: 'pausa_atual_id' in newData ? newData.pausa_atual_id : prev.pausa_atual_id,
                 }
               : null
           )
@@ -345,6 +351,7 @@ export default function WorkdeskLayout({
             isOnline={colaborador.is_online}
             onStatusChange={handleStatusChange}
             setorIds={colaborador.setores_vinculados?.map((s) => s.setor_id) || []}
+            pausaAtualId={colaborador.pausa_atual_id ?? null}
           />
 
           {/* Notifications */}
