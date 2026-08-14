@@ -143,6 +143,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  ClipboardCheck,
   RotateCcw,
   PanelLeftClose,
   PanelLeftOpen,
@@ -1722,6 +1723,8 @@ function SetorPageInner() {
   // no banco (rollout de migration pendente) — usado só pra avisar na UI, não bloqueia o resto.
   const [travarOrdenacaoChatIndisponivel, setTravarOrdenacaoChatIndisponivel] = useState(false)
   const [limitesStatusAtendimentoIndisponiveis, setLimitesStatusAtendimentoIndisponiveis] = useState(false)
+  // Mesma ideia para setores.oc_obrigatoria_para_encerrar — caso #97240.
+  const [ocObrigatoriaIndisponivel, setOcObrigatoriaIndisponivel] = useState(false)
   const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
   // Dirty tracking das outras seções da página Configurações — alimenta a
   // FloatingSaveBar para unificar os múltiplos saves em um único CTA.
@@ -1855,6 +1858,7 @@ function SetorPageInner() {
   travar_ordenacao_chat: false,
   atendimento_status_atencao_minutos: DEFAULT_ATENCAO_MINUTOS,
   atendimento_status_critico_minutos: DEFAULT_CRITICO_MINUTOS,
+  oc_obrigatoria_para_encerrar: false,
   })
   const statusAtencaoInputRef = useRef<HTMLInputElement>(null)
 
@@ -3374,6 +3378,7 @@ function SetorPageInner() {
         travar_ordenacao_chat: setor.travar_ordenacao_chat || false,
         atendimento_status_atencao_minutos: setor.atendimento_status_atencao_minutos ?? DEFAULT_ATENCAO_MINUTOS,
         atendimento_status_critico_minutos: setor.atendimento_status_critico_minutos ?? DEFAULT_CRITICO_MINUTOS,
+        oc_obrigatoria_para_encerrar: setor.oc_obrigatoria_para_encerrar || false,
       })
       fetchTemplates()
       fetchCanais()
@@ -4527,58 +4532,60 @@ const saveConfig = async () => {
         atendimento_status_critico_minutos: configForm.atendimento_status_critico_minutos,
       }
 
-      // travar_ordenacao_chat pode ainda não existir em produção (rollout de coluna
-      // pendente). Tenta com o campo; se a coluna não existir, refaz sem ele
-      // pra não derrubar o salvamento do resto das configurações do setor.
-      const updateCandidates = [
-        {
-          payload: { ...basePayload, ...statusPayload, travar_ordenacao_chat: configForm.travar_ordenacao_chat },
-          travarOrdenacaoIndisponivel: false,
-          limitesStatusIndisponiveis: false,
-        },
-        {
-          payload: { ...basePayload, ...statusPayload },
-          travarOrdenacaoIndisponivel: true,
-          limitesStatusIndisponiveis: false,
-        },
-        {
-          payload: { ...basePayload, travar_ordenacao_chat: configForm.travar_ordenacao_chat },
-          travarOrdenacaoIndisponivel: false,
-          limitesStatusIndisponiveis: true,
-        },
-        {
-          payload: basePayload,
-          travarOrdenacaoIndisponivel: true,
-          limitesStatusIndisponiveis: true,
-        },
-      ]
+      // Estas colunas podem ainda não existir no ambiente (rollout de banco
+      // pendente). Em vez de tentar todas as combinações — que dobravam a cada
+      // coluna nova —, a gente lê no erro 42703/PGRST204 QUAL coluna faltou,
+      // tira só ela e tenta de novo. O resto das configurações do setor salva
+      // normalmente.
+      const camposOpcionais: Record<string, unknown> = {
+        travar_ordenacao_chat: configForm.travar_ordenacao_chat,
+        ...statusPayload,
+        oc_obrigatoria_para_encerrar: configForm.oc_obrigatoria_para_encerrar,
+      }
 
+      const ausentes = new Set<string>()
       let updateError: any = null
-      let travarOrdenacaoIndisponivel = false
-      let limitesStatusIndisponiveis = false
 
-      for (const candidate of updateCandidates) {
-        const { error } = await supabase
-          .from('setores')
-          .update(candidate.payload)
-          .eq('id', setorId)
+      // +1 para a última tentativa, já sem nenhum campo opcional.
+      for (let tentativa = 0; tentativa <= Object.keys(camposOpcionais).length; tentativa++) {
+        const payload: Record<string, unknown> = { ...basePayload }
+        for (const [campo, valor] of Object.entries(camposOpcionais)) {
+          if (!ausentes.has(campo)) payload[campo] = valor
+        }
+
+        const { error } = await supabase.from('setores').update(payload).eq('id', setorId)
         if (!error) {
-          travarOrdenacaoIndisponivel = candidate.travarOrdenacaoIndisponivel
-          limitesStatusIndisponiveis = candidate.limitesStatusIndisponiveis
           updateError = null
           break
         }
 
         updateError = error
         if (error.code !== '42703' && error.code !== 'PGRST204') break
+
+        const faltando = Object.keys(camposOpcionais).find(
+          (campo) => !ausentes.has(campo) && error.message?.includes(campo),
+        )
+        if (faltando) {
+          ausentes.add(faltando)
+          continue
+        }
+
+        // O erro não disse qual coluna é. Cai no comportamento antigo de pior
+        // caso: derruba todos os opcionais de uma vez e tenta a última vez.
+        if (ausentes.size === Object.keys(camposOpcionais).length) break
+        Object.keys(camposOpcionais).forEach((campo) => ausentes.add(campo))
       }
 
       if (updateError) throw updateError
 
+      const travarOrdenacaoIndisponivel = ausentes.has('travar_ordenacao_chat')
+      const limitesStatusIndisponiveis = Object.keys(statusPayload).some((campo) => ausentes.has(campo))
+
       setTravarOrdenacaoChatIndisponivel(travarOrdenacaoIndisponivel)
       setLimitesStatusAtendimentoIndisponiveis(limitesStatusIndisponiveis)
+      setOcObrigatoriaIndisponivel(ausentes.has('oc_obrigatoria_para_encerrar'))
       toast.success(
-        travarOrdenacaoIndisponivel || limitesStatusIndisponiveis
+        ausentes.size > 0
           ? 'Configurações salvas! (Algumas opções aguardam a migration neste ambiente.)'
           : 'Configurações salvas com sucesso!',
       )
@@ -10020,6 +10027,42 @@ const saveConfig = async () => {
                 checked={configForm.travar_ordenacao_chat}
                 onCheckedChange={(checked) => {
                   setConfigForm((prev) => ({ ...prev, travar_ordenacao_chat: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Ocorrência obrigatória para encerrar — caso #97240 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4" />
+              Ocorrência Obrigatória
+            </CardTitle>
+            <CardDescription>Exige que o atendente abra a OC no Service Desk antes de encerrar o ticket</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="oc-obrigatoria" className="text-sm font-medium">Exigir OC para encerrar</Label>
+                <p className="text-xs text-muted-foreground">
+                  Quando ativado, o WorkDesk consulta o Service Desk ao encerrar e bloqueia se não houver OC aberta para o ticket.
+                  Tickets de disparo ficam sempre isentos. Se a consulta falhar, o encerramento é liberado — instabilidade da API nunca vira fila parada.
+                </p>
+                {ocObrigatoriaIndisponivel && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Este recurso ainda não está disponível neste ambiente (falta uma atualização de banco de dados). A opção acima não será salva até isso ser resolvido.
+                  </p>
+                )}
+              </div>
+              <Switch
+                id="oc-obrigatoria"
+                aria-label="Exigir OC para encerrar"
+                checked={configForm.oc_obrigatoria_para_encerrar}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, oc_obrigatoria_para_encerrar: checked }))
                   setHasUnsavedConfig(true)
                 }}
               />

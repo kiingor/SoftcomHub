@@ -7,34 +7,44 @@
 // Mesmo padrão de `softcom-client.ts`: base em `SOFTCOM_API_URL`, autenticação
 // pelo header `x-api-key` a partir de `SOFTCOM_API_KEY`. Nenhum cliente novo.
 //
-// ┌──────────────────────────────────────────────────────────────────────────┐
-// │ ATENÇÃO — A CONSULTA ABAIXO ESTÁ PROVISÓRIA E COMPROVADAMENTE ERRADA.    │
-// │ NÃO LIGUE `OC_OBRIGATORIA_PARA_ENCERRAR` ANTES DE CORRIGI-LA.            │
-// └──────────────────────────────────────────────────────────────────────────┘
+// COMO O VÍNCULO OC <-> TICKET DO HUB FUNCIONA
 //
-// `GET /v1/tickets/numero/{numero}` NÃO filtra pelo número do ticket do Hub.
-// Medido em 13/08/2026, com a chave de produção:
+// Ida: o WorkDesk abre a ocorrência rápida com `?ticket={numero}`
+// (`buildOcorrenciaRapidaUrl`, em `app/workdesk/page.tsx`). O formulário da
+// agenda grava esse número num campo próprio da OC, chamado `ticket`.
 //
-//   162469  (Hub: SOFTCOM BACKUP)      -> array[0]  (vazio)
-//   164347  (Hub: DEUS NO COMANDO)     -> array[1]  MBCA DISTRIBUIDORA  ← outro cliente
-//   164371  (Hub: criado 1h antes)     -> array[0]  (vazio)
-//   999999999 (número inventado)       -> array[2]  ASTGRAFICA TERESINA ← não existe no Hub
+// Volta: `GET /v1/tickets/numero/{numero}` filtra por esse campo `ticket` e
+// devolve uma LISTA — as OCs daquele número, `[]` quando não há nenhuma. É
+// exatamente a pergunta do caso #97240: "existe OC para o ticket N?".
 //
-// Um número inventado devolve OCs reais, e um ticket real devolve a OC de outro
-// cliente. Ou seja: o parâmetro é interpretado de outra forma, ou ignorado.
+// Formato de cada item (campos que importam aqui):
+//   { id: 10790936, ticket: 164494, clienteId, clienteNome, motivo, data,
+//     status: "aberto" | "finalizado", ... }
+// `id` é a OC; `ticket` é o número do Hub. São números diferentes.
 //
-// Com a flag LIGADA e esta consulta, `array[0]` vira "o atendente não abriu a
-// OC" e o ticket fica IMPOSSÍVEL de encerrar — três dos quatro casos acima
-// travariam sem que nenhuma OC pudesse liberá-los.
+// Medido em 13/08/2026 contra produção, cruzando com o banco do Hub:
 //
-// O que falta descobrir: por qual campo a OC guarda o número do ticket do Hub.
-// O WorkDesk já manda `?ticket={numero}` ao abrir a ocorrência rápida
-// (`buildOcorrenciaRapidaUrl`), então o número CHEGA na agenda — falta o
-// caminho de volta.
+//   164494 -> [1] OC 10790936, tel 8391995920  = Hub tel 558391995920   ✓ mesma linha
+//   125153 -> [1] OC 10349271, "ACTION BIKE - TEOFILO OTONI"            ✓ mesmo cliente
+//   164347 -> [1] OC 10790323, tel 81982687857 = Hub tel 558182687857   ✓ mesma linha
+//   162469, 164371, 164372, 164288, 164523 (+5)  -> []                  ✓ sem OC mesmo
 //
-// Quando souber: só a URL/parâmetro deste arquivo mudam (e o formato em
-// `interpretarRespostaOc`, se for diferente). Decisão, flag, fail-open, trava de
-// tela e testes aproveitam inteiros.
+// Os dois "contra-exemplos" que antes pareciam provar que o filtro era ignorado
+// eram leitura errada, não bug:
+//
+//   - `clienteNome` divergente: o Hub guarda o nome de PERFIL do WhatsApp
+//     ("DEUS NO COMANDO 🙏", "nadyakelly2017") e a agenda guarda a razão social
+//     ("MBCA DISTRIBUIDORA...", "NEM BIKE CG"). Conferido pelo CNPJ em
+//     `/v1/clientes`: é o mesmo cliente, e o telefone bate (só muda o nono
+//     dígito).
+//   - `999999999` devolver OCs reais: `999999999` está gravado no campo
+//     `ticket` de OCs de 2025, anteriores a este link. É lixo digitado, não
+//     prova de filtro ignorado. `tickets.numero` do Hub é SERIAL (~164 mil),
+//     então não colide.
+//
+// Por causa desse lixo, `interpretarRespostaOc` confere o `ticket` de cada OC
+// devolvida contra o número consultado — divergência vira "não consegui
+// verificar" (libera), nunca um veredito.
 
 import { interpretarRespostaOc, ocIndeterminada, type ConsultaOc } from '@/lib/oc-ticket'
 
@@ -72,7 +82,7 @@ export async function consultarOcDoTicket(numero: number | string): Promise<Cons
       return ocIndeterminada(`a API respondeu ${resposta.status} com um corpo grande demais`)
     }
 
-    return interpretarRespostaOc(resposta.status, corpo)
+    return interpretarRespostaOc(resposta.status, corpo, numeroNormalizado)
   } catch (erro) {
     const mensagem = erro instanceof Error ? erro.message : 'erro desconhecido'
     return ocIndeterminada(`a consulta de OC falhou: ${mensagem}`)

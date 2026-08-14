@@ -6,15 +6,23 @@
 //
 // A regra que vale mais que o bloqueio em si: NUNCA travar o encerramento por
 // causa de infraestrutura externa. Só uma resposta que diz claramente "não
-// existe OC para este ticket" bloqueia. Qualquer outra coisa — o 401 que a API
-// responde HOJE (a chave ainda não existe em nenhum ambiente), 5xx, timeout,
-// JSON que não reconhecemos — libera e avisa no console. O caso quer impedir
-// descuido do atendente, não transformar instabilidade de API em fila parada.
+// existe OC para este ticket" bloqueia. Qualquer outra coisa — 401, 5xx,
+// timeout, JSON que não reconhecemos — libera e avisa no console. O caso quer
+// impedir descuido do atendente, não transformar instabilidade de API em fila
+// parada.
 //
-// Ninguém viu ainda uma resposta de sucesso deste endpoint, então o parsing é
-// deliberadamente tolerante: formato reconhecido vira veredito, formato
-// desconhecido vira "não consegui verificar" (= libera), NUNCA "não existe"
-// (= bloqueia).
+// O formato real da resposta é conhecido (ver `oc-ticket-consulta.ts`): uma
+// LISTA de OCs, cada uma com `id` e `ticket`. O parsing continua tolerante a
+// envelopes porque o contrato não é versionado e não é nosso — formato
+// reconhecido vira veredito, formato desconhecido vira "não consegui
+// verificar" (= libera), NUNCA "não existe" (= bloqueia).
+//
+// Uma conferência a mais existe por um motivo medido: o campo `ticket` da
+// agenda é digitável e guarda lixo de outras origens (`999999999` devolve OCs
+// reais). Hoje isso não colide com o Hub — `tickets.numero` é SERIAL, na casa
+// dos 164 mil — mas um registro cujo `ticket` CONTRADIZ o número consultado
+// significa que o filtro não é o que entendemos, e aí a resposta certa é
+// "não consegui verificar", não um veredito.
 
 /** Nome da variável de ambiente que liga a trava. Desligada por padrão. */
 export const OC_FLAG_ENV = 'OC_OBRIGATORIA_PARA_ENCERRAR'
@@ -47,6 +55,11 @@ type RegistroDesconhecido = Record<string, unknown>
  * Campos que, se presentes e preenchidos, identificam uma OC/ticket de verdade.
  * Serve de duas coisas ao mesmo tempo: reconhecer o registro no meio do payload
  * e ter o que exibir ao atendente. A ordem é a de preferência para exibição.
+ *
+ * `ticket` NÃO entra aqui de propósito: ele é o número do ticket do Hub, que o
+ * atendente já está vendo na tela. Mostrar "a OC 164347" quando 164347 é o
+ * ticket seria confundir os dois números. Na resposta real quem identifica a OC
+ * é `id`, o último da lista.
  */
 const CAMPOS_IDENTIFICACAO = [
   'numero',
@@ -92,26 +105,48 @@ type Achado =
   | { tipo: 'registro'; registro: RegistroDesconhecido }
   /** Coleção explicitamente vazia — a única evidência aceitável de "não tem OC". */
   | { tipo: 'vazio' }
+  /** Vieram OCs, mas de OUTRO ticket: o filtro não é o que entendemos. */
+  | { tipo: 'outro-ticket' }
   | { tipo: 'desconhecido' }
 
-function inspecionar(payload: unknown, profundidade = 0): Achado {
+/**
+ * A OC é deste ticket? Só responde `false` com evidência: o registro traz
+ * `ticket` E ele é outro número. Registro sem o campo passa — não dá para
+ * conferir, e aceitar cai no lado que LIBERA o encerramento.
+ */
+function ehDoTicket(registro: RegistroDesconhecido, numeroEsperado: string): boolean {
+  if (!numeroEsperado) return true
+  const doRegistro = comoTexto(registro.ticket)
+  if (!doRegistro) return true
+  return doRegistro.trim() === numeroEsperado
+}
+
+function inspecionar(payload: unknown, numeroEsperado: string, profundidade = 0): Achado {
   // `200` com corpo `null` é o jeito idiomático de dizer "não achei" numa busca
   // por chave, que é exatamente o formato desta rota (/tickets/numero/{numero}).
   if (payload === null) return { tipo: 'vazio' }
 
   if (Array.isArray(payload)) {
-    const registro = payload.find(isRegistro)
-    if (registro) return { tipo: 'registro', registro }
-    return payload.length === 0 ? { tipo: 'vazio' } : { tipo: 'desconhecido' }
+    const registros = payload.filter(isRegistro)
+    if (registros.length === 0) {
+      return payload.length === 0 ? { tipo: 'vazio' } : { tipo: 'desconhecido' }
+    }
+
+    const registro = registros.find((item) => ehDoTicket(item, numeroEsperado))
+    return registro ? { tipo: 'registro', registro } : { tipo: 'outro-ticket' }
   }
 
   if (!isRegistro(payload)) return { tipo: 'desconhecido' }
-  if (extrairIdentificacao(payload)) return { tipo: 'registro', registro: payload }
+  if (extrairIdentificacao(payload)) {
+    return ehDoTicket(payload, numeroEsperado)
+      ? { tipo: 'registro', registro: payload }
+      : { tipo: 'outro-ticket' }
+  }
   if (profundidade >= 3) return { tipo: 'desconhecido' }
 
   for (const chave of CHAVES_ENVELOPE) {
     if (!(chave in payload)) continue
-    const achado = inspecionar(payload[chave], profundidade + 1)
+    const achado = inspecionar(payload[chave], numeroEsperado, profundidade + 1)
     if (achado.tipo !== 'desconhecido') return achado
   }
 
@@ -136,13 +171,73 @@ export function ocObrigatoriaLigada(valor: string | null | undefined): boolean {
 }
 
 /**
+ * Tudo que decide se a OC é exigida NESTE ticket. Três perguntas, nesta ordem,
+ * e qualquer uma delas isenta:
+ *
+ *   1. a flag global está ligada?      (botão de pânico — desliga o recurso inteiro)
+ *   2. o setor do ticket optou?        (rollout gradual, setor a setor)
+ *   3. o ticket NÃO é de disparo?      (quem dispara não abre OC)
+ *
+ * A ordem importa para o custo: se a exigência não vale, `/api/oc` nem chega a
+ * bater na API externa.
+ */
+export interface ContextoExigenciaOc {
+  /** `OC_OBRIGATORIA_PARA_ENCERRAR`. Desligada = nada muda em lugar nenhum. */
+  flagGlobal: boolean
+  /**
+   * `setores.oc_obrigatoria_para_encerrar` do setor do ticket. `null`/`undefined`
+   * cobre dois casos que dão no mesmo: a coluna ainda não existe no ambiente, ou
+   * o ticket não tem setor. Os dois isentam.
+   */
+  setorExige: boolean | null | undefined
+  /** Ticket nascido de disparo — isento por decisão do caso. */
+  ehDisparo: boolean
+}
+
+export function exigirOcNoTicket({
+  flagGlobal,
+  setorExige,
+  ehDisparo,
+}: ContextoExigenciaOc): boolean {
+  if (!flagGlobal) return false
+  // `!== true` de propósito: só o `true` explícito exige. Ausência não exige.
+  if (setorExige !== true) return false
+  return !ehDisparo
+}
+
+/**
+ * O ticket nasceu de um disparo?
+ *
+ * `is_disparo` e `disparo_em` andam juntos hoje (13.696 encerrados em cada,
+ * medido em 13/08/2026), mas conferir os dois custa nada e cobre o dia em que
+ * um caminho novo gravar só um deles.
+ *
+ * ATENÇÃO: o disparo pela Evolution (`app/api/evolution/dispatch/route.ts`) NÃO
+ * grava marcador nenhum — de propósito, porque `is_disparo` também tranca o
+ * envio até o cliente responder. Esses tickets, portanto, NÃO são isentos aqui.
+ */
+export function ticketEhDisparo(
+  ticket: { is_disparo?: boolean | null; disparo_em?: string | null } | null | undefined,
+): boolean {
+  if (!ticket) return false
+  return ticket.is_disparo === true || Boolean(ticket.disparo_em)
+}
+
+/**
  * Traduz a resposta HTTP crua em veredito.
  *
  * Recebe o corpo como texto (e não como objeto já parseado) de propósito: assim
  * "a API devolveu algo que não é JSON" também é um caso testável aqui, sem
  * precisar de rede.
+ *
+ * `numeroEsperado` é o número do ticket do Hub que foi consultado. Serve para
+ * conferir o `ticket` de cada OC devolvida; omiti-lo desliga a conferência.
  */
-export function interpretarRespostaOc(status: number, corpo: string | null | undefined): ConsultaOc {
+export function interpretarRespostaOc(
+  status: number,
+  corpo: string | null | undefined,
+  numeroEsperado?: number | string | null,
+): ConsultaOc {
   // A rota existe e responde — um 404 dela é sobre o ticket, não sobre o caminho.
   if (status === 404) return { situacao: 'sem-oc', identificacao: null, motivo: null }
 
@@ -160,10 +255,14 @@ export function interpretarRespostaOc(status: number, corpo: string | null | und
     return ocIndeterminada(`a API respondeu ${status} com um corpo que não é JSON`)
   }
 
-  const achado = inspecionar(payload)
+  const achado = inspecionar(payload, String(numeroEsperado ?? '').trim())
   if (achado.tipo === 'vazio') return { situacao: 'sem-oc', identificacao: null, motivo: null }
   if (achado.tipo === 'desconhecido') {
     return ocIndeterminada(`a API respondeu ${status} num formato que não reconhecemos`)
+  }
+  if (achado.tipo === 'outro-ticket') {
+    // Não é "sem OC": é "a resposta não fala do ticket que perguntamos".
+    return ocIndeterminada(`a API respondeu ${status} com OC de outro ticket`)
   }
 
   return {
@@ -174,14 +273,17 @@ export function interpretarRespostaOc(status: number, corpo: string | null | und
 }
 
 /**
- * A decisão final. Duas linhas do caso inteiro moram aqui: sem a flag nada muda,
- * e só `sem-oc` bloqueia.
+ * A decisão final. Duas linhas do caso inteiro moram aqui: sem exigência nada
+ * muda, e só `sem-oc` bloqueia.
+ *
+ * `exigencia` é o resultado de `exigirOcNoTicket` — já considera flag global,
+ * opt-in do setor e isenção de disparo.
  */
 export function decidirEncerramento(
-  flagLigada: boolean,
+  exigencia: boolean,
   consulta: ConsultaOc | null,
 ): DecisaoEncerramento {
-  if (!flagLigada) return { permite: true, bloqueio: null, aviso: null }
+  if (!exigencia) return { permite: true, bloqueio: null, aviso: null }
 
   if (!consulta) {
     return { permite: true, bloqueio: null, aviso: 'a consulta de OC não chegou a rodar' }

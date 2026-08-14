@@ -265,9 +265,15 @@ const SEND_CLAIM_STALE_MS = 10 * 60 * 1000
 const MAX_STALE_RECONCILE_ATTEMPTS = 5
 
 // Veredito de OC devolvido por `/api/oc` — caso #97240. `podeEncerrar` já vem
-// decidido lá (flag + fail-open), a tela só obedece.
+// decidido lá (exigência + fail-open), a tela só obedece.
 interface StatusOcTicket {
+  /**
+   * Recurso ligado no ambiente (env global). Serve SÓ para a tela desistir de
+   * consultar pelo resto da sessão — nunca para decidir sobre um ticket.
+   */
   flagLigada: boolean
+  /** A exigência vale para ESTE ticket: o setor optou e não é disparo. */
+  exigencia: boolean
   situacao: SituacaoOc
   identificacao: string | null
   podeEncerrar: boolean
@@ -2838,7 +2844,9 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
   }, [selectedTicket?.id, selectedTicket?.numero, verificarOcDoTicket])
 
   const avisoOcExistente = descreverOcExistente(ocStatus)
-  const ocPendente = ocStatus?.flagLigada === true && ocStatus.situacao === 'sem-oc'
+  // `exigencia`, não `flagLigada`: a global só diz que o recurso existe; quem
+  // diz que ESTE ticket precisa de OC é o opt-in do setor + a isenção de disparo.
+  const ocPendente = ocStatus?.exigencia === true && ocStatus.situacao === 'sem-oc'
 
   // Encerrar ticket
 const handleEncerrarTicket = async (ticketOverride?: Ticket): Promise<boolean> => {
@@ -5254,15 +5262,16 @@ const insertEmoji = (emoji: string) => {
                   <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <p>
                     <span className="font-semibold">Este atendimento ainda não tem OC.</span>{' '}
-                    Abra a ocorrência agora — o encerramento fica travado enquanto não houver uma.{' '}
+                    Enquanto não houver uma, o encerramento fica travado —{' '}
                     <a
                       href={buildOcorrenciaRapidaUrl(selectedTicket)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="font-semibold underline underline-offset-2"
                     >
-                      Abrir ocorrência rápida
-                    </a>
+                      abra a ocorrência
+                    </a>{' '}
+                    agora.
                   </p>
                 </div>
               )}
