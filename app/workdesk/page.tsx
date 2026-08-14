@@ -5254,15 +5254,16 @@ const insertEmoji = (emoji: string) => {
                   <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <p>
                     <span className="font-semibold">Este atendimento ainda não tem OC.</span>{' '}
-                    Abra a ocorrência agora — o encerramento fica travado enquanto não houver uma.{' '}
+                    Enquanto não houver uma, o encerramento fica travado —{' '}
                     <a
                       href={buildOcorrenciaRapidaUrl(selectedTicket)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="font-semibold underline underline-offset-2"
                     >
-                      Abrir ocorrência rápida
-                    </a>
+                      abra a ocorrência
+                    </a>{' '}
+                    agora.
                   </p>
                 </div>
               )}
