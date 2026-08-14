@@ -48,6 +48,12 @@ interface DisponibilidadePanelProps {
   isOnline: boolean
   onStatusChange: (newStatus: boolean) => void
   setorIds?: string[]
+  /**
+   * `colaboradores.pausa_atual_id` como o layout o conhece — o ponteiro, não a
+   * pausa. Serve de gatilho de sincronia: ver o efeito abaixo. Opcional porque
+   * o painel também é montado sem ele em components/workdesk/workdesk-sidebar.tsx.
+   */
+  pausaAtualId?: string | null
 }
 
 export function DisponibilidadePanel({
@@ -55,6 +61,7 @@ export function DisponibilidadePanel({
   isOnline,
   onStatusChange,
   setorIds = [],
+  pausaAtualId = null,
 }: DisponibilidadePanelProps) {
   const supabase = createClient()
   const [loading, setLoading] = useState(false)
@@ -128,10 +135,24 @@ export function DisponibilidadePanel({
   // for this same id and propagates `is_online` down via the `isOnline` prop. When that
   // prop flips (another tab/session toggled status or started/ended a pause), refetch
   // pause state & logs. This removes the duplicate realtime channel this panel used to open.
+  //
+  // ── POR QUE `pausaAtualId` TAMBÉM ENTRA (caso #97218) ───────────────────────
+  // Só com `isOnline` a sincronia tem buracos, porque nem toda mudança de pausa
+  // mexe em `is_online`:
+  //
+  //   • supervisão coloca em pausa quem JÁ estava offline — `is_online`
+  //     continua false, e o painel seguia mostrando "Offline";
+  //   • supervisão marca offline quem estava EM PAUSA — `is_online` já era
+  //     false, e o painel seguia mostrando "Ausente" com o cronômetro correndo.
+  //
+  // O ponteiro muda nos dois casos, e o evento de realtime que o carrega já é
+  // entregue hoje (a tabela está publicada; medido). Isto não abre consulta
+  // nova nem faz polling: reage a um evento que já chega, e as duas leituras
+  // abaixo só acontecem quando o estado muda de fato — algumas vezes por dia.
   useEffect(() => {
     fetchPausaAtual()
     fetchLogs()
-  }, [isOnline, fetchPausaAtual, fetchLogs])
+  }, [isOnline, pausaAtualId, fetchPausaAtual, fetchLogs])
 
   // Timer for pause duration
   useEffect(() => {

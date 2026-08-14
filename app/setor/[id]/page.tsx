@@ -11,6 +11,8 @@ import { useColaborador } from '@/lib/hooks/use-data'
 import { atendenteNoFiltro, filtroEfetivo, tagsParaFiltro, tagsVisiveisPara, ticketNoFiltroDeTag } from '@/lib/tag-setor'
 import { TagManagerDialog } from '@/components/dashboard/tag-manager-dialog'
 import { computePausaElapsedMs, formatPausaStatusLabel, isPausaEstourada } from '@/lib/pausa-status'
+import { canSeeAllTickets } from '@/lib/permissions'
+import { hasSupervisorScope } from '@/lib/transfer-authorization'
 import { unsubscribeCurrentBrowser } from '@/lib/use-push-notifications'
 import { DateRange } from 'react-day-picker'
 import { DatePeriodFilter, getDateCutoffs } from '@/components/date-period-filter'
@@ -36,6 +38,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -97,6 +103,7 @@ import {
   Target,
   Award,
   Coffee,
+  Play,
   Rocket,
   Shield,
   Truck,
@@ -106,6 +113,7 @@ import {
   TrendingUp,
   CheckCircle,
   Activity,
+  ChevronDown,
   ChevronFirst,
   ChevronLeft,
   ChevronRight,
@@ -568,10 +576,16 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
   // isolado usado em app/dashboard/monitoramento/page.tsx (evita ambiguidade de FK).
   const pausaIds = atendentesBase.filter((a: any) => a.pausa_atual_id).map((a: any) => a.pausa_atual_id)
   const pausaInfoMap = new Map<string, { nome: string; inicio: string; tempoMaximoMinutos: number | null }>()
+  // `pausa_id` e `setor_id` da INSTÂNCIA entram por causa do caso #97218: são
+  // eles que dizem qual tipo está valendo (para tirá-lo da lista de troca) e a
+  // que setor a pausa pertence. O atendente pode trabalhar em mais de um setor
+  // e ter pausado no OUTRO — e quem mexe numa ausência que conta no setor X
+  // tem que ser supervisor de X, que é a conferência que a rota faz.
+  const instanciaMap = new Map<string, { pausaTipoId: string; pausaSetorId: string }>()
   if (pausaIds.length > 0) {
     const { data: pausasAtivas } = await supabase
       .from('pausas_colaboradores')
-      .select('id, inicio, pausas(nome, tempo_maximo_minutos)')
+      .select('id, inicio, pausa_id, setor_id, pausas(nome, tempo_maximo_minutos)')
       .in('id', pausaIds)
     for (const p of pausasAtivas || []) {
       const pausaRelation = (p as any).pausas
@@ -581,10 +595,21 @@ const [setorRes, ticketsAtivosRes, ticketsHojeRes, colaboradoresRes, horariosRes
         inicio: p.inicio,
         tempoMaximoMinutos: pausaInfo?.tempo_maximo_minutos ?? null,
       })
+      instanciaMap.set(p.id, {
+        pausaTipoId: (p as any).pausa_id,
+        pausaSetorId: (p as any).setor_id,
+      })
     }
   }
   const atendentes = atendentesBase.map((a: any) => (
-    a.pausa_atual_id ? { ...a, pausaInfo: pausaInfoMap.get(a.pausa_atual_id) || null } : a
+    a.pausa_atual_id
+      ? {
+          ...a,
+          pausaInfo: pausaInfoMap.get(a.pausa_atual_id) || null,
+          pausaTipoId: instanciaMap.get(a.pausa_atual_id)?.pausaTipoId ?? null,
+          pausaSetorId: instanciaMap.get(a.pausa_atual_id)?.pausaSetorId ?? null,
+        }
+      : a
   ))
 
   // Calculate stats
@@ -2077,25 +2102,100 @@ function SetorPageInner() {
   const emailCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [alterandoStatusId, setAlterandoStatusId] = useState<string | null>(null)
 
-  // Alterar status do atendente (admin)
-  const handleAlterarStatusAtendente = async (colaboradorId: string, novoStatus: 'online' | 'offline') => {
+  /**
+   * Caso #97218 — a supervisão manda na disponibilidade do atendente.
+   *
+   * ── POR QUE PELA ROTA, E NÃO POR UPDATE DIRETO ─────────────────────────────
+   * Esta tela escrevia `colaboradores` do navegador, com o cliente anônimo, e
+   * fazia `pausa_atual_id: null` sem encerrar a instância. Isso deixava a linha
+   * de `pausas_colaboradores` com `fim IS NULL` para sempre, e a produtividade
+   * — que trata `fim` nulo como pausa em andamento e conta até agora — passava
+   * a somar uma ausência que nunca termina. Além disso a autorização era só a
+   * RLS da tabela, que não sabe o que é "supervisor deste setor".
+   *
+   * /api/colaborador/toggle-status resolve os dois: exige sessão, exige
+   * `hasSupervisorScope` sobre setor a que o alvo esteja vinculado, e encerra a
+   * instância aberta sempre que o ponteiro é limpo. É a mesma rota que a tela de
+   * monitoramento e o WorkDesk usam — uma porta só para o mesmo dado.
+   */
+  const comandarDisponibilidade = async (
+    colaboradorId: string,
+    corpo: Record<string, unknown>,
+    { sucesso, falha }: { sucesso: string; falha: string },
+  ) => {
     setAlterandoStatusId(colaboradorId)
     try {
-      const { error } = await supabase
-        .from('colaboradores')
-        .update({
-          is_online: novoStatus === 'online',
-          pausa_atual_id: null,
-        })
-        .eq('id', colaboradorId)
-      if (error) throw error
-      toast.success(`Atendente marcado como ${novoStatus === 'online' ? 'Online' : 'Offline'}`)
+      const res = await fetch('/api/colaborador/toggle-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colaboradorId, ...corpo }),
+      })
+      const resultado = await res.json().catch(() => null)
+      if (!res.ok) {
+        toast.error(resultado?.error || falha)
+        return
+      }
+      toast.success(sucesso)
       mutate()
     } catch (err: any) {
-      toast.error(err.message || 'Erro ao alterar status')
+      toast.error(err?.message || falha)
     } finally {
       setAlterandoStatusId(null)
     }
+  }
+
+  // Alterar status do atendente. `pausaAtualId: null` limpa o ponteiro E manda a
+  // rota encerrar a pausa aberta — quem estava em pausa sai dela por aqui também.
+  const handleAlterarStatusAtendente = (colaboradorId: string, novoStatus: 'online' | 'offline') =>
+    comandarDisponibilidade(colaboradorId, { isOnline: novoStatus === 'online', pausaAtualId: null }, {
+      sucesso: `Atendente marcado como ${novoStatus === 'online' ? 'Online' : 'Offline'}`,
+      falha: 'Erro ao alterar status',
+    })
+
+  // Abre instância nova e deixa o atendente offline, como o painel do WorkDesk
+  // faz quando ele mesmo entra em pausa.
+  const handleColocarEmPausa = (colaboradorId: string, tipoId: string) =>
+    comandarDisponibilidade(colaboradorId, { iniciarPausaId: tipoId }, {
+      sucesso: 'Atendente colocado em pausa',
+      falha: 'Não foi possível colocar o atendente em pausa',
+    })
+
+  // Encerra a instância (`fim`) e devolve ao atendimento.
+  const handleTirarDaPausa = (colaboradorId: string) =>
+    comandarDisponibilidade(colaboradorId, { encerrarPausa: true }, {
+      sucesso: 'Atendente retirado da pausa',
+      falha: 'Não foi possível tirar o atendente da pausa',
+    })
+
+  // Reetiqueta a pausa em andamento preservando `inicio` — o cronômetro NÃO
+  // zera, e o tempo decorrido passa a ser julgado pelo limite do tipo novo.
+  const handleTrocarTipoDePausa = (colaboradorId: string, tipoId: string) =>
+    comandarDisponibilidade(colaboradorId, { trocarTipoPausaId: tipoId }, {
+      sucesso: 'Tipo da pausa alterado',
+      falha: 'Não foi possível trocar o tipo da pausa',
+    })
+
+  /**
+   * Ticket aberto NÃO bloqueia a ação — bloquear tornaria a ferramenta inútil
+   * exatamente no caso que a motivou, o atendente que sumiu COM tickets
+   * abertos. Os tickets seguem atribuídos a ele; o gestor só é avisado de
+   * quantos são antes de confirmar. Sem ticket aberto não há o que avisar.
+   */
+  const [confirmacaoDisponibilidade, setConfirmacaoDisponibilidade] = useState<
+    { nome: string; tickets: number; rotulo: string; executar: () => Promise<void> } | null
+  >(null)
+
+  const pedirDisponibilidade = (
+    atendente: { id: string; nome: string },
+    tickets: number,
+    rotulo: string,
+    executar: () => Promise<void>,
+  ) => {
+    if (tickets > 0) {
+      setConfirmacaoDisponibilidade({ nome: atendente.nome, tickets, rotulo, executar })
+      return
+    }
+    void executar()
   }
 
   // Conversation slide-out state
@@ -3041,6 +3141,45 @@ function SetorPageInner() {
 
   const permissoes = data?.permissoes || []
   const pausasData = data?.pausas || []
+
+  // ── Caso #97218: quem pode mandar na disponibilidade dos atendentes daqui ──
+  // O critério é `hasSupervisorScope`, o mesmo que a rota aplica no servidor —
+  // aqui ele só evita oferecer um controle que o POST recusaria.
+  //
+  // Esta tela é de UM setor, então o vínculo que importa é o MEU com ele, e a
+  // lista de quem está vinculado a este setor já está carregada em `atendentes`
+  // (vem de `colaboradores_setores`; `colaboradores.setor_id` é legado e nulo
+  // em quase todo mundo).
+  const souSupervisorDoSetor = hasSupervisorScope(
+    {
+      id: colaboradorLogado?.id || '',
+      isMaster: colaboradorLogado?.is_master === true,
+      canSeeAllTickets: canSeeAllTickets((colaboradorLogado as any)?.permissoes),
+      linkedSetorIds: atendentes.some((a: any) => a.id === colaboradorLogado?.id) ? [setorId] : [],
+    },
+    setorId,
+  )
+
+  // Só tipo ATIVO entra: a rota recusa inativo com 422, e oferecer o que ela
+  // negaria é o mesmo que oferecer botão quebrado. `pausasData` traz o catálogo
+  // inteiro porque a aba de configuração precisa dos inativos para reativá-los.
+  // Sem `useMemo` de propósito: `pausasData` é array novo a cada render, então
+  // o memo nunca acertaria — e são poucas linhas.
+  const tiposDePausaAtivos: { id: string; nome: string }[] = (pausasData as any[])
+    .filter((pausa) => pausa.ativo)
+    .map((pausa) => ({ id: pausa.id as string, nome: pausa.nome as string }))
+
+  /**
+   * O atendente está em pausa DESTE setor?
+   *
+   * Trocar o tipo e tirar da pausa exigem escopo sobre o setor DA PAUSA, e não
+   * sobre um setor qualquer do atendente — o relatório de pausa é agrupado por
+   * setor. Quem trabalha em dois setores pode ter pausado no outro; aqui eu só
+   * sou supervisor deste, então a pausa do outro fica de fora e os controles
+   * dela não aparecem. É a segunda conferência que a rota faz.
+   */
+  const pausaEhDesteSetor = (atendente: any) =>
+    !!atendente?.pausa_atual_id && atendente?.pausaSetorId === setorId
 
   const atendentesStats = useMemo(() => {
     if (subsetorFilter.length === 0 && idsAtendentesNoFiltroTag === null) return baseAtendentesStats
@@ -6696,14 +6835,143 @@ const saveConfig = async () => {
                                   ? { color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Online' }
                                   : { color: 'bg-gray-400', textColor: 'text-muted-foreground', label: 'Offline' }
                               const isChanging = alterandoStatusId === atendente.id
+                              // Um conjunto de itens, dois gatilhos: o próprio status e o `...`
+                              // no fim da linha. Escondido só no `...`, o controle de pausa
+                              // não era encontrado — e o status é onde se olha para decidir
+                              // mexer nele. A aba Atendentes já abre o menu pelo badge de
+                              // status; aqui passa a ser igual.
+                              const itensDeDisponibilidade = (
+                                <>
+                                  <DropdownMenuItem
+                                    disabled={isOnline && !isOnPause}
+                                    onClick={() => pedirDisponibilidade(
+                                      atendente,
+                                      ticketsDoAtendente,
+                                      'marcar como online',
+                                      () => handleAlterarStatusAtendente(atendente.id, 'online'),
+                                    )}
+                                    className="gap-2"
+                                  >
+                                    <CircleCheck className="h-3.5 w-3.5 text-green-500" />
+                                    Marcar como Online
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    disabled={!isOnline && !isOnPause}
+                                    onClick={() => pedirDisponibilidade(
+                                      atendente,
+                                      ticketsDoAtendente,
+                                      'marcar como offline',
+                                      () => handleAlterarStatusAtendente(atendente.id, 'offline'),
+                                    )}
+                                    className="gap-2"
+                                  >
+                                    <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
+                                    Marcar como Offline
+                                  </DropdownMenuItem>
+
+                                  {/* Controle de pausa (caso #97218). Só aparece para quem
+                                      supervisiona este setor — o servidor recusa de qualquer
+                                      forma, isto só evita oferecer o que o POST negaria.
+                                      Trocar o tipo e tirar da pausa exigem ainda que a pausa
+                                      aberta seja DESTE setor: quem trabalha em dois setores
+                                      pode ter pausado no outro, e a ausência conta lá. */}
+                                  {souSupervisorDoSetor && tiposDePausaAtivos.length > 0 && (
+                                    <>
+                                      <DropdownMenuSeparator />
+                                      {isOnPause ? (
+                                        pausaEhDesteSetor(atendente) && (
+                                          <>
+                                            <DropdownMenuItem
+                                              onClick={() => pedirDisponibilidade(
+                                                atendente,
+                                                ticketsDoAtendente,
+                                                'tirar da pausa',
+                                                () => handleTirarDaPausa(atendente.id),
+                                              )}
+                                              className="gap-2"
+                                            >
+                                              <Play className="h-3.5 w-3.5 text-green-500" />
+                                              Tirar da pausa
+                                            </DropdownMenuItem>
+                                            <DropdownMenuSub>
+                                              <DropdownMenuSubTrigger className="gap-2">
+                                                <Coffee className="h-3.5 w-3.5 text-amber-500" />
+                                                Trocar tipo de pausa
+                                              </DropdownMenuSubTrigger>
+                                              <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                                                {/* O tipo que já está valendo sai da lista:
+                                                    reescolhê-lo não é troca, e a rota recusa
+                                                    com MESMO_TIPO. */}
+                                                {tiposDePausaAtivos
+                                                  .filter((tipo) => tipo.id !== atendente.pausaTipoId)
+                                                  .map((tipo) => (
+                                                    <DropdownMenuItem
+                                                      key={tipo.id}
+                                                      onClick={() => pedirDisponibilidade(
+                                                        atendente,
+                                                        ticketsDoAtendente,
+                                                        `trocar a pausa para ${tipo.nome}`,
+                                                        () => handleTrocarTipoDePausa(atendente.id, tipo.id),
+                                                      )}
+                                                    >
+                                                      {tipo.nome}
+                                                    </DropdownMenuItem>
+                                                  ))}
+                                              </DropdownMenuSubContent>
+                                            </DropdownMenuSub>
+                                          </>
+                                        )
+                                      ) : (
+                                        <DropdownMenuSub>
+                                          <DropdownMenuSubTrigger className="gap-2">
+                                            <Coffee className="h-3.5 w-3.5 text-amber-500" />
+                                            Colocar em pausa
+                                          </DropdownMenuSubTrigger>
+                                          {/* 18 tipos num setor real não cabem na tela: o
+                                              submenu rola em vez de estourar para fora. */}
+                                          <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                                            {tiposDePausaAtivos.map((tipo) => (
+                                              <DropdownMenuItem
+                                                key={tipo.id}
+                                                onClick={() => pedirDisponibilidade(
+                                                  atendente,
+                                                  ticketsDoAtendente,
+                                                  `colocar em ${tipo.nome}`,
+                                                  () => handleColocarEmPausa(atendente.id, tipo.id),
+                                                )}
+                                              >
+                                                {tipo.nome}
+                                              </DropdownMenuItem>
+                                            ))}
+                                          </DropdownMenuSubContent>
+                                        </DropdownMenuSub>
+                                      )}
+                                    </>
+                                  )}
+                                </>
+                              )
                               return (
                                 <TableRow key={atendente.id}>
                                   <TableCell className="text-sm font-medium text-foreground">{atendente.nome}</TableCell>
                                   <TableCell>
-                                    <div className="flex items-center gap-2">
-                                      <span className={cn('h-2 w-2 rounded-full shrink-0', statusDisplay.color)} />
-                                      <span className={cn('text-sm', statusDisplay.textColor)}>{statusDisplay.label}</span>
-                                    </div>
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <button
+                                          type="button"
+                                          disabled={isChanging}
+                                          aria-label={`Alterar disponibilidade de ${atendente.nome}`}
+                                          title="Alterar disponibilidade"
+                                          className="flex items-center gap-2 rounded-md px-1.5 py-1 -mx-1.5 transition-colors hover:bg-muted disabled:opacity-60"
+                                        >
+                                          <span className={cn('h-2 w-2 rounded-full shrink-0', statusDisplay.color)} />
+                                          <span className={cn('text-sm', statusDisplay.textColor)}>{statusDisplay.label}</span>
+                                          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                        </button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="start" className="w-52">
+                                        {itensDeDisponibilidade}
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-center font-medium">{ticketsDoAtendente}</TableCell>
                                   <TableCell className="text-sm tabular-nums text-center font-medium">{finalizadosHojeDoAtendente}</TableCell>
@@ -6724,23 +6992,8 @@ const saveConfig = async () => {
                                           }
                                         </Button>
                                       </DropdownMenuTrigger>
-                                      <DropdownMenuContent align="end" className="w-44">
-                                        <DropdownMenuItem
-                                          disabled={isOnline && !isOnPause}
-                                          onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
-                                          className="gap-2"
-                                        >
-                                          <CircleCheck className="h-3.5 w-3.5 text-green-500" />
-                                          Marcar como Online
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem
-                                          disabled={!isOnline && !isOnPause}
-                                          onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
-                                          className="gap-2"
-                                        >
-                                          <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
-                                          Marcar como Offline
-                                        </DropdownMenuItem>
+                                      <DropdownMenuContent align="end" className="w-52">
+                                        {itensDeDisponibilidade}
                                       </DropdownMenuContent>
                                     </DropdownMenu>
                                   </TableCell>
@@ -8307,10 +8560,18 @@ const saveConfig = async () => {
                                 )
                               })()}
                             </DropdownMenuTrigger>
+                            {/* Esta aba fica só no online/offline — o controle de
+                                pausa mora em Monitoramento → Atendentes, onde o
+                                estado da pausa está à vista com o cronômetro. */}
                             <DropdownMenuContent align="end" className="w-44">
                               <DropdownMenuItem
                                 disabled={atendente.is_online && !atendente.pausa_atual_id}
-                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
+                                onClick={() => pedirDisponibilidade(
+                                  atendente,
+                                  ticketsDoAtendente,
+                                  'marcar como online',
+                                  () => handleAlterarStatusAtendente(atendente.id, 'online'),
+                                )}
                                 className="gap-2"
                               >
                                 <CircleCheck className="h-3.5 w-3.5 text-green-500" />
@@ -8318,7 +8579,12 @@ const saveConfig = async () => {
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 disabled={!atendente.is_online && !atendente.pausa_atual_id}
-                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
+                                onClick={() => pedirDisponibilidade(
+                                  atendente,
+                                  ticketsDoAtendente,
+                                  'marcar como offline',
+                                  () => handleAlterarStatusAtendente(atendente.id, 'offline'),
+                                )}
                                 className="gap-2"
                               >
                                 <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
@@ -8347,10 +8613,18 @@ const saveConfig = async () => {
                                 }
                               </Button>
                             </DropdownMenuTrigger>
+                            {/* Esta aba fica só no online/offline — o controle de
+                                pausa mora em Monitoramento → Atendentes, onde o
+                                estado da pausa está à vista com o cronômetro. */}
                             <DropdownMenuContent align="end" className="w-44">
                               <DropdownMenuItem
                                 disabled={atendente.is_online && !atendente.pausa_atual_id}
-                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'online')}
+                                onClick={() => pedirDisponibilidade(
+                                  atendente,
+                                  ticketsDoAtendente,
+                                  'marcar como online',
+                                  () => handleAlterarStatusAtendente(atendente.id, 'online'),
+                                )}
                                 className="gap-2"
                               >
                                 <CircleCheck className="h-3.5 w-3.5 text-green-500" />
@@ -8358,7 +8632,12 @@ const saveConfig = async () => {
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 disabled={!atendente.is_online && !atendente.pausa_atual_id}
-                                onClick={() => handleAlterarStatusAtendente(atendente.id, 'offline')}
+                                onClick={() => pedirDisponibilidade(
+                                  atendente,
+                                  ticketsDoAtendente,
+                                  'marcar como offline',
+                                  () => handleAlterarStatusAtendente(atendente.id, 'offline'),
+                                )}
                                 className="gap-2"
                               >
                                 <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
@@ -10285,6 +10564,41 @@ const saveConfig = async () => {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {deleting ? 'Removendo...' : 'Remover'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Aviso de tickets abertos (caso #97218). Não é trava: o atendente que
+          sumiu COM tickets abertos é justamente o caso que motivou a
+          ferramenta. Os tickets seguem atribuídos a ele; o gestor só confirma
+          sabendo quantos são. */}
+      <AlertDialog
+        open={!!confirmacaoDisponibilidade}
+        onOpenChange={(aberto) => { if (!aberto) setConfirmacaoDisponibilidade(null) }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmacaoDisponibilidade?.nome} tem {confirmacaoDisponibilidade?.tickets}{' '}
+              {confirmacaoDisponibilidade?.tickets === 1 ? 'ticket aberto' : 'tickets abertos'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmacaoDisponibilidade?.tickets === 1 ? 'Ele continua atribuído' : 'Eles continuam atribuídos'}{' '}
+              a {confirmacaoDisponibilidade?.nome} — nada volta para a fila.
+              Confirma {confirmacaoDisponibilidade?.rotulo}?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const pendente = confirmacaoDisponibilidade
+                setConfirmacaoDisponibilidade(null)
+                if (pendente) void pendente.executar()
+              }}
+            >
+              Confirmar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
