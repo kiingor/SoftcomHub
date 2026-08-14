@@ -113,6 +113,7 @@ import {
   TrendingUp,
   CheckCircle,
   Activity,
+  ChevronDown,
   ChevronFirst,
   ChevronLeft,
   ChevronRight,
@@ -6834,14 +6835,143 @@ const saveConfig = async () => {
                                   ? { color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Online' }
                                   : { color: 'bg-gray-400', textColor: 'text-muted-foreground', label: 'Offline' }
                               const isChanging = alterandoStatusId === atendente.id
+                              // Um conjunto de itens, dois gatilhos: o próprio status e o `...`
+                              // no fim da linha. Escondido só no `...`, o controle de pausa
+                              // não era encontrado — e o status é onde se olha para decidir
+                              // mexer nele. A aba Atendentes já abre o menu pelo badge de
+                              // status; aqui passa a ser igual.
+                              const itensDeDisponibilidade = (
+                                <>
+                                  <DropdownMenuItem
+                                    disabled={isOnline && !isOnPause}
+                                    onClick={() => pedirDisponibilidade(
+                                      atendente,
+                                      ticketsDoAtendente,
+                                      'marcar como online',
+                                      () => handleAlterarStatusAtendente(atendente.id, 'online'),
+                                    )}
+                                    className="gap-2"
+                                  >
+                                    <CircleCheck className="h-3.5 w-3.5 text-green-500" />
+                                    Marcar como Online
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    disabled={!isOnline && !isOnPause}
+                                    onClick={() => pedirDisponibilidade(
+                                      atendente,
+                                      ticketsDoAtendente,
+                                      'marcar como offline',
+                                      () => handleAlterarStatusAtendente(atendente.id, 'offline'),
+                                    )}
+                                    className="gap-2"
+                                  >
+                                    <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
+                                    Marcar como Offline
+                                  </DropdownMenuItem>
+
+                                  {/* Controle de pausa (caso #97218). Só aparece para quem
+                                      supervisiona este setor — o servidor recusa de qualquer
+                                      forma, isto só evita oferecer o que o POST negaria.
+                                      Trocar o tipo e tirar da pausa exigem ainda que a pausa
+                                      aberta seja DESTE setor: quem trabalha em dois setores
+                                      pode ter pausado no outro, e a ausência conta lá. */}
+                                  {souSupervisorDoSetor && tiposDePausaAtivos.length > 0 && (
+                                    <>
+                                      <DropdownMenuSeparator />
+                                      {isOnPause ? (
+                                        pausaEhDesteSetor(atendente) && (
+                                          <>
+                                            <DropdownMenuItem
+                                              onClick={() => pedirDisponibilidade(
+                                                atendente,
+                                                ticketsDoAtendente,
+                                                'tirar da pausa',
+                                                () => handleTirarDaPausa(atendente.id),
+                                              )}
+                                              className="gap-2"
+                                            >
+                                              <Play className="h-3.5 w-3.5 text-green-500" />
+                                              Tirar da pausa
+                                            </DropdownMenuItem>
+                                            <DropdownMenuSub>
+                                              <DropdownMenuSubTrigger className="gap-2">
+                                                <Coffee className="h-3.5 w-3.5 text-amber-500" />
+                                                Trocar tipo de pausa
+                                              </DropdownMenuSubTrigger>
+                                              <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                                                {/* O tipo que já está valendo sai da lista:
+                                                    reescolhê-lo não é troca, e a rota recusa
+                                                    com MESMO_TIPO. */}
+                                                {tiposDePausaAtivos
+                                                  .filter((tipo) => tipo.id !== atendente.pausaTipoId)
+                                                  .map((tipo) => (
+                                                    <DropdownMenuItem
+                                                      key={tipo.id}
+                                                      onClick={() => pedirDisponibilidade(
+                                                        atendente,
+                                                        ticketsDoAtendente,
+                                                        `trocar a pausa para ${tipo.nome}`,
+                                                        () => handleTrocarTipoDePausa(atendente.id, tipo.id),
+                                                      )}
+                                                    >
+                                                      {tipo.nome}
+                                                    </DropdownMenuItem>
+                                                  ))}
+                                              </DropdownMenuSubContent>
+                                            </DropdownMenuSub>
+                                          </>
+                                        )
+                                      ) : (
+                                        <DropdownMenuSub>
+                                          <DropdownMenuSubTrigger className="gap-2">
+                                            <Coffee className="h-3.5 w-3.5 text-amber-500" />
+                                            Colocar em pausa
+                                          </DropdownMenuSubTrigger>
+                                          {/* 18 tipos num setor real não cabem na tela: o
+                                              submenu rola em vez de estourar para fora. */}
+                                          <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                                            {tiposDePausaAtivos.map((tipo) => (
+                                              <DropdownMenuItem
+                                                key={tipo.id}
+                                                onClick={() => pedirDisponibilidade(
+                                                  atendente,
+                                                  ticketsDoAtendente,
+                                                  `colocar em ${tipo.nome}`,
+                                                  () => handleColocarEmPausa(atendente.id, tipo.id),
+                                                )}
+                                              >
+                                                {tipo.nome}
+                                              </DropdownMenuItem>
+                                            ))}
+                                          </DropdownMenuSubContent>
+                                        </DropdownMenuSub>
+                                      )}
+                                    </>
+                                  )}
+                                </>
+                              )
                               return (
                                 <TableRow key={atendente.id}>
                                   <TableCell className="text-sm font-medium text-foreground">{atendente.nome}</TableCell>
                                   <TableCell>
-                                    <div className="flex items-center gap-2">
-                                      <span className={cn('h-2 w-2 rounded-full shrink-0', statusDisplay.color)} />
-                                      <span className={cn('text-sm', statusDisplay.textColor)}>{statusDisplay.label}</span>
-                                    </div>
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <button
+                                          type="button"
+                                          disabled={isChanging}
+                                          aria-label={`Alterar disponibilidade de ${atendente.nome}`}
+                                          title="Alterar disponibilidade"
+                                          className="flex items-center gap-2 rounded-md px-1.5 py-1 -mx-1.5 transition-colors hover:bg-muted disabled:opacity-60"
+                                        >
+                                          <span className={cn('h-2 w-2 rounded-full shrink-0', statusDisplay.color)} />
+                                          <span className={cn('text-sm', statusDisplay.textColor)}>{statusDisplay.label}</span>
+                                          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                        </button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="start" className="w-52">
+                                        {itensDeDisponibilidade}
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
                                   </TableCell>
                                   <TableCell className="text-sm tabular-nums text-center font-medium">{ticketsDoAtendente}</TableCell>
                                   <TableCell className="text-sm tabular-nums text-center font-medium">{finalizadosHojeDoAtendente}</TableCell>
@@ -6863,112 +6993,7 @@ const saveConfig = async () => {
                                         </Button>
                                       </DropdownMenuTrigger>
                                       <DropdownMenuContent align="end" className="w-52">
-                                        <DropdownMenuItem
-                                          disabled={isOnline && !isOnPause}
-                                          onClick={() => pedirDisponibilidade(
-                                            atendente,
-                                            ticketsDoAtendente,
-                                            'marcar como online',
-                                            () => handleAlterarStatusAtendente(atendente.id, 'online'),
-                                          )}
-                                          className="gap-2"
-                                        >
-                                          <CircleCheck className="h-3.5 w-3.5 text-green-500" />
-                                          Marcar como Online
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem
-                                          disabled={!isOnline && !isOnPause}
-                                          onClick={() => pedirDisponibilidade(
-                                            atendente,
-                                            ticketsDoAtendente,
-                                            'marcar como offline',
-                                            () => handleAlterarStatusAtendente(atendente.id, 'offline'),
-                                          )}
-                                          className="gap-2"
-                                        >
-                                          <CircleOff className="h-3.5 w-3.5 text-muted-foreground" />
-                                          Marcar como Offline
-                                        </DropdownMenuItem>
-
-                                        {/* Controle de pausa (caso #97218). Só aparece para quem
-                                            supervisiona este setor — o servidor recusa de qualquer
-                                            forma, isto só evita oferecer o que o POST negaria.
-                                            Trocar o tipo e tirar da pausa exigem ainda que a pausa
-                                            aberta seja DESTE setor: quem trabalha em dois setores
-                                            pode ter pausado no outro, e a ausência conta lá. */}
-                                        {souSupervisorDoSetor && tiposDePausaAtivos.length > 0 && (
-                                          <>
-                                            <DropdownMenuSeparator />
-                                            {isOnPause ? (
-                                              <>
-                                                {pausaEhDesteSetor(atendente) && (
-                                                  <>
-                                                    <DropdownMenuItem
-                                                      onClick={() => pedirDisponibilidade(
-                                                        atendente,
-                                                        ticketsDoAtendente,
-                                                        'tirar da pausa',
-                                                        () => handleTirarDaPausa(atendente.id),
-                                                      )}
-                                                      className="gap-2"
-                                                    >
-                                                      <Play className="h-3.5 w-3.5 text-green-500" />
-                                                      Tirar da pausa
-                                                    </DropdownMenuItem>
-                                                    <DropdownMenuSub>
-                                                      <DropdownMenuSubTrigger className="gap-2">
-                                                        <Coffee className="h-3.5 w-3.5 text-amber-500" />
-                                                        Trocar tipo de pausa
-                                                      </DropdownMenuSubTrigger>
-                                                      <DropdownMenuSubContent>
-                                                        {/* O tipo que já está valendo sai da lista:
-                                                            reescolhê-lo não é troca, e a rota recusa
-                                                            com MESMO_TIPO. */}
-                                                        {tiposDePausaAtivos
-                                                          .filter((tipo) => tipo.id !== atendente.pausaTipoId)
-                                                          .map((tipo) => (
-                                                            <DropdownMenuItem
-                                                              key={tipo.id}
-                                                              onClick={() => pedirDisponibilidade(
-                                                                atendente,
-                                                                ticketsDoAtendente,
-                                                                `trocar a pausa para ${tipo.nome}`,
-                                                                () => handleTrocarTipoDePausa(atendente.id, tipo.id),
-                                                              )}
-                                                            >
-                                                              {tipo.nome}
-                                                            </DropdownMenuItem>
-                                                          ))}
-                                                      </DropdownMenuSubContent>
-                                                    </DropdownMenuSub>
-                                                  </>
-                                                )}
-                                              </>
-                                            ) : (
-                                              <DropdownMenuSub>
-                                                <DropdownMenuSubTrigger className="gap-2">
-                                                  <Coffee className="h-3.5 w-3.5 text-amber-500" />
-                                                  Colocar em pausa
-                                                </DropdownMenuSubTrigger>
-                                                <DropdownMenuSubContent>
-                                                  {tiposDePausaAtivos.map((tipo) => (
-                                                    <DropdownMenuItem
-                                                      key={tipo.id}
-                                                      onClick={() => pedirDisponibilidade(
-                                                        atendente,
-                                                        ticketsDoAtendente,
-                                                        `colocar em ${tipo.nome}`,
-                                                        () => handleColocarEmPausa(atendente.id, tipo.id),
-                                                      )}
-                                                    >
-                                                      {tipo.nome}
-                                                    </DropdownMenuItem>
-                                                  ))}
-                                                </DropdownMenuSubContent>
-                                              </DropdownMenuSub>
-                                            )}
-                                          </>
-                                        )}
+                                        {itensDeDisponibilidade}
                                       </DropdownMenuContent>
                                     </DropdownMenu>
                                   </TableCell>
