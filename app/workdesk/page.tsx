@@ -1613,14 +1613,33 @@ export default function WorkdeskPage() {
   }, [supabase])
 
 // Fetch messages for selected ticket (including client history from today only)
+  // Corrida na troca de chat: cada chamada leva um número de sequência e só a
+  // mais recente pode escrever na tela. Sem isso, a resposta do ticket ANTERIOR
+  // chegava depois e pintava a conversa errada no chat aberto — relatado em
+  // 18/08/2026, e tanto mais provável quanto mais lento o banco estiver.
+  const mensagensReqRef = useRef(0)
+
   const fetchMensagens = useCallback(
     async (ticketId: string, clienteId: string, ticketCriadoEm: string, options?: { silent?: boolean }) => {
+      const req = ++mensagensReqRef.current
+      const obsoleta = () => req !== mensagensReqRef.current
+
       if (!options?.silent) setLoadingMensagens(true)
 
       // Janela relativa ao criado_em do ticket (24h antes), não à meia-noite
       // do momento atual — um ticket aberto logo após meia-noite precisa
       // enxergar a conversa do Nexus de antes dela.
       const inicioJanelaHistorico = calcularInicioJanelaHistoricoIso(ticketCriadoEm)
+
+      // A conversa do próprio ticket não depende da resolução de telefone abaixo,
+      // então parte agora, em paralelo com ela. O builder do supabase-js só dispara
+      // quando alguém chama .then() — é o que este .then(r => r) faz.
+      const consultaDoTicket = supabase
+        .from('mensagens')
+        .select('*, tickets(id, status, criado_em, encerrado_em)')
+        .eq('ticket_id', ticketId)
+        .order('enviado_em', { ascending: true, nullsFirst: false })
+        .then((r) => r)
 
       // Resolve all cliente_ids with the same phone number (handles duplicate records)
       let allClienteIds = [clienteId]
@@ -1641,31 +1660,38 @@ export default function WorkdeskPage() {
         }
       }
 
-      // Query 1: All messages from current ticket (always reliable)
-      const { data: ticketMsgs, error: err1 } = await supabase
-        .from('mensagens')
-        .select('*, tickets(id, status, criado_em, encerrado_em)')
-        .eq('ticket_id', ticketId)
-        .order('enviado_em', { ascending: true, nullsFirst: false })
+      if (obsoleta()) return
 
-      // Query 2: Messages from OTHER tickets of the same client (24h before this ticket's creation)
-      const { data: otherTicketMsgs, error: err2 } = await supabase
-        .from('mensagens')
-        .select('*, tickets(id, status, criado_em, encerrado_em)')
-        .in('cliente_id', allClienteIds)
-        .neq('ticket_id', ticketId)
-        .not('ticket_id', 'is', null)
-        .gte('enviado_em', inicioJanelaHistorico)
-        .order('enviado_em', { ascending: true, nullsFirst: false })
+      // As três são independentes entre si. Em série custavam três idas ao banco
+      // (~1s cada hoje) só para montar uma conversa; agora o caminho crítico é a
+      // resolução de telefone e mais uma rodada.
+      const [
+        { data: ticketMsgs, error: err1 },
+        { data: otherTicketMsgs, error: err2 },
+        { data: orphanMsgs, error: err3 },
+      ] = await Promise.all([
+        // Já partiu lá em cima, junto com a resolução de telefone.
+        consultaDoTicket,
+        // Mensagens de OUTROS tickets do mesmo cliente, na janela de histórico.
+        supabase
+          .from('mensagens')
+          .select('*, tickets(id, status, criado_em, encerrado_em)')
+          .in('cliente_id', allClienteIds)
+          .neq('ticket_id', ticketId)
+          .not('ticket_id', 'is', null)
+          .gte('enviado_em', inicioJanelaHistorico)
+          .order('enviado_em', { ascending: true, nullsFirst: false }),
+        // Órfãs (ticket_id IS NULL): conversa do bot antes de existir ticket.
+        supabase
+          .from('mensagens')
+          .select('*')
+          .in('cliente_id', allClienteIds)
+          .is('ticket_id', null)
+          .gte('enviado_em', inicioJanelaHistorico)
+          .order('enviado_em', { ascending: true, nullsFirst: false }),
+      ])
 
-      // Query 3: Orphan messages (ticket_id IS NULL) — bot conversations before ticket creation
-      const { data: orphanMsgs, error: err3 } = await supabase
-        .from('mensagens')
-        .select('*')
-        .in('cliente_id', allClienteIds)
-        .is('ticket_id', null)
-        .gte('enviado_em', inicioJanelaHistorico)
-        .order('enviado_em', { ascending: true, nullsFirst: false })
+      if (obsoleta()) return
 
       console.log('[fetchMensagens] Q1 ticketMsgs:', ticketMsgs?.length, err1 ? `ERR: ${JSON.stringify(err1)}` : 'OK')
       console.log('[fetchMensagens] Q2 otherTicketMsgs:', otherTicketMsgs?.length, err2 ? `ERR: ${JSON.stringify(err2)}` : 'OK')
