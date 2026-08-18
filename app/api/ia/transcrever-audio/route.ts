@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server'
-import { buildAiEndpointUrl } from '@/lib/ai-provider'
+import {
+  buildAiEndpointUrl,
+  resolverModeloDeTranscricao,
+  usaProvedorProprio,
+} from '@/lib/ai-provider'
+import { carregarConfigIaDoSetor } from '@/lib/server/setor-ia-config'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export async function POST(request: Request) {
@@ -17,11 +22,7 @@ export async function POST(request: Request) {
     const supabase = createServiceClient()
 
     // Fetch OpenAI config from setor
-    const { data: setor, error: setorError } = await supabase
-      .from('setores')
-      .select('openai_api_key, openai_ativo, openai_url_personalizada, openai_base_url')
-      .eq('id', setor_id)
-      .single()
+    const { setor, erro: setorError } = await carregarConfigIaDoSetor(supabase, setor_id)
 
     if (setorError || !setor) {
       return NextResponse.json({ error: 'Setor não encontrado' }, { status: 404 })
@@ -68,18 +69,19 @@ export async function POST(request: Request) {
     const ext = extMap[contentType.split(';')[0]] || 'ogg'
 
     // Build multipart form data for Whisper API
+    const modelo = resolverModeloDeTranscricao(setor)
     const formData = new FormData()
     const audioBlob = new Blob([audioBuffer], { type: contentType })
     formData.append('file', audioBlob, `audio.${ext}`)
-    formData.append('model', 'whisper-1')
+    formData.append('model', modelo)
     formData.append('language', 'pt')
 
     // Call OpenAI Whisper API with 30s timeout
     const whisperController = new AbortController()
     const whisperTimeout = setTimeout(() => whisperController.abort(), 30000)
 
-    const transcriptionsUrl = setor.openai_url_personalizada && setor.openai_base_url
-      ? buildAiEndpointUrl(setor.openai_base_url, 'audio/transcriptions')
+    const transcriptionsUrl = usaProvedorProprio(setor)
+      ? buildAiEndpointUrl(setor.openai_base_url!, 'audio/transcriptions')
       : 'https://api.openai.com/v1/audio/transcriptions'
 
     try {
@@ -95,9 +97,17 @@ export async function POST(request: Request) {
 
       if (!whisperRes.ok) {
         const errorData = await whisperRes.json().catch(() => ({}))
-        console.error('[IA] Whisper API error:', whisperRes.status, errorData)
+        console.error('[IA] Whisper API error:', whisperRes.status, modelo, errorData)
+        // O motivo vem do provedor e precisa chegar à tela: o caso #97520 ficou
+        // invisível justamente porque "Erro na API Whisper: 400" escondia um
+        // "No credentials for provider: openai" — modelo errado, não pane.
+        const motivo = errorData?.error?.message || errorData?.message
         return NextResponse.json(
-          { error: `Erro na API Whisper: ${whisperRes.status}` },
+          {
+            error: motivo
+              ? `Erro na transcrição (modelo ${modelo}): ${String(motivo).slice(0, 200)}`
+              : `Erro na API Whisper: ${whisperRes.status}`,
+          },
           { status: 502 },
         )
       }

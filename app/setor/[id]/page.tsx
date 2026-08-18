@@ -184,6 +184,7 @@ import { DisparosSection } from '@/components/setor/disparos-section'
 import { HistoricoClienteSection } from '@/components/setor/historico-cliente-section'
 import { AtendentesStatusModal, isAtendenteOnline } from '@/components/setor/atendentes-status-modal'
 import { StatusAtendimentoPanel } from '@/components/setor/status-atendimento-panel'
+import { ModelosIaSetor } from '@/components/setor/modelos-ia-setor'
 import { MessageMediaPreview } from '@/components/chat/message-media-preview'
 import { MensagemBubble, SeparadorConversaNexus, SeparadorInicioTicket } from '@/components/chat/mensagem-bubble'
 import { TransferirTicketForm } from '@/components/tickets/transferir-ticket-dialog'
@@ -1725,6 +1726,9 @@ function SetorPageInner() {
   const [limitesStatusAtendimentoIndisponiveis, setLimitesStatusAtendimentoIndisponiveis] = useState(false)
   // Mesma ideia para setores.oc_obrigatoria_para_encerrar — caso #97240.
   const [ocObrigatoriaIndisponivel, setOcObrigatoriaIndisponivel] = useState(false)
+  // E para as colunas do caso #97520: encerramento_morto_* e openai_modelo_*.
+  const [encerramentoMortoIndisponivel, setEncerramentoMortoIndisponivel] = useState(false)
+  const [modelosIaIndisponiveis, setModelosIaIndisponiveis] = useState(false)
   const [statusAtendentesModalOpen, setStatusAtendentesModalOpen] = useState(false)
   // Dirty tracking das outras seções da página Configurações — alimenta a
   // FloatingSaveBar para unificar os múltiplos saves em um único CTA.
@@ -1850,11 +1854,15 @@ function SetorPageInner() {
   openai_ativo: false,
   openai_url_personalizada: false,
   openai_base_url: '',
+  openai_modelo_chat: '',
+  openai_modelo_transcricao: '',
   nexus_ativo: false,
   assistente_ia: false,
   assinatura_ativa: false,
   encerramento_auto_ativo: false,
   encerramento_auto_minutos: 30,
+  encerramento_morto_ativo: false,
+  encerramento_morto_horas: 24,
   travar_ordenacao_chat: false,
   atendimento_status_atencao_minutos: DEFAULT_ATENCAO_MINUTOS,
   atendimento_status_critico_minutos: DEFAULT_CRITICO_MINUTOS,
@@ -3370,11 +3378,15 @@ function SetorPageInner() {
         openai_ativo: setor.openai_ativo || false,
         openai_url_personalizada: setor.openai_url_personalizada || false,
         openai_base_url: setor.openai_base_url || '',
+        openai_modelo_chat: setor.openai_modelo_chat || '',
+        openai_modelo_transcricao: setor.openai_modelo_transcricao || '',
         nexus_ativo: setor.nexus_ativo || false,
         assistente_ia: setor.assistente_ia || false,
         assinatura_ativa: setor.assinatura_ativa || false,
         encerramento_auto_ativo: setor.encerramento_auto_ativo || false,
         encerramento_auto_minutos: setor.encerramento_auto_minutos ?? 30,
+        encerramento_morto_ativo: setor.encerramento_morto_ativo || false,
+        encerramento_morto_horas: setor.encerramento_morto_horas ?? 24,
         travar_ordenacao_chat: setor.travar_ordenacao_chat || false,
         atendimento_status_atencao_minutos: setor.atendimento_status_atencao_minutos ?? DEFAULT_ATENCAO_MINUTOS,
         atendimento_status_critico_minutos: setor.atendimento_status_critico_minutos ?? DEFAULT_CRITICO_MINUTOS,
@@ -4537,10 +4549,22 @@ const saveConfig = async () => {
       // coluna nova —, a gente lê no erro 42703/PGRST204 QUAL coluna faltou,
       // tira só ela e tenta de novo. O resto das configurações do setor salva
       // normalmente.
+      const mortoPayload = {
+        encerramento_morto_ativo: configForm.encerramento_morto_ativo,
+        encerramento_morto_horas: configForm.encerramento_morto_horas,
+      }
+      const modelosIaPayload = {
+        // Vazio salva NULL: é o que faz o resolvedor cair no padrão do provedor.
+        openai_modelo_chat: configForm.openai_modelo_chat.trim() || null,
+        openai_modelo_transcricao: configForm.openai_modelo_transcricao.trim() || null,
+      }
+
       const camposOpcionais: Record<string, unknown> = {
         travar_ordenacao_chat: configForm.travar_ordenacao_chat,
         ...statusPayload,
         oc_obrigatoria_para_encerrar: configForm.oc_obrigatoria_para_encerrar,
+        ...mortoPayload,
+        ...modelosIaPayload,
       }
 
       const ausentes = new Set<string>()
@@ -4584,6 +4608,8 @@ const saveConfig = async () => {
       setTravarOrdenacaoChatIndisponivel(travarOrdenacaoIndisponivel)
       setLimitesStatusAtendimentoIndisponiveis(limitesStatusIndisponiveis)
       setOcObrigatoriaIndisponivel(ausentes.has('oc_obrigatoria_para_encerrar'))
+      setEncerramentoMortoIndisponivel(Object.keys(mortoPayload).some((campo) => ausentes.has(campo)))
+      setModelosIaIndisponiveis(Object.keys(modelosIaPayload).some((campo) => ausentes.has(campo)))
       toast.success(
         ausentes.size > 0
           ? 'Configurações salvas! (Algumas opções aguardam a migration neste ambiente.)'
@@ -9597,6 +9623,68 @@ const saveConfig = async () => {
           </CardContent>
         </Card>
 
+        {/* Encerramento de Tickets Mortos (abandono) */}
+        <Card className="glass-card-elevated rounded-lg">
+          <CardHeader>
+            <CardTitle>Encerramento de Tickets Mortos</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Rede de segurança para o ticket abandonado: fecha quando ninguém — nem cliente, nem atendente, nem bot — interage há X horas, seja quem for o último a falar. É o que pega o ticket parado esperando o atendente, que a regra acima nunca fecha. Tickets de disparo são ignorados.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">Ativar encerramento por abandono</p>
+                <p className="text-xs text-muted-foreground">
+                  Verificado a cada 10 minutos. O histórico do ticket registra o motivo do fechamento.
+                </p>
+              </div>
+              <Switch
+                checked={configForm.encerramento_morto_ativo}
+                onCheckedChange={(checked) => {
+                  setConfigForm((prev) => ({ ...prev, encerramento_morto_ativo: checked }))
+                  setHasUnsavedConfig(true)
+                }}
+              />
+            </div>
+
+            {configForm.encerramento_morto_ativo && (
+              <div className="flex items-center gap-3 pl-2">
+                <div className="space-y-2 flex-1 max-w-xs">
+                  <Label htmlFor="encerramento_morto_horas">Tempo sem nenhuma interação (horas)</Label>
+                  <Input
+                    id="encerramento_morto_horas"
+                    className="h-8"
+                    type="number"
+                    min={1}
+                    max={720}
+                    value={configForm.encerramento_morto_horas}
+                    onChange={(e) => {
+                      const parsed = parseInt(e.target.value, 10)
+                      const v = Number.isNaN(parsed) ? 1 : Math.max(1, parsed)
+                      setConfigForm((prev) => ({ ...prev, encerramento_morto_horas: v }))
+                      setHasUnsavedConfig(true)
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">Mínimo 1 hora. Padrão 24.</p>
+                </div>
+                <div className="flex items-center gap-2 mt-6">
+                  <div className="h-4 w-4 rounded-full bg-zinc-500" />
+                  <span className="text-sm text-muted-foreground">
+                    Fechamento após {configForm.encerramento_morto_horas}h de silêncio total
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {encerramentoMortoIndisponivel && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                O encerramento por abandono só passa a valer depois que a migration deste ambiente for executada.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Row 2: Distribuição de Tickets + Mensagem de Finalização */}
         <div className="grid gap-4 md:grid-cols-2">
           {/* Distribuição de Tickets */}
@@ -9964,6 +10052,19 @@ const saveConfig = async () => {
                   </div>
                 )}
               </div>
+            )}
+            {configForm.openai_ativo && (
+              <ModelosIaSetor
+                setorId={setorId}
+                urlPersonalizada={configForm.openai_url_personalizada}
+                modeloChat={configForm.openai_modelo_chat}
+                modeloTranscricao={configForm.openai_modelo_transcricao}
+                onChange={(campo, valor) => {
+                  setConfigForm((prev) => ({ ...prev, [campo]: valor }))
+                  setHasUnsavedConfig(true)
+                }}
+                indisponivel={modelosIaIndisponiveis}
+              />
             )}
             <div className="flex items-center justify-between pt-2 border-t border-border">
               <div>

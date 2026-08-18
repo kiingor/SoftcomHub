@@ -448,9 +448,16 @@ const AudioTranscriptionPlayer = React.memo(function AudioTranscriptionPlayer({ 
       if (res.ok && data.transcricao) {
         setTranscricao(data.transcricao)
         if (onTranscricao && mensagemId) onTranscricao(mensagemId, data.transcricao)
+      } else {
+        // Falhar calado escondeu por meses que o modelo fixo 'whisper-1' não
+        // existia no gateway do setor (caso #97520): o botão só voltava ao
+        // normal, como se nada tivesse acontecido.
+        console.error('[AudioTranscription] Falhou:', res.status, data)
+        toast.error(data?.error || 'Não foi possível transcrever o áudio.')
       }
     } catch (err) {
       console.error('[AudioTranscription] Error:', err)
+      toast.error('Não foi possível transcrever o áudio.')
     } finally {
       setTranscrevendo(false)
     }
