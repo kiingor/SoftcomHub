@@ -33,3 +33,10 @@ test('base e teto são configuráveis pelo chamador', () => {
   assert.equal(calcularProximoIntervalo(100, 5000, 20_000), 5000)
   assert.equal(calcularProximoIntervalo(30_000, 5000, 20_000), 20_000)
 })
+
+test('teto abaixo da base não inverte o que o chamador pediu', () => {
+  // O WorkDesk pede base de 60s; com o teto padrão de 30s, sem o clamp ele
+  // receberia 30s — o dobro da carga que o ajuste queria cortar.
+  assert.equal(calcularProximoIntervalo(1000, 60_000, POLL_MAX_MS), 60_000)
+  assert.equal(calcularProximoIntervalo(50_000, 60_000, POLL_MAX_MS), 60_000)
+})

@@ -23,5 +23,7 @@ export function calcularProximoIntervalo(
   maxMs: number = POLL_MAX_MS,
 ): number {
   if (!Number.isFinite(duracaoMs) || duracaoMs < 0) return baseMs
-  return Math.min(maxMs, Math.max(baseMs, duracaoMs * FATOR_LENTIDAO))
+  // Teto abaixo da base seria o oposto do que o chamador pediu.
+  const teto = Math.max(baseMs, maxMs)
+  return Math.min(teto, Math.max(baseMs, duracaoMs * FATOR_LENTIDAO))
 }

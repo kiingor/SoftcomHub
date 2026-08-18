@@ -4,6 +4,7 @@ import React from "react"
 
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, startTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useAdaptivePoll } from '@/hooks/use-adaptive-poll'
 import { logError } from '@/lib/error-logger'
 import { stripBrazilCountryCode } from '@/lib/phone'
 import { computeSendOutcome } from '@/lib/message-send-status'
@@ -2194,6 +2195,30 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
     }
   }, [colaborador?.id])
 
+  // Fallback do Realtime para os tickets do atendente e a contagem da fila.
+  //
+  // Era setInterval de 15s. Com 61 atendentes online (medido em 18/08/2026) isso
+  // dava ~244 consultas por minuto em `tickets` — e as duas não são leves: a
+  // primeira traz `*` mais `clientes(*)` por ticket, a segunda é a fila do setor,
+  // idêntica para todos os atendentes daquele setor. Os canais
+  // tickets-changes-<id> e fila-count-<id> já entregam essa informação por push;
+  // o poll existe só para o caso de a assinatura cair.
+  //
+  // Agora vai a 60s, não consulta com a aba escondida e atualiza na hora em que
+  // ela volta ao primeiro plano — que é quando o atendente de fato olha.
+  const pollTickets = useCallback(async () => {
+    const colab = colaboradorCurrentRef.current
+    if (!colab) return
+    await fetchTickets(colab)
+    await fetchFilaCount(colab)
+  }, [fetchTickets, fetchFilaCount])
+
+  useAdaptivePoll(pollTickets, {
+    ativo: !!colaborador?.id,
+    baseMs: 60_000,
+    maxMs: 120_000,
+  })
+
   // Periodic ticket refresh + queue processor
   // Runs whenever colaborador.id is set — NOT gated on is_online.
   // Reason: the page's colaborador.is_online only updates via Realtime (colaboradores-sync).
@@ -2297,24 +2322,6 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
       }
     }
 
-    // Poll tickets every 5 s regardless of online status
-    // This guarantees that assignments made by the queue processor appear quickly
-    // even if Realtime events are delayed or missed
-    let pollInFlight = false
-    const pollTickets = async () => {
-      if (pollInFlight) return // Prevent overlapping polls
-      pollInFlight = true
-      try {
-        const colab = colaboradorCurrentRef.current
-        if (colab) {
-          await fetchTickets(colab)
-          await fetchFilaCount(colab)
-        }
-      } finally {
-        pollInFlight = false
-      }
-    }
-
     // Also periodically sync is_online from DB to prevent stale local state
     // This catches the case where Realtime subscription for colaborador-sync failed
     const syncColaboradorStatus = async () => {
@@ -2334,10 +2341,8 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     // Run immediately
     triggerAutoAssign()
-    pollTickets()
 
     const autoAssignInterval = setInterval(triggerAutoAssign, 30000)
-    const pollInterval = setInterval(pollTickets, 15000)
     const syncStatusInterval = setInterval(syncColaboradorStatus, 60000)
 
     // Periodically refresh Supabase auth session to prevent token expiry
@@ -2350,7 +2355,6 @@ if (setorCanalConfig === 'discord' || setorCanalConfig === 'evolution_api') {
 
     return () => {
       clearInterval(autoAssignInterval)
-      clearInterval(pollInterval)
       clearInterval(syncStatusInterval)
       clearInterval(sessionRefreshInterval)
     }
