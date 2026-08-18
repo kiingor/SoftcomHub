@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server'
 import {
   buildAiEndpointUrl,
-  DEFAULT_CUSTOM_AI_CHAT_MODEL,
-  DEFAULT_OPENAI_CHAT_MODEL,
+  resolverModeloDeChat,
+  usaProvedorProprio,
 } from '@/lib/ai-provider'
+import { carregarConfigIaDoSetor } from '@/lib/server/setor-ia-config'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export async function POST(request: Request) {
@@ -21,11 +22,7 @@ export async function POST(request: Request) {
     // Use service role to bypass RLS
     const supabase = createServiceClient()
 
-    const { data: setor, error: setorError } = await supabase
-      .from('setores')
-      .select('openai_api_key, openai_ativo, openai_url_personalizada, openai_base_url')
-      .eq('id', setor_id)
-      .single()
+    const { setor, erro: setorError } = await carregarConfigIaDoSetor(supabase, setor_id)
 
     if (setorError || !setor) {
       return NextResponse.json(
@@ -52,13 +49,10 @@ export async function POST(request: Request) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10000)
 
-    const hasCustomProvider = Boolean(setor.openai_url_personalizada && setor.openai_base_url)
-    const chatCompletionsUrl = hasCustomProvider
-      ? buildAiEndpointUrl(setor.openai_base_url, 'chat/completions')
+    const chatCompletionsUrl = usaProvedorProprio(setor)
+      ? buildAiEndpointUrl(setor.openai_base_url!, 'chat/completions')
       : 'https://api.openai.com/v1/chat/completions'
-    const model = hasCustomProvider
-      ? DEFAULT_CUSTOM_AI_CHAT_MODEL
-      : DEFAULT_OPENAI_CHAT_MODEL
+    const model = resolverModeloDeChat(setor)
 
     try {
       const openaiResponse = await fetch(chatCompletionsUrl, {
@@ -82,6 +76,10 @@ export async function POST(request: Request) {
           ],
           max_tokens: 500,
           temperature: 0.3,
+          // Sem isto o gateway da Softcom responde text/event-stream e o
+          // response.json() abaixo estoura (verificado em 18/08/2026). A OpenAI
+          // aceita a flag do mesmo jeito, então vale para os dois provedores.
+          stream: false,
         }),
         signal: controller.signal,
       })

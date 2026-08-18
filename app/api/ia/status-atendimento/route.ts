@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { resolverProvedorDeChat } from '@/lib/ai-provider'
+import { carregarConfigIaDoSetor } from '@/lib/server/setor-ia-config'
 import {
   analiseContinuaValida,
   assinarConversa,
@@ -174,14 +175,13 @@ export async function POST(request: Request) {
 
     const motivoAberturaNexus = normalizarMotivoAberturaNexus(ticket.validacao_transf)
 
-    const { data: setor, error: setorError } = await db
-      .from('setores')
-      .select('openai_api_key, openai_ativo, openai_url_personalizada, openai_base_url')
-      .eq('id', ticket.setor_id)
-      .maybeSingle()
+    // Inclui os modelos escolhidos no setor: quando não há combo dedicado
+    // (ANALISE_IA_API_KEY), o provedor cai no setor e deve respeitar a escolha
+    // feita na tela dele, não o padrão do código.
+    const { setor, erro: setorError } = await carregarConfigIaDoSetor(db, ticket.setor_id)
 
     if (setorError) {
-      console.error('[StatusAtendimento] erro ao buscar setor:', setorError.message)
+      console.error('[StatusAtendimento] erro ao buscar setor:', setorError)
       return falha('Erro ao buscar o setor', 500)
     }
     if (!setor) return falha('Setor não encontrado', 404)

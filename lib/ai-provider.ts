@@ -1,6 +1,16 @@
 export const DEFAULT_OPENAI_CHAT_MODEL = 'gpt-4o-mini'
 export const DEFAULT_CUSTOM_AI_CHAT_MODEL = 'cx/gpt-5.4'
 
+export const DEFAULT_OPENAI_TRANSCRIPTION_MODEL = 'whisper-1'
+/**
+ * O gateway da Softcom roteia por prefixo de provedor e NÃO tem credencial da
+ * OpenAI: pedir 'whisper-1' lá volta 400 "No credentials for provider: openai".
+ * Era o modelo fixo da rota de transcrição, então o botão "Transcrever áudio"
+ * nunca funcionou em setor com URL personalizada (caso #97520). Verificado em
+ * 18/08/2026: 'groq/whisper-large-v3' responde 200 e transcreve em pt-BR.
+ */
+export const DEFAULT_CUSTOM_AI_TRANSCRIPTION_MODEL = 'groq/whisper-large-v3'
+
 /** Gateway da Softcom. É para onde o combo dedicado da análise aponta. */
 export const OMNIROUTE_BASE_URL = 'https://omniroute.mensageria.softcomtecnologia.com/v1'
 
@@ -9,7 +19,7 @@ const KNOWN_ENDPOINT_PATHS = [
   '/audio/transcriptions',
 ] as const
 
-export type AiEndpointPath = 'chat/completions' | 'audio/transcriptions'
+export type AiEndpointPath = 'chat/completions' | 'audio/transcriptions' | 'models'
 
 export function buildAiEndpointUrl(configuredUrl: string, endpointPath: AiEndpointPath): string {
   const url = new URL(configuredUrl.trim())
@@ -34,6 +44,9 @@ export interface SetorAiConfig {
   openai_api_key?: string | null
   openai_url_personalizada?: boolean | null
   openai_base_url?: string | null
+  /** Escolhido na tela do setor. Vazio = o padrão do provedor. */
+  openai_modelo_chat?: string | null
+  openai_modelo_transcricao?: string | null
 }
 
 /** As variáveis de ambiente do combo dedicado. Separadas para poder testar. */
@@ -54,6 +67,34 @@ export interface ProvedorDeChat {
 function textoNaoVazio(valor: string | null | undefined): string | null {
   const normalizado = valor?.trim()
   return normalizado ? normalizado : null
+}
+
+/** O setor aponta para um endpoint próprio (gateway/proxy) em vez da OpenAI? */
+export function usaProvedorProprio(setor: SetorAiConfig | null | undefined): boolean {
+  return Boolean(setor?.openai_url_personalizada && textoNaoVazio(setor?.openai_base_url))
+}
+
+/**
+ * Modelo de chat do setor: o escolhido na tela vence; sem escolha, cai no
+ * padrão do provedor. Os nomes não são intercambiáveis — 'gpt-4o-mini' só
+ * existe na OpenAI e o gateway exige o prefixo do provedor —, por isso o
+ * padrão depende de para onde a URL aponta.
+ */
+export function resolverModeloDeChat(setor: SetorAiConfig | null | undefined): string {
+  return (
+    textoNaoVazio(setor?.openai_modelo_chat) ??
+    (usaProvedorProprio(setor) ? DEFAULT_CUSTOM_AI_CHAT_MODEL : DEFAULT_OPENAI_CHAT_MODEL)
+  )
+}
+
+/** Mesma regra do chat, para /audio/transcriptions. */
+export function resolverModeloDeTranscricao(setor: SetorAiConfig | null | undefined): string {
+  return (
+    textoNaoVazio(setor?.openai_modelo_transcricao) ??
+    (usaProvedorProprio(setor)
+      ? DEFAULT_CUSTOM_AI_TRANSCRIPTION_MODEL
+      : DEFAULT_OPENAI_TRANSCRIPTION_MODEL)
+  )
 }
 
 /**
@@ -87,13 +128,12 @@ export function resolverProvedorDeChat(
   const chaveDoSetor = textoNaoVazio(setor?.openai_api_key)
   if (!setor?.openai_ativo || !chaveDoSetor) return null
 
-  const provedorProprio = Boolean(setor.openai_url_personalizada && textoNaoVazio(setor.openai_base_url))
   return {
-    url: provedorProprio
+    url: usaProvedorProprio(setor)
       ? buildAiEndpointUrl(setor.openai_base_url!, 'chat/completions')
       : 'https://api.openai.com/v1/chat/completions',
     apiKey: chaveDoSetor,
-    modelo: provedorProprio ? DEFAULT_CUSTOM_AI_CHAT_MODEL : DEFAULT_OPENAI_CHAT_MODEL,
+    modelo: resolverModeloDeChat(setor),
     origem: 'setor',
   }
 }
