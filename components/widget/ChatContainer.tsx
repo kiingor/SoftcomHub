@@ -5,6 +5,7 @@ import { Loader2, LogOut } from 'lucide-react'
 import { MessageBubble } from './MessageBubble'
 import { InputArea } from './InputArea'
 import { Button } from '@/components/ui/button'
+import { useAdaptivePoll } from '@/hooks/use-adaptive-poll'
 
 interface Message {
   id: string
@@ -40,7 +41,7 @@ export function ChatContainer({
   const prevAtendente = useRef<string | null>(null)
 
   // Busca mensagens + estado do ticket via endpoint autenticado por JWT.
-  // Polling (3s) em vez de Realtime anon — não mexe no RLS de produção.
+  // Polling adaptativo em vez de Realtime anon — não mexe no RLS de produção.
   const fetchMessages = useCallback(async () => {
     try {
       const res = await fetch(
@@ -69,11 +70,7 @@ export function ChatContainer({
     }
   }, [ticketId, token])
 
-  useEffect(() => {
-    fetchMessages()
-    const interval = setInterval(fetchMessages, 3000)
-    return () => clearInterval(interval)
-  }, [fetchMessages])
+  useAdaptivePoll(fetchMessages)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })

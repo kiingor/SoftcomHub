@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAdaptivePoll } from '@/hooks/use-adaptive-poll'
 import {
   Loader2,
   LogOut,
@@ -435,12 +436,7 @@ export function WidgetRoot({ widgetKey }: { widgetKey: string }) {
     } catch {}
   }, [session, resetParaInicio])
 
-  useEffect(() => {
-    if (step !== 'chat' || !session || encerrado) return
-    poll()
-    const t = setInterval(poll, 3000)
-    return () => clearInterval(t)
-  }, [step, session, poll, encerrado])
+  useAdaptivePoll(poll, { ativo: step === 'chat' && !!session && !encerrado })
 
   const enviarMensagem = async (conteudo: string) => {
     if (!session || encerrado) return
