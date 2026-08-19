@@ -285,6 +285,37 @@ export function selectRequestedActiveChannel<T>(
  * canonical owner; shared Service Desk/Ouvidoria channels are resolved by the
  * caller-provided ownership rule.
  */
+/**
+ * O identificador pedido não é canal de ninguém neste sistema?
+ *
+ * Não confundir com "pertence a outro setor": esse caso continua sendo recusa,
+ * senão um setor responderia pelo número de outro. Aqui é identificador que não
+ * existe em canal nenhum, moderno ou legado — ou seja, dado sujo.
+ *
+ * Aconteceu em 19/08/2026: o n8n gravou em `mensagens.phone_number_id` o CNPJ
+ * que o cliente tinha acabado de digitar ("60188759000171" veio de
+ * "CNPJ: 60.188.759/0001-71"). Como a última fala do cliente é justamente a
+ * evidência de canal, o atendente ficou impedido de responder um ticket que
+ * entrou pelo número principal do próprio setor — quatro tentativas, todas
+ * recusadas com CHANNEL_MISMATCH.
+ *
+ * Quem chama decide o que fazer; o caminho previsto é cair no canal do próprio
+ * setor, que é exatamente o que acontece num ticket sem evidência nenhuma.
+ */
+export function isUnregisteredChannelIdentifier({
+  requestedIdentifier,
+  matchingConfiguredChannels,
+  matchingLegacyChannels,
+}: {
+  requestedIdentifier: string | null | undefined
+  matchingConfiguredChannels: readonly unknown[]
+  matchingLegacyChannels: readonly unknown[]
+}): boolean {
+  return Boolean(requestedIdentifier)
+    && matchingConfiguredChannels.length === 0
+    && matchingLegacyChannels.length === 0
+}
+
 export function selectAuthorizedTicketChannel<T>({
   currentActiveChannels,
   matchingActiveChannels,

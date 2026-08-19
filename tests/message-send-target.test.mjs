@@ -5,6 +5,7 @@ import {
   isConfiguredLegacyEvolutionChannel,
   isConfiguredLegacyWhatsappChannel,
   isTicketReplySenderAllowed,
+  isUnregisteredChannelIdentifier,
   readResponseBodyWithLimit,
   resolvePersistedRecipient,
   resolveReplyQuote,
@@ -533,5 +534,53 @@ test('nenhum caminho de citação reprova o envio', () => {
   for (const caso of casos) {
     assert.equal('ok' in caso, false, 'resolveReplyQuote não devolve mais reprovação')
     assert.equal('code' in caso, false, 'não há mais código de erro de citação')
+  }
+})
+
+// Caso da Hadassa em 19/08/2026: o n8n gravou o CNPJ digitado pelo cliente
+// ("CNPJ: 60.188.759/0001-71") em mensagens.phone_number_id, e como a última
+// fala do cliente é a evidência de canal, o envio morria em CHANNEL_MISMATCH.
+test("identificador que não é canal de ninguém é reconhecido como dado sujo", () => {
+  assert.equal(
+    isUnregisteredChannelIdentifier({
+      requestedIdentifier: "60188759000171",
+      matchingConfiguredChannels: [],
+      matchingLegacyChannels: [],
+    }),
+    true,
+  )
+})
+
+test("identificador com canal cadastrado não é dado sujo, mesmo em outro setor", () => {
+  // Aqui a recusa continua valendo: é o que impede um setor de responder pelo
+  // número de outro.
+  assert.equal(
+    isUnregisteredChannelIdentifier({
+      requestedIdentifier: "1068061143047980",
+      matchingConfiguredChannels: [{ id: "canal-de-outro-setor" }],
+      matchingLegacyChannels: [],
+    }),
+    false,
+  )
+  assert.equal(
+    isUnregisteredChannelIdentifier({
+      requestedIdentifier: "1068061143047980",
+      matchingConfiguredChannels: [],
+      matchingLegacyChannels: [{ id: "legacy:setor" }],
+    }),
+    false,
+  )
+})
+
+test("sem identificador não há o que decidir", () => {
+  for (const vazio of [null, undefined, ""]) {
+    assert.equal(
+      isUnregisteredChannelIdentifier({
+        requestedIdentifier: vazio,
+        matchingConfiguredChannels: [],
+        matchingLegacyChannels: [],
+      }),
+      false,
+    )
   }
 })

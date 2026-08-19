@@ -14,6 +14,7 @@ import {
   TRUSTED_INBOUND_CLIENT_SENDERS,
   canUseLegacyChannelFallback,
   isConfiguredLegacyWhatsappChannel,
+  isUnregisteredChannelIdentifier,
   resolvePersistedRecipient,
   resolveReplyQuote,
   selectAuthorizedTicketChannel,
@@ -346,7 +347,7 @@ export async function POST(request: NextRequest) {
     const resolveOwnerId = (ownerIds: Iterable<string>) =>
       resolveSharedChannelOwnerId(ownerIds, ticketContext.setor_id)
 
-    const modernChannel = selectAuthorizedTicketChannel({
+    let modernChannel = selectAuthorizedTicketChannel({
       currentActiveChannels: activeChannels,
       matchingActiveChannels,
       historicalEvidence,
@@ -355,6 +356,12 @@ export async function POST(request: NextRequest) {
       getOwnerId: (channel) => channel.setor_id,
       resolveOwnerId,
     })
+    let configuredLegacyChannels: Array<{
+      id: string
+      setor_id: string
+      phone_number_id: string | null
+      whatsapp_token: string | null
+    }> = []
     let legacyChannel: {
       id: string
       setor_id: string
@@ -384,7 +391,7 @@ export async function POST(request: NextRequest) {
       // Legacy rows have no per-channel active flag. Treat only an explicitly
       // configured WhatsApp row as usable. A modern row for the identifier,
       // even inactive, deliberately blocks this compatibility path.
-      const configuredLegacyChannels = (legacySectors || [])
+      configuredLegacyChannels = (legacySectors || [])
         .filter((sector) => isConfiguredLegacyWhatsappChannel(
           sector,
           process.env.WHATSAPP_ACCESS_TOKEN,
@@ -408,6 +415,54 @@ export async function POST(request: NextRequest) {
         getOwnerId: (channel) => channel.setor_id,
         resolveOwnerId,
       })
+    }
+
+    // Identificador que não é canal de ninguém (nem moderno, nem legado) é dado
+    // sujo, não tentativa de responder pelo número de outro setor. Em 19/08/2026
+    // o n8n gravou o CNPJ digitado pelo cliente em mensagens.phone_number_id e a
+    // atendente ficou sem responder um ticket que entrou pelo número principal do
+    // próprio setor. Descartar a evidência suja e responder pelo canal por onde a
+    // conversa realmente entrou é melhor do que travar o atendimento.
+    if (
+      !modernChannel
+      && !legacyChannel
+      && activeChannels.length > 0
+      && isUnregisteredChannelIdentifier({
+        requestedIdentifier: requestedPhoneNumberId,
+        matchingConfiguredChannels: matchingModernChannels,
+        matchingLegacyChannels: configuredLegacyChannels,
+      })
+    ) {
+      // Descartada a evidência suja, vale a mais recente que sobrou NESTE ticket:
+      // mensagem cujo identificador é canal ativo deste setor. Sem esse passo o
+      // ServiceDesk Matriz, que tem dois números, responderia pelo 3133-3600 uma
+      // conversa que entrou pelo 93618-0520.
+      const identificadoresDoSetor = activeChannels
+        .map((channel) => channel.phone_number_id)
+        .filter((identificador): identificador is string => Boolean(identificador))
+
+      const { data: evidenciaValida } = await authoritativeClient
+        .from('mensagens')
+        .select('phone_number_id')
+        .eq('ticket_id', ticketId)
+        .in('phone_number_id', identificadoresDoSetor)
+        .order('enviado_em', { ascending: false })
+        .limit(1)
+
+      const identificadorValido = evidenciaValida?.[0]?.phone_number_id || null
+      modernChannel = activeChannels.find(
+        (channel) => channel.phone_number_id === identificadorValido,
+      ) || activeChannels[0]
+
+      console.warn(
+        '[WhatsAppSend] identificador sem canal correspondente; respondendo pelo canal do ticket',
+        {
+          ticketId,
+          requestedPhoneNumberId,
+          identificadorUsado: modernChannel.phone_number_id,
+          veioDeEvidencia: Boolean(identificadorValido),
+        },
+      )
     }
 
     if (requestedPhoneNumberId && !modernChannel && !legacyChannel) {
