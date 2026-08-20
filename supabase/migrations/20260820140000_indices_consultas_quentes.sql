@@ -87,6 +87,9 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mensagens_cliente_enviado
 -- -----------------------------------------------------------------
 -- Rollback
 -- -----------------------------------------------------------------
+-- Script pronto, com as verificações do que olhar antes de derrubar:
+--   supabase/rollbacks/20260820140000_indices_consultas_quentes.down.sql
+-- Resumo (rodar um por vez, fora de transação):
 -- DROP INDEX CONCURRENTLY IF EXISTS idx_tickets_colaborador_status;
 -- DROP INDEX CONCURRENTLY IF EXISTS idx_tickets_colaborador_criado;
 -- DROP INDEX CONCURRENTLY IF EXISTS idx_mensagens_cliente_enviado;
