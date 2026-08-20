@@ -21,9 +21,33 @@
 -- `colaborador_id` ou por `cliente_id` significava varrer a tabela inteira —
 -- 69 mil linhas em tickets, 1,85 milhão em mensagens — a cada chamada.
 --
--- IMPORTANTE: rodar cada CREATE INDEX SOZINHO no SQL Editor. CONCURRENTLY não
--- funciona dentro de bloco de transação, e é ele que evita travar escrita numa
--- tabela de produção enquanto o índice é construído.
+-- COMO APLICAR — leia antes de colar no Studio
+--
+-- O SQL Editor do Supabase envolve o que você roda em uma transação, e
+-- CONCURRENTLY é recusado lá dentro:
+--   ERROR: 25001: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+--
+-- Duas saídas, nesta ordem de preferência:
+--
+-- (A) dblink — abre uma sessão nova, fora da transação do editor. É a forma de
+--     manter o CONCURRENTLY (sem travar escrita) usando só o Studio:
+--
+--     CREATE EXTENSION IF NOT EXISTS dblink;
+--
+--     SELECT dblink_exec(
+--       'dbname=' || current_database(),
+--       'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tickets_colaborador_status
+--          ON tickets (colaborador_id, status)');
+--
+--     Um SELECT por índice, cada um sozinho na aba. O comando só volta quando o
+--     índice terminar — pode demorar, principalmente o de mensagens.
+--
+-- (B) Sem CONCURRENTLY (basta apagar a palavra nos comandos abaixo). Aí o
+--     Postgres pega lock de escrita na tabela enquanto constrói. Em tickets
+--     (69 mil linhas) é coisa de um segundo e pode ser a qualquer hora. Em
+--     mensagens (1,85 milhão) são alguns segundos a algumas dezenas — mensagem
+--     que chegar nesse intervalo fica esperando, não se perde. Por este
+--     caminho, faça o de mensagens fora do horário de pico.
 -- =============================================
 
 -- -----------------------------------------------------------------

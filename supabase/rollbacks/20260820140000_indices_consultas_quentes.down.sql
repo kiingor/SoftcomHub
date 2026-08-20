@@ -50,9 +50,20 @@
 -- -----------------------------------------------------------------
 -- 3. Os comandos
 -- -----------------------------------------------------------------
--- Rode UM POR VEZ, sozinho na aba. CONCURRENTLY não funciona dentro de bloco de
--- transação — e é ele que evita travar leitura e escrita da tabela enquanto o
--- índice é removido.
+-- ATENÇÃO: o SQL Editor do Supabase envolve tudo em transação, então colar o
+-- DROP ... CONCURRENTLY direto lá devolve:
+--   ERROR: 25001: DROP INDEX CONCURRENTLY cannot run inside a transaction block
+--
+-- Mesma saída da criação — dblink abre uma sessão fora da transação:
+--
+--   CREATE EXTENSION IF NOT EXISTS dblink;
+--
+--   SELECT dblink_exec(
+--     'dbname=' || current_database(),
+--     'DROP INDEX CONCURRENTLY IF EXISTS idx_mensagens_cliente_enviado');
+--
+-- Um por vez. Se preferir sem dblink, apague a palavra CONCURRENTLY: derrubar
+-- índice é rápido e o lock dura o tempo do comando, bem menos do que criar.
 --
 -- Derrubar é rápido (segundos), bem mais barato que criar.
 
