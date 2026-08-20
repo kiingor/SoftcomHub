@@ -27,27 +27,37 @@
 -- CONCURRENTLY é recusado lá dentro:
 --   ERROR: 25001: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
 --
--- Duas saídas, nesta ordem de preferência:
+-- RECOMENDADO — sem CONCURRENTLY, na ordem certa
 --
--- (A) dblink — abre uma sessão nova, fora da transação do editor. É a forma de
---     manter o CONCURRENTLY (sem travar escrita) usando só o Studio:
+-- Apague a palavra CONCURRENTLY dos comandos abaixo e rode. O Postgres pega
+-- lock de escrita na tabela enquanto constrói o índice:
 --
---     CREATE EXTENSION IF NOT EXISTS dblink;
+--   tickets    69 mil linhas   -> menos de um segundo, pode ser a qualquer hora
+--   mensagens  1,85 milhão     -> segundos a dezenas de segundos
 --
---     SELECT dblink_exec(
---       'dbname=' || current_database(),
---       'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tickets_colaborador_status
---          ON tickets (colaborador_id, status)');
+-- `mensagens` recebe ~26 mil inserções por dia, ou seja ~1 a cada 3 segundos.
+-- Um lock de 30s atrasa cerca de 10 mensagens — elas ESPERAM e entram depois,
+-- não se perdem. Ainda assim, faça esse fora do horário de pico: enquanto durar,
+-- o botão de enviar do atendente fica girando.
 --
---     Um SELECT por índice, cada um sozinho na aba. O comando só volta quando o
---     índice terminar — pode demorar, principalmente o de mensagens.
+-- Comece pelos dois de tickets: são instantâneos e já matam a consulta nº 1 em
+-- CPU, que sozinha respondia por 10.802s.
 --
--- (B) Sem CONCURRENTLY (basta apagar a palavra nos comandos abaixo). Aí o
---     Postgres pega lock de escrita na tabela enquanto constrói. Em tickets
---     (69 mil linhas) é coisa de um segundo e pode ser a qualquer hora. Em
---     mensagens (1,85 milhão) são alguns segundos a algumas dezenas — mensagem
---     que chegar nesse intervalo fica esperando, não se perde. Por este
---     caminho, faça o de mensagens fora do horário de pico.
+-- POR QUE NÃO dblink (tentado em 20/08/2026)
+--
+-- A ideia era abrir sessão fora da transação e preservar o CONCURRENTLY. No
+-- Supabase o papel `postgres` NÃO é superusuário, então o dblink recusa sem
+-- senha explícita:
+--   ERROR: 2F003: password or GSSAPI delegated credentials required
+--
+-- Funciona se a senha do banco for colocada na string de conexão:
+--
+--   SELECT dblink_exec('dbname=postgres user=postgres password=<SENHA> host=127.0.0.1 port=5432',
+--     'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mensagens_cliente_enviado
+--        ON mensagens (cliente_id, enviado_em DESC)');
+--
+-- Só que isso deixa a senha do banco gravada no histórico de queries do Studio.
+-- Para três índices, não compensa: prefira o lock curto fora do pico.
 -- =============================================
 
 -- -----------------------------------------------------------------

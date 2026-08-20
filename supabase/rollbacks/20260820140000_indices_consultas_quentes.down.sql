@@ -54,18 +54,13 @@
 -- DROP ... CONCURRENTLY direto lá devolve:
 --   ERROR: 25001: DROP INDEX CONCURRENTLY cannot run inside a transaction block
 --
--- Mesma saída da criação — dblink abre uma sessão fora da transação:
+-- Apague a palavra CONCURRENTLY e rode. Não vale a pena contornar com dblink
+-- aqui: no Supabase o papel `postgres` não é superusuário e o dblink exige a
+-- senha do banco na string de conexão (ERROR 2F003), que ficaria gravada no
+-- histórico do editor.
 --
---   CREATE EXTENSION IF NOT EXISTS dblink;
---
---   SELECT dblink_exec(
---     'dbname=' || current_database(),
---     'DROP INDEX CONCURRENTLY IF EXISTS idx_mensagens_cliente_enviado');
---
--- Um por vez. Se preferir sem dblink, apague a palavra CONCURRENTLY: derrubar
--- índice é rápido e o lock dura o tempo do comando, bem menos do que criar.
---
--- Derrubar é rápido (segundos), bem mais barato que criar.
+-- Derrubar índice é rápido — segundos — e o lock dura o tempo do comando, bem
+-- menos do que criar.
 
 DROP INDEX CONCURRENTLY IF EXISTS idx_mensagens_cliente_enviado;
 
