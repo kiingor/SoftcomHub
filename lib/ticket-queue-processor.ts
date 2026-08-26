@@ -14,7 +14,7 @@ import {
 import { isExactSubsetorMatch } from '@/lib/subsetor-routing'
 import { isTransbordoBloqueado } from '@/lib/transbordo-bloqueio'
 import { registrarOrigemDaAtribuicao, type OrigemAtribuicao } from '@/lib/transbordo-marca'
-import { ordenarTicketsPorFila } from '@/lib/ticket-fifo'
+import { ordenarTicketsPorFila, percorrerFilasEmOrdem } from '@/lib/ticket-fifo'
 
 // Configuration defaults
 const DEFAULT_CHECK_INTERVAL_MS = 30000 // 30 seconds
@@ -32,6 +32,12 @@ interface AssignmentResult {
   success: boolean
   reason: string
   fallbackEligible?: boolean
+  /**
+   * A falha foi só lotação: existe atendente para este ticket, mas todos estão
+   * no teto agora. `percorrerFilasEmOrdem` segura o resto da fila quando isso
+   * acontece, para que a próxima vaga seja de quem está esperando há mais tempo.
+   */
+  queueSaturated?: boolean
 }
 
 type RoutingPass = 'compatible' | 'fallback'
@@ -67,6 +73,12 @@ const SEM_ATENDENTE_NO_SETOR = 'No online colaboradores in setor'
  * distinção o ticket ficava preso na fila da filial para sempre.
  */
 const SEM_ATENDENTE_ELEGIVEL = 'No colaboradores allowed to take this ticket in setor'
+
+/**
+ * O ticket nem foi tentado: um mais antigo da mesma fila está esperando vaga, e
+ * a próxima vaga é dele. Não é falha de roteamento — é a fila funcionando.
+ */
+const AGUARDANDO_A_VEZ = 'Waiting behind an older ticket in the same queue'
 
 async function getSubsetoresComFila(supabase: any, setorId: string): Promise<Array<string | null>> {
   const tickets = await loadRowsByPages<{ subsetor_id: string | null }>(() => supabase
@@ -425,12 +437,16 @@ async function tryAssignTicket(
   console.log(`[TicketQueue] Found ${colaboradores.length} available, ${eligibleColaboradores.length} below limit (max=${maxTicketsPerAgent})`)
 
   if (eligibleColaboradores.length === 0) {
+    // Lotação é a única das três que passa sozinha: quem está no teto encerra um
+    // atendimento e a vaga aparece. Nas outras duas esperar não muda nada, então
+    // os tickets seguintes precisam ser avaliados — é o que leva ao transbordo.
+    const lotado = colaboradores.length > 0 && !bloqueadoPorSubsetor
     const reason = colaboradores.length === 0
       ? SEM_ATENDENTE_NO_SETOR
       : bloqueadoPorSubsetor
         ? SEM_ATENDENTE_ELEGIVEL
         : `All ${colaboradores.length} ${routingPass} colaboradores at max ticket limit (${maxTicketsPerAgent})`
-    return { ticketId, colaboradorId: null, success: false, reason }
+    return { ticketId, colaboradorId: null, success: false, reason, queueSaturated: lotado }
   }
 
   // Tentar atribuir via RPC atômica percorrendo candidatos em ordem. Se o primeiro
@@ -499,6 +515,7 @@ async function tryAssignTicket(
     success: false,
     reason: `All ${eligibleColaboradores.length} colaboradores saturated at max_tickets_per_agent limit`,
     fallbackEligible: routingPass === 'compatible',
+    queueSaturated: true,
   }
 }
 
@@ -569,36 +586,37 @@ export async function processTicketQueue(): Promise<ProcessorStats> {
   // presença, porque nenhum atendente daquele setor poderá atendê-los.
   const blockedBySetor: Record<string, string[]> = {}
   const queuedTicketById = new Map(queuedTickets.map((ticket) => [ticket.id, ticket]))
-  const resultsByTicket = new Map<string, AssignmentResult>()
 
-  for (const ticket of queuedTickets) {
-    if (!ticket.setor_id) {
-      resultsByTicket.set(ticket.id, {
-        ticketId: ticket.id,
-        colaboradorId: null,
-        success: false,
-        reason: 'No setor_id',
-      })
-      continue
-    }
+  const { resultados: resultsByTicket, aguardando } = await percorrerFilasEmOrdem(
+    queuedTickets,
+    async (ticket): Promise<AssignmentResult> => {
+      if (!ticket.setor_id) {
+        return { ticketId: ticket.id, colaboradorId: null, success: false, reason: 'No setor_id' }
+      }
 
-    try {
-      const result = await tryAssignTicketComTransbordo(
-        ticket.id,
-        ticket.setor_id,
-        ticket.subsetor_id,
-      )
-      resultsByTicket.set(ticket.id, result)
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-      stats.errors.push(`Error processing ticket ${ticket.id}: ${errorMessage}`)
-      resultsByTicket.set(ticket.id, {
-        ticketId: ticket.id,
-        colaboradorId: null,
-        success: false,
-        reason: errorMessage,
-      })
-    }
+      try {
+        return await tryAssignTicketComTransbordo(ticket.id, ticket.setor_id, ticket.subsetor_id)
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+        stats.errors.push(`Error processing ticket ${ticket.id}: ${errorMessage}`)
+        return { ticketId: ticket.id, colaboradorId: null, success: false, reason: errorMessage }
+      }
+    },
+  )
+
+  // Guardam a vez atrás de um ticket mais antigo que ficou sem vaga. Contam como
+  // pulados, mas com motivo próprio: não são candidatos ao transbordo de SETOR,
+  // porque quem decide isso é o primeiro da fila deles.
+  for (const ticket of aguardando) {
+    resultsByTicket.set(ticket.id, {
+      ticketId: ticket.id,
+      colaboradorId: null,
+      success: false,
+      reason: AGUARDANDO_A_VEZ,
+    })
+  }
+  if (aguardando.length > 0) {
+    console.log(`[TicketQueue] ${aguardando.length} ticket(s) aguardam a vez atrás de um mais antigo sem vaga — a próxima vaga é de quem está na frente.`)
   }
 
   for (const ticket of queuedTickets) {
@@ -873,26 +891,28 @@ export async function onColaboradorOnline(colaboradorId: string): Promise<Proces
     return stats
   }
 
-  const onlineResults = new Map<string, AssignmentResult>()
+  // Mesma regra da fila geral: o atendente que acabou de entrar pega o ticket
+  // mais antigo, e quem vem depois espera a vez em vez de disputar a mesma vaga.
+  const { resultados: onlineResults, aguardando } = await percorrerFilasEmOrdem(
+    queuedTickets,
+    async (ticket): Promise<AssignmentResult> => {
+      try {
+        return await tryAssignTicketComTransbordo(ticket.id, ticket.setor_id, ticket.subsetor_id)
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+        stats.errors.push(`Error processing ticket ${ticket.id}: ${errorMessage}`)
+        return { ticketId: ticket.id, colaboradorId: null, success: false, reason: errorMessage }
+      }
+    },
+  )
 
-  for (const ticket of queuedTickets) {
-    try {
-      const result = await tryAssignTicketComTransbordo(
-        ticket.id,
-        ticket.setor_id,
-        ticket.subsetor_id,
-      )
-      onlineResults.set(ticket.id, result)
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-      stats.errors.push(`Error processing ticket ${ticket.id}: ${errorMessage}`)
-      onlineResults.set(ticket.id, {
-        ticketId: ticket.id,
-        colaboradorId: null,
-        success: false,
-        reason: errorMessage,
-      })
-    }
+  for (const ticket of aguardando) {
+    onlineResults.set(ticket.id, {
+      ticketId: ticket.id,
+      colaboradorId: null,
+      success: false,
+      reason: AGUARDANDO_A_VEZ,
+    })
   }
 
   for (const ticket of queuedTickets) {
