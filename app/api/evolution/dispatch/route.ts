@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { encerrarAvaliacaoPendente } from '@/lib/avaliacao-pendente'
 import {
   buscarSubsetoresDoCriador,
   escolherSubsetorDoCriador,
@@ -184,6 +185,10 @@ export async function POST(request: NextRequest) {
         atendente: atendenteName,
       })
     } else {
+      // Antes de abrir o ticket novo, tira o cliente do NPS: preso lá, ele
+      // recebe o disparo e não consegue responder. Ver encerrarAvaliacaoPendente.
+      await encerrarAvaliacaoPendente(supabase, destinatarioPhone, 'Evolution Dispatch')
+
       // Mesmo caso da rota de disparo por template: o ticket é montado à mão e
       // ficava sem subsetor, o que o deixa fora da distribuição e dos filtros.
       // Herda de quem disparou, ou cai no padrão do setor.

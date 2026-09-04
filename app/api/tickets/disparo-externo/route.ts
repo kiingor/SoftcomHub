@@ -7,6 +7,7 @@ import {
 } from '@/lib/provider-error'
 import { getWhatsAppProviderAcceptance } from '@/lib/whatsapp-provider-error'
 import { createServiceClient } from '@/lib/supabase/service'
+import { encerrarAvaliacaoPendente } from '@/lib/avaliacao-pendente'
 import {
   registrarFalhaDeDisparo,
   verificarDestinatarioEvolution,
@@ -335,6 +336,10 @@ export async function POST(request: NextRequest) {
         console.log(`[Disparo Externo] Telefone canonizado pelo provedor — cliente: ${clienteId}`)
       }
     }
+
+    // Vale para os dois caminhos daqui: ticket novo e ticket aberto reaproveitado.
+    // A mensagem saiu; se o cliente estiver no NPS, a resposta dele não chega.
+    await encerrarAvaliacaoPendente(supabase, formattedPhone, 'Disparo Externo')
 
     if (!ticketId) {
       console.log(`[Disparo Externo] Criando ticket após o envio — setor: ${setor_id}, subsetor: ${subsetor_id || 'none'}, canal: ${canal}`)

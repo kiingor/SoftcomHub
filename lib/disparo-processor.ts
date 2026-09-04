@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { encerrarAvaliacaoPendente } from '@/lib/avaliacao-pendente'
 import { normalizeBrazilianPhone } from '@/lib/phone'
 
 export interface EvolutionCreds {
@@ -463,6 +464,14 @@ export async function processarDisparoLote(
     if (destinoTipo === 'atendentes' && atendentesIds && atendentesIds.length > 0) {
       colaboradorId = atendentesIds[i % atendentesIds.length]
     }
+
+    // Um destinatário do lote pode estar no NPS de um atendimento recém-fechado.
+    // Sem isto ele recebe a mensagem do lote e não consegue responder.
+    await encerrarAvaliacaoPendente(
+      supabase,
+      verificacao.telefone || cliente.telefone,
+      'disparo-processor',
+    )
 
     const ticketData: Record<string, unknown> = {
       cliente_id: cliente.id,
