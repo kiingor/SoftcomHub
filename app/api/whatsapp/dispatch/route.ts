@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { encerrarAvaliacaoPendente } from '@/lib/avaliacao-pendente'
 import {
   buscarSubsetoresDoCriador,
   escolherSubsetorDoCriador,
@@ -277,6 +278,10 @@ export async function POST(request: NextRequest) {
         waId,
       })
     }
+
+    // O template já saiu; o que ainda dá para consertar é a resposta do cliente.
+    // Preso no NPS do atendimento anterior, ele fala e ninguém ouve.
+    await encerrarAvaliacaoPendente(supabase, waId, 'Dispatch')
 
     // Esta rota monta o ticket à mão, sem passar por `criarEDistribuirTicket`
     // nem pelo processador de lotes — era o único caminho de criação que ainda
